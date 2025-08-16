@@ -19,13 +19,13 @@ class MyBot(commands.Bot):
         """Botが起動準備を終えたときに呼び出される特別な関数"""
         print(f'{self.user} としてログインしました！')
         
-        #for filename in os.listdir('./cogs'):
-        #    if filename.endswith('.py'):
-        #        try:
-        #            await self.load_extension(f'cogs.{filename[:-3]}')
-        #            print(f'{filename} を読み込みました。')
-        #        except Exception as e:
-        #            print(f'{filename} の読み込みに失敗しました: {e}')
+        for filename in os.listdir('./cogs'):
+            if filename.endswith('.py'):
+                try:
+                    await self.load_extension(f'cogs.{filename[:-3]}')
+                    print(f'{filename} を読み込みました。')
+                except Exception as e:
+                    print(f'{filename} の読み込みに失敗しました: {e}')
         
         synced = await self.tree.sync()
         print(f'{len(synced)}個のスラッシュコマンドを同期しました。')
