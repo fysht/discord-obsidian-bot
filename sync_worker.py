@@ -1,12 +1,10 @@
-# sync_worker.py
-
 import os
 import json
 from datetime import datetime
 from dotenv import load_dotenv
 import pytz
 import subprocess
-import sys # 文字コードエラー対策で追加
+import sys
 
 load_dotenv()
 
@@ -47,9 +45,14 @@ def sync_notes():
     """保留中のメモをObsidianの日次メモに書き込み、Dropboxと同期するメイン関数"""
     print("[Worker] 同期処理を開始します。")
 
-    if not sync_from_dropbox():
-        print("[Worker] 失敗: Dropboxからの同期に失敗しました。処理を中断します。")
+    if not VAULT_PATH:
+        print("[Worker] エラー: .envにOBSIDIAN_VAULT_PATHが設定されていないか、読み込めていません。")
         return
+    
+    # ▼▼▼ 診断のため、このブロックを一時的にコメントアウト ▼▼▼
+    # if not sync_from_dropbox():
+    #     print("[Worker] 失敗: Dropboxからの同期に失敗しました。処理を中断します。")
+    #     return
 
     try:
         with open(PENDING_MEMOS_FILE, "r", encoding='utf-8') as f:
@@ -60,10 +63,6 @@ def sync_notes():
 
     if not pending_memos:
         print("[Worker] 同期する保留メモはありませんでした。")
-        return
-        
-    if not VAULT_PATH:
-        print("[Worker] エラー: .envにOBSIDIAN_VAULT_PATHが設定されていません。")
         return
         
     print(f"[Worker] {len(pending_memos)}件の保留メモを処理します。")
@@ -85,6 +84,8 @@ def sync_notes():
             file_name = f"{post_date}.md"
             file_path = os.path.join(VAULT_PATH, file_name)
 
+            print(f"[Worker] 書き込み先のフルパス: {os.path.abspath(file_path)}")
+
             obsidian_content = []
             for memo in memos_in_date:
                 timestamp_dt = datetime.fromisoformat(memo['created_at'])
@@ -105,10 +106,11 @@ def sync_notes():
         except Exception as e:
             print(f"[Worker] 失敗: {post_date} のファイル書き込み中にエラーが発生しました。 {e}")
 
-    if not sync_to_dropbox():
-        print("[Worker] 警告: Dropboxへのアップロードに失敗しました。")
-    else:
-        print("[Worker] Dropboxへのアップロードが完了しました。")
+    # ▼▼▼ 診断のため、このブロックを一時的にコメントアウト ▼▼▼
+    # if not sync_to_dropbox():
+    #     print("[Worker] 警告: Dropboxへのアップロードに失敗しました。")
+    # else:
+    #     print("[Worker] Dropboxへのアップロードが完了しました。")
     
     try:
         with open(PENDING_MEMOS_FILE, "w", encoding='utf-8') as f:
