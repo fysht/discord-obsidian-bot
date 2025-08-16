@@ -7,7 +7,7 @@ import asyncio # 非同期で外部プログラムを呼び出すために必要
 import sys # Pythonの実行ファイルパスを取得するために必要
 
 PENDING_MEMOS_FILE = "pending_memos.json"
-SYNC_INTERVAL_SECONDS = 60
+SYNC_INTERVAL_SECONDS = 10
 
 class SyncCog(commands.Cog):
     """定期的に外部の同期ワーカーを呼び出すCog"""

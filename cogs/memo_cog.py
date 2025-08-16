@@ -2,76 +2,56 @@
 
 import discord
 from discord.ext import commands
-import os
-import datetime
 import json
+from datetime import datetime, timezone
 
-LAST_MESSAGE_ID_FILE = "last_message_id.txt"
+# --- 定数定義 ---
+TARGET_CHANNEL_NAME = "memo"  # メモを監視するチャンネル名
 PENDING_MEMOS_FILE = "pending_memos.json"
 
 class MemoCog(commands.Cog):
-    """'memo'チャンネルへの投稿を監視し、ローカルに一時保存するCog"""
-    
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        self.last_message_id = self._load_last_message_id()
-
-    def _load_last_message_id(self) -> int | None:
-        try:
-            with open(LAST_MESSAGE_ID_FILE, "r") as f:
-                return int(f.read().strip())
-        except (FileNotFoundError, ValueError):
-            return None
-
-    def _save_last_message_id(self, message_id: int):
-        with open(LAST_MESSAGE_ID_FILE, "w") as f:
-            f.write(str(message_id))
-        self.last_message_id = message_id
-
-    def _get_pending_memos(self) -> list:
-        try:
-            with open(PENDING_MEMOS_FILE, "r", encoding='utf-8') as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return []
-
-    def _save_pending_memos(self, memos: list):
-        with open(PENDING_MEMOS_FILE, "w", encoding='utf-8') as f:
-            json.dump(memos, f, ensure_ascii=False, indent=2)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or message.channel.id != self.memo_channel_id:
+        # 自身からのメッセージは無視
+        if message.author == self.bot.user:
             return
 
-        print(f"'{message.channel.name}' チャンネルでメッセージを検知しました。キューに追加します。")
-        
-        channel = message.channel
-        
-        messages_to_queue = []
-        async for msg in channel.history(limit=None, after=discord.Object(id=self.last_message_id) if self.last_message_id else None):
-            messages_to_queue.append(msg)
-        
-        if not messages_to_queue:
-            return
-            
-        pending_memos = self._get_pending_memos()
-        for msg in messages_to_queue:
-            memo_data = {
-                "id": msg.id,
-                "created_at": msg.created_at.isoformat(),
-                "author": msg.author.display_name,
-                "content": msg.clean_content
+        # 特定のチャンネルのメッセージのみを処理
+        if message.channel.name == TARGET_CHANNEL_NAME:
+            print(f"'{TARGET_CHANNEL_NAME}' チャンネルでメッセージを検知しました。ファイルへの書き込みを試みます...")
+
+            new_memo = {
+                "content": message.content,
+                "author": message.author.name,
+                # タイムゾーンをUTCに指定してISO 8601形式で保存
+                "created_at": datetime.now(timezone.utc).isoformat()
             }
-            pending_memos.append(memo_data)
 
-        self._save_pending_memos(pending_memos)
-        
-        last_msg_id = messages_to_queue[-1].id
-        self._save_last_message_id(last_msg_id)
-        
-        await message.add_reaction("📥")
+            try:
+                # 1. 既存のメモを読み込む
+                try:
+                    with open(PENDING_MEMOS_FILE, "r", encoding='utf-8') as f:
+                        pending_memos = json.load(f)
+                except (FileNotFoundError, json.JSONDecodeError):
+                    # ファイルがない、または中身が不正な場合は空のリストから開始
+                    pending_memos = []
+
+                # 2. 新しいメモを追加
+                pending_memos.append(new_memo)
+
+                # 3. 全てのメモをファイルに書き込む
+                with open(PENDING_MEMOS_FILE, "w", encoding='utf-8') as f:
+                    json.dump(pending_memos, f, ensure_ascii=False, indent=4)
+                
+                print(f"ファイル '{PENDING_MEMOS_FILE}' への書き込みが成功しました。")
+
+            except Exception as e:
+                # ファイル操作中に何らかのエラーが発生した場合、内容をコンソールに表示
+                print(f"【書き込みエラー】'{PENDING_MEMOS_FILE}'への保存中に問題が発生しました。")
+                print(f"エラー内容: {e}")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(MemoCog(bot))
