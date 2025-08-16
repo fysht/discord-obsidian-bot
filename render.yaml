@@ -1,0 +1,13 @@
+services:
+  - type: worker # Webサーバーではなく、バックグラウンドで動き続けるボットなのでworkerを指定
+    name: my-ai-secretary # Renderでのサービス名（自由に変更可）
+    env: python
+    pythonVersion: "3.11" # 使用するPythonのバージョンを明示
+    buildCommand: "pip install -r requirements.txt && curl https://rclone.org/install.sh | sudo bash"
+    startCommand: "python main.py"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+    disks:
+      - name: obsidian-vault # 以前作成したディスクの名前
+        mountPath: /var/data/obsidian_vault # 以前作成したディスクのパス
