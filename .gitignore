@@ -1,2 +1,6 @@
+# Temporary files
 pending_memos.json
 last_message_id.txt
+
+# Secret file
+.env
