@@ -3,7 +3,7 @@ import asyncio
 import logging
 import json
 from pathlib import Path
-from datetime import datetime  # 変更点1: datetimeをインポート
+from datetime import datetime
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -40,7 +40,7 @@ class MyBot(commands.Bot):
                 with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
                     memos = json.load(f)
                     if memos:
-                        # 変更点2: datetime.fromisoformatを使用する
+                        # datetime.fromisoformatを使用する
                         last_timestamp = datetime.fromisoformat(memos[-1]['created_at'])
             except (json.JSONDecodeError, IndexError, KeyError) as e:
                 logging.error(f"pending_memos.jsonの解析に失敗しました: {e}")
