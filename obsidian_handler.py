@@ -1,63 +1,51 @@
-# obsidian_handler.py
-
 import os
-from datetime import datetime
+import json
+import logging
 import asyncio
+from pathlib import Path
+from filelock import FileLock
+from datetime import datetime, timezone
 
-# 書き込み先をデスクトップのテストフォルダに固定する
-def _get_vault_path() -> str | None:
-    # あなたのユーザー名に合わせてパスを調整してください
-    return 'C:\\Users\\fyshx\\Desktop\\bot_test_output'
+# .envファイルから設定を読み込む
+from dotenv import load_dotenv
+load_dotenv()
 
-# --- 以降のコードは前回と同じ ---
+PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
+PENDING_MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-async def _write_to_file_async(path: str, content: str):
-    def write_operation():
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(content)
-    await asyncio.to_thread(write_operation)
-
-async def _read_from_file_async(path: str) -> str:
-    def read_operation():
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read()
-    return await asyncio.to_thread(read_operation)
-
-async def append_to_daily_note(content: str) -> bool:
-    vault_path = _get_vault_path()
-    if not vault_path:
-        print("エラー: テスト用のパスが設定されていません。")
-        return False
-
-    try:
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        file_name = f"{today_str}.md"
-        file_path = os.path.join(vault_path, file_name)
+# 同期的な書き込み処理（内部でのみ使用）
+def _add_memo_sync(content, author, created_at):
+    """ファイルへの書き込みを行う同期関数"""
+    data = {
+        "content": content,
+        "author": author,
+        "created_at": created_at,
+    }
+    lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
+    with lock:
+        memos = []
+        if PENDING_MEMOS_FILE.exists():
+            try:
+                # ファイルから既存のメモを読み込む
+                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+                    memos = json.load(f)
+            except (json.JSONDecodeError, FileNotFoundError):
+                # ファイルが空または壊れている場合は空のリストから開始
+                memos = []
         
-        post_content = f"\n{content}"
-        await _write_to_file_async(file_path, post_content)
+        memos.append(data)
         
-        print("テストフォルダへの書き込み成功")
-        return True
-    except Exception as e:
-        print(f"テストフォルダへのファイル書き込みに失敗しました: {e}")
-        return False
+        # 安全な書き込み（一時ファイル経由）
+        tmp_file = PENDING_MEMOS_FILE.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(memos, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_file, PENDING_MEMOS_FILE)
 
-async def read_daily_note() -> str | None:
-    vault_path = _get_vault_path()
-    if not vault_path:
-        return None
+    logging.info(f"Memo saved: {content[:30]}...")
 
-    try:
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        file_name = f"{today_str}.md"
-        file_path = os.path.join(vault_path, file_name)
-        
-        if not os.path.exists(file_path):
-            return ""
-
-        content = await _read_from_file_async(file_path)
-        return content
-    except Exception as e:
-        print(f"テストフォルダからのファイル読み込みに失敗しました: {e}")
-        return None
+# Botから呼び出すための非同期版関数
+async def add_memo_async(content, author="Unknown", created_at=None):
+    """Botの非同期処理を妨げずにメモを保存する関数"""
+    created_at = created_at or datetime.now(timezone.utc).isoformat()
+    # 同期的なファイル書き込みを別スレッドで実行し、メイン処理をブロックしないようにする
+    await asyncio.to_thread(_add_memo_sync, content, author, created_at)

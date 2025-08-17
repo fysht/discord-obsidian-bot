@@ -1,48 +1,52 @@
-# cogs/sync_cog.py
-
 import discord
 from discord.ext import commands, tasks
 import json
-import asyncio # 非同期で外部プログラムを呼び出すために必要
-import sys # Pythonの実行ファイルパスを取得するために必要
+import asyncio
+import sys
+from pathlib import Path
 
 PENDING_MEMOS_FILE = "pending_memos.json"
-SYNC_INTERVAL_SECONDS = 10
+SYNC_INTERVAL_SECONDS = 60 # 実行間隔を60秒に設定
 
 class SyncCog(commands.Cog):
     """定期的に外部の同期ワーカーを呼び出すCog"""
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # 外部スクリプトへのパスを堅牢な方法で構築
+        # このCogファイル(sync_cog.py)の親ディレクトリ(cogs)の、さらに親(プロジェクトルート)にある
+        # 'sync_worker.py' を指すように設定
+        self.worker_path = str(Path(__file__).resolve().parent.parent / "sync_worker.py")
         self.auto_sync_loop.start()
 
     def cog_unload(self):
+        """Cogがリロードされる際にループを安全に停止させる"""
         self.auto_sync_loop.cancel()
 
     @tasks.loop(seconds=SYNC_INTERVAL_SECONDS)
     async def auto_sync_loop(self):
-        # 保留中のメモがあるかだけをチェック
+        # 実行前に処理すべきメモがあるかチェック
         try:
             with open(PENDING_MEMOS_FILE, "r", encoding='utf-8') as f:
+                # ファイルの中身が空のリスト[]でないことを確認
                 if not json.load(f):
-                    return # メモがなければ何もしない
+                    return
         except (FileNotFoundError, json.JSONDecodeError):
-            return # ファイルがなければ何もしない
+            # ファイルが存在しない、または中身が不正な場合は何もしない
+            return
 
         print("【自動同期】未同期メモを検出。外部の同期ワーカーを呼び出します...")
 
         try:
-            # 外部のsync_worker.pyを、Botとは完全に別のプロセスとして実行する
-            # sys.executableは現在実行中のPythonのパス (例: C:\Python313\python.exe)
+            # 堅牢なパス指定でワーカーを呼び出す
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, 'sync_worker.py',
+                sys.executable, self.worker_path, # ここで堅牢なパスを使用
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE)
 
-            # 外部プログラムの実行結果（出力）を取得
+            # ワーカーの実行結果を監視・表示
             stdout, stderr = await proc.communicate()
 
-            # 結果をコンソールに表示
             if proc.returncode == 0:
                 print("【自動同期】外部ワーカーが正常に処理を完了しました。")
                 if stdout:
@@ -57,8 +61,9 @@ class SyncCog(commands.Cog):
 
     @auto_sync_loop.before_loop
     async def before_auto_sync_loop(self):
+        """ループが開始される前に、Botの準備が完了するのを待つ"""
         await self.bot.wait_until_ready()
-        print("自動同期ループを開始します。")
+        print(f"自動同期ループを開始します。（間隔: {SYNC_INTERVAL_SECONDS}秒）")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SyncCog(bot))
