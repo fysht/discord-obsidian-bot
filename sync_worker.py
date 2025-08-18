@@ -12,7 +12,7 @@ from filelock import FileLock
 # --- 環境変数から設定内容を直接読み込み、ファイルを作成する ---
 RCLONE_CONFIG_CONTENT = os.getenv("RCLONE_CONFIG_CONTENT")
 # Renderの書き込み可能領域にパスを固定
-RCLONE_CONFIG_PATH = "/var/data/rclone.conf" 
+RCLONE_CONFIG_PATH = "/var/data/rclone.conf"
 
 if RCLONE_CONFIG_CONTENT:
     try:
@@ -41,10 +41,11 @@ JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 VAULT_PATH.mkdir(parents=True, exist_ok=True)
 
 def sync_with_dropbox():
+    """Dropbox と双方向同期を行う"""
     rclone_path = shutil.which("rclone")
     if not rclone_path:
-        # Render環境では /usr/local/bin にあるはずなので、パスを明示的に指定してみる
-        rclone_path_alt = "/usr/local/bin/rclone"
+        # ユーザーbinに置いたrcloneを優先
+        rclone_path_alt = str(Path.home() / "bin" / "rclone")
         if Path(rclone_path_alt).exists():
             rclone_path = rclone_path_alt
         else:
@@ -53,9 +54,12 @@ def sync_with_dropbox():
 
     common_args = ["--config", RCLONE_CONFIG_PATH, "--update", "--create-empty-src-dirs", "--verbose"]
     try:
+        # ダウンロード（Dropbox → Vault）
         cmd_down = [rclone_path, "copy", f"{DROPBOX_REMOTE}:{REMOTE_DIR}", str(VAULT_PATH)] + common_args
         res_down = subprocess.run(cmd_down, check=True, capture_output=True, text=True, encoding='utf-8')
         logging.info(f"[SYNC] ダウンロード完了:\n{res_down.stdout}")
+
+        # アップロード（Vault → Dropbox）
         cmd_up = [rclone_path, "copy", str(VAULT_PATH), f"{DROPBOX_REMOTE}:{REMOTE_DIR}"] + common_args
         res_up = subprocess.run(cmd_up, check=True, capture_output=True, text=True, encoding='utf-8')
         logging.info(f"[SYNC] アップロード完了:\n{res_up.stdout}")
@@ -68,24 +72,32 @@ def sync_with_dropbox():
         return False
 
 def process_pending_memos():
-    if not PENDING_MEMOS_FILE.exists(): return True
+    """保留メモを日付ごとの DailyNote に追加する"""
+    if not PENDING_MEMOS_FILE.exists():
+        return True
     lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
     with lock:
         try:
-            with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f: memos = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError): memos = []
-        if not memos: return True
+            with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+                memos = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            memos = []
+        if not memos:
+            return True
+
         logging.info(f"[PROCESS] {len(memos)}件のメモを処理...")
         memos_by_date = {}
         for memo in memos:
             try:
                 timestamp_utc = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00'))
                 date_str = timestamp_utc.astimezone(JST).strftime('%Y-%m-%d')
-                if date_str not in memos_by_date: memos_by_date[date_str] = []
-                memos_by_date[date_str].append(memo)
-            except (KeyError, ValueError): pass
+                memos_by_date.setdefault(date_str, []).append(memo)
+            except (KeyError, ValueError):
+                pass
+
         daily_notes_path = VAULT_PATH / "DailyNotes"
         daily_notes_path.mkdir(parents=True, exist_ok=True)
+
         for date_str, memos_in_date in memos_by_date.items():
             try:
                 file_path = daily_notes_path / f"{date_str}.md"
@@ -98,20 +110,26 @@ def process_pending_memos():
                         formatted_content += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
                     lines_to_append.append(f"- {time_str}\n\t{formatted_content}")
                 with open(file_path, "a", encoding="utf-8") as f:
-                    if f.tell() > 0: f.write("\n")
+                    if f.tell() > 0:
+                        f.write("\n")
                     f.write("\n".join(lines_to_append))
             except Exception as e:
                 logging.error(f"[PROCESS] ファイル書き込みエラー: {e}", exc_info=True)
                 return False
+
         try:
             PENDING_MEMOS_FILE.unlink()
-        except OSError: pass
+        except OSError:
+            pass
     return True
 
 def main():
-    if not sync_with_dropbox(): sys.exit(1)
-    if not process_pending_memos(): sys.exit(1)
-    if not sync_with_dropbox(): sys.exit(1)
+    if not sync_with_dropbox():
+        sys.exit(1)
+    if not process_pending_memos():
+        sys.exit(1)
+    if not sync_with_dropbox():
+        sys.exit(1)
     logging.info("--- 同期ワーカー正常完了 ---")
 
 if __name__ == "__main__":
