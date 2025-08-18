@@ -8,6 +8,14 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from filelock import FileLock
+from dotenv import load_dotenv
+
+# --- .env 読み込み（ローカル環境用） ---
+load_dotenv()
+
+# --- ロギング設定 ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+sys.stdout.reconfigure(encoding='utf-8')
 
 # --- 環境変数から設定内容を直接読み込み、ファイルを作成する ---
 RCLONE_CONFIG_CONTENT = os.getenv("RCLONE_CONFIG_CONTENT")
@@ -19,19 +27,15 @@ if RCLONE_CONFIG_CONTENT:
         Path(RCLONE_CONFIG_PATH).parent.mkdir(parents=True, exist_ok=True)
         with open(RCLONE_CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(RCLONE_CONFIG_CONTENT)
-        logging.info(f"環境変数からrclone.confを {RCLONE_CONFIG_PATH} に作成しました。")
+        logging.info(f"環境変数から rclone.conf を {RCLONE_CONFIG_PATH} に作成しました。")
     except Exception as e:
         logging.error(f"rclone.conf の作成に失敗しました: {e}", exc_info=True)
         sys.exit(1)
 else:
-    logging.critical("環境変数 'RCLONE_CONFIG_CONTENT' が設定されていません。ローカル実行の場合は.envファイルを確認してください。")
+    logging.critical("環境変数 'RCLONE_CONFIG_CONTENT' が設定されていません。.env ファイルを確認してください。")
     sys.exit(1)
-# ------------------------------------
 
 # --- 基本設定 ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-sys.stdout.reconfigure(encoding='utf-8')
-
 VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/var/data/vault"))
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
 DROPBOX_REMOTE = os.getenv("DROPBOX_REMOTE", "dropbox")
@@ -49,7 +53,7 @@ def sync_with_dropbox():
         if Path(rclone_path_alt).exists():
             rclone_path = rclone_path_alt
         else:
-            logging.error("[SYNC] rcloneが見つかりませんでした。")
+            logging.error("[SYNC] rclone が見つかりませんでした。")
             return False
 
     common_args = ["--config", RCLONE_CONFIG_PATH, "--update", "--create-empty-src-dirs", "--verbose"]
@@ -85,7 +89,7 @@ def process_pending_memos():
         if not memos:
             return True
 
-        logging.info(f"[PROCESS] {len(memos)}件のメモを処理...")
+        logging.info(f"[PROCESS] {len(memos)} 件のメモを処理...")
         memos_by_date = {}
         for memo in memos:
             try:
