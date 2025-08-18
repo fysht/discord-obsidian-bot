@@ -11,7 +11,6 @@ from datetime import datetime
 from filelock import FileLock
 
 # --- 設定ファイルのデコード処理 ---
-# Render環境でBase64エンコードされた設定をファイルに書き戻す
 RCLONE_CONFIG_BASE64 = os.getenv("RCLONE_CONFIG_BASE64")
 RCLONE_CONFIG_PATH = os.getenv("RCLONE_CONFIG")
 
@@ -22,7 +21,10 @@ if RCLONE_CONFIG_BASE64 and RCLONE_CONFIG_PATH:
         decoded_config = base64.b64decode(RCLONE_CONFIG_BASE64).decode("utf-8")
         with open(RCLONE_CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(decoded_config)
-        logging.info(f"rclone.conf を {RCLONE_CONFIG_PATH} に復元しました。")
+        
+        # ★★★ デバッグ用のログ出力を追加 ★★★
+        logging.info(f"rclone.conf を {RCLONE_CONFIG_PATH} に復元しました。\n--- rclone.conf の内容 ---\n{decoded_config}\n--------------------------")
+
     except Exception as e:
         logging.error(f"rclone.conf の復元に失敗しました: {e}", exc_info=True)
 # ------------------------------------
