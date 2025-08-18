@@ -9,53 +9,75 @@ from pathlib import Path
 from datetime import datetime
 from filelock import FileLock
 
-# --- 基本設定 ---
-# ログ設定は呼び出し元のBotに任せるため、ここでのbasicConfigは不要
+# ログ設定
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "./vault"))
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
-RCLONE_CONFIG_PATH = Path(os.getenv("RCLONE_CONFIG_PATH", "rclone.conf"))
+# --- 設定 ---
+VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/var/data/vault"))  # ✅ ローカルパス推奨
+PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
 DROPBOX_REMOTE = os.getenv("DROPBOX_REMOTE", "dropbox")
+REMOTE_DIR = os.getenv("DROPBOX_REMOTE_DIR", "vault")  # デフォルトは dropbox:/vault
 
 VAULT_PATH.mkdir(parents=True, exist_ok=True)
 
-# --- Dropbox同期 ---
+# --- Dropbox同期（rcloneを使用） ---
 async def sync_with_dropbox():
-    # この関数は変更なし
-    if not shutil.which("rclone"):
-        logging.error("rclone not found in PATH.")
-        return
+    rclone_path = shutil.which("rclone")
+    logging.info(f"[SYNC] rclone: {rclone_path}")
+    logging.info(f"[SYNC] PATH={os.getenv('PATH')}")
+    logging.info(f"[SYNC] RCLONE_CONFIG={os.getenv('RCLONE_CONFIG')}")
+
+    if not rclone_path:
+        logging.error("[SYNC] rclone not found in PATH.")
+        return False
+
+    # download (remote -> local)
+    cmd_down = [
+        "rclone", "copy", f"{DROPBOX_REMOTE}:/{REMOTE_DIR}", str(VAULT_PATH),
+        "--update", "--create-empty-src-dirs", "--verbose"
+    ]
+    # upload (local -> remote)
+    cmd_up = [
+        "rclone", "copy", str(VAULT_PATH), f"{DROPBOX_REMOTE}:/{REMOTE_DIR}",
+        "--update", "--create-empty-src-dirs", "--verbose"
+    ]
 
     try:
-        subprocess.run([
-            "rclone", "copy", str(VAULT_PATH), f"{DROPBOX_REMOTE}:/vault",
-            "--config", str(RCLONE_CONFIG_PATH),
-            "--update", "--create-empty-src-dirs", "--verbose"
-        ], check=True, capture_output=True)
-        subprocess.run([
-            "rclone", "copy", f"{DROPBOX_REMOTE}:/vault", str(VAULT_PATH),
-            "--config", str(RCLONE_CONFIG_PATH),
-            "--update", "--create-empty-src-dirs", "--verbose"
-        ], check=True, capture_output=True)
-        logging.info("Dropbox sync successful.")
+        res_down = subprocess.run(cmd_down, check=True, capture_output=True)
+        logging.info(f"[SYNC] download ok:\n{res_down.stdout.decode('utf-8', 'ignore')}")
     except subprocess.CalledProcessError as e:
-        logging.error(f"rclone sync failed: {e.stderr.decode('utf-8', errors='ignore')}")
+        logging.error(f"[SYNC] download failed (code={e.returncode}):\n{e.stderr.decode('utf-8','ignore')}")
+        return False
+
+    try:
+        res_up = subprocess.run(cmd_up, check=True, capture_output=True)
+        logging.info(f"[SYNC] upload ok:\n{res_up.stdout.decode('utf-8', 'ignore')}")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"[SYNC] upload failed (code={e.returncode}):\n{e.stderr.decode('utf-8','ignore')}")
+        return False
+
+    logging.info("[SYNC] Dropbox sync successful.")
+    return True
 
 # --- メモ処理 ---
 async def process_pending_memos():
-    lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
     if not PENDING_MEMOS_FILE.exists():
+        logging.info(f"[PROCESS] pending file not found: {PENDING_MEMOS_FILE}")
         return
 
+    lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
     with lock:
-        with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-            try: memos = json.load(f)
-            except json.JSONDecodeError: memos = []
-        
+        try:
+            with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+                memos = json.load(f)
+        except json.JSONDecodeError:
+            memos = []
+
         if not memos:
+            logging.info("[PROCESS] no memos to process.")
             return
 
-        logging.info(f"Processing {len(memos)} pending memos...")
+        logging.info(f"[PROCESS] processing {len(memos)} memos...")
         memos_by_date = {}
         jst = pytz.timezone('Asia/Tokyo')
 
@@ -64,43 +86,36 @@ async def process_pending_memos():
             post_time_jst = timestamp_dt.astimezone(jst)
             post_date_str = post_time_jst.strftime('%Y-%m-%d')
             memos_by_date.setdefault(post_date_str, []).append(memo)
-        
+
         for post_date, memos_in_date in memos_by_date.items():
             try:
                 daily_file = VAULT_PATH / f"{post_date}.md"
                 daily_file.parent.mkdir(parents=True, exist_ok=True)
 
-                obsidian_content = []
+                lines = []
                 for memo in memos_in_date:
                     timestamp_dt = datetime.fromisoformat(memo['created_at'])
                     time_str = timestamp_dt.astimezone(jst).strftime('%H:%M')
                     content = memo['content'].replace('\n', '\n\t- ')
-                    
-                    formatted_memo = f"- {time_str}\n\t- {content}"
-                    obsidian_content.append(formatted_memo)
-                
-                full_content = "\n" + "\n".join(obsidian_content)
+                    lines.append(f"- {time_str}\n\t- {content}")
 
                 with open(daily_file, "a", encoding="utf-8") as f:
-                    f.write(full_content)
-                
-                logging.info(f"Successfully processed {len(memos_in_date)} memos into {daily_file}")
+                    f.write("\n" + "\n".join(lines))
 
+                logging.info(f"[PROCESS] wrote {len(memos_in_date)} memos -> {daily_file}")
             except Exception as e:
-                logging.error(f"Failed to write memos for date {post_date}: {e}")
+                logging.error(f"[PROCESS] failed to write for date {post_date}: {e}")
 
-        PENDING_MEMOS_FILE.unlink()
+        # 処理済みなので削除
+        PENDING_MEMOS_FILE.unlink(missing_ok=True)
+        logging.info("[PROCESS] cleared pending memos.")
 
-# --- メイン処理 ---
+# --- メイン ---
 async def main():
-    """
-    SyncCogから呼び出された際に、同期とメモ処理を「一度だけ」実行する。
-    """
-    # 処理の順序は ダウンロード -> ローカル処理 -> アップロード が安全
-    await sync_with_dropbox() 
+    # 安全な順序: remote -> local ダウンロード → ローカル処理 → アップロード
+    await sync_with_dropbox()
     await process_pending_memos()
     await sync_with_dropbox()
 
 if __name__ == "__main__":
-    # このファイルが直接実行された場合に備えて、非同期処理を実行
     asyncio.run(main())
