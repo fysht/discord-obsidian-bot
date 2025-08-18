@@ -10,9 +10,18 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
-# ファイルの親ディレクトリが存在しない場合に作成する
-PENDING_MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
+# 環境変数からパスを取得し、絶対パスであることをログに出力
+file_path_str = os.getenv("PENDING_MEMOS_FILE", "pending_memos.json")
+PENDING_MEMOS_FILE = Path(file_path_str).resolve() # 常に絶対パスとして扱う
+logging.info(f"PENDING_MEMOS_FILE is set to: {PENDING_MEMOS_FILE}")
+
+# ディレクトリ作成処理
+try:
+    PENDING_MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    logging.info(f"Ensured parent directory exists: {PENDING_MEMOS_FILE.parent}")
+except Exception as e:
+    logging.error(f"Failed to create parent directory for PENDING_MEMOS_FILE: {e}", exc_info=True)
+
 
 # 同期的な書き込み処理（内部でのみ使用）
 def _add_memo_sync(content, author, created_at):
@@ -22,31 +31,43 @@ def _add_memo_sync(content, author, created_at):
         "author": author,
         "created_at": created_at,
     }
+    
+    logging.info(f"Attempting to write to {PENDING_MEMOS_FILE}...")
     lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
-    with lock:
-        memos = []
-        if PENDING_MEMOS_FILE.exists():
-            try:
-                # ファイルから既存のメモを読み込む
-                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-                    memos = json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                # ファイルが空または壊れている場合は空のリストから開始
-                memos = []
-        
-        memos.append(data)
-        
-        # 安全な書き込み（一時ファイル経由）
-        tmp_file = PENDING_MEMOS_FILE.with_suffix(".tmp")
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(memos, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_file, PENDING_MEMOS_FILE)
+    
+    try:
+        with lock:
+            memos = []
+            if PENDING_MEMOS_FILE.exists():
+                logging.info(f"{PENDING_MEMOS_FILE} exists. Reading existing memos.")
+                try:
+                    with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+                        content_in_file = f.read()
+                        if content_in_file:
+                            memos = json.loads(content_in_file)
+                        else:
+                            memos = []
+                except json.JSONDecodeError:
+                    logging.warning(f"{PENDING_MEMOS_FILE} was corrupted or empty. Starting with an empty list.")
+                    memos = []
+            else:
+                logging.info(f"{PENDING_MEMOS_FILE} does not exist. Creating a new file.")
 
-    logging.info(f"Memo saved: {content[:30]}...")
+            memos.append(data)
+
+            tmp_file = PENDING_MEMOS_FILE.with_suffix(".tmp")
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(memos, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_file, PENDING_MEMOS_FILE)
+
+        logging.info(f"Memo successfully saved to {PENDING_MEMOS_FILE}: {content[:30]}...")
+
+    except Exception as e:
+        logging.error(f"Failed to write memo to {PENDING_MEMOS_FILE}: {e}", exc_info=True)
+
 
 # Botから呼び出すための非同期版関数
 async def add_memo_async(content, author="Unknown", created_at=None):
     """Botの非同期処理を妨げずにメモを保存する関数"""
     created_at = created_at or datetime.now(timezone.utc).isoformat()
-    # 同期的なファイル書き込みを別スレッドで実行し、メイン処理をブロックしないようにする
     await asyncio.to_thread(_add_memo_sync, content, author, created_at)

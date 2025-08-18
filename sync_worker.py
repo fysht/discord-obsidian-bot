@@ -1,106 +1,119 @@
 import os
+import sys
 import json
-import shutil
-import asyncio
-import logging
-import pytz
 import subprocess
+import logging
 from pathlib import Path
 from datetime import datetime
-from filelock import FileLock
+import zoneinfo
+from filelock import FileLock, Timeout
 
-# --- 基本設定 ---
-# ログ設定は呼び出し元のBotに任せるため、ここでのbasicConfigは不要
+# --- ロギング設定 ---
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# 標準出力のエンコーディングをUTF-8に設定
+sys.stdout.reconfigure(encoding='utf-8')
 
-VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "./vault"))
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
-RCLONE_CONFIG_PATH = Path(os.getenv("RCLONE_CONFIG_PATH", "rclone.conf"))
-DROPBOX_REMOTE = os.getenv("DROPBOX_REMOTE", "dropbox")
+# --- 設定 ---
+# 環境変数から設定を読み込む
+file_path_str = os.getenv("PENDING_MEMOS_FILE", "pending_memos.json")
+PENDING_MEMOS_FILE = Path(file_path_str).resolve()
+VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH") 
+JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 
-VAULT_PATH.mkdir(parents=True, exist_ok=True)
-
-# --- Dropbox同期 ---
-async def sync_with_dropbox():
-    # この関数は変更なし
-    if not shutil.which("rclone"):
-        logging.error("rclone not found in PATH.")
+def sync_memos():
+    """保留中のメモをObsidianに同期するメイン関数"""
+    logging.info("Starting sync process...")
+    if not VAULT_PATH:
+        logging.error("ERROR: 環境変数 'OBSIDIAN_VAULT_PATH' が設定されていません。")
         return
 
-    try:
-        subprocess.run([
-            "rclone", "copy", str(VAULT_PATH), f"{DROPBOX_REMOTE}:/vault",
-            "--config", str(RCLONE_CONFIG_PATH),
-            "--update", "--create-empty-src-dirs", "--verbose"
-        ], check=True, capture_output=True)
-        subprocess.run([
-            "rclone", "copy", f"{DROPBOX_REMOTE}:/vault", str(VAULT_PATH),
-            "--config", str(RCLONE_CONFIG_PATH),
-            "--update", "--create-empty-src-dirs", "--verbose"
-        ], check=True, capture_output=True)
-        logging.info("Dropbox sync successful.")
-    except subprocess.CalledProcessError as e:
-        logging.error(f"rclone sync failed: {e.stderr.decode('utf-8', errors='ignore')}")
-
-# --- メモ処理 ---
-async def process_pending_memos():
     lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
-    if not PENDING_MEMOS_FILE.exists():
-        return
+    
+    try:
+        with lock.acquire(timeout=10):
+            if not PENDING_MEMOS_FILE.exists() or PENDING_MEMOS_FILE.stat().st_size == 0:
+                logging.info("INFO: 同期対象のメモはありません。")
+                return
 
-    with lock:
-        with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-            try: memos = json.load(f)
-            except json.JSONDecodeError: memos = []
-        
-        if not memos:
-            return
+            with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+                try:
+                    content_in_file = f.read()
+                    if not content_in_file:
+                        logging.info("INFO: pending_memos.json is empty.")
+                        return
+                    memos = json.loads(content_in_file)
+                except json.JSONDecodeError:
+                    logging.error("ERROR: pending_memos.json の解析に失敗しました。")
+                    return
+            
+            if not memos:
+                logging.info("INFO: メモのリストが空です。同期をスキップします。")
+                return
 
-        logging.info(f"Processing {len(memos)} pending memos...")
-        memos_by_date = {}
-        jst = pytz.timezone('Asia/Tokyo')
+            # --- Markdownファイル形式に変換 ---
+            today = datetime.now(JST).date()
+            date_str = today.strftime('%Y-%m-%d')
+            
+            # メモを時系列でソート
+            sorted_memos = sorted(memos, key=lambda x: x.get('created_at', ''))
+            
+            content_list = []
+            for memo in sorted_memos:
+                ts_utc = datetime.fromisoformat(memo['created_at'])
+                ts_jst = ts_utc.astimezone(JST)
+                time_str = ts_jst.strftime('%H:%M')
+                # メモの各行にタイムスタンプを付与
+                for line in memo['content'].splitlines():
+                    content_list.append(f"- {time_str} {line}")
 
-        for memo in memos:
-            timestamp_dt = datetime.fromisoformat(memo['created_at'])
-            post_time_jst = timestamp_dt.astimezone(jst)
-            post_date_str = post_time_jst.strftime('%Y-%m-%d')
-            memos_by_date.setdefault(post_date_str, []).append(memo)
-        
-        for post_date, memos_in_date in memos_by_date.items():
+            # rcloneでObsidianに同期
+            # 一時ファイルに書き出し
+            temp_file_path = Path(f"/tmp/{date_str}.md") # Renderでは/tmpへの書き出しが確実
+            
+            # 追記処理: 既存のファイルを取得 -> 追記 -> アップロード
+            # 1. 既存ファイルの内容をダウンロード
+            existing_content = ""
+            # 保存先パスを 'DailyNotes' フォルダ配下にする
+            destination_path = f'{VAULT_PATH}/DailyNotes/{date_str}.md'
+            
             try:
-                daily_file = VAULT_PATH / f"{post_date}.md"
-                daily_file.parent.mkdir(parents=True, exist_ok=True)
-
-                obsidian_content = []
-                for memo in memos_in_date:
-                    timestamp_dt = datetime.fromisoformat(memo['created_at'])
-                    time_str = timestamp_dt.astimezone(jst).strftime('%H:%M')
-                    content = memo['content'].replace('\n', '\n\t- ')
-                    
-                    formatted_memo = f"- {time_str}\n\t- {content}"
-                    obsidian_content.append(formatted_memo)
-                
-                full_content = "\n" + "\n".join(obsidian_content)
-
-                with open(daily_file, "a", encoding="utf-8") as f:
-                    f.write(full_content)
-                
-                logging.info(f"Successfully processed {len(memos_in_date)} memos into {daily_file}")
+                download_cmd = ['rclone', 'cat', destination_path]
+                logging.info(f"Attempting to download existing note: {' '.join(download_cmd)}")
+                result = subprocess.run(download_cmd, capture_output=True, text=True, encoding='utf-8')
+                if result.returncode == 0:
+                    existing_content = result.stdout
+                    logging.info("Successfully downloaded existing note.")
+                else:
+                    logging.info("No existing note found or failed to download. A new note will be created.")
 
             except Exception as e:
-                logging.error(f"Failed to write memos for date {post_date}: {e}")
+                logging.warning(f"Could not download existing file, maybe it doesn't exist yet. Error: {e}")
 
-        PENDING_MEMOS_FILE.unlink()
+            # 2. 新しいメモと結合して書き込み
+            final_content = existing_content + "\n" + "\n".join(content_list)
+            temp_file_path.write_text(final_content.strip(), encoding="utf-8")
 
-# --- メイン処理 ---
-async def main():
-    """
-    SyncCogから呼び出された際に、同期とメモ処理を「一度だけ」実行する。
-    """
-    # 処理の順序は ダウンロード -> ローカル処理 -> アップロード が安全
-    await sync_with_dropbox() 
-    await process_pending_memos()
-    await sync_with_dropbox()
+            # 3. rcloneでアップロード (movetoからcopytoに変更)
+            upload_cmd = ['rclone', 'copyto', str(temp_file_path), destination_path]
+            logging.info(f"INFO: rcloneコマンドを実行します: {' '.join(upload_cmd)}")
+            result = subprocess.run(upload_cmd, capture_output=True, text=True, encoding='utf-8')
+
+            if result.returncode == 0:
+                logging.info("SUCCESS: Obsidianへの同期が完了しました。")
+                logging.info(f"rclone output:\n{result.stdout}")
+                
+                # 同期が成功したらpending_memos.jsonをクリアする
+                with open(PENDING_MEMOS_FILE, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+                logging.info("INFO: pending_memos.json をクリアしました。")
+            else:
+                logging.error(f"ERROR: rcloneの実行に失敗しました。Return Code: {result.returncode}")
+                logging.error(f"Stderr:\n{result.stderr}")
+
+    except Timeout:
+        logging.error("ERROR: ファイルロックの取得に失敗しました。他のプロセスが使用中です。")
+    except Exception as e:
+        logging.error(f"ERROR: 同期処理中に予期せぬエラーが発生しました: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    # このファイルが直接実行された場合に備えて、非同期処理を実行
-    asyncio.run(main())
+    sync_memos()
