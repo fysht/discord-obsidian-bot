@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
+# ファイルの親ディレクトリが存在しない場合に作成する
 PENDING_MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 # 同期的な書き込み処理（内部でのみ使用）
