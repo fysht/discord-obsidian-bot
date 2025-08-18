@@ -11,13 +11,12 @@ from filelock import FileLock
 
 # --- 環境変数から設定内容を直接読み込み、ファイルを作成する ---
 RCLONE_CONFIG_CONTENT = os.getenv("RCLONE_CONFIG_CONTENT")
-RCLONE_CONFIG_PATH = "/var/data/rclone.conf" # Renderの書き込み可能領域にパスを固定
+# Renderの書き込み可能領域にパスを固定
+RCLONE_CONFIG_PATH = "/var/data/rclone.conf" 
 
 if RCLONE_CONFIG_CONTENT:
     try:
-        # ファイルの親ディレクトリを念のため作成
         Path(RCLONE_CONFIG_PATH).parent.mkdir(parents=True, exist_ok=True)
-        # 環境変数の内容を直接ファイルに書き込む
         with open(RCLONE_CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(RCLONE_CONFIG_CONTENT)
         logging.info(f"環境変数からrclone.confを {RCLONE_CONFIG_PATH} に作成しました。")
@@ -25,7 +24,7 @@ if RCLONE_CONFIG_CONTENT:
         logging.error(f"rclone.conf の作成に失敗しました: {e}", exc_info=True)
         sys.exit(1)
 else:
-    logging.critical("環境変数 'RCLONE_CONFIG_CONTENT' が設定されていません。")
+    logging.critical("環境変数 'RCLONE_CONFIG_CONTENT' が設定されていません。ローカル実行の場合は.envファイルを確認してください。")
     sys.exit(1)
 # ------------------------------------
 
@@ -44,10 +43,14 @@ VAULT_PATH.mkdir(parents=True, exist_ok=True)
 def sync_with_dropbox():
     rclone_path = shutil.which("rclone")
     if not rclone_path:
-        logging.error("[SYNC] rcloneが見つかりませんでした。")
-        return False
+        # Render環境では /usr/local/bin にあるはずなので、パスを明示的に指定してみる
+        rclone_path_alt = "/usr/local/bin/rclone"
+        if Path(rclone_path_alt).exists():
+            rclone_path = rclone_path_alt
+        else:
+            logging.error("[SYNC] rcloneが見つかりませんでした。")
+            return False
 
-    # --config オプションで設定ファイルの場所を明示的に指定
     common_args = ["--config", RCLONE_CONFIG_PATH, "--update", "--create-empty-src-dirs", "--verbose"]
     try:
         cmd_down = [rclone_path, "copy", f"{DROPBOX_REMOTE}:{REMOTE_DIR}", str(VAULT_PATH)] + common_args
