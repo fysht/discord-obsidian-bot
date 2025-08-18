@@ -15,11 +15,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-
-file_path_str = os.getenv("PENDING_MEMOS_FILE", "pending_memos.json")
-PENDING_MEMOS_FILE = Path(file_path_str).resolve()
-logging.info(f"[Main] PENDING_MEMOS_FILE is configured to: {PENDING_MEMOS_FILE}")
-
+PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
 
 if not TOKEN:
     logging.critical("DISCORD_BOT_TOKENが設定されていません。")
@@ -39,24 +35,15 @@ class MyBot(commands.Bot):
         
         logging.info("オフライン中の未取得メモがないか確認します...")
         last_timestamp = None
-        
-        if PENDING_MEMOS_FILE.exists():
-            logging.info(f"{PENDING_MEMOS_FILE} exists. File size: {PENDING_MEMOS_FILE.stat().st_size} bytes.")
-            if PENDING_MEMOS_FILE.stat().st_size > 0:
-                try:
-                    with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-                        memos = json.load(f)
-                        if memos:
-                            last_timestamp = datetime.fromisoformat(memos[-1]['created_at'])
-                            logging.info(f"Last memo timestamp found: {last_timestamp}")
-                        else:
-                            logging.info("Memo file is empty. Will fetch all history.")
-                except (json.JSONDecodeError, IndexError, KeyError) as e:
-                    logging.error(f"pending_memos.jsonの解析に失敗しました: {e}")
-            else:
-                logging.info(f"{PENDING_MEMOS_FILE} is empty. Will fetch all channel history.")
-        else:
-            logging.info(f"{PENDING_MEMOS_FILE} does not exist. Will fetch all channel history.")
+        if PENDING_MEMOS_FILE.exists() and PENDING_MEMOS_FILE.stat().st_size > 0:
+            try:
+                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+                    memos = json.load(f)
+                    if memos:
+                        # datetime.fromisoformatを使用する
+                        last_timestamp = datetime.fromisoformat(memos[-1]['created_at'])
+            except (json.JSONDecodeError, IndexError, KeyError) as e:
+                logging.error(f"pending_memos.jsonの解析に失敗しました: {e}")
         
         try:
             channel = await self.fetch_channel(MEMO_CHANNEL_ID)
