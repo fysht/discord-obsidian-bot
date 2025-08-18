@@ -1,70 +1,89 @@
 import os
-import json
-import asyncio
-import sys
+import logging
 from pathlib import Path
+import discord
 from discord.ext import commands, tasks
-from filelock import FileLock, Timeout
+import subprocess
+import json
+import shutil
 
-# 環境変数ベースに統一
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
+logger = logging.getLogger(__name__)
 
-# デフォルトは60秒。必要なら環境変数で上書き（例: 30）
-SYNC_INTERVAL_SECONDS = int(os.getenv("SYNC_INTERVAL_SECONDS", "60"))
+# 環境変数から設定を取得
+PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
+VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/var/data/vault"))
+DROPBOX_REMOTE = os.getenv("DROPBOX_REMOTE", "dropbox")
 
 class SyncCog(commands.Cog):
-    """定期的に外部の同期ワーカーを呼び出すCog"""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # ルート直下の sync_worker.py への絶対パス
-        self.worker_path = str(Path(__file__).resolve().parent.parent / "sync_worker.py")
-        self.auto_sync_loop.start()
+        # __init__ ではループを開始せず、on_ready で開始する
 
-    def cog_unload(self):
-        self.auto_sync_loop.cancel()
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if not self.auto_sync_loop.is_running():
+            self.auto_sync_loop.start()
+            logger.info(f"自動同期ループを開始（間隔: 60秒、監視: {PENDING_MEMOS_FILE}）")
 
-    @tasks.loop(seconds=SYNC_INTERVAL_SECONDS)
+    @tasks.loop(seconds=60)
     async def auto_sync_loop(self):
-        # 同期対象の有無をロック付きで確認
-        lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
-        try:
-            with lock.acquire(timeout=5):
-                if not PENDING_MEMOS_FILE.exists():
-                    return
+        if PENDING_MEMOS_FILE.exists():
+            try:
                 with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
                     memos = json.load(f)
-                    if not memos:
-                        return
-        except (Timeout, FileNotFoundError, json.JSONDecodeError):
-            return
+            except Exception as e:
+                logger.error(f"[AUTO-SYNC] failed to load pending memos: {e}")
+                return
 
-        print(f"【自動同期】未同期メモを検出（{PENDING_MEMOS_FILE}）。外部ワーカーを呼び出します...")
+            if memos:
+                logger.info("【自動同期】未同期メモを検出...")
+                await self.bot.loop.run_in_executor(None, self._process_and_sync, memos)
+
+    def _process_and_sync(self, memos):
+        logger.info(f"[PROCESS] processing {len(memos)} memos...")
+
+        # Memo 保存先: KnowledgeBase/DailyNotes/
+        daily_notes_path = VAULT_PATH / "KnowledgeBase" / "DailyNotes"
+        daily_notes_path.mkdir(parents=True, exist_ok=True)
+
+        for memo in memos:
+            try:
+                date = memo["created_at"][:10]  # YYYY-MM-DD
+                file_path = daily_notes_path / f"{date}.md"
+                with open(file_path, "a", encoding="utf-8") as f:
+                    f.write(f"- {memo['created_at']} ({memo['author']}): {memo['content']}\n")
+            except Exception as e:
+                logger.error(f"[PROCESS] failed to write memo: {e}")
+
+        # rclone 同期処理
+        rclone_path = shutil.which("rclone")
+        logger.info(f"[SYNC] rclone: {rclone_path}")
+        logger.info(f"[SYNC] PATH={os.getenv('PATH')}")
+        logger.info(f"[SYNC] RCLONE_CONFIG={os.getenv('RCLONE_CONFIG')}")
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, self.worker_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=os.environ.copy()  # RCLONE_CONFIG などを継承
-            )
-            stdout, stderr = await proc.communicate()
+            cmd_up = [
+                "rclone", "copy", str(VAULT_PATH), f"{DROPBOX_REMOTE}:/vault",
+                "--update", "--create-empty-src-dirs", "--verbose"
+            ]
+            cmd_down = [
+                "rclone", "copy", f"{DROPBOX_REMOTE}:/vault", str(VAULT_PATH),
+                "--update", "--create-empty-src-dirs", "--verbose"
+            ]
+            res1 = subprocess.run(cmd_up, check=True, capture_output=True)
+            res2 = subprocess.run(cmd_down, check=True, capture_output=True)
+            logger.info(f"[SYNC] Dropbox sync successful.\nstdout:\n{res1.stdout.decode()}\n{res2.stdout.decode()}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"[SYNC] rclone sync failed: {e.stderr.decode()}")
 
-            if proc.returncode == 0:
-                print("【自動同期】外部ワーカーが正常終了。")
-                if stdout:
-                    print(f"[worker stdout]\n{stdout.decode('utf-8', errors='ignore')}")
-            else:
-                print("【自動同期】外部ワーカーでエラー。")
-                if stderr:
-                    print(f"[worker stderr]\n{stderr.decode('utf-8', errors='ignore')}")
+        # 処理済みメモをクリア
+        try:
+            with open(PENDING_MEMOS_FILE, "w", encoding="utf-8") as f:
+                json.dump([], f, ensure_ascii=False, indent=2)
+            logger.info("[PROCESS] cleared pending memos.")
         except Exception as e:
-            print(f"【自動同期】ワーカー呼び出し失敗: {e}")
+            logger.error(f"[PROCESS] failed to clear pending memos: {e}")
 
-    @auto_sync_loop.before_loop
-    async def before_auto_sync_loop(self):
-        await self.bot.wait_until_ready()
-        print(f"自動同期ループを開始（間隔: {SYNC_INTERVAL_SECONDS}秒、監視: {PENDING_MEMOS_FILE}）")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SyncCog(bot))
