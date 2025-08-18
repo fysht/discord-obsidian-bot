@@ -4,6 +4,7 @@ import json
 import asyncio
 import sys
 from pathlib import Path
+from filelock import FileLock, Timeout
 
 PENDING_MEMOS_FILE = "pending_memos.json"
 SYNC_INTERVAL_SECONDS = 60 # 実行間隔を60秒に設定
@@ -25,14 +26,23 @@ class SyncCog(commands.Cog):
 
     @tasks.loop(seconds=SYNC_INTERVAL_SECONDS)
     async def auto_sync_loop(self):
-        # 実行前に処理すべきメモがあるかチェック
+        # 実行前に処理すべきメモがあるか、ファイルロックをかけて安全にチェック
+        lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
         try:
-            with open(PENDING_MEMOS_FILE, "r", encoding='utf-8') as f:
-                # ファイルの中身が空のリスト[]でないことを確認
-                if not json.load(f):
-                    return
-        except (FileNotFoundError, json.JSONDecodeError):
-            # ファイルが存在しない、または中身が不正な場合は何もしない
+            # 5秒間だけロックの取得を試みる
+            with lock.acquire(timeout=5):
+                pending_memos_path = Path(PENDING_MEMOS_FILE)
+                # ファイルの存在と中身を安全にチェック
+                if not pending_memos_path.exists():
+                    return # ファイルがなければ何もしない
+                
+                with open(pending_memos_path, "r", encoding='utf-8') as f:
+                    memos = json.load(f)
+                    if not memos:
+                        return # 中身が空なら何もしない
+                        
+        except (Timeout, FileNotFoundError, json.JSONDecodeError):
+            # ロック取得失敗、ファイルなし、JSONエラーの場合は次のループまで待つ
             return
 
         print("【自動同期】未同期メモを検出。外部の同期ワーカーを呼び出します...")
