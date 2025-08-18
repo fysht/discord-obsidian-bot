@@ -1,78 +1,106 @@
 import os
-import discord
-from discord.ext import commands, tasks
 import json
+import shutil
 import asyncio
-import sys
+import logging
+import pytz
+import subprocess
 from pathlib import Path
-from filelock import FileLock, Timeout
+from datetime import datetime
+from filelock import FileLock
 
-# 環境変数からファイルパスを読み込む
+# --- 基本設定 ---
+# ログ設定は呼び出し元のBotに任せるため、ここでのbasicConfigは不要
+
+VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "./vault"))
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
-SYNC_INTERVAL_SECONDS = 60 # 実行間隔を60秒に設定
+RCLONE_CONFIG_PATH = Path(os.getenv("RCLONE_CONFIG_PATH", "rclone.conf"))
+DROPBOX_REMOTE = os.getenv("DROPBOX_REMOTE", "dropbox")
 
-class SyncCog(commands.Cog):
-    """定期的に外部の同期ワーカーを呼び出すCog"""
-    
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        # 外部スクリプトへのパスを堅牢な方法で構築
-        self.worker_path = str(Path(__file__).resolve().parent.parent / "sync_worker.py")
-        self.auto_sync_loop.start()
+VAULT_PATH.mkdir(parents=True, exist_ok=True)
 
-    def cog_unload(self):
-        """Cogがリロードされる際にループを安全に停止させる"""
-        self.auto_sync_loop.cancel()
+# --- Dropbox同期 ---
+async def sync_with_dropbox():
+    # この関数は変更なし
+    if not shutil.which("rclone"):
+        logging.error("rclone not found in PATH.")
+        return
 
-    @tasks.loop(seconds=SYNC_INTERVAL_SECONDS)
-    async def auto_sync_loop(self):
-        # 実行前に処理すべきメモがあるか、ファイルロックをかけて安全にチェック
-        lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
-        try:
-            # 5秒間だけロックの取得を試みる
-            with lock.acquire(timeout=5):
-                # Pathオブジェクトをそのまま使う
-                if not PENDING_MEMOS_FILE.exists():
-                    return # ファイルがなければ何もしない
-                
-                with open(PENDING_MEMOS_FILE, "r", encoding='utf-8') as f:
-                    memos = json.load(f)
-                    if not memos:
-                        return # 中身が空なら何もしない
-                        
-        except (Timeout, FileNotFoundError, json.JSONDecodeError):
-            # ロック取得失敗、ファイルなし、JSONエラーの場合は次のループまで待つ
+    try:
+        subprocess.run([
+            "rclone", "copy", str(VAULT_PATH), f"{DROPBOX_REMOTE}:/vault",
+            "--config", str(RCLONE_CONFIG_PATH),
+            "--update", "--create-empty-src-dirs", "--verbose"
+        ], check=True, capture_output=True)
+        subprocess.run([
+            "rclone", "copy", f"{DROPBOX_REMOTE}:/vault", str(VAULT_PATH),
+            "--config", str(RCLONE_CONFIG_PATH),
+            "--update", "--create-empty-src-dirs", "--verbose"
+        ], check=True, capture_output=True)
+        logging.info("Dropbox sync successful.")
+    except subprocess.CalledProcessError as e:
+        logging.error(f"rclone sync failed: {e.stderr.decode('utf-8', errors='ignore')}")
+
+# --- メモ処理 ---
+async def process_pending_memos():
+    lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
+    if not PENDING_MEMOS_FILE.exists():
+        return
+
+    with lock:
+        with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+            try: memos = json.load(f)
+            except json.JSONDecodeError: memos = []
+        
+        if not memos:
             return
 
-        print("【自動同期】未同期メモを検出。外部の同期ワーカーを呼び出します...")
+        logging.info(f"Processing {len(memos)} pending memos...")
+        memos_by_date = {}
+        jst = pytz.timezone('Asia/Tokyo')
 
-        try:
-            # 堅牢なパス指定でワーカーを呼び出す
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, self.worker_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE)
+        for memo in memos:
+            timestamp_dt = datetime.fromisoformat(memo['created_at'])
+            post_time_jst = timestamp_dt.astimezone(jst)
+            post_date_str = post_time_jst.strftime('%Y-%m-%d')
+            memos_by_date.setdefault(post_date_str, []).append(memo)
+        
+        for post_date, memos_in_date in memos_by_date.items():
+            try:
+                daily_file = VAULT_PATH / f"{post_date}.md"
+                daily_file.parent.mkdir(parents=True, exist_ok=True)
 
-            # ワーカーの実行結果を監視・表示
-            stdout, stderr = await proc.communicate()
+                obsidian_content = []
+                for memo in memos_in_date:
+                    timestamp_dt = datetime.fromisoformat(memo['created_at'])
+                    time_str = timestamp_dt.astimezone(jst).strftime('%H:%M')
+                    content = memo['content'].replace('\n', '\n\t- ')
+                    
+                    formatted_memo = f"- {time_str}\n\t- {content}"
+                    obsidian_content.append(formatted_memo)
+                
+                full_content = "\n" + "\n".join(obsidian_content)
 
-            if proc.returncode == 0:
-                print("【自動同期】外部ワーカーが正常に処理を完了しました。")
-                if stdout:
-                    print(f"   [ワーカーからの出力]:\n{stdout.decode('utf-8', errors='ignore')}")
-            else:
-                print("【自動同期】外部ワーカーの実行中にエラーが発生しました。")
-                if stderr:
-                    print(f"   [ワーカーからのエラー]:\n{stderr.decode('utf-8', errors='ignore')}")
+                with open(daily_file, "a", encoding="utf-8") as f:
+                    f.write(full_content)
+                
+                logging.info(f"Successfully processed {len(memos_in_date)} memos into {daily_file}")
 
-        except Exception as e:
-            print(f"【自動同期】外部ワーカーの呼び出しに失敗しました: {e}")
+            except Exception as e:
+                logging.error(f"Failed to write memos for date {post_date}: {e}")
 
-    @auto_sync_loop.before_loop
-    async def before_auto_sync_loop(self):
-        """ループが開始される前に、Botの準備が完了するのを待つ"""
-        await self.bot.wait_until_ready()
-        print(f"自動同期ループを開始します。（間隔: {SYNC_INTERVAL_SECONDS}秒）")
+        PENDING_MEMOS_FILE.unlink()
 
-async def setup(bot: commands.Bot):
-    await bot.add_cog(SyncCog(bot))
+# --- メイン処理 ---
+async def main():
+    """
+    SyncCogから呼び出された際に、同期とメモ処理を「一度だけ」実行する。
+    """
+    # 処理の順序は ダウンロード -> ローカル処理 -> アップロード が安全
+    await sync_with_dropbox() 
+    await process_pending_memos()
+    await sync_with_dropbox()
+
+if __name__ == "__main__":
+    # このファイルが直接実行された場合に備えて、非同期処理を実行
+    asyncio.run(main())
