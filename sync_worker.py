@@ -1,93 +1,98 @@
 import os
 import sys
 import json
-import shutil
 import logging
-import zoneinfo
 import subprocess
 from pathlib import Path
 from datetime import datetime
+import zoneinfo
 from filelock import FileLock
 from dotenv import load_dotenv
 
-# --- .env 読み込み（ローカル環境用） ---
+# --- .env 読み込み ---
 load_dotenv()
 
 # --- ロギング設定 ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 sys.stdout.reconfigure(encoding='utf-8')
 
-# --- 環境変数から設定内容を直接読み込み、ファイルを作成する ---
-RCLONE_CONFIG_CONTENT = os.getenv("RCLONE_CONFIG_CONTENT")
-# Renderの書き込み可能領域にパスを固定
-RCLONE_CONFIG_PATH = "/var/data/rclone.conf"
-
-if RCLONE_CONFIG_CONTENT:
-    try:
-        Path(RCLONE_CONFIG_PATH).parent.mkdir(parents=True, exist_ok=True)
-        with open(RCLONE_CONFIG_PATH, "w", encoding="utf-8") as f:
-            f.write(RCLONE_CONFIG_CONTENT)
-        logging.info(f"環境変数から rclone.conf を {RCLONE_CONFIG_PATH} に作成しました。")
-    except Exception as e:
-        logging.error(f"rclone.conf の作成に失敗しました: {e}", exc_info=True)
-        sys.exit(1)
-else:
-    logging.critical("環境変数 'RCLONE_CONFIG_CONTENT' が設定されていません。.env ファイルを確認してください。")
-    sys.exit(1)
-
 # --- 基本設定 ---
 VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/var/data/vault"))
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
-DROPBOX_REMOTE = os.getenv("DROPBOX_REMOTE", "dropbox")
-REMOTE_DIR = os.getenv("DROPBOX_REMOTE_DIR", "vault")
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+GIT_USER_NAME = os.getenv("GIT_USER_NAME", "Discord Memo Bot")
+GIT_USER_EMAIL = os.getenv("GIT_USER_EMAIL", "bot@example.com")
 
-VAULT_PATH.mkdir(parents=True, exist_ok=True)
-
-def sync_with_dropbox():
-    """Dropbox と双方向同期を行う"""
-    rclone_path = shutil.which("rclone")
-    if not rclone_path:
-        # ユーザーbinに置いたrcloneを優先
-        rclone_path_alt = str(Path.home() / "bin" / "rclone")
-        if Path(rclone_path_alt).exists():
-            rclone_path = rclone_path_alt
-        else:
-            logging.error("[SYNC] rclone が見つかりませんでした。")
-            return False
-
-    common_args = ["--config", RCLONE_CONFIG_PATH, "--update", "--create-empty-src-dirs", "--verbose"]
+def run_git_command(args, cwd=VAULT_PATH):
+    """指定されたディレクトリでGitコマンドを実行し、成功したかを返す"""
     try:
-        # ダウンロード（Dropbox → Vault）
-        cmd_down = [rclone_path, "copy", f"{DROPBOX_REMOTE}:{REMOTE_DIR}", str(VAULT_PATH)] + common_args
-        res_down = subprocess.run(cmd_down, check=True, capture_output=True, text=True, encoding='utf-8')
-        logging.info(f"[SYNC] ダウンロード完了:\n{res_down.stdout}")
-
-        # アップロード（Vault → Dropbox）
-        cmd_up = [rclone_path, "copy", str(VAULT_PATH), f"{DROPBOX_REMOTE}:{REMOTE_DIR}"] + common_args
-        res_up = subprocess.run(cmd_up, check=True, capture_output=True, text=True, encoding='utf-8')
-        logging.info(f"[SYNC] アップロード完了:\n{res_up.stdout}")
+        # Gitコマンドの基本設定を追加
+        base_cmd = ["git", "-c", f"user.name='{GIT_USER_NAME}'", "-c", f"user.email='{GIT_USER_EMAIL}'"]
+        cmd = base_cmd + args
+        
+        logging.info(f"[GIT] Running command: {' '.join(cmd)}")
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            cwd=cwd
+        )
+        logging.info(f"[GIT] {args[0]} successful:\n{result.stdout}")
         return True
     except subprocess.CalledProcessError as e:
-        logging.error(f"[SYNC] 同期失敗 (コード: {e.returncode})\nSTDERR:\n{e.stderr}")
+        logging.error(f"[GIT] Command failed (code: {e.returncode}): {' '.join(e.cmd)}\nSTDERR:\n{e.stderr}")
         return False
     except Exception as e:
-        logging.error(f"[SYNC] 不明なエラー: {e}", exc_info=True)
+        logging.error(f"[GIT] An unexpected error occurred: {e}", exc_info=True)
         return False
+
+def sync_with_git_repo():
+    """Gitリポジトリと同期を行う (Pull)"""
+    if not run_git_command(["pull", "--ff-only"]):
+        logging.error("[GIT] Pull failed. Aborting sync.")
+        return False
+    return True
+    
+def push_to_git_repo():
+    """変更をGitリポジトリにPushする"""
+    if not run_git_command(["add", "."]):
+        return False
+    
+    status_result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        capture_output=True, text=True, encoding='utf-8', cwd=VAULT_PATH
+    )
+    if not status_result.stdout.strip():
+        logging.info("[GIT] No changes to commit.")
+        return True
+
+    commit_message = f"docs: Add new memos from Discord ({datetime.now(JST).strftime('%Y-%m-%d %H:%M')})"
+    if not run_git_command(["commit", "-m", commit_message]):
+        return False
+        
+    if not run_git_command(["push"]):
+        return False
+        
+    return True
 
 def process_pending_memos():
     """保留メモを日付ごとの DailyNote に追加する"""
     if not PENDING_MEMOS_FILE.exists():
-        return True
+        return True, False 
+
     lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
+    memos_processed = False
     with lock:
         try:
             with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
                 memos = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
             memos = []
+            
         if not memos:
-            return True
+            return True, False
 
         logging.info(f"[PROCESS] {len(memos)} 件のメモを処理...")
         memos_by_date = {}
@@ -113,27 +118,38 @@ def process_pending_memos():
                     if len(content_lines) > 1:
                         formatted_content += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
                     lines_to_append.append(f"- {time_str}\n\t{formatted_content}")
+                    
                 with open(file_path, "a", encoding="utf-8") as f:
                     if f.tell() > 0:
                         f.write("\n")
                     f.write("\n".join(lines_to_append))
+                memos_processed = True
             except Exception as e:
                 logging.error(f"[PROCESS] ファイル書き込みエラー: {e}", exc_info=True)
-                return False
+                return False, False
 
         try:
             PENDING_MEMOS_FILE.unlink()
-        except OSError:
+        except OSError as e:
+            logging.error(f"[PROCESS] pending_memos.json の削除に失敗: {e}")
             pass
-    return True
+            
+    return True, memos_processed
 
 def main():
-    if not sync_with_dropbox():
+    if not sync_with_git_repo():
         sys.exit(1)
-    if not process_pending_memos():
+        
+    success, has_changes = process_pending_memos()
+    if not success:
         sys.exit(1)
-    if not sync_with_dropbox():
-        sys.exit(1)
+        
+    if has_changes:
+        if not push_to_git_repo():
+            sys.exit(1)
+    else:
+        logging.info("--- メモの変更がなかったため、Pushは行いません ---")
+
     logging.info("--- 同期ワーカー正常完了 ---")
 
 if __name__ == "__main__":

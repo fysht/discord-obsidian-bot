@@ -4,4 +4,3 @@ last_message_id.txt
 
 # Secret file
 .env
-rclone.conf
