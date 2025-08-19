@@ -23,6 +23,34 @@ JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 GIT_USER_NAME = os.getenv("GIT_USER_NAME", "Discord Memo Bot")
 GIT_USER_EMAIL = os.getenv("GIT_USER_EMAIL", "bot@example.com")
 
+def initial_clone_if_needed():
+    """保管庫が存在しない場合、初回のみリポジトリをクローンする"""
+    if not (VAULT_PATH.exists() and (VAULT_PATH / ".git").exists()):
+        logging.info(f"[GIT] Vault not found at {VAULT_PATH}. Cloning repository for the first time...")
+        parent_dir = VAULT_PATH.parent
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        
+        GIT_REPO_URL = os.getenv("GIT_REPO_URL")
+        if not GIT_REPO_URL:
+            logging.critical("[GIT] GIT_REPO_URL environment variable is not set. Cannot clone.")
+            sys.exit(1)
+            
+        try:
+            subprocess.run(
+                ["git", "clone", GIT_REPO_URL, str(VAULT_PATH)],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                cwd=parent_dir
+            )
+            logging.info("[GIT] Repository cloned successfully.")
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"[GIT] Initial clone failed (code: {e.returncode}):\nSTDERR:\n{e.stderr}")
+            sys.exit(1)
+    return True
+
 def run_git_command(args, cwd=VAULT_PATH):
     """指定されたディレクトリでGitコマンドを実行し、成功したかを返す"""
     try:
@@ -137,6 +165,11 @@ def process_pending_memos():
     return True, memos_processed
 
 def main():
+    # 最初に、必要であればリポジトリをクローンする
+    if not initial_clone_if_needed():
+        sys.exit(1)
+    
+    # --- 以降は元のmain関数と同じ ---
     if not sync_with_git_repo():
         sys.exit(1)
         
