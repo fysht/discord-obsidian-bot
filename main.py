@@ -1,9 +1,8 @@
 import os
 import asyncio
 import logging
-import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -15,7 +14,8 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
+# 最後に処理したタイムスタンプを保存するファイル
+LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 
 if not TOKEN:
     logging.critical("DISCORD_BOT_TOKENが設定されていません。")
@@ -34,17 +34,17 @@ class MyBot(commands.Bot):
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
         
         logging.info("オフライン中の未取得メモがないか確認します...")
-        last_timestamp = None
-        if PENDING_MEMOS_FILE.exists() and PENDING_MEMOS_FILE.stat().st_size > 0:
+        after_timestamp = None
+        # 最後に処理したタイムスタンプをファイルから読み込む
+        if LAST_PROCESSED_TIMESTAMP_FILE.exists():
             try:
-                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-                    memos = json.load(f)
-                    if memos:
-                        # datetime.fromisoformatを使用する
-                        last_timestamp = datetime.fromisoformat(memos[-1]['created_at'])
-            except (json.JSONDecodeError, IndexError, KeyError) as e:
-                logging.error(f"pending_memos.jsonの解析に失敗しました: {e}")
-        
+                ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
+                if ts_str:
+                    after_timestamp = datetime.fromisoformat(ts_str)
+                    logging.info(f"最終処理時刻: {ts_str} 以降のメッセージを取得します。")
+            except Exception as e:
+                logging.warning(f"last_processed_timestamp.txt の解析に失敗しました: {e}")
+
         try:
             channel = await self.fetch_channel(MEMO_CHANNEL_ID)
         except (discord.NotFound, discord.Forbidden):
@@ -52,7 +52,8 @@ class MyBot(commands.Bot):
         
         if channel:
             try:
-                history = [m async for m in channel.history(limit=None, after=last_timestamp)]
+                # after を使って、指定した時刻以降のメッセージのみを取得
+                history = [m async for m in channel.history(limit=None, after=after_timestamp)]
                 if history:
                     logging.info(f"{len(history)}件の未取得メモが見つかりました。保存します...")
                     for message in sorted(history, key=lambda m: m.created_at):
@@ -68,7 +69,7 @@ class MyBot(commands.Bot):
             except Exception as e:
                 logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}")
         else:
-            logging.error(f"MEMO_CHANNEL_ID: {MEMO_CHANNEL_ID} のチャンネルが見つかりません。Botがサーバーに参加しているか、権限を確認してください。")
+            logging.error(f"MEMO_CHANNEL_ID: {MEMO_CHANNEL_ID} のチャンネルが見つかりません。")
 
         logging.info("Cogの読み込みを開始します...")
         for filename in os.listdir('./cogs'):
