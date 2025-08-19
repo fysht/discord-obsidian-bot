@@ -1,52 +1,42 @@
-import os
 import json
-import logging
+import os
 import asyncio
-from pathlib import Path
-from filelock import FileLock
-from datetime import datetime, timezone
+from datetime import datetime
+import aiofiles
+import logging
 
-# .envファイルから設定を読み込む
-from dotenv import load_dotenv
-load_dotenv()
+PENDING_MEMOS_FILE = "pending_memos.json"
 
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "pending_memos.json"))
-# ファイルの親ディレクトリが存在しない場合に作成する
-PENDING_MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
+# 排他制御用のロック
+file_lock = asyncio.Lock()
 
-# 同期的な書き込み処理（内部でのみ使用）
-def _add_memo_sync(content, author, created_at):
-    """ファイルへの書き込みを行う同期関数"""
-    data = {
-        "content": content,
+async def add_memo_async(author: str, content: str):
+    """非同期でメモを保存する。重複保存を防止。"""
+    memo = {
         "author": author,
-        "created_at": created_at,
+        "content": content,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
     }
-    lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
-    with lock:
-        memos = []
-        if PENDING_MEMOS_FILE.exists():
-            try:
-                # ファイルから既存のメモを読み込む
-                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-                    memos = json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                # ファイルが空または壊れている場合は空のリストから開始
-                memos = []
-        
-        memos.append(data)
-        
-        # 安全な書き込み（一時ファイル経由）
-        tmp_file = PENDING_MEMOS_FILE.with_suffix(".tmp")
-        with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(memos, f, ensure_ascii=False, indent=2)
+
+    async with file_lock:  # 複数同時書き込み防止
+        if not os.path.exists(PENDING_MEMOS_FILE):
+            memos = []
+        else:
+            async with aiofiles.open(PENDING_MEMOS_FILE, mode='r', encoding='utf-8') as f:
+                content_existing = await f.read()
+                try:
+                    memos = json.loads(content_existing)
+                except json.JSONDecodeError:
+                    memos = []
+
+        # 重複チェック（直前の保存と同じならスキップ）
+        if memos and memos[-1]["author"] == memo["author"] and memos[-1]["content"] == memo["content"]:
+            logging.warning("Duplicate memo detected, skipping save.")
+            return
+
+        memos.append(memo)
+
+        tmp_file = f"{PENDING_MEMOS_FILE}.tmp"
+        async with aiofiles.open(tmp_file, mode='w', encoding='utf-8') as f:
+            await f.write(json.dumps(memos, ensure_ascii=False, indent=2))
         os.replace(tmp_file, PENDING_MEMOS_FILE)
-
-    logging.info(f"Memo saved: {content[:30]}...")
-
-# Botから呼び出すための非同期版関数
-async def add_memo_async(content, author="Unknown", created_at=None):
-    """Botの非同期処理を妨げずにメモを保存する関数"""
-    created_at = created_at or datetime.now(timezone.utc).isoformat()
-    # 同期的なファイル書き込みを別スレッドで実行し、メイン処理をブロックしないようにする
-    await asyncio.to_thread(_add_memo_sync, content, author, created_at)
