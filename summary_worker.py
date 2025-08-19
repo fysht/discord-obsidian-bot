@@ -1,12 +1,12 @@
 import os
 import sys
 import datetime
-import zoneinfo # 標準ライブラリ (Python 3.9+)
+import zoneinfo
 from pathlib import Path
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# 標準出力のエンコーディングをUTF-8に設定（Cogとの連携に必須）
+# 標準出力のエンコーディングをUTF-8に設定
 sys.stdout.reconfigure(encoding='utf-8')
 
 # --- 設定読み込み ---
@@ -14,8 +14,8 @@ load_dotenv()
 VAULT_PATH = os.getenv('OBSIDIAN_VAULT_PATH')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-def generate_summary():
-    """AIによるサマリー生成とファイル追記を行い、結果を標準出力に返す"""
+def generate_summary(date_str: str):
+    """指定された日付のサマリー生成とファイル追記を行い、結果を標準出力に返す"""
     if not GEMINI_API_KEY:
         print("ERROR: Gemini APIキーが.envファイルに設定されていません。")
         return
@@ -24,11 +24,7 @@ def generate_summary():
         return
 
     try:
-        # 今日の日付に合わせたデイリーノートのパスを生成
-        jst = zoneinfo.ZoneInfo("Asia/Tokyo")
-        today = datetime.datetime.now(jst).date()
-        date_str = today.strftime('%Y-%m-%d')
-        # 保存先フォルダ 'DailyNotes' をパスに追加
+        # 引数で渡された日付文字列からファイルパスを生成
         file_path = Path(VAULT_PATH) / "DailyNotes" / f"{date_str}.md"
 
         notes = ""
@@ -41,7 +37,7 @@ def generate_summary():
 
         # AIモデルの設定
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro') # モデル名を更新
+        model = genai.GenerativeModel('gemini-2.5-pro') 
         
         prompt = f"""
         あなたは私の成長をサポートするコーチです。
@@ -69,4 +65,11 @@ def generate_summary():
         print(f"ERROR: {e}")
 
 if __name__ == "__main__":
-    generate_summary()
+    if len(sys.argv) > 1:
+        target_date_str = sys.argv[1]
+        generate_summary(target_date_str)
+    else:
+        # 引数がない場合は、念のため今日の日付で実行
+        jst = zoneinfo.ZoneInfo("Asia/Tokyo")
+        today_str = datetime.datetime.now(jst).date().isoformat()
+        generate_summary(today_str)

@@ -40,7 +40,8 @@ class MyBot(commands.Bot):
             try:
                 ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
                 if ts_str:
-                    after_timestamp = datetime.fromisoformat(ts_str)
+                    # タイムゾーン情報を持たないISOフォーマット文字列をUTCとして解釈
+                    after_timestamp = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                     logging.info(f"最終処理時刻: {ts_str} 以降のメッセージを取得します。")
             except Exception as e:
                 logging.warning(f"last_processed_timestamp.txt の解析に失敗しました: {e}")
@@ -61,7 +62,7 @@ class MyBot(commands.Bot):
                             await add_memo_async(
                                 message.content,
                                 author=f"{message.author} ({message.author.id})",
-                                created_at=message.created_at.isoformat()
+                                created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
                             )
                     logging.info("未取得メモの保存が完了しました。")
                 else:

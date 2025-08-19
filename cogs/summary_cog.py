@@ -9,9 +9,7 @@ import sys
 from pathlib import Path
 
 # --- 定数定義 ---
-# タイムゾーンをJSTに設定
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-# サマリーを生成する時刻を23:59 JSTに設定
 SUMMARY_TIME = datetime.time(hour=23, minute=59, tzinfo=JST)
 
 class SummaryCog(commands.Cog):
@@ -20,15 +18,27 @@ class SummaryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        # Botのルートディレクトリにある 'summary_worker.py' へのパスを構築
         self.worker_path = str(Path(__file__).resolve().parent.parent / "summary_worker.py")
+        self.last_summary_date = None # 最後にサマリーを生成した日付を記録
         self.daily_summary.start()
 
     def cog_unload(self):
         self.daily_summary.cancel()
 
-    async def run_summary_logic(self, interaction: discord.Interaction | None = None):
-        """サマリー生成のメインロジック。スケジュール実行と手動実行の両方から呼ばれる"""
+    async def run_summary_logic(self, target_date: datetime.date, interaction: discord.Interaction | None = None):
+        """サマリー生成のメインロジック。日付を指定して実行する"""
+        
+        # --- サマリー実行前に同期処理を強制実行 ---
+        # discord.py 2.0以降では、Cog名はクラス名になる
+        sync_cog = self.bot.get_cog('SyncCog')
+        if sync_cog and hasattr(sync_cog, 'sync_lock') and not sync_cog.sync_lock.locked():
+            print("【サマリー】サマリー生成前に、保留中のメモを同期します...")
+            await sync_cog.auto_sync_loop()
+            print("【サマリー】同期が完了しました。")
+        else:
+            print("【サマリー】現在、別の同期処理が実行中のため、10秒待機します...")
+            await asyncio.sleep(10)
+        
         channel = self.bot.get_channel(self.memo_channel_id)
         if not channel:
             if interaction:
@@ -36,29 +46,27 @@ class SummaryCog(commands.Cog):
             print("【サマリー】エラー: 対象のチャンネルが見つかりませんでした。")
             return
             
-        print("【サマリー】外部のサマリー生成ワーカーを呼び出します...")
+        print(f"【サマリー】{target_date} のサマリーを生成するため、外部ワーカーを呼び出します...")
         
         try:
-            # 外部プロセスで文字化けが起きないようにエンコーディングを指定
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             
+            # 日付を引数としてワーカーに渡す
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, self.worker_path,
+                sys.executable, self.worker_path, str(target_date),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env
             )
 
-            # ワーカーからの結果報告を待つ
             stdout, stderr = await proc.communicate()
 
             if proc.returncode == 0:
-                # ワーカーからの報告（標準出力）を受け取る
                 result = stdout.decode('utf-8').strip()
                 
                 if "NO_MEMO_TODAY" in result:
-                    message = "📝 今日のメモはありませんでした！"
+                    message = f"📝 {target_date.strftime('%Y年%m月%d日')} のメモはありませんでした！"
                     if interaction:
                         await interaction.followup.send(message)
                     else:
@@ -71,19 +79,16 @@ class SummaryCog(commands.Cog):
                     else:
                         await channel.send(message)
                 else:
-                    # 成功した場合、固定形式の埋め込みメッセージを作成して投稿
-                    today = datetime.datetime.now(JST).date()
                     embed = discord.Embed(
-                        title=f" {today.strftime('%Y年%m月%d日')} のサマリー",
+                        title=f" {target_date.strftime('%Y年%m月%d日')} のサマリー",
                         description=result,
-                        color=discord.Color.from_rgb(112, 128, 144) # SlateGray
+                        color=discord.Color.from_rgb(112, 128, 144)
                     )
                     if interaction:
                         await interaction.followup.send(embed=embed)
                     else:
                         await channel.send(embed=embed)
             else:
-                # ワーカー自体の起動に失敗した場合
                 error_msg = stderr.decode('utf-8').strip()
                 print(f"【サマリー】ワーカーの実行に失敗しました:\n{error_msg}")
                 message = "🤖 サマリー生成プロセスの起動に失敗しました。"
@@ -95,22 +100,28 @@ class SummaryCog(commands.Cog):
         except Exception as e:
             print(f"【サマリー】ワーカーの呼び出し処理自体に失敗しました: {e}")
 
-    # スケジュール実行タスク
     @tasks.loop(time=SUMMARY_TIME)
     async def daily_summary(self):
-        print(f"【サマリー】定時実行（{SUMMARY_TIME}）タスクを開始します。")
-        await self.run_summary_logic()
+        today = datetime.datetime.now(JST).date()
+        
+        # --- 誤作動防止ロジック ---
+        if self.last_summary_date == today:
+            print(f"【サマリー】本日（{today}）のサマリーは既に実行済みのため、スキップします。")
+            return
+        
+        print(f"【サマリー】定時実行（{SUMMARY_TIME}）タスクを開始します。対象日: {today}")
+        self.last_summary_date = today # 実行した日付を記録
+        await self.run_summary_logic(target_date=today)
 
     @daily_summary.before_loop
     async def before_daily_summary(self):
         await self.bot.wait_until_ready()
 
-    # 手動実行用のスラッシュコマンド
     @app_commands.command(name="test_summary", description="今日のサマリー生成を手動でテスト実行します。")
     async def test_summary(self, interaction: discord.Interaction):
-        # deferで「考え中...」と表示させ、タイムアウトを防ぐ
         await interaction.response.defer(ephemeral=False)
-        await self.run_summary_logic(interaction=interaction)
+        target_date = datetime.datetime.now(JST).date()
+        await self.run_summary_logic(target_date=target_date, interaction=interaction)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(SummaryCog(bot))
