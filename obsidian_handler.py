@@ -12,33 +12,31 @@ PENDING_MEMOS_FILE = "pending_memos.json"
 file_lock = asyncio.Lock()
 
 # 直近保存した内容を記録（短時間の重複を防ぐ）
-_last_saved = {"author": None, "content": None, "ts": 0, "message_id": None}
+_last_saved = {"id": None, "ts": 0}
 
 
-async def add_memo_async(author: str, content: str, message_id: int | None = None, created_at: str | None = None):
+async def add_memo_async(author: str, content: str, message_id: str):
     """非同期でメモを保存する。二重保存を防止。"""
     global _last_saved
     now = time.time()
 
-    logging.info(f"[add_memo_async] called | author={author}, content={content}, message_id={message_id}")
+    logging.info(f"[add_memo_async] called | author={author}, content={content}, id={message_id}")
 
-    # --- 直近の保存と同一ならスキップ（5秒以内）---
+    # --- 直近の保存と同一IDならスキップ（5秒以内）---
     if (
-        _last_saved["author"] == author
-        and _last_saved["content"] == content
-        and _last_saved["message_id"] == message_id
+        _last_saved["id"] == message_id
         and now - _last_saved["ts"] < 5
     ):
-        logging.warning("[add_memo_async] Duplicate detected (recent save), skipping.")
+        logging.warning(f"[add_memo_async] Duplicate detected (recent save, id={message_id}), skipping.")
         return
 
-    _last_saved = {"author": author, "content": content, "ts": now, "message_id": message_id}
+    _last_saved = {"id": message_id, "ts": now}
 
     memo = {
+        "id": message_id,
         "author": author,
         "content": content,
-        "timestamp": created_at if created_at else datetime.utcnow().isoformat() + "Z",
-        "message_id": message_id,
+        "created_at": datetime.utcnow().isoformat() + "Z"
     }
 
     async with file_lock:  # 複数同時書き込み防止
@@ -53,9 +51,9 @@ async def add_memo_async(author: str, content: str, message_id: int | None = Non
                     logging.error("[add_memo_async] JSON decode error, resetting memos.")
                     memos = []
 
-        # --- 既存の message_id と重複チェック ---
-        if message_id is not None and any(m.get("message_id") == message_id for m in memos):
-            logging.warning(f"[add_memo_async] Duplicate detected (message_id={message_id}), skipping save.")
+        # --- ID重複チェック ---
+        if any(m.get("id") == message_id for m in memos):
+            logging.warning(f"[add_memo_async] Duplicate detected in file (id={message_id}), skipping save.")
             return
 
         memos.append(memo)
@@ -65,4 +63,4 @@ async def add_memo_async(author: str, content: str, message_id: int | None = Non
             await f.write(json.dumps(memos, ensure_ascii=False, indent=2))
         os.replace(tmp_file, PENDING_MEMOS_FILE)
 
-        logging.info("[add_memo_async] Memo saved successfully.")
+        logging.info(f"[add_memo_async] Memo saved successfully. id={message_id}")
