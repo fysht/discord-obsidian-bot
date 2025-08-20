@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+
 from obsidian_handler import add_memo_async
 
 # --- 1. 設定読み込み ---
@@ -14,7 +15,6 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-# 最後に処理したタイムスタンプを保存するファイル
 LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 
 if not TOKEN:
@@ -35,12 +35,10 @@ class MyBot(commands.Bot):
         
         logging.info("オフライン中の未取得メモがないか確認します...")
         after_timestamp = None
-        # 最後に処理したタイムスタンプをファイルから読み込む
         if LAST_PROCESSED_TIMESTAMP_FILE.exists():
             try:
                 ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
                 if ts_str:
-                    # タイムゾーン情報を持たないISOフォーマット文字列をUTCとして解釈
                     after_timestamp = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                     logging.info(f"最終処理時刻: {ts_str} 以降のメッセージを取得します。")
             except Exception as e:
@@ -53,20 +51,25 @@ class MyBot(commands.Bot):
         
         if channel:
             try:
-                # after を使って、指定した時刻以降のメッセージのみを取得
                 history = [m async for m in channel.history(limit=None, after=after_timestamp)]
                 if history:
                     logging.info(f"{len(history)}件の未取得メモが見つかりました。保存します...")
                     for message in sorted(history, key=lambda m: m.created_at):
                         if not message.author.bot:
                             await add_memo_async(
-                                message.content,
                                 author=f"{message.author} ({message.author.id})",
+                                content=message.content,
+                                message_id=message.id,
                                 created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
                             )
                     logging.info("未取得メモの保存が完了しました。")
                 else:
                     logging.info("処理対象の新しいメモはありませんでした。")
+
+                # 最新の取得日時をファイルに保存
+                if history:
+                    latest_ts = max(m.created_at for m in history)
+                    LAST_PROCESSED_TIMESTAMP_FILE.write_text(latest_ts.replace(tzinfo=timezone.utc).isoformat())
             except Exception as e:
                 logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}")
         else:
@@ -92,9 +95,3 @@ async def main():
     bot = MyBot()
     async with bot:
         await bot.start(TOKEN)
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("プログラムが強制終了されました。")
