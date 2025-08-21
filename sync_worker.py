@@ -158,21 +158,36 @@ def process_pending_memos():
                 logging.error(f"[PROCESS] ファイル書き込みエラー: {e}", exc_info=True)
                 return False, False
         
-        # 最後に処理したメモのタイムスタンプを特定
         if memos:
             last_processed_timestamp = memos[-1]['created_at']
         
-        # 最後に処理したタイムスタンプをファイルに書き込む
+        # --- 修正点: タイムスタンプの書き込みを安全に行う ---
         if last_processed_timestamp:
             try:
                 LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-                with open(LAST_PROCESSED_TIMESTAMP_FILE, "w", encoding="utf-8") as f:
-                    f.write(last_processed_timestamp)
-                logging.info(f"[PROCESS] 最終処理タイムスタンプを保存しました: {last_processed_timestamp}")
+                new_ts_obj = datetime.fromisoformat(last_processed_timestamp.replace('Z', '+00:00'))
+                
+                should_write = True
+                if LAST_PROCESSED_TIMESTAMP_FILE.exists():
+                    try:
+                        existing_ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
+                        if existing_ts_str:
+                            existing_ts_obj = datetime.fromisoformat(existing_ts_str.replace('Z', '+00:00'))
+                            if new_ts_obj <= existing_ts_obj:
+                                should_write = False
+                    except Exception:
+                        pass # ファイル破損時などは上書き
+                
+                if should_write:
+                    with open(LAST_PROCESSED_TIMESTAMP_FILE, "w", encoding="utf-8") as f:
+                        f.write(last_processed_timestamp)
+                    logging.info(f"[PROCESS] 最終処理タイムスタンプを更新しました: {last_processed_timestamp}")
+                else:
+                    logging.info("[PROCESS] 既存のタイムスタンプが新しいため、更新をスキップしました。")
+
             except Exception as e:
                 logging.error(f"[PROCESS] 最終処理タイムスタンプの保存に失敗: {e}")
 
-        # --- 修正点: pending_memos.json を完全削除ではなくクリアして残す ---
         try:
             with open(PENDING_MEMOS_FILE, "w", encoding="utf-8") as f:
                 json.dump([], f, ensure_ascii=False, indent=2)

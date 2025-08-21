@@ -26,6 +26,8 @@ class MyBot(commands.Bot):
         intents.message_content = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
+        # --- 修正点: 起動時刻を記録 ---
+        self.startup_time = datetime.now(timezone.utc)
 
     async def setup_hook(self):
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
@@ -46,7 +48,8 @@ class MyBot(commands.Bot):
         for guild in self.guilds:
             for channel in guild.text_channels:
                 try:
-                    history = [m async for m in channel.history(limit=None, after=after_timestamp)]
+                    # --- 修正点: ボット起動前のメッセージのみを取得 ---
+                    history = [m async for m in channel.history(limit=None, after=after_timestamp, before=self.startup_time)]
                     if not history:
                         continue
 
