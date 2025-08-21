@@ -1,66 +1,98 @@
-import json
 import os
+import json
 import asyncio
-import time
-from datetime import datetime
-import aiofiles
 import logging
+from pathlib import Path
+from datetime import datetime, timezone
+from filelock import FileLock
 
-PENDING_MEMOS_FILE = "pending_memos.json"
+# PENDING_MEMOS_FILE を環境変数で指定できるように
+PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
+PENDING_MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-# 排他制御用のロック
-file_lock = asyncio.Lock()
+# 同期・非同期の両方から呼ばれる可能性を考慮し、プロセス間は FileLock で守る
+_file_lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
 
-# 直近保存した内容を記録（短時間の重複を防ぐ）
-_last_saved = {"id": None, "ts": 0}
+# 直近保存（プロセス内）のノイズ抑制
+_last_saved = {"message_id": None, "ts": 0.0}
+_last_saved_lock = asyncio.Lock()
 
 
-async def add_memo_async(author: str, content: str, message_id: str):
-    """非同期でメモを保存する。二重保存を防止。"""
-    global _last_saved
-    now = time.time()
+async def add_memo_async(
+    author: str,
+    content: str,
+    *,
+    message_id: int | str | None,
+    created_at: str | None = None
+) -> None:
+    """
+    メモを pending_memos.json に追記する。
+    - message_id が与えられていれば、それをキーに重複排除（最優先）
+    - created_at は ISO8601（UTC, 例: 2025-08-20T12:34:56+00:00）を推奨
+    """
 
-    logging.info(f"[add_memo_async] called | author={author}, content={content}, id={message_id}")
+    if created_at is None:
+        created_at = datetime.now(timezone.utc).isoformat()
 
-    # --- 直近の保存と同一IDならスキップ（5秒以内）---
-    if (
-        _last_saved["id"] == message_id
-        and now - _last_saved["ts"] < 5
-    ):
-        logging.warning(f"[add_memo_async] Duplicate detected (recent save, id={message_id}), skipping.")
-        return
-
-    _last_saved = {"id": message_id, "ts": now}
+    # プロセス内での直近二重呼び出しを軽減（極短時間の多重呼び出し対策）
+    async with _last_saved_lock:
+        from time import time
+        now = time()
+        if _last_saved["message_id"] == str(message_id) and (now - _last_saved["ts"] < 3.0):
+            logging.warning("[obsidian_handler] recent duplicate call skipped (same message_id within 3s)")
+            return
+        _last_saved["message_id"] = str(message_id)
+        _last_saved["ts"] = now
 
     memo = {
-        "id": message_id,
         "author": author,
         "content": content,
-        "created_at": datetime.utcnow().isoformat() + "Z"
+        "created_at": created_at,
+        "message_id": str(message_id) if message_id is not None else None,  # ← 統一
     }
 
-    async with file_lock:  # 複数同時書き込み防止
-        if not os.path.exists(PENDING_MEMOS_FILE):
-            memos = []
-        else:
-            async with aiofiles.open(PENDING_MEMOS_FILE, mode='r', encoding='utf-8') as f:
-                content_existing = await f.read()
-                try:
-                    memos = json.loads(content_existing)
-                except json.JSONDecodeError:
-                    logging.error("[add_memo_async] JSON decode error, resetting memos.")
+    # プロセス間の排他
+    with _file_lock:
+        # 既存読み込み
+        try:
+            if PENDING_MEMOS_FILE.exists():
+                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
+                    memos = json.load(f)
+                if not isinstance(memos, list):
+                    logging.error("[obsidian_handler] pending_memos.json is not a list. Resetting.")
                     memos = []
+            else:
+                memos = []
+        except json.JSONDecodeError:
+            logging.error("[obsidian_handler] JSON decode error. Resetting memos.")
+            memos = []
 
-        # --- ID重複チェック ---
-        if any(m.get("id") == message_id for m in memos):
-            logging.warning(f"[add_memo_async] Duplicate detected in file (id={message_id}), skipping save.")
-            return
+        # --- 重複排除ロジック ---
+        # 1) message_id が入っている場合は、message_id で重複排除
+        if memo["message_id"] is not None:
+            if any(m.get("message_id") == memo["message_id"] for m in memos):
+                logging.info(f"[obsidian_handler] duplicate detected by message_id={memo['message_id']}, skip")
+                return
+        else:
+            # 2) フォールバック：message_id が無いケース（将来の互換性確保）
+            # author + content + created_at が完全一致なら重複扱い
+            if any(
+                (m.get("message_id") is None) and
+                (m.get("author") == memo["author"]) and
+                (m.get("content") == memo["content"]) and
+                (m.get("created_at") == memo["created_at"])
+                for m in memos
+            ):
+                logging.info("[obsidian_handler] duplicate detected by triplet, skip")
+                return
 
+        # 追記
         memos.append(memo)
 
-        tmp_file = f"{PENDING_MEMOS_FILE}.tmp"
-        async with aiofiles.open(tmp_file, mode='w', encoding='utf-8') as f:
-            await f.write(json.dumps(memos, ensure_ascii=False, indent=2))
-        os.replace(tmp_file, PENDING_MEMOS_FILE)
+        # 原子的に書き換え
+        tmp = PENDING_MEMOS_FILE.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(memos, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, PENDING_MEMOS_FILE)
 
-        logging.info(f"[add_memo_async] Memo saved successfully. id={message_id}")
+        logging.info(f"[obsidian_handler] memo saved (message_id={memo['message_id']})")

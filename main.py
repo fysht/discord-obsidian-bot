@@ -19,9 +19,8 @@ LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", 
 
 if not TOKEN:
     logging.critical("DISCORD_BOT_TOKENが設定されていません。")
-    exit()
+    exit(1)
 
-# --- 2. Bot本体のクラス定義 ---
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -30,9 +29,9 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        """Bot起動時の準備処理"""
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
-        
+
+        # --- 起動時バックフィル（オフライン中のメッセージも保存） ---
         logging.info("オフライン中の未取得メモがないか確認します...")
         after_timestamp = None
         if LAST_PROCESSED_TIMESTAMP_FILE.exists():
@@ -48,33 +47,37 @@ class MyBot(commands.Bot):
             channel = await self.fetch_channel(MEMO_CHANNEL_ID)
         except (discord.NotFound, discord.Forbidden):
             channel = None
-        
+
         if channel:
             try:
                 history = [m async for m in channel.history(limit=None, after=after_timestamp)]
                 if history:
                     logging.info(f"{len(history)}件の未取得メモが見つかりました。保存します...")
                     for message in sorted(history, key=lambda m: m.created_at):
-                        if not message.author.bot:
-                            await add_memo_async(
-                                author=f"{message.author} ({message.author.id})",
-                                content=message.content,
-                                message_id=message.id,
-                                created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
-                            )
+                        if message.author.bot:
+                            continue
+                        # ← ここが重要：message_id と created_at を必ず渡す
+                        await add_memo_async(
+                            author=f"{message.author} ({message.author.id})",
+                            content=message.content,
+                            message_id=message.id,
+                            created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
+                        )
                     logging.info("未取得メモの保存が完了しました。")
                 else:
                     logging.info("処理対象の新しいメモはありませんでした。")
 
-                # 最新の取得日時をファイルに保存
+                # 最後に処理した時刻を更新
                 if history:
-                    latest_ts = max(m.created_at for m in history)
-                    LAST_PROCESSED_TIMESTAMP_FILE.write_text(latest_ts.replace(tzinfo=timezone.utc).isoformat())
+                    latest_ts = max(m.created_at for m in history).replace(tzinfo=timezone.utc).isoformat()
+                    LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    LAST_PROCESSED_TIMESTAMP_FILE.write_text(latest_ts)
             except Exception as e:
-                logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}")
+                logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}", exc_info=True)
         else:
             logging.error(f"MEMO_CHANNEL_ID: {MEMO_CHANNEL_ID} のチャンネルが見つかりません。")
 
+        # --- Cog 読み込み ---
         logging.info("Cogの読み込みを開始します...")
         for filename in os.listdir('./cogs'):
             if filename.endswith('.py'):
@@ -83,7 +86,8 @@ class MyBot(commands.Bot):
                     logging.info(f" -> {filename} を読み込みました。")
                 except Exception as e:
                     logging.error(f" -> {filename} の読み込みに失敗しました: {e}")
-        
+
+        # スラッシュコマンド同期
         try:
             synced = await self.tree.sync()
             logging.info(f"{len(synced)}個のスラッシュコマンドを同期しました。")
@@ -95,3 +99,9 @@ async def main():
     bot = MyBot()
     async with bot:
         await bot.start(TOKEN)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("プログラムが強制終了されました。")
