@@ -31,7 +31,7 @@ class MyBot(commands.Bot):
         self.startup_time = datetime.now(timezone.utc)
 
     async def setup_hook(self):
-        logging.info("===== Bot v1.2 Starting up! =====") # v1.1, v1.2のように毎回変える
+        logging.info("===== Bot v1.0 Starting up! =====") # v1.1, v1.2のように毎回変える
         
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
 
