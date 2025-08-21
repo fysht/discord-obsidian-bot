@@ -14,7 +14,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
 LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 
 if not TOKEN:
@@ -43,39 +42,40 @@ class MyBot(commands.Bot):
             except Exception as e:
                 logging.warning(f"last_processed_timestamp.txt の解析に失敗しました: {e}")
 
-        try:
-            channel = await self.fetch_channel(MEMO_CHANNEL_ID)
-        except (discord.NotFound, discord.Forbidden):
-            channel = None
+        latest_ts = None
+        for guild in self.guilds:
+            for channel in guild.text_channels:
+                try:
+                    history = [m async for m in channel.history(limit=None, after=after_timestamp)]
+                    if not history:
+                        continue
 
-        if channel:
-            try:
-                history = [m async for m in channel.history(limit=None, after=after_timestamp)]
-                if history:
-                    logging.info(f"{len(history)}件の未取得メモが見つかりました。保存します...")
+                    logging.info(f"[{channel.name}] {len(history)}件の未取得メモが見つかりました。保存します...")
                     for message in sorted(history, key=lambda m: m.created_at):
                         if message.author.bot:
                             continue
-                        # ← ここが重要：message_id と created_at を必ず渡す
                         await add_memo_async(
                             author=f"{message.author} ({message.author.id})",
                             content=message.content,
-                            message_id=message.id,
+                            message_id=str(message.id),
                             created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
                         )
-                    logging.info("未取得メモの保存が完了しました。")
-                else:
-                    logging.info("処理対象の新しいメモはありませんでした。")
+                    # 最新の時刻を更新
+                    latest_ts = max(
+                        latest_ts or datetime.min.replace(tzinfo=timezone.utc),
+                        max(m.created_at for m in history).replace(tzinfo=timezone.utc)
+                    )
 
-                # 最後に処理した時刻を更新
-                if history:
-                    latest_ts = max(m.created_at for m in history).replace(tzinfo=timezone.utc).isoformat()
-                    LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-                    LAST_PROCESSED_TIMESTAMP_FILE.write_text(latest_ts)
-            except Exception as e:
-                logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}", exc_info=True)
-        else:
-            logging.error(f"MEMO_CHANNEL_ID: {MEMO_CHANNEL_ID} のチャンネルが見つかりません。")
+                except discord.Forbidden:
+                    logging.warning(f"[memo_cog] Cannot access channel: {channel.name}")
+                except Exception as e:
+                    logging.error(f"[memo_cog] Error while backfilling {channel.name}: {e}", exc_info=True)
+
+        # 最後に処理した時刻を保存
+        if latest_ts:
+            LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LAST_PROCESSED_TIMESTAMP_FILE.write_text(latest_ts.isoformat())
+            logging.info(f"最終処理時刻を更新しました: {latest_ts.isoformat()}")
 
         # --- Cog 読み込み ---
         logging.info("Cogの読み込みを開始します...")
