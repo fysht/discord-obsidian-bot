@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
+# Render環境ではこのファイルは再起動で消えるが、コード上は存在するものとして扱う
 LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 
 if not TOKEN:
@@ -26,7 +27,7 @@ class MyBot(commands.Bot):
         intents.message_content = True
         intents.members = True
         super().__init__(command_prefix="!", intents=intents)
-        # --- 修正点: 起動時刻を記録 ---
+        # ★ Botの起動時刻を記録（二重処理を防ぐための鍵）
         self.startup_time = datetime.now(timezone.utc)
 
     async def setup_hook(self):
@@ -35,6 +36,8 @@ class MyBot(commands.Bot):
         # --- 起動時バックフィル（オフライン中のメッセージも保存） ---
         logging.info("オフライン中の未取得メモがないか確認します...")
         after_timestamp = None
+        
+        # 最後に処理した時刻のファイルがあれば読み込む
         if LAST_PROCESSED_TIMESTAMP_FILE.exists():
             try:
                 ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
@@ -44,11 +47,12 @@ class MyBot(commands.Bot):
             except Exception as e:
                 logging.warning(f"last_processed_timestamp.txt の解析に失敗しました: {e}")
 
-        latest_ts = None
+        latest_ts_in_history = None
         for guild in self.guilds:
             for channel in guild.text_channels:
                 try:
-                    # --- 修正点: ボット起動前のメッセージのみを取得 ---
+                    # `before=self.startup_time` を指定することで、
+                    # この処理はリアルタイム処理と競合しなくなる
                     history = [m async for m in channel.history(limit=None, after=after_timestamp, before=self.startup_time)]
                     if not history:
                         continue
@@ -63,22 +67,26 @@ class MyBot(commands.Bot):
                             message_id=str(message.id),
                             created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
                         )
-                    # 最新の時刻を更新
-                    latest_ts = max(
-                        latest_ts or datetime.min.replace(tzinfo=timezone.utc),
-                        max(m.created_at for m in history).replace(tzinfo=timezone.utc)
-                    )
+                    
+                    # 処理した履歴の中で最新の時刻を更新
+                    current_latest = max(m.created_at for m in history).replace(tzinfo=timezone.utc)
+                    if latest_ts_in_history is None or current_latest > latest_ts_in_history:
+                        latest_ts_in_history = current_latest
 
                 except discord.Forbidden:
-                    logging.warning(f"[memo_cog] Cannot access channel: {channel.name}")
+                    logging.warning(f"チャンネルにアクセスできません: {channel.name}")
                 except Exception as e:
-                    logging.error(f"[memo_cog] Error while backfilling {channel.name}: {e}", exc_info=True)
+                    logging.error(f"バックフィル処理中にエラーが発生しました ({channel.name}): {e}", exc_info=True)
 
-        # 最後に処理した時刻を保存
-        if latest_ts:
-            LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-            LAST_PROCESSED_TIMESTAMP_FILE.write_text(latest_ts.isoformat())
-            logging.info(f"最終処理時刻を更新しました: {latest_ts.isoformat()}")
+        # 最後に処理した時刻を保存（Renderでは一時的だが、短時間の再起動には有効）
+        if latest_ts_in_history:
+            try:
+                LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+                LAST_PROCESSED_TIMESTAMP_FILE.write_text(latest_ts_in_history.isoformat())
+                logging.info(f"最終処理時刻を更新しました: {latest_ts_in_history.isoformat()}")
+            except Exception as e:
+                 logging.error(f"最終処理時刻の保存に失敗しました: {e}", exc_info=True)
+
 
         # --- Cog 読み込み ---
         logging.info("Cogの読み込みを開始します...")
