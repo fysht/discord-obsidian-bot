@@ -1,5 +1,5 @@
-import os
 import sys
+import os
 import json
 import logging
 import subprocess
@@ -56,7 +56,7 @@ def initial_clone_if_needed():
 def run_git_command(args, cwd=VAULT_PATH):
     """指定されたディレクトリでGitコマンドを実行し、成功したかを返す"""
     try:
-        base_cmd = ["git", "-c", f"user.name='{GIT_USER_NAME}'", "-c", f"user.email='{GIT_USER_EMAIL}'"]
+        base_cmd = ["git", "-c", f"user.name={GIT_USER_NAME}", "-c", f"user.email={GIT_USER_EMAIL}"]
         cmd = base_cmd + args
         
         logging.info(f"[GIT] Running command: {' '.join(cmd)}")
@@ -144,7 +144,7 @@ def process_pending_memos():
                 for memo in sorted(memos_in_date, key=lambda m: m['created_at']):
                     time_str = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00')).astimezone(JST).strftime('%H:%M')
                     content_lines = memo['content'].strip().split('\n')
-                    formatted_content = f"- {content_lines[0]}"
+                    formatted_content = f"- ({memo.get('author','')}) [{memo.get('message_id','?')}] {content_lines[0]}"
                     if len(content_lines) > 1:
                         formatted_content += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
                     lines_to_append.append(f"- {time_str}\n\t{formatted_content}")
@@ -172,10 +172,12 @@ def process_pending_memos():
             except Exception as e:
                 logging.error(f"[PROCESS] 最終処理タイムスタンプの保存に失敗: {e}")
 
+        # --- 修正点: pending_memos.json を完全削除ではなくクリアして残す ---
         try:
-            PENDING_MEMOS_FILE.unlink()
+            with open(PENDING_MEMOS_FILE, "w", encoding="utf-8") as f:
+                json.dump([], f, ensure_ascii=False, indent=2)
         except OSError as e:
-            logging.error(f"[PROCESS] pending_memos.json の削除に失敗: {e}")
+            logging.error(f"[PROCESS] pending_memos.json のクリアに失敗: {e}")
             pass
             
     return True, memos_processed

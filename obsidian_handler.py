@@ -48,7 +48,7 @@ async def add_memo_async(
         "author": author,
         "content": content,
         "created_at": created_at,
-        "message_id": str(message_id) if message_id is not None else None,  # ← 統一
+        "message_id": str(message_id) if message_id is not None else None, 
     }
 
     # プロセス間の排他
