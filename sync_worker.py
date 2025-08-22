@@ -19,39 +19,10 @@ sys.stdout.reconfigure(encoding='utf-8')
 # --- 基本設定 ---
 VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/var/data/vault"))
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
-# 最後に処理したタイムスタンプを保存するファイル
 LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 GIT_USER_NAME = os.getenv("GIT_USER_NAME", "Discord Memo Bot")
 GIT_USER_EMAIL = os.getenv("GIT_USER_EMAIL", "bot@example.com")
-
-def initial_clone_if_needed():
-    """保管庫が存在しない場合、初回のみリポジトリをクローンする"""
-    if not (VAULT_PATH.exists() and (VAULT_PATH / ".git").exists()):
-        logging.info(f"[GIT] Vault not found at {VAULT_PATH}. Cloning repository for the first time...")
-        parent_dir = VAULT_PATH.parent
-        parent_dir.mkdir(parents=True, exist_ok=True)
-        
-        GIT_REPO_URL = os.getenv("GIT_REPO_URL")
-        if not GIT_REPO_URL:
-            logging.critical("[GIT] GIT_REPO_URL environment variable is not set. Cannot clone.")
-            sys.exit(1)
-            
-        try:
-            subprocess.run(
-                ["git", "clone", GIT_REPO_URL, str(VAULT_PATH)],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                cwd=parent_dir
-            )
-            logging.info("[GIT] Repository cloned successfully.")
-            return True
-        except subprocess.CalledProcessError as e:
-            logging.error(f"[GIT] Initial clone failed (code: {e.returncode}):\nSTDERR:\n{e.stderr}")
-            sys.exit(1)
-    return True
 
 def run_git_command(args, cwd=VAULT_PATH):
     """指定されたディレクトリでGitコマンドを実行し、成功したかを返す"""
@@ -76,6 +47,66 @@ def run_git_command(args, cwd=VAULT_PATH):
     except Exception as e:
         logging.error(f"[GIT] An unexpected error occurred: {e}", exc_info=True)
         return False
+
+def initial_clone_if_needed():
+    """保管庫の初期設定を行う。存在しない場合はクローンし、.gitがない場合は初期化して復元する"""
+    GIT_REPO_URL = os.getenv("GIT_REPO_URL")
+    if not GIT_REPO_URL:
+        logging.critical("[GIT] GIT_REPO_URL environment variable is not set. Cannot proceed.")
+        sys.exit(1)
+
+    # Case 1: Vault directory doesn't exist. Clone it.
+    if not VAULT_PATH.exists():
+        logging.info(f"[GIT] Vault not found at {VAULT_PATH}. Cloning repository...")
+        parent_dir = VAULT_PATH.parent
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run(
+                ["git", "clone", GIT_REPO_URL, str(VAULT_PATH)],
+                check=True, capture_output=True, text=True, encoding='utf-8', cwd=parent_dir
+            )
+            logging.info("[GIT] Repository cloned successfully.")
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"[GIT] Initial clone failed (code: {e.returncode}):\nSTDERR:\n{e.stderr}")
+            sys.exit(1)
+
+    # Case 2: Vault directory exists, but .git is missing (broken state). Initialize and restore.
+    if not (VAULT_PATH / ".git").exists():
+        logging.warning(f"[GIT] Vault exists at {VAULT_PATH}, but it's not a git repository. Attempting to restore...")
+        
+        if not run_git_command(["init"]): sys.exit(1)
+        
+        remotes_result = subprocess.run(["git", "remote"], capture_output=True, text=True, encoding='utf-8', cwd=VAULT_PATH)
+        if 'origin' not in remotes_result.stdout:
+            if not run_git_command(["remote", "add", "origin", GIT_REPO_URL]): sys.exit(1)
+        
+        if not run_git_command(["fetch", "origin"]): sys.exit(1)
+        
+        try:
+            remote_info = subprocess.run(
+                ["git", "remote", "show", "origin"],
+                capture_output=True, text=True, check=True, encoding='utf-8', cwd=VAULT_PATH
+            )
+            default_branch = ""
+            for line in remote_info.stdout.split('\n'):
+                if "HEAD branch" in line:
+                    default_branch = line.split(':')[1].strip()
+                    break
+            
+            if not default_branch:
+                logging.error("[GIT] Could not determine the default branch from remote 'origin'.")
+                sys.exit(1)
+
+            logging.info(f"[GIT] Default branch is '{default_branch}'. Resetting local state to match remote.")
+            if not run_git_command(["reset", "--hard", f"origin/{default_branch}"]): sys.exit(1)
+            
+        except subprocess.CalledProcessError as e:
+            logging.error(f"[GIT] Failed to determine default branch (code: {e.returncode}):\nSTDERR:\n{e.stderr}")
+            sys.exit(1)
+
+    logging.info(f"[GIT] Vault repository found at {VAULT_PATH}.")
+    return True
 
 def sync_with_git_repo():
     """Gitリポジトリと同期を行う (Pull)"""
@@ -161,7 +192,6 @@ def process_pending_memos():
         if memos:
             last_processed_timestamp = memos[-1]['created_at']
         
-        # --- 修正点: タイムスタンプの書き込みを安全に行う ---
         if last_processed_timestamp:
             try:
                 LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -176,7 +206,7 @@ def process_pending_memos():
                             if new_ts_obj <= existing_ts_obj:
                                 should_write = False
                     except Exception:
-                        pass # ファイル破損時などは上書き
+                        pass
                 
                 if should_write:
                     with open(LAST_PROCESSED_TIMESTAMP_FILE, "w", encoding="utf-8") as f:
