@@ -24,12 +24,11 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 # --- 基本設定 ---
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
-LAST_PROCESSED_ID_FILE = Path(os.getenv("LAST_PROCESSED_ID_FILE", "/var/data/last_processed_id.txt"))
-# Dropbox App Consoleで取得したキーとトークン
 DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
 DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
 DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_VAULT_PATH = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault") 
+LAST_PROCESSED_ID_FILE_PATH = f"{DROPBOX_VAULT_PATH}/.bot/last_processed_id.txt"
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 
 def process_pending_memos():
@@ -42,7 +41,7 @@ def process_pending_memos():
         try:
             with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
                 memos = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
+        except (json.JSONDecodeError, FileNotFoundError, ValueError):
             memos = []
             
         if not memos:
@@ -51,20 +50,19 @@ def process_pending_memos():
         logging.info(f"[PROCESS] {len(memos)} 件のメモをDropboxに保存します...")
         
         try:
-            # リフレッシュトークンを使って、常に新しいアクセストークンで接続する
             with dropbox.Dropbox(
                 oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
                 app_key=DROPBOX_APP_KEY,
                 app_secret=DROPBOX_APP_SECRET
             ) as dbx:
-                dbx.check_user() # これで接続を確認し、必要ならトークンを内部で更新
+                dbx.check_user()
                 logging.info("[DROPBOX] Dropboxへの接続に成功しました。")
 
                 sorted_memos = sorted(memos, key=lambda m: int(m['id']))
                 memos_by_date = {}
                 for memo in sorted_memos:
                     try:
-                        timestamp_utc = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00'))
+                        timestamp_utc = datetime.fromisoformat(memo['created_at'].replace('Z', ''))
                         date_str = timestamp_utc.astimezone(JST).strftime('%Y-%m-%d')
                         memos_by_date.setdefault(date_str, []).append(memo)
                     except (KeyError, ValueError):
@@ -87,7 +85,7 @@ def process_pending_memos():
                     
                     lines_to_append = []
                     for memo in memos_in_date:
-                        time_str = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00')).astimezone(JST).strftime('%H:%M')
+                        time_str = datetime.fromisoformat(memo['created_at'].replace('Z', '')).astimezone(JST).strftime('%H:%M')
                         content_lines = memo['content'].strip().split('\n')
                         formatted_content = f"- {content_lines[0]}"
                         if len(content_lines) > 1:
@@ -96,33 +94,25 @@ def process_pending_memos():
 
                     new_content = current_content
                     if new_content and not new_content.endswith("\n"):
-                        new_content += "\n"
+                        new_content += "\n\n"
                     new_content += "\n".join(lines_to_append)
 
-                    try:
-                        dbx.files_upload(new_content.encode('utf-8'), file_path, mode=WriteMode('overwrite'))
-                        logging.info(f"[DROPBOX] {file_path} の更新に成功しました。")
-                    except ApiError as e:
-                        logging.error(f"[DROPBOX] {file_path} のアップロードに失敗しました: {e}")
-                        all_success = False
+                    dbx.files_upload(new_content.encode('utf-8'), file_path, mode=WriteMode('overwrite'))
+                    logging.info(f"[DROPBOX] {file_path} の更新に成功しました。")
                 
                 if all_success and sorted_memos:
                     last_id = sorted_memos[-1]['id']
-                    try:
-                        LAST_PROCESSED_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
-                        with open(LAST_PROCESSED_ID_FILE, "w", encoding="utf-8") as f:
-                            f.write(str(last_id))
-                        logging.info(f"[PROCESS] 最終処理IDを保存しました: {last_id}")
-                    except Exception as e:
-                        logging.error(f"[PROCESS] 最終処理IDの保存に失敗: {e}")
-                    
-                    with open(PENDING_MEMOS_FILE, "w") as f:
-                        json.dump([], f)
+                    dbx.files_upload(str(last_id).encode('utf-8'), LAST_PROCESSED_ID_FILE_PATH, mode=WriteMode('overwrite'))
+                    logging.info(f"[PROCESS] 最終処理IDをDropboxに保存しました: {last_id}")
+                
+                # 処理が成功したので一時ファイルを空にする
+                with open(PENDING_MEMOS_FILE, "w") as f:
+                    json.dump([], f)
             
             return all_success
 
         except Exception as e:
-            logging.error(f"[DROPBOX] Dropbox処理中に予期せぬエラーが発生しました: {e}")
+            logging.error(f"[DROPBOX] Dropbox処理中に予期せぬエラーが発生しました: {e}", exc_info=True)
             return False
 
 def main():
