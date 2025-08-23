@@ -5,7 +5,9 @@ import asyncio
 from pathlib import Path
 from filelock import FileLock
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 
+# .envファイルから設定を読み込む
 load_dotenv()
 
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
@@ -29,7 +31,6 @@ def _add_memo_sync(content, author, created_at, message_id):
             except (json.JSONDecodeError, FileNotFoundError):
                 memos = []
         
-        # 同じIDのメモが既に存在しないかチェック
         if not any(memo.get("id") == str(message_id) for memo in memos):
             memos.append(data)
             tmp_file = PENDING_MEMOS_FILE.with_suffix(".tmp")
