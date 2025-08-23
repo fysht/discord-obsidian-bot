@@ -14,7 +14,7 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
+LAST_PROCESSED_ID_FILE = Path(os.getenv("LAST_PROCESSED_ID_FILE", "/var/data/last_processed_id.txt"))
 
 if not TOKEN:
     logging.critical("DISCORD_BOT_TOKENが設定されていません。")
@@ -33,16 +33,15 @@ class MyBot(commands.Bot):
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
         
         logging.info("オフライン中の未取得メモがないか確認します...")
-        after_timestamp = None
-        # 最後に処理したタイムスタンプをファイルから読み込む
-        if LAST_PROCESSED_TIMESTAMP_FILE.exists():
+        after_message = None
+        if LAST_PROCESSED_ID_FILE.exists():
             try:
-                ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
-                if ts_str:
-                    after_timestamp = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-                    logging.info(f"最終処理時刻: {ts_str} 以降のメッセージを取得します。")
+                last_id_str = LAST_PROCESSED_ID_FILE.read_text().strip()
+                if last_id_str:
+                    after_message = discord.Object(id=int(last_id_str))
+                    logging.info(f"最終処理ID: {last_id_str} 以降のメッセージを取得します。")
             except Exception as e:
-                logging.warning(f"last_processed_timestamp.txt の解析に失敗しました: {e}")
+                logging.warning(f"last_processed_id.txt の解析に失敗しました: {e}")
 
         try:
             channel = await self.fetch_channel(MEMO_CHANNEL_ID)
@@ -51,8 +50,7 @@ class MyBot(commands.Bot):
         
         if channel:
             try:
-                # after を使って、指定した時刻以降のメッセージのみを取得
-                history = [m async for m in channel.history(limit=None, after=after_timestamp)]
+                history = [m async for m in channel.history(limit=None, after=after_message)]
                 if history:
                     logging.info(f"{len(history)}件の未取得メモが見つかりました。保存します...")
                     for message in sorted(history, key=lambda m: m.created_at):
@@ -60,7 +58,8 @@ class MyBot(commands.Bot):
                             await add_memo_async(
                                 content=message.content,
                                 author=f"{message.author} ({message.author.id})",
-                                created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
+                                created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat(),
+                                message_id=message.id
                             )
                     logging.info("未取得メモの保存が完了しました。")
                 else:

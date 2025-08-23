@@ -11,17 +11,14 @@ import dropbox
 from dropbox.exceptions import ApiError
 from dropbox.files import WriteMode
 
-# --- .env 読み込み ---
 load_dotenv()
 
-# --- ロギング設定 ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 sys.stdout.reconfigure(encoding='utf-8')
 
-# --- 基本設定 ---
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
+LAST_PROCESSED_ID_FILE = Path(os.getenv("LAST_PROCESSED_ID_FILE", "/var/data/last_processed_id.txt"))
 DROPBOX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN")
-# Dropbox上の保管庫パス (例: /MyObsidianVault)
 DROPBOX_VAULT_PATH = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault") 
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 
@@ -50,8 +47,9 @@ def process_pending_memos():
             logging.error(f"[DROPBOX] Dropboxへの接続に失敗しました: {e}")
             return False
 
+        sorted_memos = sorted(memos, key=lambda m: int(m['id']))
         memos_by_date = {}
-        for memo in sorted(memos, key=lambda m: m['created_at']):
+        for memo in sorted_memos:
             try:
                 timestamp_utc = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00'))
                 date_str = timestamp_utc.astimezone(JST).strftime('%Y-%m-%d')
@@ -62,21 +60,18 @@ def process_pending_memos():
         all_success = True
         for date_str, memos_in_date in memos_by_date.items():
             file_path = f"{DROPBOX_VAULT_PATH}/DailyNotes/{date_str}.md"
-            
             try:
-                # 既存のファイル内容をダウンロード
                 _, res = dbx.files_download(file_path)
                 current_content = res.content.decode('utf-8')
             except ApiError as e:
                 if isinstance(e.error, dropbox.files.DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    current_content = "" # ファイルが存在しない場合は空文字列から開始
+                    current_content = ""
                     logging.info(f"[DROPBOX] {file_path} は存在しないため、新規作成します。")
                 else:
                     logging.error(f"[DROPBOX] {file_path} のダウンロードに失敗しました: {e}")
                     all_success = False
                     continue
             
-            # 追記するメモを作成
             lines_to_append = []
             for memo in memos_in_date:
                 time_str = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00')).astimezone(JST).strftime('%H:%M')
@@ -86,26 +81,28 @@ def process_pending_memos():
                     formatted_content += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
                 lines_to_append.append(f"- {time_str}\n\t{formatted_content}")
 
-            # 既存の内容と新しいメモを結合
             new_content = current_content
             if new_content and not new_content.endswith("\n"):
                 new_content += "\n"
             new_content += "\n".join(lines_to_append)
 
-            # ファイルをアップロード（上書き）
             try:
-                dbx.files_upload(
-                    new_content.encode('utf-8'),
-                    file_path,
-                    mode=WriteMode('overwrite')
-                )
+                dbx.files_upload(new_content.encode('utf-8'), file_path, mode=WriteMode('overwrite'))
                 logging.info(f"[DROPBOX] {file_path} の更新に成功しました。")
             except ApiError as e:
                 logging.error(f"[DROPBOX] {file_path} のアップロードに失敗しました: {e}")
                 all_success = False
         
-        if all_success:
-            # すべて成功した場合のみ、一時ファイルをクリア
+        if all_success and sorted_memos:
+            last_id = sorted_memos[-1]['id']
+            try:
+                LAST_PROCESSED_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(LAST_PROCESSED_ID_FILE, "w", encoding="utf-8") as f:
+                    f.write(str(last_id))
+                logging.info(f"[PROCESS] 最終処理IDを保存しました: {last_id}")
+            except Exception as e:
+                logging.error(f"[PROCESS] 最終処理IDの保存に失敗: {e}")
+            
             with open(PENDING_MEMOS_FILE, "w") as f:
                 json.dump([], f)
     
