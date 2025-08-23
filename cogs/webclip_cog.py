@@ -7,6 +7,7 @@ import re
 import asyncio
 import dropbox
 from dropbox.files import WriteMode
+from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
 
@@ -42,34 +43,81 @@ class WebClipCog(commands.Cog):
                 None, parse_url_with_readability, url
             )
             
-            # ファイル名として使えない文字を削除・置換
             safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
             if not safe_title:
                 safe_title = "Untitled"
             
-            # ファイル名に日付と時刻を追加して、一意性を確保する
             now = datetime.datetime.now(JST)
-            timestamp = now.strftime('%Y%m%d-%H%M%S')
-            file_name = f"{safe_title}-{timestamp}.md"
+            timestamp = now.strftime('%Y%m%d%H%M%S')
+            daily_note_date = now.strftime('%Y-%m-%d')
 
-            # ページタイトルとURLをファイルの先頭に追加する形式
-            final_content = f"# {title}\n\n**Source:** <{url}>\n\n---\n\n{content_md}"
-            
-            # 保存先のファイルパスを定義
-            file_path = f"{self.dropbox_vault_path}/WebClips/{file_name}"
+            webclip_file_name = f"{timestamp}-{safe_title}.md"
+            webclip_file_name_for_link = webclip_file_name.replace('.md', '')
+
+            webclip_note_content = (
+                f"# {title}\n\n"
+                f"- **Source:** <{url}>\n\n"
+                f"---\n\n"
+                f"[[{daily_note_date}]]\n\n"
+                f"{content_md}"
+            )
             
             with dropbox.Dropbox(
                 oauth2_refresh_token=self.dropbox_refresh_token,
                 app_key=self.dropbox_app_key,
                 app_secret=self.dropbox_app_secret
             ) as dbx:
+                webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
                 dbx.files_upload(
-                    final_content.encode('utf-8'),
-                    file_path,
+                    webclip_note_content.encode('utf-8'),
+                    webclip_file_path,
                     mode=WriteMode('add')
                 )
+                logging.info(f"クリップ成功: {webclip_file_path}")
 
-            logging.info(f"クリップ成功: {file_path}")
+                daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
+                
+                try:
+                    _, res = dbx.files_download(daily_note_path)
+                    daily_note_content = res.content.decode('utf-8')
+                except ApiError as e:
+                    if isinstance(e.error, dropbox.files.DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                        daily_note_content = ""
+                        logging.info(f"デイリーノート {daily_note_path} は存在しないため、新規作成します。")
+                    else:
+                        raise
+
+                link_to_add = f"- [[{webclip_file_name_for_link}]]"
+                webclips_heading = "## WebClips"
+
+                lines = daily_note_content.split('\n')
+                try:
+                    heading_index = lines.index(webclips_heading)
+                    insert_index = heading_index + 1
+                    while insert_index < len(lines):
+                        # セクション内のリストの末尾を探す
+                        if lines[insert_index].strip().startswith('- ') or lines[insert_index].strip() == "":
+                            insert_index += 1
+                        else:
+                            break
+                    lines.insert(insert_index, link_to_add)
+                    daily_note_content = "\n".join(lines)
+                except ValueError:
+                    # 「## WebClips」セクションが存在しない場合は、ファイルの先頭に新規作成する
+                    new_section = f"{webclips_heading}\n{link_to_add}\n"
+                    # 既存のコンテンツとの間に空行を1行挟む
+                    if daily_note_content.strip():
+                        daily_note_content = new_section + "\n" + daily_note_content
+                    else:
+                        daily_note_content = new_section
+                
+                dbx.files_upload(
+                    daily_note_content.encode('utf-8'),
+                    daily_note_path,
+                    mode=WriteMode('overwrite')
+                )
+                logging.info(f"デイリーノートを更新しました: {daily_note_path}")
+
             await message.add_reaction("✅")
 
         except Exception as e:
@@ -82,7 +130,6 @@ class WebClipCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.channel.id != self.web_clip_channel_id:
             return
-
         content = message.content.strip()
         if content.startswith('http') and URL_REGEX.match(content):
             url = content
