@@ -14,7 +14,6 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-# 最後に処理したタイムスタンプを保存するファイル
 LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 
 if not TOKEN:
@@ -40,7 +39,7 @@ class MyBot(commands.Bot):
             try:
                 ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
                 if ts_str:
-                    after_timestamp = datetime.fromisoformat(ts_str)
+                    after_timestamp = datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
                     logging.info(f"最終処理時刻: {ts_str} 以降のメッセージを取得します。")
             except Exception as e:
                 logging.warning(f"last_processed_timestamp.txt の解析に失敗しました: {e}")
@@ -59,15 +58,15 @@ class MyBot(commands.Bot):
                     for message in sorted(history, key=lambda m: m.created_at):
                         if not message.author.bot:
                             await add_memo_async(
-                                message.content,
+                                content=message.content,
                                 author=f"{message.author} ({message.author.id})",
-                                created_at=message.created_at.isoformat()
+                                created_at=message.created_at.replace(tzinfo=timezone.utc).isoformat()
                             )
                     logging.info("未取得メモの保存が完了しました。")
                 else:
                     logging.info("処理対象の新しいメモはありませんでした。")
             except Exception as e:
-                logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}")
+                logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}", exc_info=True)
         else:
             logging.error(f"MEMO_CHANNEL_ID: {MEMO_CHANNEL_ID} のチャンネルが見つかりません。")
 
