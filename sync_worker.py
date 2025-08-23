@@ -19,29 +19,35 @@ sys.stdout.reconfigure(encoding='utf-8')
 # --- 基本設定 ---
 VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/var/data/vault"))
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
-# 最後に処理したタイムスタンプを保存するファイル
 LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 GIT_USER_NAME = os.getenv("GIT_USER_NAME", "Discord Memo Bot")
 GIT_USER_EMAIL = os.getenv("GIT_USER_EMAIL", "bot@example.com")
 
+# RenderのSecret Fileのパスを直接指定する
+SECRET_KEY_PATH = "/etc/secrets/id_ed25519_deploy_key"
+
+def get_git_env():
+    """Gitコマンド実行時に使用する環境変数を設定する"""
+    env = os.environ.copy()
+    # SSHコマンドに、使用する秘密鍵(-i)とホストキーチェック無効化のオプションを渡す
+    ssh_command = f"ssh -i {SECRET_KEY_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    env["GIT_SSH_COMMAND"] = ssh_command
+    return env
+
 def initial_clone_if_needed():
     """保管庫が存在しない場合、初回のみリポジトリをクローンする"""
     if not (VAULT_PATH.exists() and (VAULT_PATH / ".git").exists()):
-        logging.info(f"[GIT] Vault not found at {VAULT_PATH}. Cloning repository for the first time...")
+        logging.info(f"[GIT] Vault not found at {VAULT_PATH}. Cloning repository...")
         parent_dir = VAULT_PATH.parent
         parent_dir.mkdir(parents=True, exist_ok=True)
         
         GIT_REPO_URL = os.getenv("GIT_REPO_URL")
         if not GIT_REPO_URL:
-            logging.critical("[GIT] GIT_REPO_URL environment variable is not set. Cannot clone.")
+            logging.critical("[GIT] GIT_REPO_URL is not set.")
             sys.exit(1)
             
         try:
-            # SSHホストキーの検証を無効にするための環境変数を設定
-            env = os.environ.copy()
-            env["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-
             subprocess.run(
                 ["git", "clone", GIT_REPO_URL, str(VAULT_PATH)],
                 check=True,
@@ -49,10 +55,9 @@ def initial_clone_if_needed():
                 text=True,
                 encoding='utf-8',
                 cwd=parent_dir,
-                env=env # 修正した環境変数を渡す
+                env=get_git_env() # ★修正
             )
             logging.info("[GIT] Repository cloned successfully.")
-            return True
         except subprocess.CalledProcessError as e:
             logging.error(f"[GIT] Initial clone failed (code: {e.returncode}):\nSTDERR:\n{e.stderr}")
             sys.exit(1)
@@ -65,11 +70,6 @@ def run_git_command(args, cwd=VAULT_PATH):
         cmd = base_cmd + args
         
         logging.info(f"[GIT] Running command: {' '.join(cmd)}")
-
-        # SSHホストキーの検証を無効にするための環境変数を設定
-        env = os.environ.copy()
-        env["GIT_SSH_COMMAND"] = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-
         result = subprocess.run(
             cmd,
             check=True,
@@ -77,7 +77,7 @@ def run_git_command(args, cwd=VAULT_PATH):
             text=True,
             encoding='utf-8',
             cwd=cwd,
-            env=env # 修正した環境変数を渡す
+            env=get_git_env() 
         )
         logging.info(f"[GIT] {args[0]} successful:\n{result.stdout}")
         return True
@@ -100,9 +100,10 @@ def push_to_git_repo():
     if not run_git_command(["add", "."]):
         return False
     
+    # 環境変数を渡す
     status_result = subprocess.run(
         ["git", "status", "--porcelain"],
-        capture_output=True, text=True, encoding='utf-8', cwd=VAULT_PATH
+        capture_output=True, text=True, encoding='utf-8', cwd=VAULT_PATH, env=get_git_env()
     )
     if not status_result.stdout.strip():
         logging.info("[GIT] No changes to commit.")
@@ -172,7 +173,6 @@ def process_pending_memos():
         if memos:
             last_processed_timestamp = memos[-1]['created_at']
         
-        # --- タイムスタンプの書き込みを安全に行う ---
         if last_processed_timestamp:
             try:
                 LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -187,7 +187,7 @@ def process_pending_memos():
                             if new_ts_obj <= existing_ts_obj:
                                 should_write = False
                     except Exception:
-                        pass # ファイル破損時などは上書き
+                        pass
                 
                 if should_write:
                     with open(LAST_PROCESSED_TIMESTAMP_FILE, "w", encoding="utf-8") as f:
@@ -204,13 +204,11 @@ def process_pending_memos():
                 json.dump([], f, ensure_ascii=False, indent=2)
         except OSError as e:
             logging.error(f"[PROCESS] pending_memos.json のクリアに失敗: {e}")
-            pass
             
     return True, memos_processed
 
 def main():
-    if not initial_clone_if_needed():
-        sys.exit(1)
+    initial_clone_if_needed()
     
     if not sync_with_git_repo():
         sys.exit(1)
