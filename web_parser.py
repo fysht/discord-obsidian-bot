@@ -1,52 +1,33 @@
-import asyncio
-from requests_html import HTMLSession
+import requests
+from readability import Document
 from markdownify import markdownify as md
 import logging
-import nest_asyncio
 
-# requests-htmlが非同期ループ内で動作するために必要
-nest_asyncio.apply()
-
-def parse_url_advanced(url: str) -> tuple[str | None, str | None]:
+def parse_url_with_readability(url: str) -> tuple[str | None, str | None]:
     """
-    仮想ブラウザ(requests-html)を使い、JSをレンダリングした上で
-    ページのタイトルと本文(Markdown)を抽出する。
+    requestsとreadability-lxmlを使い、ページのタイトルと本文(Markdown)を抽出する。
     """
-    session = None
     try:
-        session = HTMLSession()
-        r = session.get(url, timeout=30)
-        
-        # JSをレンダリング（SPAなどの現代的なサイトに対応）
-        # スクロールダウンと待機時間を設けることで、動的に読み込まれるコンテンツも取得しやすくする
-        r.html.render(scrolldown=1, sleep=3, keep_page=True, timeout=20)
-        
-        # ページタイトルを取得
-        title = r.html.find('title', first=True)
-        title_text = title.text if title else "No Title Found"
+        # 1. User-Agentを指定してウェブページを取得
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()  # HTTPエラーがあれば例外を発生
 
-        # 本文が含まれていそうな主要な要素を探す（<article>や<main>を優先）
-        article = r.html.find('article', first=True)
-        if not article:
-            article = r.html.find('main', first=True)
-        
-        # <article>や<main>が見つかればその中身を、なければページ全体を変換対象とする
-        html_to_convert = article.html if article else r.html.html
+        # 2. readabilityで本文を抽出
+        doc = Document(response.text)
+        title = doc.title()
+        content_html = doc.summary()
 
-        # HTMLをMarkdownに変換
-        markdown_content = md(html_to_convert, heading_style="ATX")
+        # 3. HTMLをMarkdownに変換
+        markdown_content = md(content_html, heading_style="ATX")
 
-        if not markdown_content:
-            logging.warning(f"Markdownへの変換に失敗しました: {url}")
-            return title_text, None
+        return title, markdown_content
 
-        return title_text, markdown_content
-
+    except requests.exceptions.RequestException as e:
+        logging.error(f"URLの取得に失敗しました {url}: {e}")
+        return "No Title Found", f"（URLの取得に失敗しました: {e}）"
     except Exception as e:
-        logging.error(f"高度なURL解析中にエラーが発生しました {url}: {e}", exc_info=True)
-        # エラーが発生した場合は、タイトルと空の本文を返すこともできるが、
-        # 今回はブックマークとして保存する логиックのためNoneを返す
-        return None, None
-    finally:
-        if session:
-            session.close()
+        logging.error(f"URLの解析中に予期せぬエラーが発生しました {url}: {e}", exc_info=True)
+        return "No Title Found", f"（ページの解析中にエラーが発生しました: {e}）"
