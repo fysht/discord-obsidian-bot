@@ -3,16 +3,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import logging
-from datetime import datetime
+import re
+import datetime
+import zoneinfo
 import dropbox
 from dropbox.files import WriteMode
-from web_parser import parse_url 
-import zoneinfo
-import re
+from web_parser import parse_url
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-# URLを検出するための簡易的な正規表現
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
 
 class WebClipCog(commands.Cog):
@@ -25,39 +24,40 @@ class WebClipCog(commands.Cog):
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-        # 環境変数からWebクリップ用チャンネルのIDを取得
         self.web_clip_channel_id = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
 
-    async def _perform_clip(self, url: str, interaction: discord.Interaction | None = None, message: discord.Message | None = None):
-        """Webクリップのコアロジック。コマンドとon_messageの両方から呼ばれる。"""
+        # Dropbox設定が不完全な場合は警告を出す
+        if not all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token]):
+            logging.warning("WebClipCog: Dropboxの認証情報が.envファイルに設定されていません。")
+
+    async def _perform_clip(self, url: str, message: discord.Message):
+        """Webクリップのコアロジック"""
         try:
-            logging.info(f"クリップを開始します: {url}")
-            # web_parser.pyの関数を呼び出してページ内容を取得
+            await message.add_reaction("⏳")
+            
             title, content = await parse_url(url)
 
             if not title or not content:
-                error_msg = "エラー: ページのタイトルまたは本文を取得できませんでした。"
-                if interaction:
-                    await interaction.followup.send(error_msg, ephemeral=True)
-                elif message:
-                    await message.channel.send(f"{message.author.mention} {error_msg}")
+                await message.channel.send(f"{message.author.mention} ページのタイトルまたは本文を取得できませんでした。")
                 return
 
-            # Obsidianに保存するMarkdownコンテンツを作成
-            now = datetime.now(JST)
-            timestamp = now.strftime('%Y-%m-%d %H:%M:%S')
-            file_timestamp = now.strftime('%Y-%m-%d-%H-%M-%S')
+            now = datetime.datetime.now(JST)
+            today_str = now.strftime('%Y-%m-%d')
+            
+            # ファイル名に使えない文字を削除・置換
+            safe_title = re.sub(r'[\\|/|:|*|?|"|<|>|\|]', '-', title)
+            file_name = f"WebClip - {safe_title[:50]} - {now.strftime('%Y%m%d%H%M%S')}"
             
             markdown_content = (
                 f"# {title}\n\n"
-                f"- **URL**: {url}\n"
-                f"- **Clipped at**: {timestamp}\n\n"
+                f"- **URL**: <{url}>\n"
+                f"- **Clipped at**: {now.strftime('%Y-%m-%d %H:%M')}\n"
+                f"- **関連**: [[{today_str}]]\n\n"
                 f"---\n\n"
                 f"{content}"
             )
 
-            # Dropboxにファイルをアップロード
-            file_path = f"{self.dropbox_vault_path}/WebClips/{file_timestamp}.md"
+            file_path = f"{self.dropbox_vault_path}/WebClips/{file_name}.md"
             
             with dropbox.Dropbox(
                 oauth2_refresh_token=self.dropbox_refresh_token,
@@ -67,57 +67,38 @@ class WebClipCog(commands.Cog):
                 dbx.files_upload(
                     markdown_content.encode('utf-8'),
                     file_path,
-                    mode=WriteMode('add') # 新規ファイルとして追加
+                    mode=WriteMode('add')
                 )
 
-            logging.info(f"クリップが成功しました: {file_path}")
-            
-            # 成功を通知
-            if interaction:
-                embed = discord.Embed(
-                    title="✅ Webクリップ成功",
-                    description=f"**[{title}]({url})** をObsidianに保存しました。",
-                    color=discord.Color.green()
-                )
-                embed.add_field(name="保存先", value=f"`{file_path}`")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            elif message:
-                await message.add_reaction("✅")
-
+            logging.info(f"クリップ成功: {file_path}")
+            await message.add_reaction("✅")
 
         except Exception as e:
-            logging.error(f"Webクリップ処理中にエラーが発生しました: {e}", exc_info=True)
-            if interaction:
-                await interaction.followup.send(f"🤖 エラーが発生しました: {e}", ephemeral=True)
-            elif message:
-                await message.add_reaction("❌")
+            logging.error(f"Webクリップ処理中にエラー: {e}", exc_info=True)
+            await message.add_reaction("❌")
+        finally:
+            await message.remove_reaction("⏳", self.bot.user)
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """メッセージ投稿を監視し、特定チャンネルのURLを自動でクリップする"""
-        # Bot自身のメッセージは無視
-        if message.author.bot:
-            return
-            
-        # 指定されたWebクリップ用チャンネルでなければ無視
-        if message.channel.id != self.web_clip_channel_id:
+        """指定チャンネルのURLを自動クリップ"""
+        if message.author.bot or message.channel.id != self.web_clip_channel_id:
             return
 
-        # メッセージからURLを検索
         match = URL_REGEX.search(message.content)
         if match:
             url = match.group(0)
-            await message.add_reaction("⏳") # 処理中のリアクション
             await self._perform_clip(url=url, message=message)
-            await message.remove_reaction("⏳", self.bot.user) # 処理中リアクションを削除
 
-    @app_commands.command(name="clip", description="指定したURLのウェブページをObsidianにクリップします。")
-    @app_commands.describe(url="クリップしたいウェブページのURL")
+    @app_commands.command(name="clip", description="URLをObsidianにクリップします。")
+    @app_commands.describe(url="クリップしたいページのURL")
     async def clip(self, interaction: discord.Interaction, url: str):
-        """スラッシュコマンド '/clip' の処理"""
-        await interaction.response.defer(ephemeral=True) # 応答を保留
-        await self._perform_clip(url=url, interaction=interaction)
-
+        """スラッシュコマンド /clip の処理"""
+        # ephemeral=True で本人にのみ表示される応答
+        await interaction.response.send_message(f"`{url}` のクリップ処理を開始します...", ephemeral=True)
+        # interactionからmessageオブジェクトを取得して共通処理に渡す
+        message = await interaction.original_response()
+        await self._perform_clip(url=url, message=message)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WebClipCog(bot))
