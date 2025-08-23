@@ -31,6 +31,7 @@ def _add_memo_sync(content, author, created_at, message_id):
             except (json.JSONDecodeError, FileNotFoundError):
                 memos = []
         
+        # 同じIDのメモが既に存在しないかチェック
         if not any(memo.get("id") == str(message_id) for memo in memos):
             memos.append(data)
             tmp_file = PENDING_MEMOS_FILE.with_suffix(".tmp")
