@@ -24,14 +24,14 @@ JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 GIT_USER_NAME = os.getenv("GIT_USER_NAME", "Discord Memo Bot")
 GIT_USER_EMAIL = os.getenv("GIT_USER_EMAIL", "bot@example.com")
 
-# RenderのSecret Fileのパスを直接指定する
-SECRET_KEY_PATH = "/etc/secrets/id_ed25519_deploy_key"
+# RenderのSecret Fileのパスを設定したファイル名に合わせる
+SECRET_KEY_PATH = "/etc/secrets/id_rsa_obsidian_bot"
 
 def get_git_env():
     """Gitコマンド実行時に使用する環境変数を設定する"""
     env = os.environ.copy()
     # SSHコマンドに、使用する秘密鍵(-i)とホストキーチェック無効化のオプションを渡す
-    ssh_command = f"ssh -i {SECRET_KEY_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    ssh_command = f"ssh -i {SECRET_KEY_PATH} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     env["GIT_SSH_COMMAND"] = ssh_command
     return env
 
@@ -41,12 +41,12 @@ def initial_clone_if_needed():
         logging.info(f"[GIT] Vault not found at {VAULT_PATH}. Cloning repository...")
         parent_dir = VAULT_PATH.parent
         parent_dir.mkdir(parents=True, exist_ok=True)
-        
+
         GIT_REPO_URL = os.getenv("GIT_REPO_URL")
         if not GIT_REPO_URL:
             logging.critical("[GIT] GIT_REPO_URL is not set.")
             sys.exit(1)
-            
+
         try:
             subprocess.run(
                 ["git", "clone", GIT_REPO_URL, str(VAULT_PATH)],
@@ -55,7 +55,7 @@ def initial_clone_if_needed():
                 text=True,
                 encoding='utf-8',
                 cwd=parent_dir,
-                env=get_git_env() # ★修正
+                env=get_git_env() # 修正
             )
             logging.info("[GIT] Repository cloned successfully.")
         except subprocess.CalledProcessError as e:
@@ -68,7 +68,7 @@ def run_git_command(args, cwd=VAULT_PATH):
     try:
         base_cmd = ["git", "-c", f"user.name={GIT_USER_NAME}", "-c", f"user.email={GIT_USER_EMAIL}"]
         cmd = base_cmd + args
-        
+
         logging.info(f"[GIT] Running command: {' '.join(cmd)}")
         result = subprocess.run(
             cmd,
@@ -79,7 +79,10 @@ def run_git_command(args, cwd=VAULT_PATH):
             cwd=cwd,
             env=get_git_env() 
         )
-        logging.info(f"[GIT] {args[0]} successful:\n{result.stdout}")
+        if result.stdout:
+            logging.info(f"[GIT] {args[0]} successful:\n{result.stdout}")
+        if result.stderr:
+             logging.info(f"[GIT] {args[0]} stderr:\n{result.stderr}")
         return True
     except subprocess.CalledProcessError as e:
         logging.error(f"[GIT] Command failed (code: {e.returncode}): {' '.join(e.cmd)}\nSTDERR:\n{e.stderr}")
@@ -94,13 +97,12 @@ def sync_with_git_repo():
         logging.error("[GIT] Pull failed. Aborting sync.")
         return False
     return True
-    
+
 def push_to_git_repo():
     """変更をGitリポジトリにPushする"""
     if not run_git_command(["add", "."]):
         return False
-    
-    # 環境変数を渡す
+
     status_result = subprocess.run(
         ["git", "status", "--porcelain"],
         capture_output=True, text=True, encoding='utf-8', cwd=VAULT_PATH, env=get_git_env()
@@ -112,16 +114,16 @@ def push_to_git_repo():
     commit_message = f"docs: Add new memos from Discord ({datetime.now(JST).strftime('%Y-%m-%d %H:%M')})"
     if not run_git_command(["commit", "-m", commit_message]):
         return False
-        
+
     if not run_git_command(["push"]):
         return False
-        
+
     return True
 
 def process_pending_memos():
     """保留メモを日付ごとの DailyNote に追加する"""
     if not PENDING_MEMOS_FILE.exists():
-        return True, False 
+        return True, False
 
     lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
     memos_processed = False
@@ -132,7 +134,7 @@ def process_pending_memos():
                 memos = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError):
             memos = []
-            
+
         if not memos:
             return True, False
 
@@ -160,7 +162,7 @@ def process_pending_memos():
                     if len(content_lines) > 1:
                         formatted_content += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
                     lines_to_append.append(f"- {time_str}\n\t{formatted_content}")
-                    
+
                 with open(file_path, "a", encoding="utf-8") as f:
                     if f.tell() > 0:
                         f.write("\n")
@@ -169,33 +171,15 @@ def process_pending_memos():
             except Exception as e:
                 logging.error(f"[PROCESS] ファイル書き込みエラー: {e}", exc_info=True)
                 return False, False
-        
+
         if memos:
             last_processed_timestamp = memos[-1]['created_at']
-        
+
         if last_processed_timestamp:
             try:
                 LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
-                new_ts_obj = datetime.fromisoformat(last_processed_timestamp.replace('Z', '+00:00'))
-                
-                should_write = True
-                if LAST_PROCESSED_TIMESTAMP_FILE.exists():
-                    try:
-                        existing_ts_str = LAST_PROCESSED_TIMESTAMP_FILE.read_text().strip()
-                        if existing_ts_str:
-                            existing_ts_obj = datetime.fromisoformat(existing_ts_str.replace('Z', '+00:00'))
-                            if new_ts_obj <= existing_ts_obj:
-                                should_write = False
-                    except Exception:
-                        pass
-                
-                if should_write:
-                    with open(LAST_PROCESSED_TIMESTAMP_FILE, "w", encoding="utf-8") as f:
-                        f.write(last_processed_timestamp)
-                    logging.info(f"[PROCESS] 最終処理タイムスタンプを更新しました: {last_processed_timestamp}")
-                else:
-                    logging.info("[PROCESS] 既存のタイムスタンプが新しいため、更新をスキップしました。")
-
+                LAST_PROCESSED_TIMESTAMP_FILE.write_text(last_processed_timestamp)
+                logging.info(f"[PROCESS] 最終処理タイムスタンプを更新しました: {last_processed_timestamp}")
             except Exception as e:
                 logging.error(f"[PROCESS] 最終処理タイムスタンプの保存に失敗: {e}")
 
@@ -204,19 +188,19 @@ def process_pending_memos():
                 json.dump([], f, ensure_ascii=False, indent=2)
         except OSError as e:
             logging.error(f"[PROCESS] pending_memos.json のクリアに失敗: {e}")
-            
+
     return True, memos_processed
 
 def main():
     initial_clone_if_needed()
-    
+
     if not sync_with_git_repo():
         sys.exit(1)
-        
+
     success, has_changes = process_pending_memos()
     if not success:
         sys.exit(1)
-        
+
     if has_changes:
         if not push_to_git_repo():
             sys.exit(1)
