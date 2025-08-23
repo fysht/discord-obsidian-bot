@@ -11,11 +11,19 @@ import dropbox
 from dropbox.exceptions import ApiError
 from dropbox.files import WriteMode
 
+# --- .env 読み込み ---
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# --- ロギング設定 ---
+# ログの出力先を「標準出力(stdout)」に明示的に設定
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout
+)
 sys.stdout.reconfigure(encoding='utf-8')
 
+# --- 基本設定 ---
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
 LAST_PROCESSED_ID_FILE = Path(os.getenv("LAST_PROCESSED_ID_FILE", "/var/data/last_processed_id.txt"))
 DROPBOX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN")
@@ -25,6 +33,7 @@ JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 def process_pending_memos():
     """保留メモをDropbox上のDailyNoteに追加する"""
     if not PENDING_MEMOS_FILE.exists():
+        # 処理すべきファイルがない場合は、何もログを出さずに正常終了
         return True
 
     lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
@@ -36,6 +45,7 @@ def process_pending_memos():
             memos = []
             
         if not memos:
+            # ファイルが空の場合も、何もログを出さずに正常終了
             return True
 
         logging.info(f"[PROCESS] {len(memos)} 件のメモをDropboxに保存します...")
@@ -103,6 +113,7 @@ def process_pending_memos():
             except Exception as e:
                 logging.error(f"[PROCESS] 最終処理IDの保存に失敗: {e}")
             
+            # 処理が成功したので一時ファイルを空にする
             with open(PENDING_MEMOS_FILE, "w") as f:
                 json.dump([], f)
     
