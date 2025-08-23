@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ext import commands
 import logging
 import re
+from urllib.parse import urlparse
 import datetime
 import zoneinfo
 import dropbox
@@ -19,14 +20,12 @@ class WebClipCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # .envファイルから各種設定を読み込む
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         self.web_clip_channel_id = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
 
-        # Dropbox設定が不完全な場合は警告を出す
         if not all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token]):
             logging.warning("WebClipCog: Dropboxの認証情報が.envファイルに設定されていません。")
 
@@ -35,26 +34,34 @@ class WebClipCog(commands.Cog):
         try:
             await message.add_reaction("⏳")
             
-            title, content = await parse_url(url)
+            # web_parser.py を使ってページのタイトルと本文を取得
+            fetched_title, fetched_content = await parse_url(url)
 
-            if not title or not content:
+            if not fetched_title or not fetched_content:
                 await message.channel.send(f"{message.author.mention} ページのタイトルまたは本文を取得できませんでした。")
                 return
 
             now = datetime.datetime.now(JST)
             today_str = now.strftime('%Y-%m-%d')
+
+            # 1. ファイル名を "WebClip-{ドメイン}-{日付}.md" 形式に
+            try:
+                domain = urlparse(url).netloc
+            except Exception:
+                domain = "unknown"
             
-            # ファイル名に使えない文字を削除・置換
-            safe_title = re.sub(r'[\\|/|:|*|?|"|<|>|\|]', '-', title)
-            file_name = f"WebClip - {safe_title[:50]} - {now.strftime('%Y%m%d%H%M%S')}"
+            # 同じドメインから同日に複数クリップした場合に上書きされないよう、時刻もファイル名に含める
+            time_str = now.strftime('%H%M%S')
+            file_name = f"WebClip-{domain}-{today_str}-{time_str}"
             
+            # 2. ノートのコンテンツをご提示の形式 + 取得した情報で作成
             markdown_content = (
-                f"# {title}\n\n"
-                f"- **URL**: <{url}>\n"
-                f"- **Clipped at**: {now.strftime('%Y-%m-%d %H:%M')}\n"
-                f"- **関連**: [[{today_str}]]\n\n"
+                f"# {fetched_title}\n\n"  # 取得したタイトルを見出しに
+                f"- URL: <{url}>\n"
+                f"- 作成日: {today_str}\n"
+                f"- 関連: [[{today_str}]]\n\n"
                 f"---\n\n"
-                f"{content}"
+                f"{fetched_content}" # 取得した本文を追加
             )
 
             file_path = f"{self.dropbox_vault_path}/WebClips/{file_name}.md"
@@ -77,6 +84,7 @@ class WebClipCog(commands.Cog):
             logging.error(f"Webクリップ処理中にエラー: {e}", exc_info=True)
             await message.add_reaction("❌")
         finally:
+            # 成功・失敗にかかわらず処理中リアクションは削除
             await message.remove_reaction("⏳", self.bot.user)
     
     @commands.Cog.listener()
@@ -94,9 +102,7 @@ class WebClipCog(commands.Cog):
     @app_commands.describe(url="クリップしたいページのURL")
     async def clip(self, interaction: discord.Interaction, url: str):
         """スラッシュコマンド /clip の処理"""
-        # ephemeral=True で本人にのみ表示される応答
         await interaction.response.send_message(f"`{url}` のクリップ処理を開始します...", ephemeral=True)
-        # interactionからmessageオブジェクトを取得して共通処理に渡す
         message = await interaction.original_response()
         await self._perform_clip(url=url, message=message)
 
