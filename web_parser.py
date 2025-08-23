@@ -1,42 +1,48 @@
 import asyncio
-import aiohttp
-from bs4 import BeautifulSoup
-from readability import Document
+from requests_html import HTMLSession
+from markdownify import markdownify as md # turndownからmarkdownifyに変更
 import logging
+import nest_asyncio
 
-async def parse_url(url: str) -> tuple[str | None, str | None]:
+# requests-htmlが非同期ループ内で動作するために必要
+nest_asyncio.apply()
+
+def parse_url_advanced(url: str) -> tuple[str | None, str | None]:
     """
-    指定されたURLからページのタイトルと本文を非同期で取得する。
-    readability-lxmlを使用して、主要なコンテンツをより正確に抽出する。
+    仮想ブラウザ(requests-html)を使い、JSをレンダリングした上で
+    ページのタイトルと本文(Markdown)を抽出する。
     """
+    session = None
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=15) as response:
-                if not response.ok:
-                    logging.error(f"URLの取得に失敗しました {url} (ステータスコード: {response.status})")
-                    return None, None
-                
-                html = await response.text()
-
-        doc = Document(html)
-        title = doc.title()
-        content_html = doc.summary()
+        session = HTMLSession()
+        r = session.get(url, timeout=30)
         
-        soup = BeautifulSoup(content_html, 'lxml')
-        content_text = soup.get_text('\n', strip=True)
-            
-        if not title or not content_text:
-            logging.warning(f"タイトルまたは本文の抽出に失敗しました: {url}")
-            return None, None
+        # JSをレンダリング
+        r.html.render(scrolldown=1, sleep=3, keep_page=True, timeout=20)
+        
+        # ページタイトルを取得
+        title = r.html.find('title', first=True)
+        title_text = title.text if title else "No Title Found"
 
-        return title, content_text
+        # 本文が含まれていそうな主要な要素を探す
+        article = r.html.find('article', first=True)
+        if not article:
+            article = r.html.find('main', first=True)
+        
+        html_to_convert = article.html if article else r.html.html
 
-    except asyncio.TimeoutError:
-        logging.error(f"URL取得がタイムアウトしました: {url}")
-        return None, None
+        # HTMLをMarkdownに変換 (markdownifyを使用)
+        markdown_content = md(html_to_convert, heading_style="ATX")
+
+        if not markdown_content:
+            logging.warning(f"Markdownへの変換に失敗しました: {url}")
+            return title_text, None
+
+        return title_text, markdown_content
+
     except Exception as e:
-        logging.error(f"URLの解析中にエラーが発生しました {url}: {e}", exc_info=True)
+        logging.error(f"高度なURL解析中にエラーが発生しました {url}: {e}", exc_info=True)
         return None, None
+    finally:
+        if session:
+            session.close()

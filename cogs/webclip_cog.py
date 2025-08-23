@@ -9,7 +9,10 @@ import datetime
 import zoneinfo
 import dropbox
 from dropbox.files import WriteMode
-from web_parser import parse_url
+import asyncio
+
+# 変更: 新しいパーサーをインポート
+from web_parser import parse_url_advanced 
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -34,35 +37,44 @@ class WebClipCog(commands.Cog):
         try:
             await message.add_reaction("⏳")
             
-            # web_parser.py を使ってページのタイトルと本文を取得
-            fetched_title, fetched_content = await parse_url(url)
-
-            if not fetched_title or not fetched_content:
-                await message.channel.send(f"{message.author.mention} ページのタイトルまたは本文を取得できませんでした。")
-                return
-
+            # 変更: 新しいパーサーを別スレッドで実行
+            loop = asyncio.get_running_loop()
+            # parse_url_advancedは重い処理なので、BotをブロックしないようにExecutorで実行
+            fetched_title, fetched_content = await loop.run_in_executor(
+                None, parse_url_advanced, url
+            )
+            
             now = datetime.datetime.now(JST)
             today_str = now.strftime('%Y-%m-%d')
-
-            # 1. ファイル名を "WebClip-{ドメイン}-{日付}.md" 形式に
+            time_str = now.strftime('%H%M%S')
+            
             try:
                 domain = urlparse(url).netloc
             except Exception:
                 domain = "unknown"
-            
-            # 同じドメインから同日に複数クリップした場合に上書きされないよう、時刻もファイル名に含める
-            time_str = now.strftime('%H%M%S')
-            file_name = f"WebClip-{domain}-{today_str}-{time_str}"
-            
-            # 2. ノートのコンテンツをご提示の形式 + 取得した情報で作成
-            markdown_content = (
-                f"# {fetched_title}\n\n"  # 取得したタイトルを見出しに
-                f"- URL: <{url}>\n"
-                f"- 作成日: {today_str}\n"
-                f"- 関連: [[{today_str}]]\n\n"
-                f"---\n\n"
-                f"{fetched_content}" # 取得した本文を追加
-            )
+
+            # ページの取得自体に失敗した場合のフォールバック
+            if fetched_title is None:
+                logging.warning(f"ページの取得自体に失敗、ブックマークとして保存します: {url}")
+                file_name = f"Bookmark-{domain}-{today_str}-{time_str}"
+                markdown_content = (
+                    f"# Web Clip (Bookmark)\n\n"
+                    f"- URL: <{url}>\n"
+                    f"- 作成日: {today_str}\n"
+                    f"- 関連: [[{today_str}]]\n\n"
+                    f"---\n\n"
+                    f"（ページの読み込みに失敗しました）"
+                )
+            else:
+                 file_name = f"WebClip-{domain}-{today_str}-{time_str}"
+                 markdown_content = (
+                    f"# {fetched_title}\n\n"
+                    f"- URL: <{url}>\n"
+                    f"- 作成日: {today_str}\n"
+                    f"- 関連: [[{today_str}]]\n\n"
+                    f"---\n\n"
+                    f"{fetched_content}"
+                )
 
             file_path = f"{self.dropbox_vault_path}/WebClips/{file_name}.md"
             
@@ -84,12 +96,10 @@ class WebClipCog(commands.Cog):
             logging.error(f"Webクリップ処理中にエラー: {e}", exc_info=True)
             await message.add_reaction("❌")
         finally:
-            # 成功・失敗にかかわらず処理中リアクションは削除
             await message.remove_reaction("⏳", self.bot.user)
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """指定チャンネルのURLを自動クリップ"""
         if message.author.bot or message.channel.id != self.web_clip_channel_id:
             return
 
@@ -101,7 +111,6 @@ class WebClipCog(commands.Cog):
     @app_commands.command(name="clip", description="URLをObsidianにクリップします。")
     @app_commands.describe(url="クリップしたいページのURL")
     async def clip(self, interaction: discord.Interaction, url: str):
-        """スラッシュコマンド /clip の処理"""
         await interaction.response.send_message(f"`{url}` のクリップ処理を開始します...", ephemeral=True)
         message = await interaction.original_response()
         await self._perform_clip(url=url, message=message)
