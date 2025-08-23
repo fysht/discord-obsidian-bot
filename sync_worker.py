@@ -19,6 +19,8 @@ sys.stdout.reconfigure(encoding='utf-8')
 # --- 基本設定 ---
 VAULT_PATH = Path(os.getenv("OBSIDIAN_VAULT_PATH", "/var/data/vault"))
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
+# 最後に処理したタイムスタンプを保存するファイル
+LAST_PROCESSED_TIMESTAMP_FILE = Path(os.getenv("LAST_PROCESSED_TIMESTAMP_FILE", "/var/data/last_processed_timestamp.txt"))
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 GIT_USER_NAME = os.getenv("GIT_USER_NAME", "Discord Memo Bot")
 GIT_USER_EMAIL = os.getenv("GIT_USER_EMAIL", "bot@example.com")
@@ -54,7 +56,6 @@ def initial_clone_if_needed():
 def run_git_command(args, cwd=VAULT_PATH):
     """指定されたディレクトリでGitコマンドを実行し、成功したかを返す"""
     try:
-        # Gitコマンドの基本設定を追加
         base_cmd = ["git", "-c", f"user.name='{GIT_USER_NAME}'", "-c", f"user.email='{GIT_USER_EMAIL}'"]
         cmd = base_cmd + args
         
@@ -112,6 +113,7 @@ def process_pending_memos():
 
     lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
     memos_processed = False
+    last_processed_timestamp = None
     with lock:
         try:
             with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
@@ -155,6 +157,20 @@ def process_pending_memos():
             except Exception as e:
                 logging.error(f"[PROCESS] ファイル書き込みエラー: {e}", exc_info=True)
                 return False, False
+        
+        # 最後に処理したメモのタイムスタンプを特定
+        if memos:
+            last_processed_timestamp = memos[-1]['created_at']
+        
+        # 最後に処理したタイムスタンプをファイルに書き込む
+        if last_processed_timestamp:
+            try:
+                LAST_PROCESSED_TIMESTAMP_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(LAST_PROCESSED_TIMESTAMP_FILE, "w", encoding="utf-8") as f:
+                    f.write(last_processed_timestamp)
+                logging.info(f"[PROCESS] 最終処理タイムスタンプを保存しました: {last_processed_timestamp}")
+            except Exception as e:
+                logging.error(f"[PROCESS] 最終処理タイムスタンプの保存に失敗: {e}")
 
         try:
             PENDING_MEMOS_FILE.unlink()
@@ -165,11 +181,9 @@ def process_pending_memos():
     return True, memos_processed
 
 def main():
-    # 最初に、必要であればリポジトリをクローンする
     if not initial_clone_if_needed():
         sys.exit(1)
     
-    # --- 以降は元のmain関数と同じ ---
     if not sync_with_git_repo():
         sys.exit(1)
         
