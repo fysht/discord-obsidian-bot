@@ -11,14 +11,15 @@ from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
 import google.generativeai as genai
+
+# OAuth2.0認証に必要なライブラリ
+import google.oauth2.credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
-
-# API接続用の定数を追加
 YOUTUBE_API_SERVICE_NAME = 'youtube'
 YOUTUBE_API_VERSION = 'v3'
 
@@ -35,59 +36,71 @@ class YouTubeCog(commands.Cog):
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.youtube_summary_channel_id = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
 
-        # YouTube APIキーを読み込む
-        self.youtube_api_key = os.getenv("YOUTUBE_API_KEY")
+        # OAuth 2.0関連の情報を読み込む
+        self.google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+        self.google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
+        self.google_refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
+        
+        self.google_creds_available = all([self.google_client_id, self.google_client_secret, self.google_refresh_token])
+        if not self.google_creds_available:
+            logging.warning("YouTubeCog: Google OAuth関連の環境変数が設定されていません。")
 
         if not self.gemini_api_key:
             logging.warning("YouTubeCog: GEMINI_API_KEYが.envファイルに設定されていません。")
         else:
             genai.configure(api_key=self.gemini_api_key)
-        
-        # YouTube APIキーの存在もチェック
-        if not self.youtube_api_key:
-            logging.warning("YouTubeCog: YOUTUBE_API_KEYが.envファイルに設定されていません。")
 
     async def _get_transcript_from_api(self, video_id: str) -> str | None:
         """
-        YouTube Data APIを使用して動画の字幕を取得する非同期ラッパー関数
+        YouTube Data APIを使用して動画の字幕を取得する非同期ラッパー関数 (OAuth 2.0対応)
         """
         def blocking_io_call():
             """APIリクエストを行う同期関数"""
             try:
+                # OAuth 2.0の資格情報（Credentials）を作成
+                creds = google.oauth2.credentials.Credentials(
+                    None,  # Access tokenは不要（リフレッシュトークンがあれば自動で取得される）
+                    refresh_token=self.google_refresh_token,
+                    token_uri='https://oauth2.googleapis.com/token',
+                    client_id=self.google_client_id,
+                    client_secret=self.google_client_secret,
+                    scopes=['https://www.googleapis.com/auth/youtube.readonly']
+                )
+
                 youtube = build(
                     YOUTUBE_API_SERVICE_NAME,
                     YOUTUBE_API_VERSION,
-                    developerKey=self.youtube_api_key
+                    credentials=creds
                 )
+                
+                # 1. 動画に利用可能な字幕トラックのリストをリクエスト
                 caption_request = youtube.captions().list(part='snippet', videoId=video_id)
                 caption_response = caption_request.execute()
 
+                # 2. 日本語または英語の字幕トラックを探す
                 target_caption_id = None
-                # 字幕の言語を 日本語 > 英語 の優先順位で探す
                 for item in caption_response.get('items', []):
                     lang = item['snippet']['language']
-                    if lang == 'ja':
+                    if lang == 'ja':  # 日本語を最優先
                         target_caption_id = item['id']
                         break
-                    elif lang == 'en':
+                    elif lang == 'en': # 日本語がなければ英語
                         target_caption_id = item['id']
 
                 if not target_caption_id:
                     logging.warning(f"字幕トラックが見つかりませんでした (Video ID: {video_id})")
                     return None
-                
-                # 字幕データをダウンロード (プレーンテキスト形式)
+
+                # 3. 見つかった字幕トラックIDを使って、実際の字幕データをダウンロード
                 transcript_request = youtube.captions().download(id=target_caption_id, tfmt='plainText')
                 transcript_data = transcript_request.execute()
                 
-                # ダウンロードされたデータはバイト列の場合があるのでデコードする
                 if isinstance(transcript_data, bytes):
                     return transcript_data.decode('utf-8')
                 return transcript_data
 
             except HttpError as e:
                 logging.error(f"YouTube APIエラー (Video ID: {video_id}): {e}")
-                # ここでエラーの理由 (e.g., クォータ超過) を詳細にログ出力できる
                 return None
             except Exception as e:
                 logging.error(f"YouTube API処理中の予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
@@ -99,8 +112,12 @@ class YouTubeCog(commands.Cog):
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
         try:
-            if not self.youtube_api_key:
-                await message.channel.send("⚠️ YouTube APIキーが設定されていません。")
+            if not self.google_creds_available:
+                error_msg = "⚠️ YouTube APIの認証情報が設定されていません。"
+                if isinstance(message, discord.InteractionMessage):
+                    await message.edit(content=error_msg)
+                else:
+                    await message.channel.send(error_msg)
                 return
 
             if isinstance(message, discord.Message):
@@ -112,13 +129,11 @@ class YouTubeCog(commands.Cog):
                 return
             video_id = video_id_match.group(1)
 
-            # 字幕取得ロジック
             transcript_text = await self._get_transcript_from_api(video_id)
             if not transcript_text:
                 logging.warning(f"字幕の取得に失敗しました (Video ID: {video_id})")
                 if isinstance(message, discord.Message):
-                    await message.remove_reaction("⏳", self.bot.user)
-                    await message.add_reaction("🔇") # 字幕なしのリアクション
+                    await message.add_reaction("🔇")
                 elif isinstance(message, discord.InteractionMessage):
                     await message.edit(content="🔇 この動画には利用可能な字幕がありませんでした。")
                 return
@@ -225,7 +240,11 @@ class YouTubeCog(commands.Cog):
 
         finally:
             if isinstance(message, discord.Message):
-                await message.remove_reaction("⏳", self.bot.user)
+                # リアクションが既に追加されているか確認してから削除
+                # これにより、リアクションが見つからないエラーを防ぐ
+                cache_message = discord.utils.get(self.bot.cached_messages, id=message.id)
+                if cache_message and "⏳" in [str(r.emoji) for r in cache_message.reactions]:
+                    await message.remove_reaction("⏳", self.bot.user)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -237,10 +256,10 @@ class YouTubeCog(commands.Cog):
             await self._perform_summary(url=url, message=message)
 
     @app_commands.command(name="yt_summary", description="YouTube動画のURLを要約してObsidianに保存します。")
-    @app_commands.describe(url="要約したいYouTube動画のURL")
+    @app_cpm.describe(url="要約したいYouTube動画のURL")
     async def yt_summary(self, interaction: discord.Interaction, url: str):
-        if not self.gemini_api_key or not self.youtube_api_key: # 変更点
-            await interaction.response.send_message("⚠️ APIキーが設定されていません。", ephemeral=True)
+        if not self.google_creds_available or not self.gemini_api_key:
+            await interaction.response.send_message("⚠️ APIキーまたは認証情報が設定されていません。", ephemeral=True)
             return
 
         await interaction.response.send_message("⏳ YouTubeの要約を作成中です...", ephemeral=False)
@@ -250,7 +269,6 @@ class YouTubeCog(commands.Cog):
     async def get_video_info(self, video_id: str) -> dict:
         """oEmbedを使って動画のタイトルやチャンネル名を取得する"""
         try:
-            # aiohttpセッションが存在しない場合に作成（discord.ClientSessionは非推奨）
             if not hasattr(self.bot, 'session') or self.bot.session.closed:
                  import aiohttp
                  self.bot.session = aiohttp.ClientSession()
