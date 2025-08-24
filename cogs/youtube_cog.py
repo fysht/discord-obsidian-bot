@@ -89,9 +89,9 @@ class YouTubeCog(commands.Cog):
             video_id = video_id_match.group(1)
             try:
                 transcript_list = await asyncio.to_thread(
-                    YouTubeTranscriptApi.get_transcript, video_id, languages=['ja', 'en']
+                    YouTubeTranscriptApi().fetch(video_id, languages=['ja', 'en'])
                 )
-                transcript_text = " ".join([item['text'] for item in transcript_list])
+                transcript_text = " ".join([item.text for item in transcript_list])
                 if not transcript_text.strip():
                     raise NoTranscriptFound(video_id=video_id)
             except (TranscriptsDisabled, NoTranscriptFound):
