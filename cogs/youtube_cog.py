@@ -256,7 +256,7 @@ class YouTubeCog(commands.Cog):
             await self._perform_summary(url=url, message=message)
 
     @app_commands.command(name="yt_summary", description="YouTube動画のURLを要約してObsidianに保存します。")
-    @app_cpm.describe(url="要約したいYouTube動画のURL")
+    @app_commands.describe(url="要約したいYouTube動画のURL")
     async def yt_summary(self, interaction: discord.Interaction, url: str):
         if not self.google_creds_available or not self.gemini_api_key:
             await interaction.response.send_message("⚠️ APIキーまたは認証情報が設定されていません。", ephemeral=True)
