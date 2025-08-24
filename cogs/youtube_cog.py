@@ -3,7 +3,6 @@ import re
 import io
 import discord
 from dotenv import load_dotenv
-import pytz
 import requests
 from readability import Document
 from markdownify import markdownify as md
