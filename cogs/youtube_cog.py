@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 import requests
 from readability import Document
 from markdownify import markdownify as md
-import pdfplumber
 import chardet
 import google.generativeai as genai
 
