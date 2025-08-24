@@ -10,22 +10,16 @@ from dropbox.files import WriteMode
 from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
-import google.generativeai as genai
 import aiohttp
-
-# OAuth2.0認証に必要なライブラリ
-import google.oauth2.credentials
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+import google.generativeai as genai
+from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
-YOUTUBE_API_SERVICE_NAME = 'youtube'
-YOUTUBE_API_VERSION = 'v3'
 
 class YouTubeCog(commands.Cog):
-    """YouTube動画の文字起こしを取得し、要約してObsidianに保存するCog"""
+    """YouTube動画の要約とObsidianへの保存を行うCog（ローカル処理担当）"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -37,115 +31,93 @@ class YouTubeCog(commands.Cog):
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.youtube_summary_channel_id = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
 
-        # OAuth 2.0関連の情報を読み込む
-        self.google_client_id = os.getenv("GOOGLE_CLIENT_ID")
-        self.google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET")
-        self.google_refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN")
-        
-        self.google_creds_available = all([self.google_client_id, self.google_client_secret, self.google_refresh_token])
-        if not self.google_creds_available:
-            logging.warning("YouTubeCog: Google OAuth関連の環境変数が設定されていません。")
-
         if not self.gemini_api_key:
-            logging.warning("YouTubeCog: GEMINI_API_KEYが.envファイルに設定されていません。")
+            logging.warning("YouTubeCog: GEMINI_API_KEYが設定されていません。")
         else:
             genai.configure(api_key=self.gemini_api_key)
+        
+        # aiohttpのセッションを初期化
+        self.session = aiohttp.ClientSession()
 
-    async def _get_transcript_from_api(self, video_id: str) -> str | None:
-        """
-        YouTube Data APIを使用して動画の字幕を取得する非同期ラッパー関数 (SRT形式対応)。
-        """
-        def blocking_io_call():
-            """APIリクエストを行い、SRTをパースする同期関数"""
+    async def cog_unload(self):
+        # Cogがアンロードされるときにセッションを閉じる
+        await self.session.close()
+
+    async def process_pending_summaries(self):
+        """チャンネル履歴を遡り、未処理の要約リクエストをすべて処理する"""
+        channel = self.bot.get_channel(self.youtube_summary_channel_id)
+        if not channel:
+            logging.error(f"YouTubeCog: チャンネルID {self.youtube_summary_channel_id} が見つかりません。")
+            return
+
+        logging.info(f"チャンネル '{channel.name}' の未処理YouTube要約をスキャンします...")
+        
+        pending_messages = []
+        # 履歴を遡り、📥リアクションがついたメッセージを探す
+        async for message in channel.history(limit=200):
+            has_pending_reaction = any(r.emoji == '📥' for r in message.reactions)
+            if has_pending_reaction:
+                 # 処理済みリアクション（✅ or ❌）がボットによって付けられていないか確認
+                is_processed = any(r.emoji in ('✅', '❌') and r.me for r in message.reactions)
+                if not is_processed:
+                    pending_messages.append(message)
+        
+        if not pending_messages:
+            logging.info("処理対象の新しいYouTube要約はありませんでした。")
+            return
+
+        logging.info(f"{len(pending_messages)}件の未処理YouTube要約が見つかりました。古いものから順に処理します...")
+        # 古いメッセージから処理するためにリストを逆順にする
+        for message in reversed(pending_messages):
+            logging.info(f"処理開始: {message.jump_url}")
+            url = message.content.strip()
+
+            # 📥リアクションを削除
             try:
-                creds = google.oauth2.credentials.Credentials(
-                    None,
-                    refresh_token=self.google_refresh_token,
-                    token_uri='https://oauth2.googleapis.com/token',
-                    client_id=self.google_client_id,
-                    client_secret=self.google_client_secret,
-                    scopes=['https://www.googleapis.com/auth/youtube.force-ssl']
-                )
-
-                youtube = build(
-                    YOUTUBE_API_SERVICE_NAME,
-                    YOUTUBE_API_VERSION,
-                    credentials=creds
-                )
-                
-                caption_request = youtube.captions().list(part='snippet', videoId=video_id)
-                caption_response = caption_request.execute()
-
-                target_caption_id = None
-                for item in caption_response.get('items', []):
-                    lang = item['snippet']['language']
-                    if lang == 'ja':
-                        target_caption_id = item['id']
-                        break
-                    elif lang == 'en':
-                        target_caption_id = item['id']
-
-                if not target_caption_id:
-                    logging.warning(f"字幕トラックが見つかりませんでした (Video ID: {video_id})")
-                    return None
-
-                transcript_request = youtube.captions().download(id=target_caption_id, tfmt='srt')
-                transcript_data_srt = transcript_request.execute()
-
-                if isinstance(transcript_data_srt, bytes):
-                    transcript_data_srt = transcript_data_srt.decode('utf-8')
-                
-                lines = transcript_data_srt.splitlines()
-                text_lines = []
-                for line in lines:
-                    if '-->' in line or line.strip().isdigit():
-                        continue
-                    text_lines.append(line.strip())
-                
-                clean_text = " ".join(filter(None, text_lines))
-                return clean_text
-
-            except HttpError as e:
-                if e.resp.status == 400 and 'couldNotConvert' in str(e.content):
-                    logging.warning(f"字幕フォーマット変換に失敗 (Video ID: {video_id}): {e}")
-                else:
-                    logging.error(f"YouTube APIエラー (Video ID: {video_id}): {e}")
-                return None
+                # Render側のボットとユーザーが違うことを想定
+                await message.clear_reaction('📥')
+            except discord.Forbidden:
+                logging.warning(f"リアクションの削除権限がありません: {message.jump_url}")
             except Exception as e:
-                logging.error(f"YouTube API処理中の予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
-                return None
-
-        return await asyncio.to_thread(blocking_io_call)
+                logging.error(f"リアクション削除中に予期せぬエラー: {e}")
+            
+            await self._perform_summary(url=url, message=message)
+            
+            # APIのレート制限を避けるために待機
+            await asyncio.sleep(5)
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
         try:
-            if not self.google_creds_available:
-                error_msg = "⚠️ YouTube APIの認証情報が設定されていません。"
-                if isinstance(message, discord.InteractionMessage):
-                    await message.edit(content=error_msg)
-                else:
-                    await message.channel.send(error_msg)
-                return
-
+            # リアクションで処理中を示す
             if isinstance(message, discord.Message):
                 await message.add_reaction("⏳")
 
+            # 1. URLから動画IDを抽出
             video_id_match = YOUTUBE_URL_REGEX.search(url)
             if not video_id_match:
                 if isinstance(message, discord.Message): await message.add_reaction("❓")
                 return
             video_id = video_id_match.group(1)
 
-            transcript_text = await self._get_transcript_from_api(video_id)
-            if not transcript_text:
-                logging.warning(f"字幕の取得に失敗しました (Video ID: {video_id})")
-                if isinstance(message, discord.Message):
-                    await message.add_reaction("🔇")
-                elif isinstance(message, discord.InteractionMessage):
-                    await message.edit(content="🔇 この動画には利用可能な字幕がありませんでした。")
+            # 2. 字幕を取得
+            try:
+                transcript_list = await asyncio.to_thread(
+                    YouTubeTranscriptApi().fetch(video_id, languages=['ja', 'en'])
+                )
+                transcript_text = " ".join([item.text for item in transcript_list])
+                if not transcript_text.strip():
+                    raise NoTranscriptFound(video_id=video_id)
+            except (TranscriptsDisabled, NoTranscriptFound):
+                logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
+                if isinstance(message, discord.Message): await message.add_reaction("🔇")
+                return
+            except Exception as e:
+                logging.error(f"字幕取得中に予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
+                if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
             
+            # 3. AIで2種類の要約を並列生成
             model = genai.GenerativeModel("gemini-2.5-pro")
             concise_prompt = f"以下のYouTube動画の文字起こしを、重要ポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
             detail_prompt = f"以下のYouTube動画の文字起こしを、その内容を網羅するように詳細にまとめてください。\n\n{transcript_text}"
@@ -163,6 +135,7 @@ class YouTubeCog(commands.Cog):
             concise_summary = responses[0].text
             detail_summary = responses[1].text
             
+            # 4. Dropboxにノートを保存 & デイリーノートを更新
             now = datetime.datetime.now(JST)
             daily_note_date = now.strftime('%Y-%m-%d')
             timestamp = now.strftime('%Y%m%d%H%M%S')
@@ -189,9 +162,11 @@ class YouTubeCog(commands.Cog):
                 app_key=self.dropbox_app_key,
                 app_secret=self.dropbox_app_secret
             ) as dbx:
+                # 1. 要約ノート本体を保存
                 note_path = f"{self.dropbox_vault_path}/YouTube/{note_filename}"
                 dbx.files_upload(note_content.encode('utf-8'), note_path, mode=WriteMode('add'))
                 
+                # 2. デイリーノートにリンクを追記
                 daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
                 try:
                     _, res = dbx.files_download(daily_note_path)
@@ -201,42 +176,17 @@ class YouTubeCog(commands.Cog):
                         daily_note_content = ""
                     else: raise
 
-                link_to_add = f"- [[{note_filename_for_link}]]"
-                youtube_heading = "## YouTube Summaries"
+                link_to_add = f"- [[YouTube/{note_filename_for_link}]]" # リンクパスを修正
+                youtube_heading = "\n## 📺 YouTube Summaries"
 
                 if youtube_heading in daily_note_content:
                     daily_note_content = daily_note_content.replace(youtube_heading, f"{youtube_heading}\n{link_to_add}")
-                elif "## WebClips" in daily_note_content:
-                    lines = daily_note_content.split('\n')
-                    webclips_end_index = -1
-                    in_webclips_section = False
-                    for i, line in enumerate(lines):
-                        if line.strip() == "## WebClips": in_webclips_section = True
-                        elif in_webclips_section and line.strip().startswith('## '):
-                            webclips_end_index = i
-                            break
-                    if webclips_end_index == -1: webclips_end_index = len(lines)
-                    new_section = f"\n{youtube_heading}\n{link_to_add}"
-                    lines.insert(webclips_end_index, new_section)
-                    daily_note_content = "\n".join(lines)
                 else:
-                    new_section = f"{youtube_heading}\n{link_to_add}\n"
-                    daily_note_content = (new_section + "\n" + daily_note_content) if daily_note_content.strip() else new_section
+                    daily_note_content += f"\n{youtube_heading}\n{link_to_add}\n"
                 
                 dbx.files_upload(daily_note_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
 
-            embed = discord.Embed(
-                title=f"YouTube要約",
-                description=f"**[{video_info.get('title', 'No Title')}]({url})**",
-                color=discord.Color.red()
-            )
-            embed.add_field(name="要点まとめ", value=concise_summary, inline=False)
-            
-            if isinstance(message, discord.InteractionMessage):
-                await message.edit(content=None, embed=embed)
-            else:
-                await message.channel.send(embed=embed)
-
+            # 5. Discordに完了リアクションを投稿
             if isinstance(message, discord.Message):
                 await message.add_reaction("✅")
 
@@ -248,44 +198,34 @@ class YouTubeCog(commands.Cog):
 
         finally:
             if isinstance(message, discord.Message):
-                try:
-                    await message.remove_reaction("⏳", self.bot.user)
-                except discord.errors.NotFound:
-                    pass # リアクションが既になければ何もしない
+                await message.remove_reaction("⏳", self.bot.user)
 
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot or message.channel.id != self.youtube_summary_channel_id:
-            return
-        
-        if YOUTUBE_URL_REGEX.search(message.content):
-            url = message.content.strip()
-            await self._perform_summary(url=url, message=message)
-
-    @app_commands.command(name="yt_summary", description="YouTube動画のURLを要約してObsidianに保存します。")
+    @app_commands.command(name="yt_summary", description="[手動] YouTube動画のURLを要約してObsidianに保存します。")
     @app_commands.describe(url="要約したいYouTube動画のURL")
     async def yt_summary(self, interaction: discord.Interaction, url: str):
-        if not self.google_creds_available or not self.gemini_api_key:
-            await interaction.response.send_message("⚠️ APIキーまたは認証情報が設定されていません。", ephemeral=True)
+        """手動でYouTube要約を実行するスラッシュコマンド"""
+        if not self.gemini_api_key:
+            await interaction.response.send_message("⚠️ Gemini APIキーが設定されていません。", ephemeral=True)
             return
 
-        await interaction.response.send_message("⏳ YouTubeの要約を作成中です...", ephemeral=False)
+        await interaction.response.send_message("⏳ 手動でYouTubeの要約を作成中です...", ephemeral=False)
         message = await interaction.original_response()
         await self._perform_summary(url=url, message=message)
 
     async def get_video_info(self, video_id: str) -> dict:
         """oEmbedを使って動画のタイトルやチャンネル名を取得する"""
+        url = f"https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v={video_id}&format=json"
         try:
-            if not hasattr(self.bot, 'session') or self.bot.session.closed:
-                 self.bot.session = aiohttp.ClientSession()
-
-            async with self.bot.session.get(f"https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v={video_id}&format=json") as response:
+            async with self.session.get(url) as response:
                 if response.status == 200:
                     data = await response.json()
                     return {"title": data.get("title"), "author_name": data.get("author_name")}
+                else:
+                    logging.warning(f"oEmbedでの動画情報取得に失敗: Status {response.status}")
         except Exception as e:
-            logging.warning(f"oEmbedでの動画情報取得に失敗: {e}")
+            logging.warning(f"oEmbedへのリクエスト中にエラー: {e}")
         return {"title": f"YouTube-{video_id}", "author_name": "N/A"}
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(YouTubeCog(bot))

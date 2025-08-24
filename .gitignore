@@ -5,3 +5,6 @@ last_message_id.txt
 # Secret file
 .env
 client_secret.json
+
+# local
+local_worker.py
