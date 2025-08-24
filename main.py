@@ -1,11 +1,13 @@
 import os
 import asyncio
 import logging
+from pathlib import Path
+from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-import dropbox
 from obsidian_handler import add_memo_async
+import dropbox
 
 # --- 1. 設定読み込み ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -61,7 +63,8 @@ class MyBot(commands.Bot):
 
         logging.info("すべての起動時処理が完了しました。")
         # すべてのバッチ処理が終わったらボットを終了させる
-        await self.close()
+        # Renderで24時間稼働させる場合はこの行をコメントアウトしてください
+        # await self.close()
 
 
     async def process_offline_memos(self):
@@ -132,8 +135,6 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # bot.run()は内部でasyncio.run()を呼び出すため、二重呼び出しを避ける
-        # asyncio.run()を使う場合はbot.start()と組み合わせる
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("プログラムが強制終了されました。")
