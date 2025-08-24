@@ -17,6 +17,41 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
 
+# --- ご提示いただいた、新旧両対応の字幕テキスト抽出ヘルパー関数 ---
+def extract_transcript_text(fetched_transcript):
+    """
+    youtube-transcript-api の v0.x系 (辞書のリスト) と v1系 (オブジェクトのリスト)
+    の両方の戻り値に対応し、字幕テキストを結合した単一の文字列を返す。
+    """
+    texts = []
+    # イテラブルなオブジェクトかチェック
+    try:
+        for item in fetched_transcript:
+            # itemが .text 属性を持つオブジェクトの場合 (v1系)
+            if hasattr(item, 'text'):
+                texts.append(getattr(item, 'text', ''))
+            # itemが 'text' をキーに持つ辞書の場合 (v0.x系)
+            elif isinstance(item, dict):
+                texts.append(item.get('text', ''))
+            else:
+                texts.append(str(item))
+        return " ".join(t.strip() for t in texts if t)
+    except TypeError:
+        logging.error("字幕データの形式が予期せぬものです。")
+        return "" # エラー時は空文字列を返す
+
+def fetch_transcript_sync(video_id: str):
+    """
+    youtube-transcript-apiを使って字幕データを取得する同期関数
+    v1系では list_transcripts -> find_transcript -> fetch の流れが推奨
+    """
+    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+    # manually_created もしくは generated の字幕を探す
+    transcript = transcript_list.find_transcript(['ja', 'en'])
+    # データを辞書のリストとして取得
+    return transcript.fetch()
+
+
 class YouTubeCog(commands.Cog):
     """YouTube動画の文字起こしを取得し、要約してObsidianに保存するCog"""
 
@@ -38,25 +73,24 @@ class YouTubeCog(commands.Cog):
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
         try:
-            # リアクションで処理中を示す
             if isinstance(message, discord.Message):
                 await message.add_reaction("⏳")
 
-            # 1. URLから動画IDを抽出
             video_id_match = YOUTUBE_URL_REGEX.search(url)
             if not video_id_match:
                 if isinstance(message, discord.Message): await message.add_reaction("❓")
-                return # URLでない場合は何もしない
+                return
             video_id = video_id_match.group(1)
 
             # 2. 字幕を取得
             try:
-                # クラスをインスタンス化してからメソッドを呼び出す
-                transcript_list = await asyncio.to_thread(
-                    YouTubeTranscriptApi().get_transcript, video_id, languages=['ja', 'en']
-                )
-                transcript_text = " ".join([item["text"] for item in transcript_list])
-                if not transcript_text.strip():
+                # 新しいAPI仕様で字幕データを取得
+                fetched_transcript_data = await asyncio.to_thread(fetch_transcript_sync, video_id)
+                
+                # 新旧両対応のヘルパー関数で安全にテキスト化
+                transcript_text = extract_transcript_text(fetched_transcript_data)
+
+                if not transcript_text:
                     raise NoTranscriptFound(video_id)
             except (TranscriptsDisabled, NoTranscriptFound):
                 logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
@@ -68,7 +102,7 @@ class YouTubeCog(commands.Cog):
                 return
             
             # 3. AIで2種類の要約を並列生成
-            model = genai.GenerativeModel("gemini-2.5-pro")
+            model = genai.GenerativeModel("gemini-1.5-pro-latest")
             concise_prompt = f"以下のYouTube動画の文字起こしを、重要ポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
             detail_prompt = f"以下のYouTube動画の文字起こしを、その内容を網羅するように詳細にまとめてください。\n\n{transcript_text}"
             
@@ -174,15 +208,16 @@ class YouTubeCog(commands.Cog):
 
         finally:
             if isinstance(message, discord.Message):
-                await message.remove_reaction("⏳", self.bot.user)
+                try:
+                    await message.remove_reaction("⏳", self.bot.user)
+                except discord.errors.NotFound:
+                    pass
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """チャンネルへのURL投稿を監視して自動で要約を実行する"""
         if message.author.bot or message.channel.id != self.youtube_summary_channel_id:
             return
         
-        # メッセージにURLが含まれているかチェック
         if YOUTUBE_URL_REGEX.search(message.content):
             url = message.content.strip()
             await self._perform_summary(url=url, message=message)
@@ -190,7 +225,6 @@ class YouTubeCog(commands.Cog):
     @app_commands.command(name="yt_summary", description="YouTube動画のURLを要約してObsidianに保存します。")
     @app_commands.describe(url="要約したいYouTube動画のURL")
     async def yt_summary(self, interaction: discord.Interaction, url: str):
-        """手動でYouTube要約を実行するスラッシュコマンド"""
         if not self.gemini_api_key:
             await interaction.response.send_message("⚠️ Gemini APIキーが設定されていません。", ephemeral=True)
             return
@@ -200,7 +234,6 @@ class YouTubeCog(commands.Cog):
         await self._perform_summary(url=url, message=message)
 
     async def get_video_info(self, video_id: str) -> dict:
-        """oEmbedを使って動画のタイトルやチャンネル名を取得する"""
         try:
             if not hasattr(self.bot, 'session'):
                 self.bot.session = discord.ClientSession()
