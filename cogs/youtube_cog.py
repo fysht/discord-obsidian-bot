@@ -11,6 +11,7 @@ from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
 import google.generativeai as genai
+import aiohttp
 
 # OAuth2.0認証に必要なライブラリ
 import google.oauth2.credentials
@@ -52,14 +53,13 @@ class YouTubeCog(commands.Cog):
 
     async def _get_transcript_from_api(self, video_id: str) -> str | None:
         """
-        YouTube Data APIを使用して動画の字幕を取得する非同期ラッパー関数 (OAuth 2.0対応)
+        YouTube Data APIを使用して動画の字幕を取得する非同期ラッパー関数 (SRT形式対応)。
         """
         def blocking_io_call():
-            """APIリクエストを行う同期関数"""
+            """APIリクエストを行い、SRTをパースする同期関数"""
             try:
-                # OAuth 2.0の資格情報（Credentials）を作成
                 creds = google.oauth2.credentials.Credentials(
-                    None,  # Access tokenは不要（リフレッシュトークンがあれば自動で取得される）
+                    None,
                     refresh_token=self.google_refresh_token,
                     token_uri='https://oauth2.googleapis.com/token',
                     client_id=self.google_client_id,
@@ -73,40 +73,48 @@ class YouTubeCog(commands.Cog):
                     credentials=creds
                 )
                 
-                # 1. 動画に利用可能な字幕トラックのリストをリクエスト
                 caption_request = youtube.captions().list(part='snippet', videoId=video_id)
                 caption_response = caption_request.execute()
 
-                # 2. 日本語または英語の字幕トラックを探す
                 target_caption_id = None
                 for item in caption_response.get('items', []):
                     lang = item['snippet']['language']
-                    if lang == 'ja':  # 日本語を最優先
+                    if lang == 'ja':
                         target_caption_id = item['id']
                         break
-                    elif lang == 'en': # 日本語がなければ英語
+                    elif lang == 'en':
                         target_caption_id = item['id']
 
                 if not target_caption_id:
                     logging.warning(f"字幕トラックが見つかりませんでした (Video ID: {video_id})")
                     return None
 
-                # 3. 見つかった字幕トラックIDを使って、実際の字幕データをダウンロード
-                transcript_request = youtube.captions().download(id=target_caption_id, tfmt='plainText')
-                transcript_data = transcript_request.execute()
+                transcript_request = youtube.captions().download(id=target_caption_id, tfmt='srt')
+                transcript_data_srt = transcript_request.execute()
+
+                if isinstance(transcript_data_srt, bytes):
+                    transcript_data_srt = transcript_data_srt.decode('utf-8')
                 
-                if isinstance(transcript_data, bytes):
-                    return transcript_data.decode('utf-8')
-                return transcript_data
+                lines = transcript_data_srt.splitlines()
+                text_lines = []
+                for line in lines:
+                    if '-->' in line or line.strip().isdigit():
+                        continue
+                    text_lines.append(line.strip())
+                
+                clean_text = " ".join(filter(None, text_lines))
+                return clean_text
 
             except HttpError as e:
-                logging.error(f"YouTube APIエラー (Video ID: {video_id}): {e}")
+                if e.resp.status == 400 and 'couldNotConvert' in str(e.content):
+                    logging.warning(f"字幕フォーマット変換に失敗 (Video ID: {video_id}): {e}")
+                else:
+                    logging.error(f"YouTube APIエラー (Video ID: {video_id}): {e}")
                 return None
             except Exception as e:
                 logging.error(f"YouTube API処理中の予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
                 return None
 
-        # 同期関数を非同期で実行し、Botのメインループをブロックしないようにする
         return await asyncio.to_thread(blocking_io_call)
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
@@ -240,11 +248,10 @@ class YouTubeCog(commands.Cog):
 
         finally:
             if isinstance(message, discord.Message):
-                # リアクションが既に追加されているか確認してから削除
-                # これにより、リアクションが見つからないエラーを防ぐ
-                cache_message = discord.utils.get(self.bot.cached_messages, id=message.id)
-                if cache_message and "⏳" in [str(r.emoji) for r in cache_message.reactions]:
+                try:
                     await message.remove_reaction("⏳", self.bot.user)
+                except discord.errors.NotFound:
+                    pass # リアクションが既になければ何もしない
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -270,7 +277,6 @@ class YouTubeCog(commands.Cog):
         """oEmbedを使って動画のタイトルやチャンネル名を取得する"""
         try:
             if not hasattr(self.bot, 'session') or self.bot.session.closed:
-                 import aiohttp
                  self.bot.session = aiohttp.ClientSession()
 
             async with self.bot.session.get(f"https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v={video_id}&format=json") as response:
