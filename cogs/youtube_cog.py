@@ -64,7 +64,7 @@ class YouTubeCog(commands.Cog):
                     token_uri='https://oauth2.googleapis.com/token',
                     client_id=self.google_client_id,
                     client_secret=self.google_client_secret,
-                    scopes=['https://www.googleapis.com/auth/youtube.readonly']
+                    scopes=['https://www.googleapis.com/auth/youtube.force-ssl']
                 )
 
                 youtube = build(
