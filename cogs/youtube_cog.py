@@ -17,39 +17,12 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
 
-# --- ご提示いただいた、新旧両対応の字幕テキスト抽出ヘルパー関数 ---
-def extract_transcript_text(fetched_transcript):
-    """
-    youtube-transcript-api の v0.x系 (辞書のリスト) と v1系 (オブジェクトのリスト)
-    の両方の戻り値に対応し、字幕テキストを結合した単一の文字列を返す。
-    """
-    texts = []
-    # イテラブルなオブジェクトかチェック
-    try:
-        for item in fetched_transcript:
-            # itemが .text 属性を持つオブジェクトの場合 (v1系)
-            if hasattr(item, 'text'):
-                texts.append(getattr(item, 'text', ''))
-            # itemが 'text' をキーに持つ辞書の場合 (v0.x系)
-            elif isinstance(item, dict):
-                texts.append(item.get('text', ''))
-            else:
-                texts.append(str(item))
-        return " ".join(t.strip() for t in texts if t)
-    except TypeError:
-        logging.error("字幕データの形式が予期せぬものです。")
-        return "" # エラー時は空文字列を返す
-
+#  `get_transcript` を使用する同期関数
 def fetch_transcript_sync(video_id: str):
     """
     youtube-transcript-apiを使って字幕データを取得する同期関数
-    v1系では list_transcripts -> find_transcript -> fetch の流れが推奨
     """
-    transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-    # manually_created もしくは generated の字幕を探す
-    transcript = transcript_list.find_transcript(['ja', 'en'])
-    # データを辞書のリストとして取得
-    return transcript.fetch()
+    return YouTubeTranscriptApi().get_transcript(video_id, languages=['ja', 'en'])
 
 
 class YouTubeCog(commands.Cog):
@@ -84,13 +57,13 @@ class YouTubeCog(commands.Cog):
 
             # 2. 字幕を取得
             try:
-                # 新しいAPI仕様で字幕データを取得
-                fetched_transcript_data = await asyncio.to_thread(fetch_transcript_sync, video_id)
+                # 動作実績のある fetch_transcript_sync を呼び出す
+                transcript_list = await asyncio.to_thread(fetch_transcript_sync, video_id)
                 
-                # 新旧両対応のヘルパー関数で安全にテキスト化
-                transcript_text = extract_transcript_text(fetched_transcript_data)
+                # item.text でテキストを抽出する
+                transcript_text = " ".join([item['text'] for item in transcript_list])
 
-                if not transcript_text:
+                if not transcript_text.strip():
                     raise NoTranscriptFound(video_id)
             except (TranscriptsDisabled, NoTranscriptFound):
                 logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
@@ -101,7 +74,7 @@ class YouTubeCog(commands.Cog):
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
             
-            # 3. AIで2種類の要約を並列生成
+            # 3. AIで2種類の要約を並列生成 (モデル名は安定版の gemini-1.5-pro-latest を使用)
             model = genai.GenerativeModel("gemini-1.5-pro-latest")
             concise_prompt = f"以下のYouTube動画の文字起こしを、重要ポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
             detail_prompt = f"以下のYouTube動画の文字起こしを、その内容を網羅するように詳細にまとめてください。\n\n{transcript_text}"
