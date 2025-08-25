@@ -39,7 +39,6 @@ class YouTubeCog(commands.Cog):
     async def cog_unload(self):
         await self.session.close()
 
-    # 新旧APIのどちらの形式にも対応できる、より安全なテキスト抽出処理
     def _extract_transcript_text(self, fetched_transcript) -> str:
         """
         youtube-transcript-api v1.x系で返されるオブジェクトのリストから
@@ -75,7 +74,6 @@ class YouTubeCog(commands.Cog):
         
         pending_messages = []
         async for message in channel.history(limit=200):
-            # (ロジックは変更なし)
             has_pending_reaction = any(r.emoji == '📥' for r in message.reactions)
             if has_pending_reaction:
                 is_processed = any(r.emoji in ('✅', '❌') and r.me for r in message.reactions)
@@ -133,23 +131,29 @@ class YouTubeCog(commands.Cog):
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
 
-            model = genai.GenerativeModel("gemini-2.5-pro") 
-            concise_prompt = f"以下のYouTube動画の文字起こしを、重要ポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
+            # --- Gemini要約、Dropbox保存処理 ---
+            model = genai.GenerativeModel("gemini-2.5-pro")
             detail_prompt = f"以下のYouTube動画の文字起こしを、その内容を網羅するように詳細にまとめてください。\n\n{transcript_text}"
             
-            concise_task = model.generate_content_async(concise_prompt)
-            detail_task = model.generate_content_async(detail_prompt)
+            # 詳細な要約のみをリクエスト
+            try:
+                detail_response = await model.generate_content_async(detail_prompt)
+                detail_summary = detail_response.text
             
-            responses = await asyncio.gather(concise_task, detail_task, return_exceptions=True)
+            # API呼び出し自体で例外が発生した場合
+            except Exception as e:
+                # ValueErrorは.textアクセスの問題、それ以外はAPI呼び出し自体の問題
+                if isinstance(e, ValueError):
+                    logging.error(f"Gemini APIが詳細な要約を生成できませんでした。Finish reason: {detail_response.candidates[0].finish_reason if 'detail_response' in locals() else 'N/A'}", exc_info=True)
+                else:
+                    logging.error(f"Gemini APIによる要約生成中にエラーが発生: {e}", exc_info=True)
 
-            if isinstance(responses[0], Exception) or isinstance(responses[1], Exception):
-                logging.error(f"Gemini APIによる要約生成に失敗: {responses}")
-                if isinstance(message, discord.Message): await message.add_reaction("❌")
+                if isinstance(message, discord.Message):
+                    await message.add_reaction("❌")
+                elif isinstance(message, discord.InteractionMessage):
+                    await message.edit(content="❌ 要約の生成に失敗しました。理由: Gemini APIが安全上の理由等でコンテンツを返さなかったか、APIエラーが発生しました。")
                 return
-                
-            concise_summary = responses[0].text
-            detail_summary = responses[1].text
-            
+
             now = datetime.datetime.now(JST)
             daily_note_date = now.strftime('%Y-%m-%d')
             timestamp = now.strftime('%Y%m%d%H%M%S')
@@ -159,6 +163,7 @@ class YouTubeCog(commands.Cog):
             note_filename = f"{timestamp}-{safe_title}.md"
             note_filename_for_link = note_filename.replace('.md', '')
             
+            # ノートの内容から「簡潔な要約」を削除
             note_content = (
                 f"# {video_info.get('title', 'No Title')}\n\n"
                 f"- **URL:** <{url}>\n"
@@ -166,7 +171,6 @@ class YouTubeCog(commands.Cog):
                 f"- **作成日:** {daily_note_date}\n\n"
                 f"[[{daily_note_date}]]\n\n"
                 f"---\n\n"
-                f"## 簡潔な要約（要点）\n{concise_summary}\n\n"
                 f"## 詳細な要約\n{detail_summary}\n"
             )
 
@@ -204,7 +208,6 @@ class YouTubeCog(commands.Cog):
             logging.error(f"YouTube要約処理全体でエラー: {e}", exc_info=True)
             if isinstance(message, discord.Message): await message.add_reaction("❌")
             elif isinstance(message, discord.InteractionMessage):
-                # interactionの場合はeditでエラーメッセージを返す
                 await message.edit(content=f"❌ エラーが発生しました: `{e}`")
         finally:
             if isinstance(message, discord.Message):
