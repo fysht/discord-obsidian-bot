@@ -12,7 +12,6 @@ import datetime
 import zoneinfo
 import aiohttp
 import google.generativeai as genai
-# ライブラリ名を修正
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 # --- 定数定義 ---
@@ -41,6 +40,33 @@ class YouTubeCog(commands.Cog):
     async def cog_unload(self):
         await self.session.close()
 
+    def _extract_transcript_text(self, fetched_data):
+        """
+        youtube-transcript-apiのfetch結果からテキストを抽出するヘルパー関数
+        v1系のオブジェクト形式と古い辞書リスト形式の両方に対応
+        """
+        texts = []
+        # イテラブルなオブジェクトかチェック
+        try:
+            for snippet in fetched_data:
+                if isinstance(snippet, dict):
+                    texts.append(snippet.get('text', ''))
+                elif hasattr(snippet, 'text'):
+                    texts.append(getattr(snippet, 'text', ''))
+                else:
+                    texts.append(str(snippet))
+            return " ".join(t.strip() for t in texts if t and t.strip())
+        except TypeError:
+            # イテラブルでない場合、listかチェック
+            if isinstance(fetched_data, list):
+                for item in fetched_data:
+                     if isinstance(item, dict):
+                        texts.append(item.get('text', ''))
+                return " ".join(t.strip() for t in texts if t and t.strip())
+        
+        logging.warning(f"予期せぬ字幕データ形式のため、テキスト抽出に失敗しました: {type(fetched_data)}")
+        return ""
+
     async def process_pending_summaries(self):
         """チャンネル履歴を遡り、未処理の要約リクエストをすべて処理する"""
         channel = self.bot.get_channel(self.youtube_summary_channel_id)
@@ -54,7 +80,7 @@ class YouTubeCog(commands.Cog):
         async for message in channel.history(limit=200):
             has_pending_reaction = any(r.emoji == '📥' for r in message.reactions)
             if has_pending_reaction:
-                is_processed = any(r.emoji in ('✅', '❌') and r.me for r in message.reactions)
+                is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
                 if not is_processed:
                     pending_messages.append(message)
         
@@ -68,7 +94,6 @@ class YouTubeCog(commands.Cog):
             url = message.content.strip()
 
             try:
-                # clear_reactionはボットがメッセージ管理権限を持っている必要がある
                 await message.clear_reaction('📥')
             except discord.Forbidden:
                 logging.warning(f"リアクションの削除権限がありません: {message.jump_url}")
@@ -76,7 +101,7 @@ class YouTubeCog(commands.Cog):
                 logging.error(f"リアクション削除中に予期せぬエラー: {e}")
             
             await self._perform_summary(url=url, message=message)
-            await asyncio.sleep(5)
+            await asyncio.sleep(5) # APIへの負荷を考慮
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
@@ -84,22 +109,19 @@ class YouTubeCog(commands.Cog):
             if isinstance(message, discord.Message):
                 await message.add_reaction("⏳")
 
+            # 1. YouTube動画IDの抽出
             video_id_match = YOUTUBE_URL_REGEX.search(url)
             if not video_id_match:
                 if isinstance(message, discord.Message): await message.add_reaction("❓")
                 return
             video_id = video_id_match.group(1)
 
-            # 2. 字幕を取得
+            # 2. 字幕の取得とエラーハンドリング
             try:
-                # get_transcriptは同期的（ブロッキング）な処理のため、to_threadで実行
-                transcript_list = await asyncio.to_thread(
-                    YouTubeTranscriptApi.get_transcript, video_id, languages=['ja', 'en']
+                # ご希望の fetch() メソッドを、ボットを停止させない asyncio.to_thread で呼び出す
+                fetched = await asyncio.to_thread(
+                    YouTubeTranscriptApi().fetch(video_id, languages=['ja', 'en'])
                 )
-                # get_transcriptは辞書のリストを返す: [{'text': '...', 'start': ..., 'duration': ...}]
-                transcript_text = " ".join([item['text'] for item in transcript_list])
-                if not transcript_text.strip():
-                    raise NoTranscriptFound(video_id=video_id)
             except (TranscriptsDisabled, NoTranscriptFound):
                 logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
                 if isinstance(message, discord.Message): await message.add_reaction("🔇")
@@ -108,9 +130,17 @@ class YouTubeCog(commands.Cog):
                 logging.error(f"字幕取得中に予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
-            
+
+            # 3. 字幕テキストの整形
+            transcript_text = self._extract_transcript_text(fetched)
+            if not transcript_text:
+                logging.warning(f"字幕テキストが空でした (Video ID: {video_id})")
+                if isinstance(message, discord.Message): await message.add_reaction("🔇")
+                return
+
+            # 4. Gemini APIによる要約
             model = genai.GenerativeModel("gemini-2.5-pro")
-            concise_prompt = f"以下のYouTube動画の文字起こしを、重要ポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
+            concise_prompt = f"以下のYouTube動画の文字起こしを、重要なポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
             detail_prompt = f"以下のYouTube動画の文字起こしを、その内容を網羅するように詳細にまとめてください。\n\n{transcript_text}"
             
             concise_task = model.generate_content_async(concise_prompt)
@@ -122,9 +152,10 @@ class YouTubeCog(commands.Cog):
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
 
-            concise_summary = responses[0].text
-            detail_summary = responses[1].text
+            concise_summary = responses[0].text if not isinstance(responses[0], Exception) else "要約の生成に失敗しました。"
+            detail_summary = responses[1].text if not isinstance(responses[1], Exception) else "詳細な要約の生成に失敗しました。"
             
+            # 5. 動画タイトルの取得とファイル保存
             now = datetime.datetime.now(JST)
             daily_note_date = now.strftime('%Y-%m-%d')
             timestamp = now.strftime('%Y%m%d%H%M%S')
@@ -143,7 +174,9 @@ class YouTubeCog(commands.Cog):
                 f"[[{daily_note_date}]]\n\n"
                 f"---\n\n"
                 f"## 簡潔な要約（要点）\n{concise_summary}\n\n"
-                f"## 詳細な要約\n{detail_summary}\n"
+                f"## 詳細な要約\n{detail_summary}\n\n"
+                f"---\n\n"
+                f"## 字幕（抜粋）\n{transcript_text[:4000]}..."
             )
 
             with dropbox.Dropbox(
@@ -184,7 +217,10 @@ class YouTubeCog(commands.Cog):
 
         finally:
             if isinstance(message, discord.Message):
-                await message.remove_reaction("⏳", self.bot.user)
+                try:
+                    await message.remove_reaction("⏳", self.bot.user)
+                except discord.NotFound:
+                    pass # すでにメッセージが消されている場合など
 
     @app_commands.command(name="yt_summary", description="[手動] YouTube動画のURLを要約してObsidianに保存します。")
     @app_commands.describe(url="要約したいYouTube動画のURL")
