@@ -44,7 +44,7 @@ class YouTubeCog(commands.Cog):
     def _extract_transcript_text(self, fetched_data):
         """
         youtube-transcript-apiのfetch結果からテキストを抽出するヘルパー関数
-        v1系のオブジェクト形式と古い辞書リスト形式の両方に対応
+        v1系のオブジェクト形式と古い辞書リスト形式の両方に対応する
         """
         texts = []
         try:
@@ -115,7 +115,7 @@ class YouTubeCog(commands.Cog):
             try:
                 # to_threadには、関数と引数を別々に渡す
                 fetched = await asyncio.to_thread(
-                    YouTubeTranscriptApi().fetch, video_id, languages=['ja', 'en']
+                    YouTubeTranscriptApi().fetch(video_id, languages=['ja', 'en'])
                 )
             except (TranscriptsDisabled, NoTranscriptFound):
                 logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
