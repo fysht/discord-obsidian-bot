@@ -12,6 +12,7 @@ import datetime
 import zoneinfo
 import aiohttp
 import google.generativeai as genai
+# ライブラリ名を修正
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
 # --- 定数定義 ---
@@ -34,34 +35,11 @@ class YouTubeCog(commands.Cog):
             logging.warning("YouTubeCog: GEMINI_API_KEYが設定されていません。")
         else:
             genai.configure(api_key=self.gemini_api_key)
+        
         self.session = aiohttp.ClientSession()
 
     async def cog_unload(self):
         await self.session.close()
-
-    def _extract_transcript_text(self, fetched_transcript) -> str:
-        """
-        youtube-transcript-api v1.x系で返されるオブジェクトのリストから
-        安全にテキスト部分のみを抽出して結合する
-        """
-        texts = []
-        if not fetched_transcript:
-            return ""
-        
-        # イテラブルなオブジェクトであることを期待して処理
-        try:
-            for snippet in fetched_transcript:
-                # オブジェクトに .text 属性があればそれを使い、なければ辞書としてアクセスを試みる
-                if hasattr(snippet, 'text'):
-                    texts.append(getattr(snippet, 'text', ''))
-                elif isinstance(snippet, dict):
-                    texts.append(snippet.get('text', ''))
-            
-            return " ".join(t.strip() for t in texts if t)
-        except TypeError as e:
-            logging.error(f"字幕データの処理中にエラーが発生しました: {e}")
-            return ""
-
 
     async def process_pending_summaries(self):
         """チャンネル履歴を遡り、未処理の要約リクエストをすべて処理する"""
@@ -90,6 +68,7 @@ class YouTubeCog(commands.Cog):
             url = message.content.strip()
 
             try:
+                # clear_reactionはボットがメッセージ管理権限を持っている必要がある
                 await message.clear_reaction('📥')
             except discord.Forbidden:
                 logging.warning(f"リアクションの削除権限がありません: {message.jump_url}")
@@ -111,17 +90,16 @@ class YouTubeCog(commands.Cog):
                 return
             video_id = video_id_match.group(1)
 
+            # 2. 字幕を取得
             try:
+                # get_transcriptは同期的（ブロッキング）な処理のため、to_threadで実行
                 transcript_list = await asyncio.to_thread(
-                    lambda: YouTubeTranscriptApi().fetch(video_id, languages=['ja', 'en'])
+                    YouTubeTranscriptApi.get_transcript, video_id, languages=['ja', 'en']
                 )
-                
-                transcript_text = self._extract_transcript_text(transcript_list)
-                
+                # get_transcriptは辞書のリストを返す: [{'text': '...', 'start': ..., 'duration': ...}]
+                transcript_text = " ".join([item['text'] for item in transcript_list])
                 if not transcript_text.strip():
-                    # テキストが空の場合もNoTranscriptFoundとして扱う
                     raise NoTranscriptFound(video_id=video_id)
-                    
             except (TranscriptsDisabled, NoTranscriptFound):
                 logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
                 if isinstance(message, discord.Message): await message.add_reaction("🔇")
@@ -130,40 +108,33 @@ class YouTubeCog(commands.Cog):
                 logging.error(f"字幕取得中に予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
-
-            # --- Gemini要約、Dropbox保存処理 ---
+            
             model = genai.GenerativeModel("gemini-2.5-pro")
+            concise_prompt = f"以下のYouTube動画の文字起こしを、重要ポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
             detail_prompt = f"以下のYouTube動画の文字起こしを、その内容を網羅するように詳細にまとめてください。\n\n{transcript_text}"
             
-            # 詳細な要約のみをリクエスト
-            try:
-                detail_response = await model.generate_content_async(detail_prompt)
-                detail_summary = detail_response.text
-            
-            # API呼び出し自体で例外が発生した場合
-            except Exception as e:
-                # ValueErrorは.textアクセスの問題、それ以外はAPI呼び出し自体の問題
-                if isinstance(e, ValueError):
-                    logging.error(f"Gemini APIが詳細な要約を生成できませんでした。Finish reason: {detail_response.candidates[0].finish_reason if 'detail_response' in locals() else 'N/A'}", exc_info=True)
-                else:
-                    logging.error(f"Gemini APIによる要約生成中にエラーが発生: {e}", exc_info=True)
+            concise_task = model.generate_content_async(concise_prompt)
+            detail_task = model.generate_content_async(detail_prompt)
+            responses = await asyncio.gather(concise_task, detail_task, return_exceptions=True)
 
-                if isinstance(message, discord.Message):
-                    await message.add_reaction("❌")
-                elif isinstance(message, discord.InteractionMessage):
-                    await message.edit(content="❌ 要約の生成に失敗しました。理由: Gemini APIが安全上の理由等でコンテンツを返さなかったか、APIエラーが発生しました。")
+            if isinstance(responses[0], Exception) or isinstance(responses[1], Exception):
+                logging.error(f"Gemini APIによる要約生成に失敗: {responses}")
+                if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
 
+            concise_summary = responses[0].text
+            detail_summary = responses[1].text
+            
             now = datetime.datetime.now(JST)
             daily_note_date = now.strftime('%Y-%m-%d')
             timestamp = now.strftime('%Y%m%d%H%M%S')
-            
+
             video_info = await self.get_video_info(video_id)
             safe_title = re.sub(r'[\\/*?:"<>|]', "", video_info.get("title", "No Title"))
+            
             note_filename = f"{timestamp}-{safe_title}.md"
             note_filename_for_link = note_filename.replace('.md', '')
-            
-            # ノートの内容から「簡潔な要約」を削除
+
             note_content = (
                 f"# {video_info.get('title', 'No Title')}\n\n"
                 f"- **URL:** <{url}>\n"
@@ -171,6 +142,7 @@ class YouTubeCog(commands.Cog):
                 f"- **作成日:** {daily_note_date}\n\n"
                 f"[[{daily_note_date}]]\n\n"
                 f"---\n\n"
+                f"## 簡潔な要約（要点）\n{concise_summary}\n\n"
                 f"## 詳細な要約\n{detail_summary}\n"
             )
 
@@ -193,7 +165,7 @@ class YouTubeCog(commands.Cog):
 
                 link_to_add = f"- [[YouTube/{note_filename_for_link}]]"
                 youtube_heading = "\n## 📺 YouTube Summaries"
-                
+
                 if youtube_heading in daily_note_content:
                     daily_note_content = daily_note_content.replace(youtube_heading, f"{youtube_heading}\n{link_to_add}")
                 else:
@@ -203,31 +175,29 @@ class YouTubeCog(commands.Cog):
 
             if isinstance(message, discord.Message):
                 await message.add_reaction("✅")
-                
+
         except Exception as e:
             logging.error(f"YouTube要約処理全体でエラー: {e}", exc_info=True)
             if isinstance(message, discord.Message): await message.add_reaction("❌")
             elif isinstance(message, discord.InteractionMessage):
                 await message.edit(content=f"❌ エラーが発生しました: `{e}`")
+
         finally:
             if isinstance(message, discord.Message):
-                # ⏳リアクションを消す
                 await message.remove_reaction("⏳", self.bot.user)
 
     @app_commands.command(name="yt_summary", description="[手動] YouTube動画のURLを要約してObsidianに保存します。")
     @app_commands.describe(url="要約したいYouTube動画のURL")
     async def yt_summary(self, interaction: discord.Interaction, url: str):
-        """手動でYouTube要約を実行するスラッシュコマンド"""
         if not self.gemini_api_key:
             await interaction.response.send_message("⚠️ Gemini APIキーが設定されていません。", ephemeral=True)
             return
-            
+
         await interaction.response.send_message("⏳ 手動でYouTubeの要約を作成中です...", ephemeral=False)
         message = await interaction.original_response()
         await self._perform_summary(url=url, message=message)
 
     async def get_video_info(self, video_id: str) -> dict:
-        """oEmbedを使って動画のタイトルやチャンネル名を取得する"""
         url = f"https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v={video_id}&format=json"
         try:
             async with self.session.get(url) as response:
