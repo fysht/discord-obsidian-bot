@@ -38,6 +38,7 @@ class YouTubeCog(commands.Cog):
         self.session = aiohttp.ClientSession()
 
     async def cog_unload(self):
+        # Bot終了時にセッションを閉じる
         await self.session.close()
 
     def _extract_transcript_text(self, fetched_data):
@@ -46,7 +47,6 @@ class YouTubeCog(commands.Cog):
         v1系のオブジェクト形式と古い辞書リスト形式の両方に対応
         """
         texts = []
-        # イテラブルなオブジェクトかチェック
         try:
             for snippet in fetched_data:
                 if isinstance(snippet, dict):
@@ -57,7 +57,6 @@ class YouTubeCog(commands.Cog):
                     texts.append(str(snippet))
             return " ".join(t.strip() for t in texts if t and t.strip())
         except TypeError:
-            # イテラブルでない場合、listかチェック
             if isinstance(fetched_data, list):
                 for item in fetched_data:
                      if isinstance(item, dict):
@@ -95,13 +94,11 @@ class YouTubeCog(commands.Cog):
 
             try:
                 await message.clear_reaction('📥')
-            except discord.Forbidden:
-                logging.warning(f"リアクションの削除権限がありません: {message.jump_url}")
-            except Exception as e:
-                logging.error(f"リアクション削除中に予期せぬエラー: {e}")
+            except (discord.Forbidden, discord.NotFound):
+                logging.warning(f"リアクションの削除に失敗しました: {message.jump_url}")
             
             await self._perform_summary(url=url, message=message)
-            await asyncio.sleep(5) # APIへの負荷を考慮
+            await asyncio.sleep(5)
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
@@ -109,18 +106,16 @@ class YouTubeCog(commands.Cog):
             if isinstance(message, discord.Message):
                 await message.add_reaction("⏳")
 
-            # 1. YouTube動画IDの抽出
             video_id_match = YOUTUBE_URL_REGEX.search(url)
             if not video_id_match:
                 if isinstance(message, discord.Message): await message.add_reaction("❓")
                 return
             video_id = video_id_match.group(1)
 
-            # 2. 字幕の取得とエラーハンドリング
             try:
-                # ご希望の fetch() メソッドを、ボットを停止させない asyncio.to_thread で呼び出す
+                # to_threadには、関数と引数を別々に渡す
                 fetched = await asyncio.to_thread(
-                    YouTubeTranscriptApi().fetch(video_id, languages=['ja', 'en'])
+                    YouTubeTranscriptApi().fetch, video_id, languages=['ja', 'en']
                 )
             except (TranscriptsDisabled, NoTranscriptFound):
                 logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
@@ -130,15 +125,13 @@ class YouTubeCog(commands.Cog):
                 logging.error(f"字幕取得中に予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
-
-            # 3. 字幕テキストの整形
+            
             transcript_text = self._extract_transcript_text(fetched)
             if not transcript_text:
                 logging.warning(f"字幕テキストが空でした (Video ID: {video_id})")
                 if isinstance(message, discord.Message): await message.add_reaction("🔇")
                 return
-
-            # 4. Gemini APIによる要約
+            
             model = genai.GenerativeModel("gemini-2.5-pro")
             concise_prompt = f"以下のYouTube動画の文字起こしを、重要なポイントを3〜5点で簡潔にまとめてください。\n\n{transcript_text}"
             detail_prompt = f"以下のYouTube動画の文字起こしを、その内容を網羅するように詳細にまとめてください。\n\n{transcript_text}"
@@ -147,15 +140,9 @@ class YouTubeCog(commands.Cog):
             detail_task = model.generate_content_async(detail_prompt)
             responses = await asyncio.gather(concise_task, detail_task, return_exceptions=True)
 
-            if isinstance(responses[0], Exception) or isinstance(responses[1], Exception):
-                logging.error(f"Gemini APIによる要約生成に失敗: {responses}")
-                if isinstance(message, discord.Message): await message.add_reaction("❌")
-                return
-
             concise_summary = responses[0].text if not isinstance(responses[0], Exception) else "要約の生成に失敗しました。"
             detail_summary = responses[1].text if not isinstance(responses[1], Exception) else "詳細な要約の生成に失敗しました。"
             
-            # 5. 動画タイトルの取得とファイル保存
             now = datetime.datetime.now(JST)
             daily_note_date = now.strftime('%Y-%m-%d')
             timestamp = now.strftime('%Y%m%d%H%M%S')
@@ -220,7 +207,7 @@ class YouTubeCog(commands.Cog):
                 try:
                     await message.remove_reaction("⏳", self.bot.user)
                 except discord.NotFound:
-                    pass # すでにメッセージが消されている場合など
+                    pass
 
     @app_commands.command(name="yt_summary", description="[手動] YouTube動画のURLを要約してObsidianに保存します。")
     @app_commands.describe(url="要約したいYouTube動画のURL")
