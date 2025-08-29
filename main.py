@@ -54,14 +54,14 @@ class MyBot(commands.Bot):
     async def on_ready(self):
         """Botの準備が完了したときの処理"""
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
-
+        
         # 1. オフライン中のメモを処理
         await self.process_offline_memos()
+        
+        # 2. 未処理のYouTube要約を処理
+        await self.process_pending_youtube_summaries()
 
-        # 2. 未処理のYouTube要約を処理 (リアクション監視型になったため、この処理は不要)
-        # await self.process_pending_youtube_summaries()
-
-        # logging.info("すべての起動時処理が完了しました。")
+        logging.info("すべての起動時処理が完了しました。")
         # すべてのバッチ処理が終わったらボットを終了させる
         # Renderで24時間稼働させる場合はこの行をコメントアウトしてください
         # await self.close()
@@ -115,18 +115,17 @@ class MyBot(commands.Bot):
         except Exception as e:
             logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}", exc_info=True)
 
-    # リアクション監視型になったため、このメソッドは不要
-    # async def process_pending_youtube_summaries(self):
-    #     """未処理のYouTube要約がないか確認し、処理する"""
-    #     logging.info("未処理のYouTube要約がないか確認します...")
-    #     youtube_cog = self.get_cog('YouTubeCog')
-    #     if youtube_cog:
-    #         try:
-    #             await youtube_cog.process_pending_summaries()
-    #         except Exception as e:
-    #             logging.error(f"YouTube要約の処理中にエラーが発生: {e}", exc_info=True)
-    #     else:
-    #         logging.warning("YouTubeCogがロードされていません。YouTubeの要約処理をスキップします。")
+    async def process_pending_youtube_summaries(self):
+        """未処理のYouTube要約がないか確認し、処理する"""
+        logging.info("未処理のYouTube要約がないか確認します...")
+        youtube_cog = self.get_cog('YouTubeCog')
+        if youtube_cog:
+            try:
+                await youtube_cog.process_pending_summaries()
+            except Exception as e:
+                logging.error(f"YouTube要約の処理中にエラーが発生: {e}", exc_info=True)
+        else:
+            logging.warning("YouTubeCogがロードされていません。YouTubeの要約処理をスキップします。")
 
 
 # --- 3. 起動処理 ---
