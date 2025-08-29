@@ -36,7 +36,7 @@ class YouTubeCog(commands.Cog):
             logging.warning("YouTubeCog: GEMINI_API_KEYが設定されていません。")
         else:
             genai.configure(api_key=self.gemini_api_key)
-        
+
         self.session = aiohttp.ClientSession()
 
     async def cog_unload(self):
@@ -55,7 +55,7 @@ class YouTubeCog(commands.Cog):
         channel = self.bot.get_channel(payload.channel_id)
         if not channel:
             return
-        
+
         try:
             message = await channel.fetch_message(payload.message_id)
         except (discord.NotFound, discord.Forbidden):
@@ -68,7 +68,7 @@ class YouTubeCog(commands.Cog):
             return
 
         logging.info(f"リアクション '{TRIGGER_EMOJI}' を検知しました。要約処理を開始します: {message.jump_url}")
-        
+
         try:
             user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(payload.user_id)
             await message.remove_reaction(payload.emoji, user)
@@ -94,7 +94,7 @@ class YouTubeCog(commands.Cog):
                         if isinstance(item, dict):
                             texts.append(item.get('text', ''))
                 return " ".join(t.strip() for t in texts if t and t.strip())
-        
+
         logging.warning(f"予期せぬ字幕データ形式のため、テキスト抽出に失敗しました: {type(fetched_data)}")
         return ""
 
@@ -106,7 +106,7 @@ class YouTubeCog(commands.Cog):
             return
 
         logging.info(f"チャンネル '{channel.name}' の未処理YouTube要約をスキャンします...")
-        
+
         pending_messages = []
         async for message in channel.history(limit=200):
             # TRIGGER_EMOJI（📥）で判定するように修正
@@ -115,7 +115,7 @@ class YouTubeCog(commands.Cog):
                 is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
                 if not is_processed:
                     pending_messages.append(message)
-        
+
         if not pending_messages:
             logging.info("処理対象の新しいYouTube要約はありませんでした。")
             return
@@ -131,7 +131,7 @@ class YouTubeCog(commands.Cog):
                 await message.clear_reaction(TRIGGER_EMOJI)
             except (discord.Forbidden, discord.NotFound):
                 logging.warning(f"リアクションの削除に失敗しました: {message.jump_url}")
-            
+
             await self._perform_summary(url=url, message=message)
             await asyncio.sleep(5) # 連続処理のための待機
 
@@ -161,27 +161,27 @@ class YouTubeCog(commands.Cog):
                 logging.error(f"字幕取得中に予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
-            
+
             transcript_text = self._extract_transcript_text(fetched)
             if not transcript_text:
                 logging.warning(f"字幕テキストが空でした (Video ID: {video_id})")
                 if isinstance(message, discord.Message): await message.add_reaction("🔇")
                 return
-            
+
             model = genai.GenerativeModel("gemini-2.5-pro")
-            
+
             concise_prompt = (
                 "以下のYouTube動画の文字起こし全文を元に、重要なポイントを3～5点で簡潔にまとめてください。\n"
                 "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
                 f"--- 文字起こし全文 ---\n{transcript_text}"
             )
-            
+
             detail_prompt = (
                 "以下のYouTube動画の文字起こし全文を元に、その内容を網羅する詳細で包括的な要約を作成してください。\n"
                 "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
                 f"--- 文字起こし全文 ---\n{transcript_text}"
             )
-            
+
             tasks = [
                 model.generate_content_async(concise_prompt),
                 model.generate_content_async(detail_prompt)
@@ -197,7 +197,7 @@ class YouTubeCog(commands.Cog):
 
             video_info = await self.get_video_info(video_id)
             safe_title = re.sub(r'[\\/*?:"<>|]', "", video_info.get("title", "No Title"))
-            
+
             note_filename = f"{timestamp}-{safe_title}.md"
             note_filename_for_link = note_filename.replace('.md', '')
 
@@ -220,7 +220,7 @@ class YouTubeCog(commands.Cog):
             ) as dbx:
                 note_path = f"{self.dropbox_vault_path}/YouTube/{note_filename}"
                 dbx.files_upload(note_content.encode('utf-8'), note_path, mode=WriteMode('add'))
-                
+
                 daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
                 try:
                     _, res = dbx.files_download(daily_note_path)
@@ -231,12 +231,35 @@ class YouTubeCog(commands.Cog):
                     else: raise
 
                 link_to_add = f"- [[YouTube/{note_filename_for_link}]]"
-                youtube_heading = "\n## 📺 YouTube Summaries"
+                youtube_heading = "\n## YouTube Summaries"
+                webclips_heading = "## WebClips" # WebClipsセクションのヘッダー
 
-                if youtube_heading in daily_note_content:
-                    daily_note_content = daily_note_content.replace(youtube_heading, f"{youtube_heading}\n{link_to_add}")
-                else:
-                    daily_note_content += f"\n{youtube_heading}\n{link_to_add}\n"
+                lines = daily_note_content.split('\n')
+                
+                try:
+                    # YouTubeセクションが既に存在する場合
+                    heading_index = lines.index(youtube_heading.strip())
+                    insert_index = heading_index + 1
+                    while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or lines[insert_index].strip() == ""):
+                        insert_index += 1
+                    lines.insert(insert_index, link_to_add)
+                except ValueError:
+                    # YouTubeセクションが存在しない場合
+                    new_youtube_section = f"{youtube_heading}\n{link_to_add}"
+                    try:
+                        # WebClipsセクションのインデックスを探す
+                        webclips_heading_index = lines.index(webclips_heading)
+                        # WebClipsセクションの終わり（次のセクションの始まり or ファイルの終わり）を探す
+                        insert_index = webclips_heading_index + 1
+                        while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
+                            insert_index += 1
+                        # WebClipsセクションの直後にYouTubeセクションを挿入
+                        lines.insert(insert_index, new_youtube_section)
+                    except ValueError:
+                        # WebClipsセクションも存在しない場合は、ファイルの末尾に追加
+                        lines.append(new_youtube_section)
+
+                daily_note_content = "\n".join(lines)
                 
                 dbx.files_upload(daily_note_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
 
@@ -246,7 +269,7 @@ class YouTubeCog(commands.Cog):
 
         except Exception as e:
             logging.error(f"YouTube要約処理全体でエラー: {e}", exc_info=True)
-            if isinstance(message, discord.Message): 
+            if isinstance(message, discord.Message):
                 await message.add_reaction("❌")
             elif isinstance(message, discord.InteractionMessage):
                 interaction = getattr(message, 'interaction', None)

@@ -37,16 +37,16 @@ class WebClipCog(commands.Cog):
         """Webクリップのコアロジック"""
         try:
             await message.add_reaction("⏳")
-            
+
             loop = asyncio.get_running_loop()
             title, content_md = await loop.run_in_executor(
                 None, parse_url_with_readability, url
             )
-            
+
             safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
             if not safe_title:
                 safe_title = "Untitled"
-            
+
             now = datetime.datetime.now(JST)
             timestamp = now.strftime('%Y%m%d%H%M%S')
             daily_note_date = now.strftime('%Y-%m-%d')
@@ -61,7 +61,7 @@ class WebClipCog(commands.Cog):
                 f"[[{daily_note_date}]]\n\n"
                 f"{content_md}"
             )
-            
+
             with dropbox.Dropbox(
                 oauth2_refresh_token=self.dropbox_refresh_token,
                 app_key=self.dropbox_app_key,
@@ -76,7 +76,7 @@ class WebClipCog(commands.Cog):
                 logging.info(f"クリップ成功: {webclip_file_path}")
 
                 daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
-                
+
                 try:
                     _, res = dbx.files_download(daily_note_path)
                     daily_note_content = res.content.decode('utf-8')
@@ -110,7 +110,7 @@ class WebClipCog(commands.Cog):
                         daily_note_content = new_section + "\n" + daily_note_content
                     else:
                         daily_note_content = new_section
-                
+
                 dbx.files_upload(
                     daily_note_content.encode('utf-8'),
                     daily_note_path,
@@ -125,7 +125,7 @@ class WebClipCog(commands.Cog):
             await message.add_reaction("❌")
         finally:
             await message.remove_reaction("⏳", self.bot.user)
-    
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.channel.id != self.web_clip_channel_id:
