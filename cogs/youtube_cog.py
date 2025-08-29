@@ -17,8 +17,8 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
-# --- ▼ 要約のトリガーとなる絵文字を定義 ▼ ---
-SUMMARY_TRIGGER_EMOJI = "📝"
+# リアクションとして検知する絵文字
+TRIGGER_EMOJI = '📥'
 
 class YouTubeCog(commands.Cog):
     """YouTube動画の要約とObsidianへの保存を行うCog（ローカル処理担当）"""
@@ -42,6 +42,49 @@ class YouTubeCog(commands.Cog):
     async def cog_unload(self):
         await self.session.close()
 
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        """特定のリアクションが付与された際に動画要約処理を開始するイベントリスナー"""
+        # 監視対象のチャンネルでなければ無視
+        if payload.channel_id != self.youtube_summary_channel_id:
+            return
+
+        # Bot自身のリアクションは無視
+        if payload.user_id == self.bot.user.id:
+            return
+
+        # トリガーとなる絵文字でなければ無視
+        if str(payload.emoji) != TRIGGER_EMOJI:
+            return
+
+        channel = self.bot.get_channel(payload.channel_id)
+        if not channel:
+            return
+        
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except (discord.NotFound, discord.Forbidden):
+            logging.warning(f"メッセージの取得に失敗しました: {payload.message_id}")
+            return
+
+        # 既に処理済みのリアクション（✅, ❌, ⏳）がBotによって付与されているか確認
+        is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
+        if is_processed:
+            logging.info(f"既に処理済みのメッセージのためスキップします: {message.jump_url}")
+            return
+
+        logging.info(f"リアクション '{TRIGGER_EMOJI}' を検知しました。要約処理を開始します: {message.jump_url}")
+        
+        # ユーザーが付与したトリガーリアクションを削除（任意）
+        try:
+            user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(payload.user_id)
+            await message.remove_reaction(payload.emoji, user)
+        except (discord.Forbidden, discord.NotFound):
+            logging.warning(f"ユーザーリアクションの削除に失敗しました: {message.jump_url}")
+
+        # 要約処理を実行
+        await self._perform_summary(url=message.content.strip(), message=message)
+
     def _extract_transcript_text(self, fetched_data):
         texts = []
         try:
@@ -62,36 +105,6 @@ class YouTubeCog(commands.Cog):
         
         logging.warning(f"予期せぬ字幕データ形式のため、テキスト抽出に失敗しました: {type(fetched_data)}")
         return ""
-
-    async def process_pending_summaries(self):
-        channel = self.bot.get_channel(self.youtube_summary_channel_id)
-        if not channel:
-            logging.error(f"YouTubeCog: チャンネルID {self.youtube_summary_channel_id} が見つかりません。")
-            return
-
-        logging.info(f"チャンネル '{channel.name}' の未処理YouTube要約をスキャンします...")
-        
-        pending_messages = []
-        async for message in channel.history(limit=200):
-            # --- ▼ チェックするリアクションを '📝' に変更 ▼ ---
-            has_pending_reaction = any(str(r.emoji) == SUMMARY_TRIGGER_EMOJI for r in message.reactions)
-            
-            if has_pending_reaction:
-                is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
-                if not is_processed:
-                    pending_messages.append(message)
-        
-        if not pending_messages:
-            logging.info(f"処理対象（{SUMMARY_TRIGGER_EMOJI}リアクション付き）の新しいYouTube要約はありませんでした。")
-            return
-
-        logging.info(f"{len(pending_messages)}件の未処理YouTube要約が見つかりました。古いものから順に処理します...")
-        for message in reversed(pending_messages):
-            logging.info(f"処理開始: {message.jump_url}")
-            url = message.content.strip()
-            
-            await self._perform_summary(url=url, message=message)
-            await asyncio.sleep(5)
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
@@ -127,7 +140,7 @@ class YouTubeCog(commands.Cog):
                 return
             
             # --- 有料プラン向けの高速・高品質な要約生成ロジック ---
-            model = genai.GenerativeModel("gemini-2.5-pro")
+            model = genai.GenerativeModel("gemini-2.5-pro") 
             
             concise_prompt = (
                 "以下のYouTube動画の文字起こし全文を元に、重要なポイントを3～5点で簡潔にまとめてください。\n"
@@ -141,7 +154,6 @@ class YouTubeCog(commands.Cog):
                 f"--- 文字起こし全文 ---\n{transcript_text}"
             )
             
-            # 2つの要約生成を同時に（並列で）実行
             tasks = [
                 model.generate_content_async(concise_prompt),
                 model.generate_content_async(detail_prompt)
@@ -150,7 +162,6 @@ class YouTubeCog(commands.Cog):
 
             concise_summary = responses[0].text if not isinstance(responses[0], Exception) and hasattr(responses[0], 'text') else f"Concise summary generation failed: {responses[0]}"
             detail_summary = responses[1].text if not isinstance(responses[1], Exception) and hasattr(responses[1], 'text') else f"Detailed summary generation failed: {responses[1]}"
-            # --- ここまで ---
 
             now = datetime.datetime.now(JST)
             daily_note_date = now.strftime('%Y-%m-%d')
@@ -165,7 +176,7 @@ class YouTubeCog(commands.Cog):
             note_content = (
                 f"# {video_info.get('title', 'No Title')}\n\n"
                 f'<iframe width="560" height="315" src="https://www.youtube.com/embed/{video_id}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>\n\n'
-                f"- **URL:** <{url}>\n"
+                f"- **URL:** {url}\n"
                 f"- **Channel:** {video_info.get('author_name', 'N/A')}\n"
                 f"- **作成日:** {daily_note_date}\n\n"
                 f"[[{daily_note_date}]]\n\n"
@@ -232,7 +243,6 @@ class YouTubeCog(commands.Cog):
         original_response = await interaction.original_response()
         await self._perform_summary(url=url, message=original_response)
         await interaction.followup.send("✅ YouTubeの要約を作成し、保存しました。", ephemeral=True)
-
 
     async def get_video_info(self, video_id: str) -> dict:
         url = f"https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v={video_id}&format=json"
