@@ -17,9 +17,10 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
+SUMMARY_TRIGGER_EMOJI = "📝" # 要約をトリガーする絵文字
 
 class YouTubeCog(commands.Cog):
-    """YouTube動画の要約とObsidianへの保存を行うCog（ローカル処理担当）"""
+    """YouTube動画の要約とObsidianへの保存を行うCog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -34,7 +35,7 @@ class YouTubeCog(commands.Cog):
             logging.warning("YouTubeCog: GEMINI_API_KEYが設定されていません。")
         else:
             genai.configure(api_key=self.gemini_api_key)
-        
+
         self.session = aiohttp.ClientSession()
 
     async def cog_unload(self):
@@ -57,42 +58,35 @@ class YouTubeCog(commands.Cog):
                         if isinstance(item, dict):
                             texts.append(item.get('text', ''))
                 return " ".join(t.strip() for t in texts if t and t.strip())
-        
+
         logging.warning(f"予期せぬ字幕データ形式のため、テキスト抽出に失敗しました: {type(fetched_data)}")
         return ""
 
-    async def process_pending_summaries(self):
-        channel = self.bot.get_channel(self.youtube_summary_channel_id)
-        if not channel:
-            logging.error(f"YouTubeCog: チャンネルID {self.youtube_summary_channel_id} が見つかりません。")
+    @commands.Cog.listener()
+    async def on_reaction_add(self, reaction: discord.Reaction, user: discord.User):
+        """リアクションが付与されたときに要約処理を実行する"""
+        # ボットによるリアクションは無視
+        if user.bot:
+            return
+        # 対象チャンネルでない場合は無視
+        if reaction.message.channel.id != self.youtube_summary_channel_id:
+            return
+        # トリガーとなる絵文字でない場合は無視
+        if str(reaction.emoji) != SUMMARY_TRIGGER_EMOJI:
             return
 
-        logging.info(f"チャンネル '{channel.name}' の未処理YouTube要約をスキャンします...")
-        
-        pending_messages = []
-        async for message in channel.history(limit=200):
-            has_pending_reaction = any(r.emoji == '📥' for r in message.reactions)
-            if has_pending_reaction:
-                is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
-                if not is_processed:
-                    pending_messages.append(message)
-        
-        if not pending_messages:
-            logging.info("処理対象の新しいYouTube要約はありませんでした。")
-            return
+        message = reaction.message
+        url = message.content.strip()
 
-        logging.info(f"{len(pending_messages)}件の未処理YouTube要約が見つかりました。古いものから順に処理します...")
-        for message in reversed(pending_messages):
-            logging.info(f"処理開始: {message.jump_url}")
-            url = message.content.strip()
+        # すでに処理済みの絵文字があれば処理しない
+        for r in message.reactions:
+            if r.me and str(r.emoji) in ('✅', '❌', '⏳'):
+                logging.info(f"すでに処理済みのリアクションがあるためスキップ: {message.jump_url}")
+                return
 
-            try:
-                await message.clear_reaction('📥')
-            except (discord.Forbidden, discord.NotFound):
-                logging.warning(f"リアクションの削除に失敗しました: {message.jump_url}")
-            
-            await self._perform_summary(url=url, message=message)
-            await asyncio.sleep(5)
+        logging.info(f"リアクションを検知し、処理を開始: {message.jump_url}")
+        await self._perform_summary(url=url, message=message)
+
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
@@ -120,28 +114,28 @@ class YouTubeCog(commands.Cog):
                 logging.error(f"字幕取得中に予期せぬエラー (Video ID: {video_id}): {e}", exc_info=True)
                 if isinstance(message, discord.Message): await message.add_reaction("❌")
                 return
-            
+
             transcript_text = self._extract_transcript_text(fetched)
             if not transcript_text:
                 logging.warning(f"字幕テキストが空でした (Video ID: {video_id})")
                 if isinstance(message, discord.Message): await message.add_reaction("🔇")
                 return
-            
+
             # --- 有料プラン向けの高速・高品質な要約生成ロジック ---
             model = genai.GenerativeModel("gemini-2.5-pro")
-            
+
             concise_prompt = (
                 "以下のYouTube動画の文字起こし全文を元に、重要なポイントを3～5点で簡潔にまとめてください。\n"
                 "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
                 f"--- 文字起こし全文 ---\n{transcript_text}"
             )
-            
+
             detail_prompt = (
                 "以下のYouTube動画の文字起こし全文を元に、その内容を網羅する詳細で包括的な要約を作成してください。\n"
                 "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
                 f"--- 文字起こし全文 ---\n{transcript_text}"
             )
-            
+
             # 2つの要約生成を同時に（並列で）実行
             tasks = [
                 model.generate_content_async(concise_prompt),
@@ -159,7 +153,7 @@ class YouTubeCog(commands.Cog):
 
             video_info = await self.get_video_info(video_id)
             safe_title = re.sub(r'[\\/*?:"<>|]', "", video_info.get("title", "No Title"))
-            
+
             note_filename = f"{timestamp}-{safe_title}.md"
             note_filename_for_link = note_filename.replace('.md', '')
 
@@ -182,7 +176,7 @@ class YouTubeCog(commands.Cog):
             ) as dbx:
                 note_path = f"{self.dropbox_vault_path}/YouTube/{note_filename}"
                 dbx.files_upload(note_content.encode('utf-8'), note_path, mode=WriteMode('add'))
-                
+
                 daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
                 try:
                     _, res = dbx.files_download(daily_note_path)
@@ -199,7 +193,7 @@ class YouTubeCog(commands.Cog):
                     daily_note_content = daily_note_content.replace(youtube_heading, f"{youtube_heading}\n{link_to_add}")
                 else:
                     daily_note_content += f"\n{youtube_heading}\n{link_to_add}\n"
-                
+
                 dbx.files_upload(daily_note_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
 
             if isinstance(message, discord.Message):
@@ -208,7 +202,7 @@ class YouTubeCog(commands.Cog):
 
         except Exception as e:
             logging.error(f"YouTube要約処理全体でエラー: {e}", exc_info=True)
-            if isinstance(message, discord.Message): 
+            if isinstance(message, discord.Message):
                 await message.add_reaction("❌")
             elif isinstance(message, discord.InteractionMessage):
                 interaction = getattr(message, 'interaction', None)

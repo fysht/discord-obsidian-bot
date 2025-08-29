@@ -29,15 +29,19 @@ class LocalWorkerBot(commands.Bot):
 
     async def on_ready(self):
         logging.info(f"{self.user} としてログインしました (Local - 処理担当)")
-        
-        youtube_cog = self.get_cog('YouTubeCog')
-        if youtube_cog:
-            await youtube_cog.process_pending_summaries()
-        else:
-            logging.error("YouTubeCogの読み込みに失敗しました。")
 
-        logging.info("すべての処理が完了しました。シャットダウンします。")
-        await self.close()
+        # youtube_cog = self.get_cog('YouTubeCog')
+        # if youtube_cog:
+        #     # リアクション監視型になったため、起動時に一括処理する必要はなくなりました。
+        #     # await youtube_cog.process_pending_summaries()
+        #     pass
+        # else:
+        #     logging.error("YouTubeCogの読み込みに失敗しました。")
+
+        # logging.info("すべての処理が完了しました。シャットダウンします。")
+        # await self.close()
+        logging.info("リアクション監視モードで起動しました。")
+
 
 # --- 3. 起動処理 ---
 async def main():

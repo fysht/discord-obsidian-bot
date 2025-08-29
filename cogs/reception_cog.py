@@ -15,20 +15,9 @@ class ReceptionCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # ボット自身のメッセージや、監視対象外のチャンネルは無視
-        if message.author.bot or message.channel.id != self.youtube_summary_channel_id:
-            return
-
-        # メッセージにYouTubeのURLが含まれているかチェック
-        if YOUTUBE_URL_REGEX.search(message.content):
-            try:
-                # 処理済みリアクションがなければ、処理待ちリアクションを付ける
-                is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
-                if not is_processed:
-                    await message.add_reaction("📥")
-                    logging.info(f"[ReceptionCog] URLを検知し、リアクションを付与: {message.jump_url}")
-            except Exception as e:
-                logging.error(f"[ReceptionCog] リアクション付与中にエラー: {e}")
+        # リアクションによるトリガーに変更したため、このリスナーは不要になります。
+        # 意図しない動作を防ぐため、passを記述しておきます。
+        pass
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ReceptionCog(bot))
