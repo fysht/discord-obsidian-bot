@@ -45,15 +45,10 @@ class YouTubeCog(commands.Cog):
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """特定のリアクションが付与された際に動画要約処理を開始するイベントリスナー"""
-        # 監視対象のチャンネルでなければ無視
         if payload.channel_id != self.youtube_summary_channel_id:
             return
-
-        # Bot自身のリアクションは無視
         if payload.user_id == self.bot.user.id:
             return
-
-        # トリガーとなる絵文字でなければ無視
         if str(payload.emoji) != TRIGGER_EMOJI:
             return
 
@@ -67,7 +62,6 @@ class YouTubeCog(commands.Cog):
             logging.warning(f"メッセージの取得に失敗しました: {payload.message_id}")
             return
 
-        # 既に処理済みのリアクション（✅, ❌, ⏳）がBotによって付与されているか確認
         is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
         if is_processed:
             logging.info(f"既に処理済みのメッセージのためスキップします: {message.jump_url}")
@@ -75,14 +69,12 @@ class YouTubeCog(commands.Cog):
 
         logging.info(f"リアクション '{TRIGGER_EMOJI}' を検知しました。要約処理を開始します: {message.jump_url}")
         
-        # ユーザーが付与したトリガーリアクションを削除（任意）
         try:
             user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(payload.user_id)
             await message.remove_reaction(payload.emoji, user)
         except (discord.Forbidden, discord.NotFound):
             logging.warning(f"ユーザーリアクションの削除に失敗しました: {message.jump_url}")
 
-        # 要約処理を実行
         await self._perform_summary(url=message.content.strip(), message=message)
 
     def _extract_transcript_text(self, fetched_data):
@@ -105,6 +97,43 @@ class YouTubeCog(commands.Cog):
         
         logging.warning(f"予期せぬ字幕データ形式のため、テキスト抽出に失敗しました: {type(fetched_data)}")
         return ""
+
+    async def process_pending_summaries(self):
+        """起動時などに未処理の要約リクエストをまとめて処理する関数"""
+        channel = self.bot.get_channel(self.youtube_summary_channel_id)
+        if not channel:
+            logging.error(f"YouTubeCog: チャンネルID {self.youtube_summary_channel_id} が見つかりません。")
+            return
+
+        logging.info(f"チャンネル '{channel.name}' の未処理YouTube要約をスキャンします...")
+        
+        pending_messages = []
+        async for message in channel.history(limit=200):
+            # TRIGGER_EMOJI（📥）で判定するように修正
+            has_pending_reaction = any(r.emoji == TRIGGER_EMOJI for r in message.reactions)
+            if has_pending_reaction:
+                is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
+                if not is_processed:
+                    pending_messages.append(message)
+        
+        if not pending_messages:
+            logging.info("処理対象の新しいYouTube要約はありませんでした。")
+            return
+
+        logging.info(f"{len(pending_messages)}件の未処理YouTube要約が見つかりました。古いものから順に処理します...")
+        for message in reversed(pending_messages):
+            logging.info(f"処理開始: {message.jump_url}")
+            url = message.content.strip()
+
+            try:
+                # ユーザーが付けたリアクションをBotが消す場合は .me ではなく、リアクションしたユーザーオブジェクトが必要
+                # ここではシンプルにBotがリアクションをクリアしようと試みる
+                await message.clear_reaction(TRIGGER_EMOJI)
+            except (discord.Forbidden, discord.NotFound):
+                logging.warning(f"リアクションの削除に失敗しました: {message.jump_url}")
+            
+            await self._perform_summary(url=url, message=message)
+            await asyncio.sleep(5) # 連続処理のための待機
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
@@ -139,8 +168,7 @@ class YouTubeCog(commands.Cog):
                 if isinstance(message, discord.Message): await message.add_reaction("🔇")
                 return
             
-            # --- 有料プラン向けの高速・高品質な要約生成ロジック ---
-            model = genai.GenerativeModel("gemini-2.5-pro") 
+            model = genai.GenerativeModel("gemini-2.5-pro")
             
             concise_prompt = (
                 "以下のYouTube動画の文字起こし全文を元に、重要なポイントを3～5点で簡潔にまとめてください。\n"
