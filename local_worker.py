@@ -27,7 +27,20 @@ class LocalWorkerBot(commands.Bot):
 
     async def on_ready(self):
         logging.info(f"{self.user} としてログインしました (Local - 処理担当)")
-        logging.info("リアクション監視モードで起動しました。")
+        
+        # Cogを取得
+        youtube_cog = self.get_cog('YouTubeCog')
+        if youtube_cog:
+            logging.info("起動時に未処理のリアクションをスキャンします...")
+            try:
+                # 起動時に一度だけ、既存のリアクションをまとめて処理する
+                await youtube_cog.process_pending_summaries()
+            except Exception as e:
+                logging.error(f"起動時のYouTube要約一括処理中にエラー: {e}", exc_info=True)
+        else:
+            logging.error("YouTubeCogが見つかりません。起動時スキャンを中止します。")
+
+        logging.info("リアクション監視モードに移行します。（新しいリアクションを待ち受けます）")
 
 
 # --- 3. 起動処理 ---

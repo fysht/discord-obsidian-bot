@@ -15,7 +15,6 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-# YouTube要約チャンネルIDを.envから読み込む
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", "0"))
 
 # --- Dropbox関連設定 ---
@@ -32,15 +31,19 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
-        intents.reactions = True  # リアクションを読み取るためにTrueにする
+        intents.reactions = True
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
         """Cogをロードする"""
         logging.info("Cogの読み込みを開始します...")
-        # cogsフォルダのパスを正しく解決
         cogs_dir = Path(__file__).parent / 'cogs'
         for filename in os.listdir(cogs_dir):
+            # youtube_cog.py はスキップする
+            if filename == 'youtube_cog.py':
+                logging.info(f" -> {filename} はローカルBot用のためスキップします。")
+                continue
+
             if filename.endswith('.py'):
                 try:
                     await self.load_extension(f'cogs.{filename[:-3]}')
@@ -55,17 +58,10 @@ class MyBot(commands.Bot):
         """Botの準備が完了したときの処理"""
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
         
-        # 1. オフライン中のメモを処理
+        # オフライン中のメモを処理
         await self.process_offline_memos()
         
-        # 2. 未処理のYouTube要約を処理
-        await self.process_pending_youtube_summaries()
-
         logging.info("すべての起動時処理が完了しました。")
-        # すべてのバッチ処理が終わったらボットを終了させる
-        # Renderで24時間稼働させる場合はこの行をコメントアウトしてください
-        # await self.close()
-
 
     async def process_offline_memos(self):
         """オフライン中の未取得メモがないか確認し、処理する"""
@@ -114,18 +110,6 @@ class MyBot(commands.Bot):
                 logging.info("処理対象の新しいメモはありませんでした。")
         except Exception as e:
             logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}", exc_info=True)
-
-    async def process_pending_youtube_summaries(self):
-        """未処理のYouTube要約がないか確認し、処理する"""
-        logging.info("未処理のYouTube要約がないか確認します...")
-        youtube_cog = self.get_cog('YouTubeCog')
-        if youtube_cog:
-            try:
-                await youtube_cog.process_pending_summaries()
-            except Exception as e:
-                logging.error(f"YouTube要約の処理中にエラーが発生: {e}", exc_info=True)
-        else:
-            logging.warning("YouTubeCogがロードされていません。YouTubeの要約処理をスキップします。")
 
 
 # --- 3. 起動処理 ---
