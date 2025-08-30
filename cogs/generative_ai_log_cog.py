@@ -68,6 +68,7 @@ class GenerativeAiLogCog(commands.Cog):
     def _initialize_ai_model(self) -> genai.GenerativeModel:
         """生成AIモデルを初期化する"""
         genai.configure(api_key=self.gemini_api_key)
+        # モデル名はご自身の環境に合わせて調整してください
         return genai.GenerativeModel('gemini-2.5-pro')
 
     @commands.Cog.listener()
@@ -205,28 +206,45 @@ class GenerativeAiLogCog(commands.Cog):
         """その日のデイリーノートに、作成したログへのリンクを追記する"""
         daily_note_date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date_str}.md"
-        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]\n"
-        section_header = "\n## Logs\n"
+        
+        # Obsidian形式のリンクを作成（末尾の改行は不要）
+        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]"
+        
+        # 見出しのテキスト
+        section_header = "## Logs"
+        
+        # 挿入するセクション全体のテキスト
+        new_section_with_link = f"\n{section_header}\n{link_to_add}"
 
         try:
+            # 既存のデイリーノートをダウンロード
             _, res = self.dbx.files_download(daily_note_path)
             content = res.content.decode('utf-8')
             
-            log_section_pattern = r'(##\s+Logs\s*\n)'
-            match = re.search(log_section_pattern, content)
-
+            # "## Logs" 見出しを検索するための正規表現パターン（大文字/小文字を区別せず、行頭を基準とする）
+            log_section_pattern = re.compile(r'(^##\s+Logs\s*$)', re.MULTILINE | re.IGNORECASE)
+            
+            # パターンに一致する見出しがあれば、その直後にリンクを挿入
+            match = log_section_pattern.search(content)
             if match:
-                insert_pos = match.end()
-                new_content = f"{content[:insert_pos]}{link_to_add}{content[insert_pos:]}"
+                # 置換後のテキストを作成: (見出し) + (改行) + (新しいリンク)
+                replacement = f"{match.group(1)}\n{link_to_add}"
+                # re.subを使い、最初に見つかった見出し部分だけを置換する
+                new_content = log_section_pattern.sub(replacement, content, count=1)
             else:
-                new_content = f"{content.strip()}\n{section_header}{link_to_add}"
+                # 見出しが見つからない場合は、ファイルの末尾に新しいセクションを追加
+                new_content = content.strip() + new_section_with_link + "\n"
 
         except dropbox.exceptions.ApiError as e:
+            # デイリーノートが存在しない場合
             if e.error.is_path() and e.error.get_path().is_not_found():
-                new_content = f"{section_header}{link_to_add}"
+                # 新しくセクションとリンクを作成
+                new_content = section_header + f"\n{link_to_add}\n"
             else:
+                # その他のDropbox APIエラーの場合は例外を再送出
                 raise
 
+        # 更新されたコンテンツをDropboxにアップロード（ファイルを上書き）
         self.dbx.files_upload(
             new_content.encode('utf-8'),
             daily_note_path,
