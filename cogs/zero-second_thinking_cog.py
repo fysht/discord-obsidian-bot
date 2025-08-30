@@ -18,7 +18,7 @@ SUPPORTED_AUDIO_TYPES = [
     'audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm'
 ]
 
-class ZeroThinkingCog(commands.Cog):
+class ZeroSecondThinkingCog(commands.Cog):
     """
     Discord上でゼロ秒思考を支援するためのCog
     """
@@ -26,7 +26,7 @@ class ZeroThinkingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # --- 環境変数からの設定読み込み ---
-        self.zero_thinking_channel_id = int(os.getenv("ZERO_THINKING_CHANNEL_ID", 0))
+        self.zero_second_thinking_channel_id = int(os.getenv("ZERO_SECOND_THINKING_CHANNEL_ID", 0))
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
@@ -40,14 +40,14 @@ class ZeroThinkingCog(commands.Cog):
         self.user_states = {}
 
         # --- 初期チェック ---
-        if not self.zero_thinking_channel_id:
-            logging.warning("ZeroThinkingCog: ZERO_THINKING_CHANNEL_IDが設定されていません。")
+        if not self.zero_second_thinking_channel_id:
+            logging.warning("ZeroSecondThinkingCog: ZERO_SECOND_THINKING_CHANNEL_IDが設定されていません。")
         if not self.openai_api_key:
-            logging.warning("ZeroThinkingCog: OPENAI_API_KEYが設定されていません。")
+            logging.warning("ZeroSecondThinkingCog: OPENAI_API_KEYが設定されていません。")
         if not self.gemini_api_key:
-            logging.warning("ZeroThinkingCog: GEMINI_API_KEYが設定されていません。")
+            logging.warning("ZeroSecondThinkingCog: GEMINI_API_KEYが設定されていません。")
         if not all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token]):
-            logging.warning("ZeroThinkingCog: Dropboxの認証情報が不足しています。")
+            logging.warning("ZeroSecondThinkingCog: Dropboxの認証情報が不足しています。")
 
         # --- APIクライアントの初期化 ---
         self.session = aiohttp.ClientSession()
@@ -62,11 +62,11 @@ class ZeroThinkingCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """メッセージ投稿を監視し、ゼロ秒思考のフローを処理する"""
+        """メッセージ投稿を監視し、Zero-Second Thinkingのフローを処理する"""
         # --- 処理実行の条件判定 ---
         if message.author.bot:
             return
-        if message.channel.id != self.zero_thinking_channel_id:
+        if message.channel.id != self.zero_second_thinking_channel_id:
             return
 
         user_id = message.author.id
@@ -74,10 +74,24 @@ class ZeroThinkingCog(commands.Cog):
         # --- テキストメッセージの処理 ---
         if message.content.lower() == 's':
             await self._start_new_session(message)
+            # メッセージを削除
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                logging.warning(f"ZeroSecondThinkingCog: Botにメッセージ削除の権限がありません。(User: {message.author})")
+            except discord.NotFound:
+                pass # すでに削除されている場合は何もしない
             return
         
         if message.content.lower() == 'd':
             await self._dig_deeper(message)
+            # メッセージを削除
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                logging.warning(f"ZeroSecodThinkingCog: Botにメッセージ削除の権限がありません。(User: {message.author})")
+            except discord.NotFound:
+                pass # すでに削除されている場合は何もしない
             return
 
         # --- 音声メッセージ（添付ファイル）の処理 ---
@@ -89,13 +103,18 @@ class ZeroThinkingCog(commands.Cog):
                 return
 
     async def _start_new_session(self, message: discord.Message):
-        """新しいゼロ秒思考セッションを開始する"""
+        """新しいZero-Second Thinkingセッションを開始する"""
         user_id = message.author.id
         try:
             async with message.channel.typing():
                 # 1. Gemini APIでお題を生成
-                model = genai.GenerativeModel("gemini-1.5-pro-latest")
-                prompt = "ゼロ秒思考のためのお題を1つ、前置きや返答を一切含めずに生成してください。"
+                model = genai.GenerativeModel("gemini-2.5-pro")
+                prompt = (
+                    "あなたはこれから、私が「ゼロ秒思考」を行うのを支援します。\n"
+                    "ゼロ秒思考とは、赤羽雄二氏が提唱する、A4用紙に1件1ページのメモを1分以内に書き、深く考える習慣です。\n"
+                    "これから私がこのゼロ秒思考を行いますので、ゼロ秒思考を行うのに適したお題を1つ、前置きや返答を一切含めずに生成してください。\n"
+                    "テーマはビジネス、自己啓発、プライベートなど多岐にわたりますが、深い洞察を促すような問いをお願いします。"
+                )
                 response = await model.generate_content_async(prompt)
                 question = response.text.strip()
 
@@ -103,12 +122,12 @@ class ZeroThinkingCog(commands.Cog):
                 self.user_states[user_id] = {'last_question': question}
                 
                 # 3. お題をチャンネルに投稿
-                await message.reply(f"お題: **{question}**")
-                logging.info(f"[ZeroThinking] New session for {message.author}: {question}")
+                await message.channel.send(f"お題: **{question}**")
+                logging.info(f"[Zero-Second Thinking] New session for {message.author}: {question}")
 
         except Exception as e:
-            logging.error(f"[ZeroThinking] Failed to start new session: {e}", exc_info=True)
-            await message.reply(f"エラーが発生しました: {e}")
+            logging.error(f"[Zero-Second Thinking] Failed to start new session: {e}", exc_info=True)
+            await message.channel.send(f"エラーが発生しました: {e}")
 
     async def _dig_deeper(self, message: discord.Message):
         """既存の思考を深掘りする"""
@@ -117,7 +136,7 @@ class ZeroThinkingCog(commands.Cog):
 
         # 1. 状態のチェック
         if not state or 'last_question' not in state or 'last_answer' not in state:
-            await message.reply("先に `s` で新しい思考を開始し、一度音声で回答してください。")
+            await message.channel.send("先に `s` で新しい思考を開始し、一度音声で回答してください。")
             return
 
         try:
@@ -137,12 +156,12 @@ class ZeroThinkingCog(commands.Cog):
                 self.user_states[user_id]['last_question'] = new_question
                 
                 # 4. 新しいお題をチャンネルに投稿
-                await message.reply(f"次の問い: **{new_question}**")
-                logging.info(f"[ZeroThinking] Digging deeper for {message.author}: {new_question}")
+                await message.channel.send(f"次の問い: **{new_question}**")
+                logging.info(f"[Zero-Second Thinking] Digging deeper for {message.author}: {new_question}")
 
         except Exception as e:
-            logging.error(f"[ZeroThinking] Failed to dig deeper: {e}", exc_info=True)
-            await message.reply(f"エラーが発生しました: {e}")
+            logging.error(f"[Zero-Second Thinking] Failed to dig deeper: {e}", exc_info=True)
+            await message.channel.send(f"エラーが発生しました: {e}")
 
 
     async def _process_thinking_memo(self, message: discord.Message, attachment: discord.Attachment):
@@ -171,7 +190,7 @@ class ZeroThinkingCog(commands.Cog):
             transcribed_text = transcription.text
 
             # 2. 回答の整形
-            model = genai.GenerativeModel("gemini-1.5-pro-latest")
+            model = genai.GenerativeModel("gemini-2.5-pro")
             formatting_prompt = (
                 "以下の音声メモの文字起こしを、構造化された箇条書きのMarkdown形式でまとめてください。\n"
                 "箇条書きの本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
@@ -212,7 +231,7 @@ class ZeroThinkingCog(commands.Cog):
                         note_path,
                         mode=WriteMode('overwrite')
                     )
-                    logging.info(f"[ZeroThinking] Appended to note for {message.author}: {note_path}")
+                    logging.info(f"[Zero-Second Thinking] Appended to note for {message.author}: {note_path}")
 
                 else:
                     # 新規ノートを作成
@@ -221,7 +240,7 @@ class ZeroThinkingCog(commands.Cog):
                     timestamp = now.strftime('%Y%m%d%H%M%S')
                     
                     note_filename = f"{timestamp}-{safe_title}.md"
-                    note_path = f"{self.dropbox_vault_path}/ZeroThinking/{note_filename}"
+                    note_path = f"{self.dropbox_vault_path}/Zero-Second Thinking/{note_filename}" # フォルダ名を変更
 
                     # ノート内容を作成
                     new_note_content = (
@@ -240,7 +259,7 @@ class ZeroThinkingCog(commands.Cog):
                         note_path,
                         mode=WriteMode('add')
                     )
-                    logging.info(f"[ZeroThinking] Created new note for {message.author}: {note_path}")
+                    logging.info(f"[Zero-Second Thinking] Created new note for {message.author}: {note_path}")
                     
                     # デイリーノートを更新
                     daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
@@ -255,24 +274,102 @@ class ZeroThinkingCog(commands.Cog):
                     
                     # リンクを作成
                     note_filename_for_link = note_filename.replace('.md', '')
-                    link_to_add = f"- [[ZeroThinking/{note_filename_for_link}]]"
-                    heading = "## ゼロ秒思考"
-
-                    lines = daily_note_content.split('\n')
-                    if heading in lines:
-                        # セクションが存在する場合、その末尾に追加
-                        heading_index = lines.index(heading)
-                        insert_index = heading_index + 1
-                        while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or lines[insert_index].strip() == ""):
-                            insert_index += 1
-                        lines.insert(insert_index, link_to_add)
-                    else:
-                        # セクションが存在しない場合、末尾に新規作成
-                        if daily_note_content.strip():
-                            lines.append(f"\n{heading}\n{link_to_add}")
-                        else:
-                            lines.append(f"{heading}\n{link_to_add}")
+                    link_to_add = f"- [[Zero-Second Thinking/{note_filename_for_link}]]" # リンクパスも変更
                     
+                    # 挿入位置を調整
+                    lines = daily_note_content.split('\n')
+                    youtube_summaries_heading = "## YouTube Summaries"
+                    memo_heading = "## Memo"
+                    zero_second_thinking_heading = "## Zero-Second Thinking"
+
+                    insert_index = -1 # デフォルトは末尾
+
+                    # YouTube SummariesとMemoの間に挿入
+                    youtube_index = -1
+                    memo_index = -1
+                    for i, line in enumerate(lines):
+                        if line.strip() == youtube_summaries_heading:
+                            youtube_index = i
+                        if line.strip() == memo_heading:
+                            memo_index = i
+                        
+                        # YouTube Summariesの直後にZero-Second Thinkingが存在する場合、その次
+                        if line.strip() == zero_second_thinking_heading and youtube_index != -1 and i > youtube_index:
+                            insert_index = i + 1
+                            while insert_index < len(lines) and lines[insert_index].strip().startswith('-'):
+                                insert_index += 1
+                            break
+
+                    if youtube_index != -1 and memo_index != -1 and youtube_index < memo_index:
+                        # YouTube SummariesとMemoの間に挿入
+                        # Zero-Second Thinkingセクションが既にあるか確認し、その下に追記
+                        found_zero_second_thinking_section = False
+                        for i in range(youtube_index + 1, memo_index):
+                            if lines[i].strip() == zero_second_thinking_heading:
+                                found_zero_second_thinking_section = True
+                                insert_index = i + 1
+                                while insert_index < len(lines) and lines[insert_index].strip().startswith('-'):
+                                    insert_index += 1
+                                break
+                        if not found_zero_second_thinking_section:
+                            # 間にセクションがなければ、新規でセクションとリンクを作成
+                            insert_index = memo_index # Memoの直前に挿入
+                            lines.insert(insert_index, zero_second_thinking_heading)
+                            lines.insert(insert_index + 1, link_to_add)
+                    elif youtube_index != -1 and memo_index == -1:
+                        # YouTube SummariesはあるがMemoがない場合、YouTube Summariesの後に挿入
+                        found_zero_second_thinking_section = False
+                        for i in range(youtube_index + 1, len(lines)):
+                            if lines[i].strip() == zero_second_thinking_heading:
+                                found_zero_second_thinking_section = True
+                                insert_index = i + 1
+                                while insert_index < len(lines) and lines[insert_index].strip().startswith('-'):
+                                    insert_index += 1
+                                break
+                        if not found_zero_second_thinking_section:
+                            # セクションがなければ、新規でセクションとリンクを作成
+                            insert_index = youtube_index + 1
+                            lines.insert(insert_index, zero_second_thinking_heading)
+                            lines.insert(insert_index + 1, link_to_add)
+                    elif youtube_index == -1 and memo_index != -1:
+                        # YouTube SummariesはないがMemoがある場合、Memoの前に挿入
+                        found_zero_second_thinking_section = False
+                        for i in range(0, memo_index):
+                            if lines[i].strip() == zero_second_thinking_heading:
+                                found_zero_second_thinking_section = True
+                                insert_index = i + 1
+                                while insert_index < len(lines) and lines[insert_index].strip().startswith('-'):
+                                    insert_index += 1
+                                break
+                        if not found_zero_second_thinking_section:
+                            # セクションがなければ、新規でセクションとリンクを作成
+                            insert_index = memo_index # Memoの直前に挿入
+                            lines.insert(insert_index, zero_second_thinking_heading)
+                            lines.insert(insert_index + 1, link_to_add)
+                    else: # どちらのセクションも見つからない場合、ファイルの末尾に追加
+                        if not any(line.strip() == zero_second_thinking_heading for line in lines):
+                            if lines and lines[-1].strip(): # ファイルが空でなければ改行を追加
+                                lines.append("")
+                            lines.append(zero_second_thinking_heading)
+                            lines.append(link_to_add)
+                        else:
+                            # Zero-Second Thinkingセクションが既にある場合、その下に追記
+                            for i, line in enumerate(lines):
+                                if line.strip() == zero_second_thinking_heading:
+                                    insert_index = i + 1
+                                    while insert_index < len(lines) and lines[insert_index].strip().startswith('-'):
+                                        insert_index += 1
+                                    lines.insert(insert_index, link_to_add)
+                                    break
+                    
+                    if insert_index != -1 and not (youtube_index != -1 and memo_index != -1 and youtube_index < memo_index and not found_zero_second_thinking_section):
+                        # 特定のケースを除き、insert_indexが設定されていれば挿入
+                        # (すでにセクションとリンクを同時に挿入している場合は二重挿入を避ける)
+                        if not any(line.strip() == link_to_add for line in lines): # 重複防止
+                            lines.insert(insert_index, link_to_add)
+
+
+                    # 最終的なリストを結合
                     new_daily_content = "\n".join(lines)
                     dbx.files_upload(
                         new_daily_content.encode('utf-8'),
@@ -290,10 +387,10 @@ class ZeroThinkingCog(commands.Cog):
             
             # 状態を更新
             self.user_states[user_id]['last_answer'] = formatted_answer
-            logging.info(f"[ZeroThinking] Successfully processed for {message.author}")
+            logging.info(f"[Zero-Second Thinking] Successfully processed for {message.author}")
 
         except Exception as e:
-            logging.error(f"[ZeroThinking] Error during processing: {e}", exc_info=True)
+            logging.error(f"[Zero-Second Thinking] Error during processing: {e}", exc_info=True)
             try:
                 await message.remove_reaction("⏳", self.bot.user)
                 await message.add_reaction("❌")
@@ -307,10 +404,10 @@ class ZeroThinkingCog(commands.Cog):
 async def setup(bot: commands.Bot):
     """CogをBotに追加する"""
     # 必要な環境変数がすべて設定されているか確認
-    if not all([os.getenv("ZERO_THINKING_CHANNEL_ID"),
+    if not all([os.getenv("ZERO_SECOND_THINKING_CHANNEL_ID"),
                 os.getenv("OPENAI_API_KEY"), 
                 os.getenv("GEMINI_API_KEY"), 
                 os.getenv("DROPBOX_REFRESH_TOKEN")]):
-        logging.error("ZeroThinkingCog: 必要な環境変数が不足しているため、Cogをロードしません。")
+        logging.error("ZeroSecondThinkingCog: 必要な環境変数が不足しているため、Cogをロードしません。")
         return
-    await bot.add_cog(ZeroThinkingCog(bot))
+    await bot.add_cog(ZeroSecondThinkingCog(bot))
