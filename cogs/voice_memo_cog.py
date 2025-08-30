@@ -98,7 +98,7 @@ class VoiceMemoCog(commands.Cog):
                 transcription = await self.openai_client.audio.transcriptions.create(model="whisper-1", file=audio_file)
             transcribed_text = transcription.text
 
-            model = genai.GenerativeModel("gemini-pro-2.5")
+            model = genai.GenerativeModel("gemini-2.5-pro")
             prompt = (
                 "以下の文章は音声メモを文字起こししたものです。内容を理解し、重要なポイントを抽出して、箇条書きのMarkdown形式でまとめてください。\n\n"
                 f"---\n\n{transcribed_text}"
