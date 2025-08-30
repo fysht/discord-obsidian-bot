@@ -6,7 +6,7 @@ import logging
 import re
 import asyncio
 import dropbox
-from dropbox.files import WriteMode
+from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
@@ -17,8 +17,14 @@ from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, No
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
-# リアクションとして検知する絵文字
 TRIGGER_EMOJI = '📥'
+SECTION_ORDER = [
+    "## WebClips",
+    "## YouTube Summaries",
+    "## AI Logs",
+    "## Zero-Second Thinking",
+    "## Memo"
+]
 
 class YouTubeCog(commands.Cog):
     """YouTube動画の要約とObsidianへの保存を行うCog（ローカル処理担当）"""
@@ -41,6 +47,54 @@ class YouTubeCog(commands.Cog):
 
     async def cog_unload(self):
         await self.session.close()
+
+    def _update_daily_note_with_ordered_section(self, current_content: str, link_to_add: str, section_header: str) -> str:
+        """定義された順序に基づいてデイリーノートのコンテンツを更新する"""
+        lines = current_content.split('\n')
+        
+        # セクションが既に存在するか確認
+        try:
+            header_index = lines.index(section_header)
+            insert_index = header_index + 1
+            while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or not lines[insert_index].strip()):
+                insert_index += 1
+            lines.insert(insert_index, link_to_add)
+            return "\n".join(lines)
+        except ValueError:
+            # セクションが存在しない場合、正しい位置に新規作成
+            existing_sections = {line.strip(): i for i, line in enumerate(lines) if line.strip() in SECTION_ORDER}
+            
+            insert_after_index = -1
+            new_section_order_index = SECTION_ORDER.index(section_header)
+            for i in range(new_section_order_index - 1, -1, -1):
+                preceding_header = SECTION_ORDER[i]
+                if preceding_header in existing_sections:
+                    header_line_index = existing_sections[preceding_header]
+                    insert_after_index = header_line_index + 1
+                    while insert_after_index < len(lines) and not lines[insert_after_index].strip().startswith('## '):
+                        insert_after_index += 1
+                    break
+            
+            if insert_after_index != -1:
+                lines.insert(insert_after_index, f"\n{section_header}\n{link_to_add}")
+                return "\n".join(lines)
+
+            insert_before_index = -1
+            for i in range(new_section_order_index + 1, len(SECTION_ORDER)):
+                following_header = SECTION_ORDER[i]
+                if following_header in existing_sections:
+                    insert_before_index = existing_sections[following_header]
+                    break
+            
+            if insert_before_index != -1:
+                lines.insert(insert_before_index, f"{section_header}\n{link_to_add}\n")
+                return "\n".join(lines)
+
+            if current_content.strip():
+                 lines.append("")
+            lines.append(section_header)
+            lines.append(link_to_add)
+            return "\n".join(lines)
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -109,7 +163,6 @@ class YouTubeCog(commands.Cog):
         
         pending_messages = []
         async for message in channel.history(limit=200):
-            # TRIGGER_EMOJI（📥）で判定するように修正
             has_pending_reaction = any(r.emoji == TRIGGER_EMOJI for r in message.reactions)
             if has_pending_reaction:
                 is_processed = any(r.emoji in ('✅', '❌', '⏳') and r.me for r in message.reactions)
@@ -126,14 +179,12 @@ class YouTubeCog(commands.Cog):
             url = message.content.strip()
 
             try:
-                # ユーザーが付けたリアクションをBotが消す場合は .me ではなく、リアクションしたユーザーオブジェクトが必要
-                # ここではシンプルにBotがリアクションをクリアしようと試みる
                 await message.clear_reaction(TRIGGER_EMOJI)
             except (discord.Forbidden, discord.NotFound):
                 logging.warning(f"リアクションの削除に失敗しました: {message.jump_url}")
             
             await self._perform_summary(url=url, message=message)
-            await asyncio.sleep(5) # 連続処理のための待機
+            await asyncio.sleep(5)
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
         """YouTube要約処理のコアロジック"""
@@ -149,9 +200,7 @@ class YouTubeCog(commands.Cog):
 
             try:
                 fetched = await asyncio.to_thread(
-                    YouTubeTranscriptApi().fetch,
-                    video_id,
-                    languages=['ja', 'en']
+                    YouTubeTranscriptApi.get_transcript, video_id, languages=['ja', 'en']
                 )
             except (TranscriptsDisabled, NoTranscriptFound):
                 logging.warning(f"字幕が見つかりませんでした (Video ID: {video_id})")
@@ -222,45 +271,23 @@ class YouTubeCog(commands.Cog):
                 dbx.files_upload(note_content.encode('utf-8'), note_path, mode=WriteMode('add'))
                 
                 daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
+                daily_note_content = ""
                 try:
                     _, res = dbx.files_download(daily_note_path)
                     daily_note_content = res.content.decode('utf-8')
                 except ApiError as e:
-                    if isinstance(e.error, dropbox.files.DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                        daily_note_content = ""
+                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                        pass
                     else: raise
 
                 link_to_add = f"- [[YouTube/{note_filename_for_link}]]"
                 youtube_heading = "## YouTube Summaries"
-                webclips_heading = "## WebClips"
 
-                lines = daily_note_content.split('\n')
+                new_daily_content = self._update_daily_note_with_ordered_section(
+                    daily_note_content, link_to_add, youtube_heading
+                )
                 
-                try:
-                    # YouTubeセクションが既に存在する場合
-                    heading_index = lines.index(youtube_heading)
-                    insert_index = heading_index + 1
-                    while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or lines[insert_index].strip() == ""):
-                        insert_index += 1
-                    lines.insert(insert_index, link_to_add)
-
-                except ValueError:
-                    # YouTubeセクションが存在しない場合
-                    new_youtube_section = f"\n{youtube_heading}\n{link_to_add}"
-                    try:
-                        # WebClipsセクションを探し、そのセクションの末尾に追加
-                        webclips_heading_index = lines.index(webclips_heading)
-                        insert_index = webclips_heading_index + 1
-                        while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
-                            insert_index += 1
-                        lines.insert(insert_index, new_youtube_section)
-                    except ValueError:
-                        # WebClipsセクションも存在しない場合は、ファイルの先頭に追加
-                        lines.insert(0, new_youtube_section)
-                
-                daily_note_content = "\n".join(lines)
-                
-                dbx.files_upload(daily_note_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
+                dbx.files_upload(new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
 
             if isinstance(message, discord.Message):
                 await message.add_reaction("✅")

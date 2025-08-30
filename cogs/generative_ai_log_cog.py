@@ -15,6 +15,13 @@ logger = logging.getLogger(__name__)
 
 # --- 定数 ---
 JST = timezone(timedelta(hours=+9), 'JST')
+SECTION_ORDER = [
+    "## WebClips",
+    "## YouTube Summaries",
+    "## AI Logs",
+    "## Zero-Second Thinking",
+    "## Memo"
+]
 
 
 class GenerativeAiLogCog(commands.Cog):
@@ -37,8 +44,8 @@ class GenerativeAiLogCog(commands.Cog):
             self.ai_model = self._initialize_ai_model()
             self.is_ready = True
             logger.info("✅ Generative AI Log Cog is loaded and ready.")
-        except Exception:
-            logger.error("❌ Generative AI Log Cogの初期化中にエラーが発生しました。", exc_info=True)
+        except Exception as e:
+            logger.error(f"❌ Generative AI Log Cogの初期化中にエラーが発生しました: {e}", exc_info=True)
 
     def _load_environment_variables(self):
         """環境変数をインスタンス変数に読み込む"""
@@ -104,18 +111,24 @@ class GenerativeAiLogCog(commands.Cog):
 
         try:
             separator = "\n---\n"
-            title_part = ""
-            body_part = ""
+            question_part = ""
+            answer_part = ""
 
             if separator in full_content:
                 parts = full_content.split(separator, 1)
-                title_part = parts[0].strip()
-                body_part = parts[1].strip()
+                question_part = parts[0].strip()
+                answer_part = parts[1].strip()
             else:
-                body_part = full_content.strip()
+                question_part = "（質問なし）"
+                answer_part = full_content.strip()
 
-            ai_response = await self._generate_title_and_summary(full_content)
-            title = title_part if title_part else ai_response.get("title", "Untitled Log")
+            # タイトルと要約、記事を並行して生成
+            title_summary_task = self._generate_title_and_summary(full_content)
+            article_task = self._generate_article(full_content)
+            
+            ai_response, article_text = await asyncio.gather(title_summary_task, article_task)
+            
+            title = ai_response.get("title", "Untitled Log")
             summary = ai_response.get("summary", "No summary generated.")
 
             now = datetime.now(JST)
@@ -124,7 +137,8 @@ class GenerativeAiLogCog(commands.Cog):
             filename = f"{timestamp}-{sanitized_title}.md"
             
             markdown_content = self._create_markdown_content(
-                title=title, summary=summary, full_answer=body_part, date=now
+                title=title, summary=summary, question=question_part, 
+                answer=answer_part, article=article_text, date=now
             )
 
             dropbox_path = f"{self.dropbox_vault_path}/AI Logs/{filename}"
@@ -136,8 +150,8 @@ class GenerativeAiLogCog(commands.Cog):
             
             await message.add_reaction("✅")
 
-        except Exception:
-            logger.error("❌ An error occurred while processing the message.", exc_info=True)
+        except Exception as e:
+            logger.error(f"❌ An error occurred while processing the message: {e}", exc_info=True)
             await message.add_reaction("❌")
 
     async def _generate_title_and_summary(self, content: str) -> dict:
@@ -161,27 +175,55 @@ class GenerativeAiLogCog(commands.Cog):
         
         cleaned_text = re.search(r'\{.*\}', response.text, re.DOTALL)
         if not cleaned_text:
-            raise ValueError("AI response does not contain a valid JSON object.")
-        
+            logger.warning("AI response did not contain valid JSON. Falling back to title generation only.")
+            prompt_title_only = f"以下のテキストに最適なタイトルを、タイトル本文のみで生成してください:\n\n{content}"
+            response_title_only = await self.ai_model.generate_content_async(prompt_title_only)
+            fallback_title = response_title_only.text.strip()
+            return {"title": fallback_title, "summary": "（要約の自動生成に失敗しました）"}
+
         return json.loads(cleaned_text.group(0))
+
+    async def _generate_article(self, content: str) -> str:
+        """会話ログからnote投稿用の記事を生成する"""
+        prompt = f"""
+        以下のAIアシスタントとの会話ログを元に、一人称視点のブログ記事（noteなどを想定）を作成してください。
+        - 読者が興味を持ち、理解しやすいように、会話の専門的な内容をかみ砕いて説明してください。
+        - 最終的な結論や得られた知見が明確に伝わるように構成してください。
+        - 前置きやAIとしての返答は含めず、記事の本文のみを生成してください。
+        ---
+        会話ログ:
+        {content}
+        ---
+        """
+        try:
+            response = await self.ai_model.generate_content_async(prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"記事の生成に失敗しました: {e}")
+            return "（記事の自動生成に失敗しました）"
+
 
     def _sanitize_filename(self, filename: str) -> str:
         """ファイル名として不適切な文字をハイフンに置換し、長さを制限する"""
         sanitized = re.sub(r'[\\/*?:"<>|]', '-', filename)
         return sanitized[:100]
 
-    def _create_markdown_content(self, title: str, summary: str, full_answer: str, date: datetime) -> str:
+    def _create_markdown_content(self, title: str, summary: str, question: str, answer: str, article: str, date: datetime) -> str:
         """Obsidian保存用のMarkdownコンテンツを整形して生成する"""
         date_str = date.strftime('%Y-%m-%d')
         return (
             f"# {title}\n\n"
-            f"- **Source:** \n"
+            f"- **Source:** Discord AI Log\n"
             f"- **作成日:** {date_str}\n\n"
             f"[[{date_str}]]\n\n"
             f"---\n\n"
             f"## Summary\n{summary}\n\n"
             f"---\n\n"
-            f"## Full Text\n{full_answer}\n"
+            f"## Question\n{question}\n\n"
+            f"---\n\n"
+            f"## Answer\n{answer}\n\n"
+            f"---\n\n"
+            f"## Article\n{article}\n"
         )
 
     def _upload_to_dropbox(self, path: str, content: str):
@@ -193,31 +235,71 @@ class GenerativeAiLogCog(commands.Cog):
             mute=True
         )
 
+    def _update_daily_note_with_ordered_section(self, current_content: str, link_to_add: str, section_header: str) -> str:
+        """定義された順序に基づいてデイリーノートのコンテンツを更新する"""
+        lines = current_content.split('\n')
+        
+        # セクションが既に存在するか確認
+        try:
+            header_index = lines.index(section_header)
+            insert_index = header_index + 1
+            while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or not lines[insert_index].strip()):
+                insert_index += 1
+            lines.insert(insert_index, link_to_add)
+            return "\n".join(lines)
+        except ValueError:
+            # セクションが存在しない場合、正しい位置に新規作成
+            existing_sections = {line.strip(): i for i, line in enumerate(lines) if line.strip() in SECTION_ORDER}
+            
+            insert_after_index = -1
+            new_section_order_index = SECTION_ORDER.index(section_header)
+            for i in range(new_section_order_index - 1, -1, -1):
+                preceding_header = SECTION_ORDER[i]
+                if preceding_header in existing_sections:
+                    header_line_index = existing_sections[preceding_header]
+                    insert_after_index = header_line_index + 1
+                    while insert_after_index < len(lines) and not lines[insert_after_index].strip().startswith('## '):
+                        insert_after_index += 1
+                    break
+            
+            if insert_after_index != -1:
+                lines.insert(insert_after_index, f"\n{section_header}\n{link_to_add}")
+                return "\n".join(lines)
+
+            insert_before_index = -1
+            for i in range(new_section_order_index + 1, len(SECTION_ORDER)):
+                following_header = SECTION_ORDER[i]
+                if following_header in existing_sections:
+                    insert_before_index = existing_sections[following_header]
+                    break
+            
+            if insert_before_index != -1:
+                lines.insert(insert_before_index, f"{section_header}\n{link_to_add}\n")
+                return "\n".join(lines)
+
+            if current_content.strip():
+                 lines.append("")
+            lines.append(section_header)
+            lines.append(link_to_add)
+            return "\n".join(lines)
+
     async def _add_link_to_daily_note(self, filename: str, title: str, date: datetime):
         """その日のデイリーノートに、作成したログへのリンクを追記する"""
         daily_note_date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date_str}.md"
-        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]\n"
-        section_header = "\n## Logs\n"
+        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]"
+        section_header = "## AI Logs"
 
         try:
             _, res = self.dbx.files_download(daily_note_path)
             content = res.content.decode('utf-8')
-            
-            log_section_pattern = r'(##\s+Logs\s*\n)'
-            match = re.search(log_section_pattern, content)
-
-            if match:
-                insert_pos = match.end()
-                new_content = f"{content[:insert_pos]}{link_to_add}{content[insert_pos:]}"
-            else:
-                new_content = f"{content.strip()}\n{section_header}{link_to_add}"
-
         except dropbox.exceptions.ApiError as e:
             if e.error.is_path() and e.error.get_path().is_not_found():
-                new_content = f"{section_header}{link_to_add}"
+                content = ""
             else:
                 raise
+
+        new_content = self._update_daily_note_with_ordered_section(content, link_to_add, section_header)
 
         self.dbx.files_upload(
             new_content.encode('utf-8'),
