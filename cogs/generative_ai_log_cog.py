@@ -7,8 +7,6 @@ import logging
 import google.generativeai as genai
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
-from dropbox.files import WriteMode
-from dropbox.exceptions import ApiError
 
 # --- ロガーの設定 ---
 log_format = '%(asctime)s - %(levelname)s - %(message)s'
@@ -43,7 +41,7 @@ class GenerativeAiLogCog(commands.Cog):
             logger.error("❌ Generative AI Log Cogの初期化中にエラーが発生しました。", exc_info=True)
 
     def _load_environment_variables(self):
-        """環境変数をインスタンス変数に読み込む。"""
+        """環境変数をインスタンス変数に読み込む"""
         self.channel_id = os.getenv("AI_LOG_CHANNEL_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
@@ -95,14 +93,18 @@ class GenerativeAiLogCog(commands.Cog):
                 if attachment.filename.endswith('.txt'):
                     try:
                         source_type = f"File: {attachment.filename}"
+                        # 添付ファイルの内容をバイトデータとして読み込み
                         content_bytes = await attachment.read()
+                        # UTF-8で文字列にデコード
                         full_content = content_bytes.decode('utf-8')
+                        # 最初の有効なテキストファイルが見つかった時点でループを抜ける
                         break
                     except Exception:
                         logger.error(f"添付ファイルの読み込みに失敗しました: {attachment.filename}", exc_info=True)
-                        await message.add_reaction("⚠️")
+                        await message.add_reaction("⚠️") # ファイル読み込み失敗のリアクション
                         return
 
+        # 最終的に処理すべきテキストがなければ終了
         if not full_content:
             return
 
@@ -181,7 +183,7 @@ class GenerativeAiLogCog(commands.Cog):
         date_str = date.strftime('%Y-%m-%d')
         return (
             f"# {title}\n\n"
-            f"- **Source:** Discord Log\n"
+            f"- **Source:** \n"
             f"- **作成日:** {date_str}\n\n"
             f"[[{date_str}]]\n\n"
             f"---\n\n"
@@ -195,7 +197,7 @@ class GenerativeAiLogCog(commands.Cog):
         self.dbx.files_upload(
             content.encode('utf-8'),
             path,
-            mode=WriteMode('add'),
+            mode=dropbox.files.WriteMode('add'),
             mute=True
         )
 
@@ -203,49 +205,32 @@ class GenerativeAiLogCog(commands.Cog):
         """その日のデイリーノートに、作成したログへのリンクを追記する"""
         daily_note_date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date_str}.md"
-        
-        # リンクのファイル名から拡張子 .md を除去
-        filename_for_link = filename[:-3]
-        link_to_add = f"- [[AI Logs/{filename_for_link}|{title}]]"
-        
-        section_header = "## Logs"
-        
-        daily_note_content = ""
+        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]\n"
+        section_header = "\n## Logs\n"
+
         try:
-            # 既存のデイリーノートをダウンロード
             _, res = self.dbx.files_download(daily_note_path)
-            daily_note_content = res.content.decode('utf-8')
-        except ApiError as e:
-            # デイリーノートが存在しない場合は新規作成のため、contentは空のまま
-            if isinstance(e.error, dropbox.files.DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                logger.info(f"デイリーノートが存在しないため、新規作成します: {daily_note_path}")
+            content = res.content.decode('utf-8')
+            
+            log_section_pattern = r'(##\s+Logs\s*\n)'
+            match = re.search(log_section_pattern, content)
+
+            if match:
+                insert_pos = match.end()
+                new_content = f"{content[:insert_pos]}{link_to_add}{content[insert_pos:]}"
             else:
-                # その他のDropbox APIエラーの場合は例外を再送出
+                new_content = f"{content.strip()}\n{section_header}{link_to_add}"
+
+        except dropbox.exceptions.ApiError as e:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                new_content = f"{section_header}{link_to_add}"
+            else:
                 raise
 
-        lines = daily_note_content.split('\n')
-        
-        try:
-            # "## Logs"セクションが存在する場合、そのセクションの最後にリンクを追記
-            header_index = lines.index(section_header)
-            insert_index = header_index + 1
-            # 既存のリスト項目の後に追加する
-            while insert_index < len(lines) and (lines[insert_index].strip().startswith('-') or lines[insert_index].strip() == ""):
-                insert_index += 1
-            lines.insert(insert_index, link_to_add)
-        except ValueError:
-            # "## Logs"セクションが存在しない場合、ファイルの末尾にセクションごと追加
-            if daily_note_content.strip(): # ファイルが空でなければ改行を追加
-                lines.append("")
-            lines.append(section_header)
-            lines.append(link_to_add)
-
-        # 更新されたコンテンツを結合してアップロード
-        new_content = "\n".join(lines)
         self.dbx.files_upload(
             new_content.encode('utf-8'),
             daily_note_path,
-            mode=WriteMode('overwrite'),
+            mode=dropbox.files.WriteMode('overwrite'),
             mute=True
         )
 
