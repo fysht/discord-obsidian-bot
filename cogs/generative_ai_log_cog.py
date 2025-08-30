@@ -9,15 +9,11 @@ from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 
 # --- ロガーの設定 ---
-# ログの出力形式を定義
 log_format = '%(asctime)s - %(levelname)s - %(message)s'
-# 基本的な設定を適用 (INFOレベル以上のログを出力)
 logging.basicConfig(level=logging.INFO, format=log_format)
-# このファイル用のロガーインスタンスを作成
 logger = logging.getLogger(__name__)
 
 # --- 定数 ---
-# 日本標準時 (JST) を定義
 JST = timezone(timedelta(hours=+9), 'JST')
 
 
@@ -45,7 +41,7 @@ class GenerativeAiLogCog(commands.Cog):
             logger.error("❌ Generative AI Log Cogの初期化中にエラーが発生しました。", exc_info=True)
 
     def _load_environment_variables(self):
-        """環境変数をインスタンス変数に読み込む。"""
+        """環境変数をインスタンス変数に読み込む"""
         self.channel_id = os.getenv("AI_LOG_CHANNEL_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
@@ -76,16 +72,37 @@ class GenerativeAiLogCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        """特定のチャンネルへのメッセージ投稿を監視するイベントリスナー"""
         if (not self.is_ready or
             message.author.bot or
-            str(message.channel.id) != self.channel_id or
-            not message.content):
+            str(message.channel.id) != self.channel_id):
             return
 
-        logger.info(f"📄 Processing message from {message.author.name} in #{message.channel.name}")
+        full_content = ""
+        source_type = ""
+
+        if message.content:
+            full_content = message.content
+            source_type = "Text"
+        elif message.attachments:
+            for attachment in message.attachments:
+                if attachment.filename.endswith('.txt'):
+                    try:
+                        source_type = f"File: {attachment.filename}"
+                        content_bytes = await attachment.read()
+                        full_content = content_bytes.decode('utf-8')
+                        break
+                    except Exception:
+                        logger.error(f"添付ファイルの読み込みに失敗しました: {attachment.filename}", exc_info=True)
+                        await message.add_reaction("⚠️")
+                        return
+
+        if not full_content:
+            return
+
+        logger.info(f"📄 Processing message from {message.author.name} (Source: {source_type})")
 
         try:
-            full_content = message.content
             separator = "\n---\n"
             title_part = ""
             body_part = ""
@@ -179,7 +196,7 @@ class GenerativeAiLogCog(commands.Cog):
     async def _add_link_to_daily_note(self, filename: str, title: str, date: datetime):
         """その日のデイリーノートに、作成したログへのリンクを追記する"""
         daily_note_date_str = date.strftime('%Y-%m-%d')
-        daily_note_path = f"{self.dropbox_vault_path}/Daily/{daily_note_date_str}.md"
+        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date_str}.md"
         link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]\n"
         section_header = "\n## Logs\n"
 
