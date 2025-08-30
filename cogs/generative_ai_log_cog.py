@@ -9,15 +9,11 @@ from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 
 # --- ロガーの設定 ---
-# ログの出力形式を定義
 log_format = '%(asctime)s - %(levelname)s - %(message)s'
-# 基本的な設定を適用 (INFOレベル以上のログを出力)
 logging.basicConfig(level=logging.INFO, format=log_format)
-# このファイル用のロガーインスタンスを作成
 logger = logging.getLogger(__name__)
 
 # --- 定数 ---
-# 日本標準時 (JST) を定義
 JST = timezone(timedelta(hours=+9), 'JST')
 
 
@@ -42,13 +38,11 @@ class GenerativeAiLogCog(commands.Cog):
             self.is_ready = True
             logger.info("✅ Generative AI Log Cog is loaded and ready.")
         except Exception:
-            # exc_info=Trueでエラーのトレースバック（詳細情報）をログに出力
             logger.error("❌ Generative AI Log Cogの初期化中にエラーが発生しました。", exc_info=True)
 
     def _load_environment_variables(self):
-        """環境変数をインスタンス変数に読み込む"""
+        """環境変数をインスタンス変数に読み込む。"""
         self.channel_id = os.getenv("AI_LOG_CHANNEL_ID")
-        # APIキーは使用するサービスに依存するため、名称はそのままにしています
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
@@ -64,7 +58,7 @@ class GenerativeAiLogCog(commands.Cog):
         return all(required_vars)
 
     def _initialize_dropbox_client(self) -> dropbox.Dropbox:
-        """Dropboxクライアントを初期化する。"""
+        """Dropboxクライアントを初期化する"""
         return dropbox.Dropbox(
             app_key=self.dropbox_app_key,
             app_secret=self.dropbox_app_secret,
@@ -79,21 +73,48 @@ class GenerativeAiLogCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """特定のチャンネルへのメッセージ投稿を監視するイベントリスナー"""
+        # Bot自身からのメッセージや、対象チャンネル以外からの投稿は無視
         if (not self.is_ready or
             message.author.bot or
-            str(message.channel.id) != self.channel_id or
-            not message.content):
+            str(message.channel.id) != self.channel_id):
             return
 
-        logger.info(f"📄 Processing message from {message.author.name} in #{message.channel.name}")
+        full_content = ""
+        source_type = ""
+
+        # 1. メッセージ本文からテキストを取得
+        if message.content:
+            full_content = message.content
+            source_type = "Text"
+        # 2. 本文が空なら、添付ファイルをチェック
+        elif message.attachments:
+            for attachment in message.attachments:
+                # テキストファイル（.txt）のみを対象とする
+                if attachment.filename.endswith('.txt'):
+                    try:
+                        source_type = f"File: {attachment.filename}"
+                        # 添付ファイルの内容をバイトデータとして読み込み
+                        content_bytes = await attachment.read()
+                        # UTF-8で文字列にデコード
+                        full_content = content_bytes.decode('utf-8')
+                        # 最初の有効なテキストファイルが見つかった時点でループを抜ける
+                        break
+                    except Exception:
+                        logger.error(f"添付ファイルの読み込みに失敗しました: {attachment.filename}", exc_info=True)
+                        await message.add_reaction("⚠️") # ファイル読み込み失敗のリアクション
+                        return
+
+        # 最終的に処理すべきテキストがなければ終了
+        if not full_content:
+            return
+
+        logger.info(f"📄 Processing message from {message.author.name} (Source: {source_type})")
 
         try:
-            full_content = message.content
             separator = "\n---\n"
             title_part = ""
             body_part = ""
 
-            # ---区切り線でタイトル部分と本文を分離
             if separator in full_content:
                 parts = full_content.split(separator, 1)
                 title_part = parts[0].strip()
@@ -101,10 +122,7 @@ class GenerativeAiLogCog(commands.Cog):
             else:
                 body_part = full_content.strip()
 
-            # AIによる解析（タイトルと要約の生成）
             ai_response = await self._generate_title_and_summary(full_content)
-            
-            # ユーザーが指定したタイトルがあればそちらを優先し、なければAIが生成したものを使用
             title = title_part if title_part else ai_response.get("title", "Untitled Log")
             summary = ai_response.get("summary", "No summary generated.")
 
@@ -117,19 +135,16 @@ class GenerativeAiLogCog(commands.Cog):
                 title=title, summary=summary, full_answer=body_part, date=now
             )
 
-            # Dropbox経由でObsidianに保存
             dropbox_path = f"{self.dropbox_vault_path}/AI Logs/{filename}"
             self._upload_to_dropbox(dropbox_path, markdown_content)
             logger.info(f"⬆️ Successfully uploaded to Dropbox: {dropbox_path}")
 
-            # デイリーノートにリンクを追記
             await self._add_link_to_daily_note(filename, title, now)
             logger.info("🔗 Successfully added link to the daily note.")
             
             await message.add_reaction("✅")
 
         except Exception:
-            # exc_info=Trueでエラーの詳細（トレースバック）をログに出力
             logger.error("❌ An error occurred while processing the message.", exc_info=True)
             await message.add_reaction("❌")
 
@@ -194,7 +209,6 @@ class GenerativeAiLogCog(commands.Cog):
         section_header = "\n## Logs\n"
 
         try:
-            # 既存のデイリーノートをダウンロード
             _, res = self.dbx.files_download(daily_note_path)
             content = res.content.decode('utf-8')
             
@@ -202,22 +216,17 @@ class GenerativeAiLogCog(commands.Cog):
             match = re.search(log_section_pattern, content)
 
             if match:
-                # Logsセクションが存在すれば、その直後にリンクを挿入
                 insert_pos = match.end()
                 new_content = f"{content[:insert_pos]}{link_to_add}{content[insert_pos:]}"
             else:
-                # なければ、ファイルの末尾にセクションごと追加
                 new_content = f"{content.strip()}\n{section_header}{link_to_add}"
 
         except dropbox.exceptions.ApiError as e:
             if e.error.is_path() and e.error.get_path().is_not_found():
-                # デイリーノートが存在しない場合は、セクションを含めて新規作成
                 new_content = f"{section_header}{link_to_add}"
             else:
-                # その他のDropbox APIエラーは再送出
                 raise
 
-        # 更新したデイリーノートをアップロード（上書き）
         self.dbx.files_upload(
             new_content.encode('utf-8'),
             daily_note_path,
