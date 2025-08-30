@@ -68,7 +68,6 @@ class GenerativeAiLogCog(commands.Cog):
     def _initialize_ai_model(self) -> genai.GenerativeModel:
         """生成AIモデルを初期化する"""
         genai.configure(api_key=self.gemini_api_key)
-        # モデル名はご自身の環境に合わせて調整してください
         return genai.GenerativeModel('gemini-2.5-pro')
 
     @commands.Cog.listener()
@@ -207,8 +206,11 @@ class GenerativeAiLogCog(commands.Cog):
         daily_note_date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date_str}.md"
         
-        # Obsidian形式のリンクを作成（末尾の改行は不要）
-        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]"
+        # re.subの置換文字列内でバックスラッシュがエラーを起こさないようにエスケープする
+        safe_title = title.replace('\\', '\\\\')
+
+        # Obsidian形式のリンクを作成（エスケープ済みのタイトルを使用）
+        link_to_add = f"- [[AI Logs/{filename[:-3]}|{safe_title}]]"
         
         # 見出しのテキスト
         section_header = "## Logs"
