@@ -100,25 +100,25 @@ class VoiceMemoCog(commands.Cog):
 
             model = genai.GenerativeModel("gemini-2.5-pro")
             prompt = (
-                "以下の文章は音声メモを文字起こししたものです。内容を理解し、重要なポイントを抽出して、箇条書きのMarkdown形式でまとめてください。\n\n"
+                "以下の文章は音声メモを文字起こししたものです。内容を理解し、重要なポイントを抽出して、箇条書きのMarkdown形式でまとめてください。\n"
+                "箇条書きの本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
                 f"---\n\n{transcribed_text}"
             )
             response = await model.generate_content_async(prompt)
-            formatted_text = response.text
+            formatted_text = response.text.strip()
 
-            # --- Dropboxへの書き込み処理 ---
             now = datetime.now(JST)
             daily_note_date = now.strftime('%Y-%m-%d')
             current_time = now.strftime('%H:%M')
             
+            # 箇条書きの各行をインデントして整形
+            content_lines = formatted_text.split('\n')
+            indented_content = "\n".join([f"\t{line.strip()}" for line in content_lines])
+
+            # 手入力メモと同様のフォーマットを作成
             content_to_append = (
-                f"\n\n---\n\n"
-                f"## 音声メモ ({current_time})\n\n"
-                f"{formatted_text}\n\n"
-                f"<details>\n"
-                f"<summary>文字起こし全文</summary>\n\n"
-                f"{transcribed_text}\n\n"
-                f"</details>"
+                f"\n- {current_time} (voice memo)\n"
+                f"{indented_content}"
             )
 
             with dropbox.Dropbox(
@@ -137,7 +137,9 @@ class VoiceMemoCog(commands.Cog):
                     else:
                         raise
 
-                new_content = daily_note_content + content_to_append
+                # ファイルの末尾に追記
+                new_content = daily_note_content.rstrip() + "\n" + content_to_append
+                
                 dbx.files_upload(
                     new_content.encode('utf-8'),
                     daily_note_path,
