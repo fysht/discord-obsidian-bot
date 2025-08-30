@@ -179,7 +179,7 @@ class GenerativeAiLogCog(commands.Cog):
     async def _add_link_to_daily_note(self, filename: str, title: str, date: datetime):
         """その日のデイリーノートに、作成したログへのリンクを追記する。"""
         daily_note_date_str = date.strftime('%Y-%m-%d')
-        daily_note_path = f"{self.dropbox_vault_path}/Daily/{daily_note_date_str}.md"
+        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date_str}.md"
         link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]\n"
         section_header = "\n## Logs\n"
 
