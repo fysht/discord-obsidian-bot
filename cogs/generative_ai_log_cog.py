@@ -3,12 +3,23 @@ import re
 import json
 import discord
 import dropbox
+import logging
 import google.generativeai as genai
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
 
+# --- ロガーの設定 ---
+# ログの出力形式を定義
+log_format = '%(asctime)s - %(levelname)s - %(message)s'
+# 基本的な設定を適用 (INFOレベル以上のログを出力)
+logging.basicConfig(level=logging.INFO, format=log_format)
+# このファイル用のロガーインスタンスを作成
+logger = logging.getLogger(__name__)
+
+# --- 定数 ---
 # 日本標準時 (JST) を定義
 JST = timezone(timedelta(hours=+9), 'JST')
+
 
 class GenerativeAiLogCog(commands.Cog):
     """
@@ -17,25 +28,21 @@ class GenerativeAiLogCog(commands.Cog):
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.is_ready = False  # 初期化状態を管理するフラグ
+        self.is_ready = False
 
-        # .envから設定を読み込み
         self._load_environment_variables()
 
-        # 必須の環境変数がすべて設定されているかチェック
         if not self._are_credentials_valid():
-            print("❌ Error: Generative AI Log Cogの必須環境変数が不足しています。このCogは無効化されます。")
+            logger.error("❌ Generative AI Log Cogの必須環境変数が不足しています。このCogは無効化されます。")
             return
 
-        # 各APIクライアントを初期化
         try:
             self.dbx = self._initialize_dropbox_client()
-            # 現在の実装はGoogle Generative AIに依存している
             self.ai_model = self._initialize_ai_model()
             self.is_ready = True
-            print("✅ Generative AI Log Cog is loaded and ready.")
-        except Exception as e:
-            print(f"❌ Error: Generative AI Log Cogの初期化中にエラーが発生しました: {e}")
+            logger.info("✅ Generative AI Log Cog is loaded and ready.")
+        except Exception:
+            logger.error("❌ Generative AI Log Cogの初期化中にエラーが発生しました。", exc_info=True)
 
     def _load_environment_variables(self):
         """環境変数をインスタンス変数に読み込む。"""
@@ -69,17 +76,15 @@ class GenerativeAiLogCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """特定のチャンネルへのメッセージ投稿を監視するイベントリスナー。"""
         if (not self.is_ready or
             message.author.bot or
             str(message.channel.id) != self.channel_id or
             not message.content):
             return
 
-        print(f"📄 Processing message from {message.author.name} in #{message.channel.name}")
+        logger.info(f"📄 Processing message from {message.author.name} in #{message.channel.name}")
 
         try:
-            # メッセージを質問（タイトル）と回答（本文）に分割
             full_content = message.content
             separator = "\n---\n"
             title_part = ""
@@ -92,9 +97,7 @@ class GenerativeAiLogCog(commands.Cog):
             else:
                 body_part = full_content.strip()
 
-            # AIによる解析（タイトルと要約の生成）
             ai_response = await self._generate_title_and_summary(full_content)
-            # ユーザーが指定したタイトルがあればそちらを優先
             title = title_part if title_part else ai_response.get("title", "Untitled Log")
             summary = ai_response.get("summary", "No summary generated.")
 
@@ -107,36 +110,31 @@ class GenerativeAiLogCog(commands.Cog):
                 title=title, summary=summary, full_answer=body_part, date=now
             )
 
-            # Dropbox経由でObsidianに保存
-            dropbox_path = f"{self.dropbox_vault_path}/AI Logs/{filename}" # 保存先フォルダ名を変更
+            dropbox_path = f"{self.dropbox_vault_path}/AI Logs/{filename}"
             self._upload_to_dropbox(dropbox_path, markdown_content)
-            print(f"⬆️ Successfully uploaded to Dropbox: {dropbox_path}")
+            logger.info(f"⬆️ Successfully uploaded to Dropbox: {dropbox_path}")
 
-            # デイリーノートにリンクを追記
             await self._add_link_to_daily_note(filename, title, now)
-            print(f"🔗 Successfully added link to the daily note.")
+            logger.info("🔗 Successfully added link to the daily note.")
             
             await message.add_reaction("✅")
 
-        except Exception as e:
-            print(f"❌ An error occurred while processing the message: {e}")
+        except Exception:
+            logger.error("❌ An error occurred while processing the message.", exc_info=True)
             await message.add_reaction("❌")
 
     async def _generate_title_and_summary(self, content: str) -> dict:
         """AIを呼び出し、テキストからタイトルと要約をJSON形式で生成する。"""
         prompt = f"""
         以下のテキストは、AIアシスタントとの会話ログです。この内容を分析し、Obsidianのノートとして保存するのに最適な「タイトル」と、内容の要点を3行程度でまとめた「要約」を生成してください。
-
         制約事項:
         - 出力は必ず下記のJSON形式でなければなりません。
         - JSON以外の説明文や前置きは一切含めないでください。
-
         出力形式:
         {{
             "title": "生成されたタイトル",
             "summary": "生成された要約"
         }}
-
         ---
         入力テキスト:
         {content}
@@ -158,7 +156,6 @@ class GenerativeAiLogCog(commands.Cog):
     def _create_markdown_content(self, title: str, summary: str, full_answer: str, date: datetime) -> str:
         """Obsidian保存用のMarkdownコンテンツを整形して生成する。"""
         date_str = date.strftime('%Y-%m-%d')
-        # --- で分割されたQ&A形式を考慮しないシンプルな形式に変更
         return (
             f"# {title}\n\n"
             f"- **Source:** \n"
@@ -173,7 +170,7 @@ class GenerativeAiLogCog(commands.Cog):
     def _upload_to_dropbox(self, path: str, content: str):
         """指定されたDropboxパスにコンテンツをアップロードする。"""
         self.dbx.files_upload(
-            content.encode('utf-f'),
+            content.encode('utf-8'),
             path,
             mode=dropbox.files.WriteMode('add'),
             mute=True
@@ -183,7 +180,7 @@ class GenerativeAiLogCog(commands.Cog):
         """その日のデイリーノートに、作成したログへのリンクを追記する。"""
         daily_note_date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/Daily/{daily_note_date_str}.md"
-        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]\n" # リンク先のパスを変更
+        link_to_add = f"- [[AI Logs/{filename[:-3]}|{title}]]\n"
         section_header = "\n## Logs\n"
 
         try:
@@ -213,5 +210,5 @@ class GenerativeAiLogCog(commands.Cog):
         )
 
 async def setup(bot: commands.Bot):
-    """Cogをボットに登録するためのセットアップ関数。"""
+    """Cogをボットに登録するためのセットアップ関数"""
     await bot.add_cog(GenerativeAiLogCog(bot))
