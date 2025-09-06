@@ -52,7 +52,7 @@ class AskCog(commands.Cog):
 
                 # 2. Gemini APIで回答を生成
                 logging.info("[AskCog] Gemini APIへの問い合わせを開始...")
-                model = genai.GenerativeModel("gemini-2.5-pro")
+                model = genai.GenerativeModel("gemini-2.5-flash")
                 
                 prompt = (
                     "あなたは私のアシスタントです。\n"
