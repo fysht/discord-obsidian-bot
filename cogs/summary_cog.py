@@ -36,14 +36,12 @@ class SummaryCog(commands.Cog):
         """サマリー生成のメインロジック。日付を指定して実行する"""
         
         sync_cog = self.bot.get_cog('SyncCog')
-        if sync_cog and hasattr(sync_cog, 'sync_lock') and not sync_cog.sync_lock.locked():
-            logging.info("【サマリー】サマリー生成前に、保留中のメモを同期します...")
-            # @tasks.loopで飾られたコルーチンを直接呼び出すのではなく、その実体を呼び出す
-            await sync_cog.auto_sync_loop.callback(sync_cog)
-            logging.info("【サマリー】同期が完了しました。")
+        if sync_cog:
+            logging.info("【サマリー】サマリー生成前に、保留中のメモを強制同期します...")
+            await sync_cog.force_sync()
+            logging.info("【サマリー】同期処理の完了を待機しました。")
         else:
-            logging.warning("【サマリー】現在、別の同期処理が実行中のため、10秒待機します...")
-            await asyncio.sleep(10)
+            logging.warning("【サマリー】SyncCogが見つからなかったため、同期をスキップします。")
         
         channel = self.bot.get_channel(self.memo_channel_id)
         if not channel:

@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 import dropbox
 from dropbox.exceptions import ApiError
 from dropbox.files import WriteMode
+import asyncio
+from discord.ext import commands, tasks
 
 # --- .env 読み込み ---
 load_dotenv()
@@ -24,120 +26,73 @@ sys.stdout.reconfigure(encoding='utf-8')
 
 # --- 基本設定 ---
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
-DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_VAULT_PATH = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault") 
-LAST_PROCESSED_ID_FILE_PATH = f"{DROPBOX_VAULT_PATH}/.bot/last_processed_id.txt"
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 
-def process_pending_memos():
-    """保留メモをDropbox上のDailyNoteに追加する"""
-    if not PENDING_MEMOS_FILE.exists():
-        return True
+class SyncCog(commands.Cog):
+    """定期的に外部の同期ワーカーを呼び出すCog"""
 
-    lock = FileLock(str(PENDING_MEMOS_FILE) + ".lock")
-    with lock:
-        try:
-            with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-                memos = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError, ValueError):
-            memos = []
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.worker_path = str(Path(__file__).resolve().parent.parent / "sync_worker.py")
+        self.sync_lock = asyncio.Lock()
+        self.logger = logging.getLogger(__name__)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Botの準備完了時にタスクを開始"""
+        self.logger.info("自動同期待機ループを開始します...")
+        if not self.auto_sync_loop.is_running():
+            self.auto_sync_loop.start()
+
+    def cog_unload(self):
+        """Cogのアンロード時にタスクをキャンセル"""
+        self.auto_sync_loop.cancel()
+
+    async def force_sync(self):
+        """
+        保留中のメモを強制的に同期します。
+        ロックを使用して、多重実行を防止します。
+        """
+        if self.sync_lock.locked():
+            self.logger.warning("【強制同期】現在、別の同期処理が実行中のため、今回の実行はスキップします。")
+            return
+
+        async with self.sync_lock:
+            self.logger.info("【強制同期】保留中のメモの同期処理を開始します...")
             
-        if not memos:
-            return True
+            if not PENDING_MEMOS_FILE.exists() or PENDING_MEMOS_FILE.stat().st_size == 0:
+                self.logger.info("【強制同期】保留中のメモはありませんでした。")
+                return
 
-        logging.info(f"[PROCESS] {len(memos)} 件のメモをDropboxに保存します...")
-        
-        try:
-            with dropbox.Dropbox(
-                oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
-                app_key=DROPBOX_APP_KEY,
-                app_secret=DROPBOX_APP_SECRET
-            ) as dbx:
-                dbx.check_user()
-                logging.info("[DROPBOX] Dropboxへの接続に成功しました。")
+            self.logger.info("【強制同期】未同期のメモを検出しました。同期ワーカーを呼び出します...")
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, self.worker_path,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await proc.communicate()
 
-                sorted_memos = sorted(memos, key=lambda m: int(m['id']))
-                memos_by_date = {}
-                for memo in sorted_memos:
-                    try:
-                        timestamp_utc = datetime.fromisoformat(memo['created_at'].replace('Z', ''))
-                        date_str = timestamp_utc.astimezone(JST).strftime('%Y-%m-%d')
-                        memos_by_date.setdefault(date_str, []).append(memo)
-                    except (KeyError, ValueError):
-                        pass
-                
-                all_success = True
-                for date_str, memos_in_date in memos_by_date.items():
-                    file_path = f"{DROPBOX_VAULT_PATH}/DailyNotes/{date_str}.md"
-                    current_content = ""
-                    try:
-                        _, res = dbx.files_download(file_path)
-                        current_content = res.content.decode('utf-8')
-                    except ApiError as e:
-                        if isinstance(e.error, dropbox.files.DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                            current_content = ""
-                            logging.info(f"[DROPBOX] {file_path} は存在しないため、新規作成します。")
-                        else:
-                            logging.error(f"[DROPBOX] {file_path} のダウンロードに失敗しました: {e}")
-                            all_success = False
-                            continue
-                    
-                    lines_to_append = []
-                    for memo in memos_in_date:
-                        time_str = datetime.fromisoformat(memo['created_at'].replace('Z', '')).astimezone(JST).strftime('%H:%M')
-                        content_lines = memo['content'].strip().split('\n')
-                        formatted_content = f"- {content_lines[0]}"
-                        if len(content_lines) > 1:
-                            formatted_content += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
-                        lines_to_append.append(f"- {time_str}\n\t{formatted_content}")
+                if proc.returncode == 0:
+                    log_output = stdout.decode('utf-8', 'ignore').strip()
+                    self.logger.info(f"【強制同期】ワーカーが正常に完了しました。\n--- ワーカーログ ---\n{log_output}\n--------------------")
+                else:
+                    error_output = stderr.decode('utf-8', 'ignore').strip()
+                    self.logger.error(f"【強制同期】ワーカーの実行に失敗しました (終了コード: {proc.returncode})。\n--- ワーカーエラーログ ---\n{error_output}\n--------------------------")
+            except Exception as e:
+                self.logger.error(f"【強制同期】ワーカーの呼び出し処理自体に失敗しました: {e}", exc_info=True)
 
-                    memo_header = "## Memo"
-                    lines = current_content.split('\n')
-                    
-                    try:
-                        # 既存の "## Memo" セクションを探す
-                        header_index = lines.index(memo_header)
-                        insert_index = header_index + 1
-                        # セクションの末尾（次の見出し or ファイルの終わり）まで進む
-                        while insert_index < len(lines) and not lines[insert_index].startswith('## '):
-                            insert_index += 1
-                        
-                        # 新しいメモを挿入
-                        for line in reversed(lines_to_append):
-                            lines.insert(insert_index, line)
 
-                    except ValueError:
-                        # "## Memo" セクションがない場合は、ファイルの末尾に追加
-                        if current_content.strip():
-                            lines.append("") # 空行を追加
-                        lines.append(memo_header)
-                        lines.extend(lines_to_append)
+    @tasks.loop(minutes=5)
+    async def auto_sync_loop(self):
+        """5分ごとに保留メモの同期を試みるループ"""
+        await self.force_sync()
 
-                    new_content = "\n".join(lines)
+    @auto_sync_loop.before_loop
+    async def before_auto_sync_loop(self):
+        """ループ開始前にBotの準備が整うのを待つ"""
+        await self.bot.wait_until_ready()
+        self.logger.info(f"自動同期ループを開始します（間隔: 5分、監視対象: {PENDING_MEMOS_FILE}）")
 
-                    dbx.files_upload(new_content.encode('utf-8'), file_path, mode=WriteMode('overwrite'))
-                    logging.info(f"[DROPBOX] {file_path} の更新に成功しました。")
-                
-                if all_success and sorted_memos:
-                    last_id = sorted_memos[-1]['id']
-                    dbx.files_upload(str(last_id).encode('utf-8'), LAST_PROCESSED_ID_FILE_PATH, mode=WriteMode('overwrite'))
-                    logging.info(f"[PROCESS] 最終処理IDをDropboxに保存しました: {last_id}")
-                
-                with open(PENDING_MEMOS_FILE, "w") as f:
-                    json.dump([], f)
-            
-            return all_success
 
-        except Exception as e:
-            logging.error(f"[DROPBOX] Dropbox処理中に予期せぬエラーが発生しました: {e}", exc_info=True)
-            return False
-
-def main():
-    if not process_pending_memos():
-        sys.exit(1)
-    logging.info("--- 同期ワーカー正常完了 ---")
-
-if __name__ == "__main__":
-    main()
+async def setup(bot: commands.Bot):
+    await bot.add_cog(SyncCog(bot))
