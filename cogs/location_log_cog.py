@@ -33,7 +33,7 @@ class LocationLogCog(commands.Cog):
         self.bot = bot
         # --- .envからの設定読み込み ---
         self.location_log_channel_id = int(os.getenv("LOCATION_LOG_CHANNEL_ID", 0))
-        self.json_path_in_dropbox = os.getenv("LOCATION_HISTORY_JSON_PATH") # ★ 新しい設定項目
+        self.json_path_in_dropbox = os.getenv("LOCATION_HISTORY_JSON_PATH")
         self.home_coordinates = self._parse_coordinates(os.getenv("HOME_COORDINATES"))
         self.work_coordinates = self._parse_coordinates(os.getenv("WORK_COORDINATES"))
         self.exclude_radius_meters = int(os.getenv("EXCLUDE_RADIUS_METERS", 500))
@@ -77,20 +77,17 @@ class LocationLogCog(commands.Cog):
 
         content = message.content.strip()
         
-        # メッセージが日付形式 (YYYY-MM or YYYY-MM-DD) かどうかをチェック
         if (date_match := DATE_RANGE_REGEX.match(content)):
             date_filter = date_match.group(0)
             
             await message.add_reaction("⏳")
             try:
-                # DropboxからマスターJSONファイルをダウンロード
                 json_data = await self._download_master_json()
                 if json_data:
                     await self._process_location_history(json_data, message, date_filter)
                 else:
                     await message.reply("❌ Dropboxからロケーション履歴ファイルを取得できませんでした。パスが正しいか確認してください。")
                     await message.add_reaction("❌")
-
             except Exception as e:
                 logging.error(f"ロケーション履歴の処理中にエラーが発生: {e}", exc_info=True)
                 await message.reply(f"❌ エラーが発生しました: {e}")
@@ -110,63 +107,92 @@ class LocationLogCog(commands.Cog):
 
     async def _process_location_history(self, data: dict, message: discord.Message, date_filter: str | None):
         """ロケーション履歴データを処理し、Obsidianに保存するメインロジック"""
+        
+        # ★ 新旧のJSON形式に対応
         timeline_objects = data.get("timelineObjects", [])
+        if not timeline_objects:
+            timeline_objects = data.get("semanticSegments", [])
+            logging.info("`timelineObjects`が見つからなかったため、`semanticSegments`を処理します。")
+
+        if not timeline_objects:
+            logging.warning("JSONファイル内に `timelineObjects` も `semanticSegments` も見つかりませんでした。")
+            await message.reply("❌ JSONファイルのデータ形式が不明です。処理を中断しました。")
+            return
+
         visits_by_date = {}
+        logging.info(f"合計 {len(timeline_objects)} 個のオブジェクトを処理します。フィルタ: {date_filter}")
 
-        for obj in timeline_objects:
-            if "placeVisit" in obj:
-                visit = obj["placeVisit"]
-                
-                start_time = datetime.fromtimestamp(int(visit["duration"]["startTimestampMs"]) / 1000, tz=JST)
-                
-                # 日付フィルタリング
-                if date_filter and not start_time.strftime('%Y-%m-%d').startswith(date_filter):
-                    continue
+        for i, obj in enumerate(timeline_objects):
+            if "placeVisit" not in obj:
+                continue
 
-                duration_ms = int(visit["duration"]["endTimestampMs"]) - int(visit["duration"]["startTimestampMs"])
-                
-                if duration_ms < 30 * 60 * 1000:
-                    continue
+            visit = obj["placeVisit"]
+            
+            # タイムスタンプのキーが異なる場合に対応
+            duration = visit.get("duration", {})
+            start_ts_ms_str = duration.get("startTimestampMs") or duration.get("startTimestamp")
+            end_ts_ms_str = duration.get("endTimestampMs") or duration.get("endTimestamp")
 
-                location = visit.get("location", {})
-                lat = location.get("latitudeE7", 0) / 1e7
-                lon = location.get("longitudeE7", 0) / 1e7
-                place_coords = (lat, lon)
+            if not start_ts_ms_str or not end_ts_ms_str:
+                logging.debug(f"[{i}] スキップ: タイムスタンプが不完全です。")
+                continue
+            
+            start_ts_ms = int(re.sub(r'\.\d+Z$', 'Z', start_ts_ms_str.replace('Z', ''))) if isinstance(start_ts_ms_str, str) else int(start_ts_ms_str)
+            end_ts_ms = int(re.sub(r'\.\d+Z$', 'Z', end_ts_ms_str.replace('Z', ''))) if isinstance(end_ts_ms_str, str) else int(end_ts_ms_str)
 
-                if self.home_coordinates and great_circle(place_coords, self.home_coordinates).meters < self.exclude_radius_meters:
-                    continue
-                if self.work_coordinates and great_circle(place_coords, self.work_coordinates).meters < self.exclude_radius_meters:
-                    continue
+            start_time = datetime.fromtimestamp(start_ts_ms / 1000, tz=JST)
+            
+            # 日付フィルタリング
+            if date_filter and not start_time.strftime('%Y-%m-%d').startswith(date_filter):
+                continue
+            
+            duration_ms = end_ts_ms - start_ts_ms
+            if duration_ms < 30 * 60 * 1000:
+                logging.debug(f"[{i}] スキップ: 滞在時間不足 ({duration_ms / 60000:.1f}分)")
+                continue
 
-                end_time = datetime.fromtimestamp(int(visit["duration"]["endTimestampMs"]) / 1000, tz=JST)
-                date_str = start_time.strftime('%Y-%m-%d')
-                
-                if date_str not in visits_by_date:
-                    visits_by_date[date_str] = []
+            location = visit.get("location", {})
+            lat = location.get("latitudeE7", 0) / 1e7
+            lon = location.get("longitudeE7", 0) / 1e7
+            place_coords = (lat, lon)
 
-                visits_by_date[date_str].append({
-                    "name": location.get("name", "名称不明の場所"),
-                    "start": start_time.strftime('%H:%M'),
-                    "end": end_time.strftime('%H:%M')
-                })
+            if self.home_coordinates and great_circle(place_coords, self.home_coordinates).meters < self.exclude_radius_meters:
+                logging.debug(f"[{i}] スキップ: 自宅の範囲内です。")
+                continue
+            if self.work_coordinates and great_circle(place_coords, self.work_coordinates).meters < self.exclude_radius_meters:
+                logging.debug(f"[{i}] スキップ: 勤務先の範囲内です。")
+                continue
+
+            end_time = datetime.fromtimestamp(end_ts_ms / 1000, tz=JST)
+            date_str = start_time.strftime('%Y-%m-%d')
+            
+            place_name = location.get("name", "名称不明の場所")
+            logging.info(f"✅ 発見: {date_str} {place_name} ({start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')})")
+            
+            if date_str not in visits_by_date:
+                visits_by_date[date_str] = []
+
+            visits_by_date[date_str].append({
+                "name": place_name,
+                "start": start_time.strftime('%H:%M'),
+                "end": end_time.strftime('%H:%M')
+            })
         
         if not visits_by_date:
             feedback = f"✅ 処理対象となる30分以上の滞在記録（自宅・勤務先以外）は見つかりませんでした。"
             if date_filter:
                 feedback += f" (期間: {date_filter})"
             await message.reply(feedback)
-            await message.remove_reaction("⏳", self.bot.user)
-            await message.add_reaction("✅")
-            return
+        else:
+            for date_str, visits in sorted(visits_by_date.items()):
+                log_entries = [f"- {v['name']} ({v['start']} - {v['end']})" for v in visits]
+                text_to_add = "\n".join(log_entries)
+                await self._save_data_to_obsidian(date_str, text_to_add)
+            
+            start_date = min(visits_by_date.keys())
+            end_date = max(visits_by_date.keys())
+            await message.reply(f"✅ ロケーション履歴の記録が完了しました！ (対象期間: {start_date} ~ {end_date})")
 
-        for date_str, visits in sorted(visits_by_date.items()):
-            log_entries = [f"- {v['name']} ({v['start']} - {v['end']})" for v in visits]
-            text_to_add = "\n".join(log_entries)
-            await self._save_data_to_obsidian(date_str, text_to_add)
-        
-        start_date = min(visits_by_date.keys())
-        end_date = max(visits_by_date.keys())
-        await message.reply(f"✅ ロケーション履歴の記録が完了しました！ (対象期間: {start_date} ~ {end_date})")
         await message.remove_reaction("⏳", self.bot.user)
         await message.add_reaction("✅")
     
