@@ -9,10 +9,13 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 from geopy.distance import great_circle
+import re
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-# 順序定義に "## Location Logs" を追加
+# 日付指定の正規表現 (YYYY-MM or YYYY-MM-DD)
+DATE_RANGE_REGEX = re.compile(r'^\d{4}-\d{2}(?:-\d{2})?$')
+
 SECTION_ORDER = [
     "## Health Metrics",
     "## Location Logs",
@@ -30,6 +33,7 @@ class LocationLogCog(commands.Cog):
         self.bot = bot
         # --- .envからの設定読み込み ---
         self.location_log_channel_id = int(os.getenv("LOCATION_LOG_CHANNEL_ID", 0))
+        self.json_path_in_dropbox = os.getenv("LOCATION_HISTORY_JSON_PATH") # ★ 新しい設定項目
         self.home_coordinates = self._parse_coordinates(os.getenv("HOME_COORDINATES"))
         self.work_coordinates = self._parse_coordinates(os.getenv("WORK_COORDINATES"))
         self.exclude_radius_meters = int(os.getenv("EXCLUDE_RADIUS_METERS", 500))
@@ -45,7 +49,7 @@ class LocationLogCog(commands.Cog):
 
     def _validate_and_init_clients(self):
         """環境変数のチェックとAPIクライアントの初期化を行う"""
-        if not all([self.location_log_channel_id, self.dropbox_refresh_token]):
+        if not all([self.location_log_channel_id, self.dropbox_refresh_token, self.json_path_in_dropbox]):
             return False
         
         self.dbx = dropbox.Dropbox(
@@ -67,30 +71,44 @@ class LocationLogCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """ファイルアップロードを監視し、JSONファイルが投稿されたら処理を開始する"""
+        """期間が投稿されたら、DropboxからJSONを読み込んで処理する"""
         if not self.is_ready or message.author.bot or message.channel.id != self.location_log_channel_id:
             return
 
-        if message.attachments:
-            attachment = message.attachments[0]
-            if attachment.filename.endswith('.json'):
-                await message.add_reaction("⏳")
-                try:
-                    json_data = await self._download_and_parse_json(attachment)
-                    if json_data:
-                        await self._process_location_history(json_data, message)
-                except Exception as e:
-                    logging.error(f"ロケーション履歴の処理中にエラーが発生: {e}", exc_info=True)
-                    await message.reply(f"❌ エラーが発生しました: {e}")
-                    await message.remove_reaction("⏳", self.bot.user)
+        content = message.content.strip()
+        
+        # メッセージが日付形式 (YYYY-MM or YYYY-MM-DD) かどうかをチェック
+        if (date_match := DATE_RANGE_REGEX.match(content)):
+            date_filter = date_match.group(0)
+            
+            await message.add_reaction("⏳")
+            try:
+                # DropboxからマスターJSONファイルをダウンロード
+                json_data = await self._download_master_json()
+                if json_data:
+                    await self._process_location_history(json_data, message, date_filter)
+                else:
+                    await message.reply("❌ Dropboxからロケーション履歴ファイルを取得できませんでした。パスが正しいか確認してください。")
                     await message.add_reaction("❌")
 
-    async def _download_and_parse_json(self, attachment: discord.Attachment) -> dict:
-        """添付ファイルをダウンロードしてJSONとして解析する"""
-        content_bytes = await attachment.read()
-        return json.loads(content_bytes.decode('utf-8'))
+            except Exception as e:
+                logging.error(f"ロケーション履歴の処理中にエラーが発生: {e}", exc_info=True)
+                await message.reply(f"❌ エラーが発生しました: {e}")
+                await message.remove_reaction("⏳", self.bot.user)
+                await message.add_reaction("❌")
 
-    async def _process_location_history(self, data: dict, message: discord.Message):
+    async def _download_master_json(self) -> dict | None:
+        """Dropboxの固定パスからマスターJSONファイルをダウンロードして解析する"""
+        logging.info(f"マスターJSONファイルをDropboxからダウンロードします: {self.json_path_in_dropbox}")
+        try:
+            _, res = self.dbx.files_download(self.json_path_in_dropbox)
+            content_bytes = res.content
+            return json.loads(content_bytes.decode('utf-8'))
+        except ApiError as e:
+            logging.error(f"マスターJSONファイルのダウンロードに失敗: {e}")
+            return None
+
+    async def _process_location_history(self, data: dict, message: discord.Message, date_filter: str | None):
         """ロケーション履歴データを処理し、Obsidianに保存するメインロジック"""
         timeline_objects = data.get("timelineObjects", [])
         visits_by_date = {}
@@ -98,9 +116,15 @@ class LocationLogCog(commands.Cog):
         for obj in timeline_objects:
             if "placeVisit" in obj:
                 visit = obj["placeVisit"]
+                
+                start_time = datetime.fromtimestamp(int(visit["duration"]["startTimestampMs"]) / 1000, tz=JST)
+                
+                # 日付フィルタリング
+                if date_filter and not start_time.strftime('%Y-%m-%d').startswith(date_filter):
+                    continue
+
                 duration_ms = int(visit["duration"]["endTimestampMs"]) - int(visit["duration"]["startTimestampMs"])
                 
-                # 滞在時間が30分未満の場合はスキップ
                 if duration_ms < 30 * 60 * 1000:
                     continue
 
@@ -109,15 +133,12 @@ class LocationLogCog(commands.Cog):
                 lon = location.get("longitudeE7", 0) / 1e7
                 place_coords = (lat, lon)
 
-                # 除外リストのチェック
                 if self.home_coordinates and great_circle(place_coords, self.home_coordinates).meters < self.exclude_radius_meters:
                     continue
                 if self.work_coordinates and great_circle(place_coords, self.work_coordinates).meters < self.exclude_radius_meters:
                     continue
 
-                start_time = datetime.fromtimestamp(int(visit["duration"]["startTimestampMs"]) / 1000, tz=JST)
                 end_time = datetime.fromtimestamp(int(visit["duration"]["endTimestampMs"]) / 1000, tz=JST)
-                
                 date_str = start_time.strftime('%Y-%m-%d')
                 
                 if date_str not in visits_by_date:
@@ -130,18 +151,19 @@ class LocationLogCog(commands.Cog):
                 })
         
         if not visits_by_date:
-            await message.reply("✅ 処理対象となる30分以上の滞在記録（自宅・勤務先以外）は見つかりませんでした。")
+            feedback = f"✅ 処理対象となる30分以上の滞在記録（自宅・勤務先以外）は見つかりませんでした。"
+            if date_filter:
+                feedback += f" (期間: {date_filter})"
+            await message.reply(feedback)
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
             return
 
-        # 日付ごとにデイリーノートを更新
         for date_str, visits in sorted(visits_by_date.items()):
             log_entries = [f"- {v['name']} ({v['start']} - {v['end']})" for v in visits]
             text_to_add = "\n".join(log_entries)
             await self._save_data_to_obsidian(date_str, text_to_add)
         
-        # フィードバック
         start_date = min(visits_by_date.keys())
         end_date = max(visits_by_date.keys())
         await message.reply(f"✅ ロケーション履歴の記録が完了しました！ (対象期間: {start_date} ~ {end_date})")
@@ -149,12 +171,10 @@ class LocationLogCog(commands.Cog):
         await message.add_reaction("✅")
     
     def _update_daily_note_with_ordered_section(self, current_content: str, text_to_add: str, section_header: str) -> str:
-        """fitbit_cog.pyから流用した、順序を維持してセクションを追加/更新する関数"""
         lines = current_content.split('\n')
         
         try:
             header_index = lines.index(section_header)
-            # 既存セクションの内容を新しい内容で置き換える（ヘッダーはそのまま）
             end_index = header_index + 1
             while end_index < len(lines) and not lines[end_index].strip().startswith('## '):
                 end_index += 1
@@ -162,7 +182,6 @@ class LocationLogCog(commands.Cog):
             lines.insert(header_index + 1, text_to_add)
             return "\n".join(lines)
         except ValueError:
-            # セクションが存在しない場合、正しい位置に新規作成
             new_section_with_header = f"\n{section_header}\n{text_to_add}"
             if not any(s in current_content for s in SECTION_ORDER):
                  return current_content.strip() + "\n" + new_section_with_header
@@ -171,10 +190,8 @@ class LocationLogCog(commands.Cog):
             try:
                 new_section_order_index = SECTION_ORDER.index(section_header)
             except ValueError:
-                # SECTION_ORDERにないヘッダーの場合は末尾に追加
                 return current_content.strip() + "\n" + new_section_with_header
 
-            # 挿入すべき位置を後ろから探す
             insert_after_index = -1
             for i in range(new_section_order_index - 1, -1, -1):
                 preceding_header = SECTION_ORDER[i]
@@ -189,7 +206,6 @@ class LocationLogCog(commands.Cog):
                 lines.insert(insert_after_index, new_section_with_header)
                 return "\n".join(lines).strip()
 
-            # 挿入すべき位置を前から探す
             insert_before_index = -1
             for i in range(new_section_order_index + 1, len(SECTION_ORDER)):
                 following_header = SECTION_ORDER[i]
@@ -201,11 +217,9 @@ class LocationLogCog(commands.Cog):
                 lines.insert(insert_before_index, new_section_with_header + "\n")
                 return "\n".join(lines).strip()
 
-            # どのセクションも見つからなければ末尾に追加
             return current_content.strip() + "\n" + new_section_with_header
 
     async def _save_data_to_obsidian(self, date_str: str, log_text: str):
-        """取得したデータをObsidianのデイリーノートに保存する"""
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
         
         try:
