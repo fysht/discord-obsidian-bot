@@ -1,7 +1,32 @@
-# Temporary files
-pending_memos.json
-last_message_id.txt
-
-# Secret file
+# ===================================================
+# Secret Files - 絶対に公開しないファイル
+# ===================================================
+# 環境変数ファイル (APIキーなど)
 .env
-client_secret.json
+
+# Google API 認証情報
+credentials.json
+token.json
+client_secret.json # credentials.json の別名として念のため記載
+
+# ===================================================
+# Python Cache & System Files - 実行時に自動生成されるファイル
+# ===================================================
+# Pythonのコンパイル済みキャッシュ
+__pycache__/
+*.pyc
+
+# OS固有のファイル (macOS)
+.DS_Store
+
+# ===================================================
+# Temporary Files - Botが一時的に作成するファイル
+# ===================================================
+# 保留中のメモ
+pending_memos.json
+
+# ファイルロック用の一時ファイル
+*.lock
+
+# 音声メモなど一時的にダウンロードするファイル
+temp_*
