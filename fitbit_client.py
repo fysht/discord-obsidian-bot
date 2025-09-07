@@ -1,9 +1,13 @@
 import os
-import fitbit
 import asyncio
-from datetime import date
 import logging
+from datetime import date
 from typing import Optional, Dict, Any
+import aiohttp
+import base64
+import dropbox
+from dropbox.exceptions import ApiError
+from dropbox.files import WriteMode
 
 class FitbitClient:
     """
@@ -12,58 +16,104 @@ class FitbitClient:
     def __init__(self, client_id: str, client_secret: str, refresh_token: str, user_id: str = "-"):
         self.client_id = client_id
         self.client_secret = client_secret
-        self.refresh_token = refresh_token
+        self.initial_refresh_token = refresh_token # 環境変数からの初期トークン
         self.user_id = user_id
-        self.client = self._create_client()
+        self.session = aiohttp.ClientSession()
         self.lock = asyncio.Lock()
+        
+        # Dropboxクライアントをトークン管理用に初期化
+        self.dbx = dropbox.Dropbox(os.getenv("DROPBOX_REFRESH_TOKEN"))
+        self.vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
+        self.token_path = f"{self.vault_path}/.bot/fitbit_refresh_token.txt"
 
-    def _token_refresher(self, token: Dict[str, Any]):
-        """
-        Fitbit APIから新しいアクセストークンが発行された際に呼び出されるコールバック
-        ここでは新しいリフレッシュトークンを保存する（今回は環境変数なので何もしない）
-        """
-        # NOTE: 本来は新しいリフレッシュトークンを永続化するが、今回は環境変数運用なので何もしない
-        logging.info("Fitbitのアクセストークンが更新されました。")
-        self.refresh_token = token['refresh_token']
+    async def _get_latest_refresh_token(self) -> str:
+        """Dropboxから最新のリフレッシュトークンを読み込む。なければ環境変数の初期値を使う"""
+        try:
+            _, res = self.dbx.files_download(self.token_path)
+            token = res.content.decode('utf-8').strip()
+            logging.info("Dropboxから最新のFitbitリフレッシュトークンを読み込みました。")
+            return token
+        except ApiError as e:
+            if e.error.is_path() and e.error.get_path().is_not_found():
+                logging.warning("Dropboxにトークンファイルが見つかりません。環境変数の初期トークンを使用します。")
+                return self.initial_refresh_token
+            else:
+                logging.error(f"Dropboxからのトークン読み込みに失敗: {e}")
+                return self.initial_refresh_token # エラー時もフォールバック
 
-    def _create_client(self) -> fitbit.Fitbit:
-        """fitbitクライアントのインスタンスを作成する"""
-        return fitbit.Fitbit(
-            self.client_id,
-            self.client_secret,
-            oauth2=True,
-            access_token=None,  # 初期はNoneでOK
-            refresh_token=self.refresh_token,
-            refresh_cb=self._token_refresher,
-        )
+    def _save_new_refresh_token(self, new_token: str):
+        """新しいリフレッシュトークンをDropboxに保存して永続化する"""
+        try:
+            self.dbx.files_upload(
+                new_token.encode('utf-8'),
+                self.token_path,
+                mode=WriteMode('overwrite')
+            )
+            logging.info(f"新しいFitbitリフレッシュトークンをDropboxに保存しました: {self.token_path}")
+        except Exception as e:
+            logging.error(f"Dropboxへのトークン保存に失敗しました: {e}", exc_info=True)
+
+    async def _get_access_token(self) -> Optional[str]:
+        """リフレッシュトークンを使って新しいアクセストークンを取得する"""
+        url = "https://api.fitbit.com/oauth2/token"
+        auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+        headers = {
+            "Authorization": f"Basic {auth_header}",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        # 常に最新のトークンをDropboxから取得して使用
+        current_refresh_token = await self._get_latest_refresh_token()
+        
+        payload = {
+            "grant_type": "refresh_token",
+            "refresh_token": current_refresh_token
+        }
+        
+        async with self.session.post(url, headers=headers, data=payload) as resp:
+            response_json = await resp.json()
+            
+            if resp.status == 200:
+                logging.info("アクセストークンの取得に成功しました。")
+                access_token = response_json.get("access_token")
+                new_refresh_token = response_json.get("refresh_token")
+                # 新しいリフレッシュトークンをDropboxに保存
+                self._save_new_refresh_token(new_refresh_token)
+                return access_token
+            else:
+                logging.error(f"トークン交換APIからのエラー (ステータス: {resp.status}): {response_json}")
+                return None
 
     async def get_sleep_data(self, target_date: date) -> Optional[Dict[str, Any]]:
-        """
-        指定された日付の睡眠データを取得する
-        API呼び出しは非同期で実行する
-        """
-        async with self.lock:
-            try:
-                loop = asyncio.get_running_loop()
-                # fitbitライブラリは非同期ではないため、executorで実行する
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: self.client.get_sleep(target_date)
-                )
+        access_token = await self._get_access_token()
+        if not access_token: return None
+        date_str = target_date.strftime('%Y-%m-%d')
+        url = f"https://api.fitbit.com/1.2/user/{self.user_id}/sleep/date/{date_str}.json"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        
+        async with self.session.get(url, headers=headers) as resp:
+            response_json = await resp.json()
+            if resp.status == 200 and response_json.get('sleep'):
+                logging.info(f"{target_date} の睡眠データを正常に取得しました。")
+                return max(response_json['sleep'], key=lambda x: x.get('minutesAsleep', 0))
+            else:
+                logging.error(f"睡眠データAPIからのエラー (ステータス: {resp.status}): {response_json}")
+                return None
 
-                if response and 'summary' in response and response.get('sleep'):
-                    # 必要な情報だけを抽出して返す
-                    main_sleep = response['sleep'][0] # 通常、最初のものがメインの睡眠
-                    return {
-                        "score": main_sleep.get("efficiency"), # API v1ではefficiencyがスコアに近い
-                        "timeInBed": main_sleep.get("timeInBed"),
-                        "minutesAsleep": main_sleep.get("minutesAsleep"),
-                        "efficiency": main_sleep.get("efficiency"),
-                        "levels": main_sleep.get("levels", {}).get("summary")
-                    }
-                else:
-                    logging.warning(f"Fitbit APIから {target_date} の有効な睡眠データが取得できませんでした。")
-                    return None
-            except Exception as e:
-                logging.error(f"Fitbit APIからの睡眠データ取得中にエラーが発生: {e}", exc_info=True)
+    async def get_activity_summary(self, target_date: date) -> Optional[Dict[str, Any]]:
+        access_token = await self._get_access_token()
+        if not access_token: return None
+        date_str = target_date.strftime('%Y-%m-%d')
+        url = f"https://api.fitbit.com/1/user/{self.user_id}/activities/date/{date_str}.json"
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        async with self.session.get(url, headers=headers) as resp:
+            response_json = await resp.json()
+            if resp.status == 200 and 'summary' in response_json:
+                logging.info(f"{target_date} の活動概要データを正常に取得しました。")
+                heart_rate_zones = response_json.get('summary', {}).get('heartRateZones', [])
+                response_json['summary']['heartRateZones'] = {zone['name']: zone for zone in heart_rate_zones}
+                return response_json
+            else:
+                logging.error(f"活動概要データAPIからのエラー (ステータス: {resp.status}): {response_json}")
                 return None
