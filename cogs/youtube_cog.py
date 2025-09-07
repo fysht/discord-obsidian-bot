@@ -14,6 +14,8 @@ import aiohttp
 import google.generativeai as genai
 from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
 
+from utils.obsidian_utils import update_section
+
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/)([a-zA-Z0-9_-]{11})')
@@ -228,29 +230,9 @@ class YouTubeCog(commands.Cog):
 
                 link_to_add = f"- [[YouTube/{note_filename_for_link}]]"
                 youtube_heading = "## YouTube Summaries"
-                webclips_heading = "## WebClips"
-
-                lines = daily_note_content.split('\n')
                 
-                try:
-                    heading_index = lines.index(youtube_heading)
-                    insert_index = heading_index + 1
-                    while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or lines[insert_index].strip() == ""):
-                        insert_index += 1
-                    lines.insert(insert_index, link_to_add)
-
-                except ValueError:
-                    new_youtube_section = f"\n{youtube_heading}\n{link_to_add}"
-                    try:
-                        webclips_heading_index = lines.index(webclips_heading)
-                        insert_index = webclips_heading_index + 1
-                        while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
-                            insert_index += 1
-                        lines.insert(insert_index, new_youtube_section)
-                    except ValueError:
-                        lines.insert(0, new_youtube_section)
-                
-                daily_note_content = "\n".join(lines)
+                # ★ 共通関数を呼び出すように変更
+                daily_note_content = update_section(daily_note_content, link_to_add, youtube_heading)
                 
                 dbx.files_upload(daily_note_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
 

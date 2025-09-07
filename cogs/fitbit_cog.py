@@ -13,15 +13,11 @@ from io import StringIO
 import asyncio
 
 from fitbit_client import FitbitClient
+from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 HEALTH_LOG_TIME = datetime.time(hour=8, minute=0, tzinfo=JST)
-SECTION_ORDER = [
-    "## Health Metrics", 
-    "## WebClips", "## YouTube Summaries",
-    "## AI Logs", "## Zero-Second Thinking", "## Memo"
-]
 
 class FitbitCog(commands.Cog):
     """Fitbitのデータを取得し、Obsidianへの記録とAIによる健康アドバイスを行うCog"""
@@ -113,48 +109,6 @@ class FitbitCog(commands.Cog):
         except yaml.YAMLError: pass
         return {}, content
 
-    def _update_daily_note_with_ordered_section(self, current_content: str, text_to_add: str, section_header: str) -> str:
-        lines = current_content.split('\n')
-        try:
-            header_index = lines.index(section_header)
-            end_index = header_index + 1
-            while end_index < len(lines) and not lines[end_index].strip().startswith('## '):
-                end_index += 1
-            del lines[header_index + 1 : end_index]
-            lines.insert(header_index + 1, text_to_add)
-            return "\n".join(lines)
-        except ValueError:
-            new_section_with_header = f"\n{section_header}\n{text_to_add}"
-            if not any(s in current_content for s in SECTION_ORDER):
-                 return current_content.strip() + "\n" + new_section_with_header
-            existing_sections = {line.strip(): i for i, line in enumerate(lines) if line.strip() in SECTION_ORDER}
-            try:
-                new_section_order_index = SECTION_ORDER.index(section_header)
-            except ValueError:
-                 return current_content.strip() + "\n" + new_section_with_header
-            insert_after_index = -1
-            for i in range(new_section_order_index - 1, -1, -1):
-                preceding_header = SECTION_ORDER[i]
-                if preceding_header in existing_sections:
-                    header_line_index = existing_sections[preceding_header]
-                    insert_after_index = header_line_index + 1
-                    while insert_after_index < len(lines) and not lines[insert_after_index].strip().startswith('## '):
-                        insert_after_index += 1
-                    break
-            if insert_after_index != -1:
-                lines.insert(insert_after_index, new_section_with_header)
-                return "\n".join(lines).strip()
-            insert_before_index = -1
-            for i in range(new_section_order_index + 1, len(SECTION_ORDER)):
-                following_header = SECTION_ORDER[i]
-                if following_header in existing_sections:
-                    insert_before_index = existing_sections[following_header]
-                    break
-            if insert_before_index != -1:
-                lines.insert(insert_before_index, new_section_with_header + "\n")
-                return "\n".join(lines).strip()
-            return current_content.strip() + "\n" + new_section_with_header
-
     async def _save_data_to_obsidian(self, target_date: datetime.date, sleep_data: dict, activity_data: dict, advice_text: str):
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{target_date.strftime('%Y-%m-%d')}.md"
         
@@ -228,8 +182,8 @@ class FitbitCog(commands.Cog):
                 f"{advice_text}"
             )
             metrics_sections.append(ai_coach_text)
-
-        new_body = self._update_daily_note_with_ordered_section(body, "\n\n".join(metrics_sections), "## Health Metrics")
+        
+        new_body = update_section(body, "\n\n".join(metrics_sections), "## Health Metrics")
         
         new_daily_content = f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False)}---\n\n{new_body}"
         

@@ -7,6 +7,9 @@ import logging
 import google.generativeai as genai
 from discord.ext import commands
 from datetime import datetime, timezone, timedelta
+import asyncio
+
+from utils.obsidian_utils import update_section
 
 # --- ロガーの設定 ---
 log_format = '%(asctime)s - %(levelname)s - %(message)s'
@@ -15,14 +18,6 @@ logger = logging.getLogger(__name__)
 
 # --- 定数 ---
 JST = timezone(timedelta(hours=+9), 'JST')
-SECTION_ORDER = [
-    "## WebClips",
-    "## YouTube Summaries",
-    "## AI Logs",
-    "## Zero-Second Thinking",
-    "## Memo"
-]
-
 
 class GenerativeAiLogCog(commands.Cog):
     """
@@ -122,7 +117,6 @@ class GenerativeAiLogCog(commands.Cog):
                 question_part = "（質問なし）"
                 answer_part = full_content.strip()
 
-            # タイトルと要約、記事を並行して生成
             title_summary_task = self._generate_title_and_summary(full_content)
             article_task = self._generate_article(full_content)
             
@@ -235,54 +229,6 @@ class GenerativeAiLogCog(commands.Cog):
             mute=True
         )
 
-    def _update_daily_note_with_ordered_section(self, current_content: str, link_to_add: str, section_header: str) -> str:
-        """定義された順序に基づいてデイリーノートのコンテンツを更新する"""
-        lines = current_content.split('\n')
-        
-        # セクションが既に存在するか確認
-        try:
-            header_index = lines.index(section_header)
-            insert_index = header_index + 1
-            while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or not lines[insert_index].strip()):
-                insert_index += 1
-            lines.insert(insert_index, link_to_add)
-            return "\n".join(lines)
-        except ValueError:
-            # セクションが存在しない場合、正しい位置に新規作成
-            existing_sections = {line.strip(): i for i, line in enumerate(lines) if line.strip() in SECTION_ORDER}
-            
-            insert_after_index = -1
-            new_section_order_index = SECTION_ORDER.index(section_header)
-            for i in range(new_section_order_index - 1, -1, -1):
-                preceding_header = SECTION_ORDER[i]
-                if preceding_header in existing_sections:
-                    header_line_index = existing_sections[preceding_header]
-                    insert_after_index = header_line_index + 1
-                    while insert_after_index < len(lines) and not lines[insert_after_index].strip().startswith('## '):
-                        insert_after_index += 1
-                    break
-            
-            if insert_after_index != -1:
-                lines.insert(insert_after_index, f"\n{section_header}\n{link_to_add}")
-                return "\n".join(lines)
-
-            insert_before_index = -1
-            for i in range(new_section_order_index + 1, len(SECTION_ORDER)):
-                following_header = SECTION_ORDER[i]
-                if following_header in existing_sections:
-                    insert_before_index = existing_sections[following_header]
-                    break
-            
-            if insert_before_index != -1:
-                lines.insert(insert_before_index, f"{section_header}\n{link_to_add}\n")
-                return "\n".join(lines)
-
-            if current_content.strip():
-                 lines.append("")
-            lines.append(section_header)
-            lines.append(link_to_add)
-            return "\n".join(lines)
-
     async def _add_link_to_daily_note(self, filename: str, title: str, date: datetime):
         """その日のデイリーノートに、作成したログへのリンクを追記する"""
         daily_note_date_str = date.strftime('%Y-%m-%d')
@@ -299,7 +245,7 @@ class GenerativeAiLogCog(commands.Cog):
             else:
                 raise
 
-        new_content = self._update_daily_note_with_ordered_section(content, link_to_add, section_header)
+        new_content = update_section(content, link_to_add, section_header)
 
         self.dbx.files_upload(
             new_content.encode('utf-8'),

@@ -13,19 +13,13 @@ from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import re
 
+from utils.obsidian_utils import update_section
+
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SUPPORTED_AUDIO_TYPES = [
     'audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm'
 ]
-SECTION_ORDER = [
-    "## WebClips",
-    "## YouTube Summaries",
-    "## AI Logs",
-    "## Zero-Second Thinking",
-    "## Memo"
-]
-
 
 class ZeroSecondThinkingCog(commands.Cog):
     """
@@ -158,51 +152,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             logging.error(f"[Zero-Second Thinking] Failed to dig deeper: {e}", exc_info=True)
             await message.channel.send(f"エラーが発生しました: {e}")
 
-    def _update_daily_note_with_ordered_section(self, current_content: str, link_to_add: str, section_header: str) -> str:
-        """定義された順序に基づいてデイリーノートのコンテンツを更新する"""
-        lines = current_content.split('\n')
-        
-        try:
-            header_index = lines.index(section_header)
-            insert_index = header_index + 1
-            while insert_index < len(lines) and (lines[insert_index].strip().startswith('- ') or not lines[insert_index].strip()):
-                insert_index += 1
-            lines.insert(insert_index, link_to_add)
-            return "\n".join(lines)
-        except ValueError:
-            existing_sections = {line.strip(): i for i, line in enumerate(lines) if line.strip() in SECTION_ORDER}
-            
-            insert_after_index = -1
-            new_section_order_index = SECTION_ORDER.index(section_header)
-            for i in range(new_section_order_index - 1, -1, -1):
-                preceding_header = SECTION_ORDER[i]
-                if preceding_header in existing_sections:
-                    header_line_index = existing_sections[preceding_header]
-                    insert_after_index = header_line_index + 1
-                    while insert_after_index < len(lines) and not lines[insert_after_index].strip().startswith('## '):
-                        insert_after_index += 1
-                    break
-            
-            if insert_after_index != -1:
-                lines.insert(insert_after_index, f"\n{section_header}\n{link_to_add}")
-                return "\n".join(lines)
-
-            insert_before_index = -1
-            for i in range(new_section_order_index + 1, len(SECTION_ORDER)):
-                following_header = SECTION_ORDER[i]
-                if following_header in existing_sections:
-                    insert_before_index = existing_sections[following_header]
-                    break
-            
-            if insert_before_index != -1:
-                lines.insert(insert_before_index, f"{section_header}\n{link_to_add}\n")
-                return "\n".join(lines)
-
-            if current_content.strip():
-                 lines.append("")
-            lines.append(section_header)
-            lines.append(link_to_add)
-            return "\n".join(lines)
+    # ★ _update_daily_note_with_ordered_section 関数を削除
 
     async def _process_thinking_memo(self, message: discord.Message, attachment: discord.Attachment):
         """音声メモを処理し、思考を記録するコアロジック"""
@@ -289,7 +239,7 @@ class ZeroSecondThinkingCog(commands.Cog):
                     link_to_add = f"- [[Zero-Second Thinking/{note_filename_for_link}]]"
                     section_header = "## Zero-Second Thinking"
 
-                    new_daily_content = self._update_daily_note_with_ordered_section(
+                    new_daily_content = update_section(
                         daily_note_content, link_to_add, section_header
                     )
                     

@@ -12,15 +12,12 @@ from geopy.distance import great_circle
 import re
 import googlemaps
 
+from utils.obsidian_utils import update_section
+
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 # 期間指定(YYYY-MM-DD~YYYY-MM-DD)も可能な正規表現
 DATE_RANGE_REGEX = re.compile(r'^(\d{4}-\d{2}(?:-\d{2})?)(?:~(\d{4}-\d{2}-\d{2}))?$')
-
-SECTION_ORDER = [
-    "## Health Metrics", "## Location Logs", "## WebClips", "## YouTube Summaries",
-    "## AI Logs", "## Zero-Second Thinking", "## Memo"
-]
 
 # 絵文字を削除した移動手段の辞書
 ACTIVITY_TYPE_MAP = {
@@ -231,46 +228,6 @@ class LocationLogCog(commands.Cog):
         await message.remove_reaction("⏳", self.bot.user)
         await message.add_reaction("✅")
 
-    def _update_daily_note_with_ordered_section(self, current_content: str, text_to_add: str, section_header: str) -> str:
-        lines = current_content.split('\n')
-        try:
-            header_index = lines.index(section_header)
-            end_index = header_index + 1
-            while end_index < len(lines) and not lines[end_index].strip().startswith('## '):
-                end_index += 1
-            del lines[header_index + 1 : end_index]
-            lines.insert(header_index + 1, text_to_add)
-            return "\n".join(lines)
-        except ValueError:
-            new_section_with_header = f"\n{section_header}\n{text_to_add}"
-            if not any(s in current_content for s in SECTION_ORDER):
-                 return current_content.strip() + new_section_with_header
-            existing_sections = {line.strip(): i for i, line in enumerate(lines) if line.strip() in SECTION_ORDER}
-            try: new_section_order_index = SECTION_ORDER.index(section_header)
-            except ValueError: return current_content.strip() + new_section_with_header
-            insert_after_index = -1
-            for i in range(new_section_order_index - 1, -1, -1):
-                preceding_header = SECTION_ORDER[i]
-                if preceding_header in existing_sections:
-                    header_line_index = existing_sections[preceding_header]
-                    insert_after_index = header_line_index + 1
-                    while insert_after_index < len(lines) and not lines[insert_after_index].strip().startswith('## '):
-                        insert_after_index += 1
-                    break
-            if insert_after_index != -1:
-                lines.insert(insert_after_index, new_section_with_header)
-                return "\n".join(lines).strip()
-            insert_before_index = -1
-            for i in range(new_section_order_index + 1, len(SECTION_ORDER)):
-                following_header = SECTION_ORDER[i]
-                if following_header in existing_sections:
-                    insert_before_index = existing_sections[following_header]
-                    break
-            if insert_before_index != -1:
-                lines.insert(insert_before_index, new_section_with_header + "\n")
-                return "\n".join(lines).strip()
-            return current_content.strip() + new_section_with_header
-
     async def _save_data_to_obsidian(self, date_str: str, log_text: str):
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
         try:
@@ -280,7 +237,8 @@ class LocationLogCog(commands.Cog):
             if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                 current_content = ""
             else: raise
-        new_daily_content = self._update_daily_note_with_ordered_section(
+        
+        new_daily_content = update_section(
             current_content, log_text, "## Location Logs"
         )
         self.dbx.files_upload(
