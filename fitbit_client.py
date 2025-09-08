@@ -21,7 +21,6 @@ class FitbitClient:
         self.session = aiohttp.ClientSession()
         self.lock = asyncio.Lock()
         
-        # Dropboxクライアントを引数で受け取る
         self.dbx = dbx
         
         self.vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
@@ -40,7 +39,7 @@ class FitbitClient:
                 return self.initial_refresh_token
             else:
                 logging.error(f"Dropboxからのトークン読み込みに失敗: {e}")
-                return self.initial_refresh_token # エラー時もフォールバック
+                return self.initial_refresh_token
 
     def _save_new_refresh_token(self, new_token: str):
         """新しいリフレッシュトークンをDropboxに保存して永続化する"""
@@ -63,7 +62,6 @@ class FitbitClient:
             "Content-Type": "application/x-www-form-urlencoded"
         }
         
-        # 常に最新のトークンをDropboxから取得して使用
         current_refresh_token = await self._get_latest_refresh_token()
         
         payload = {
@@ -78,7 +76,6 @@ class FitbitClient:
                 logging.info("アクセストークンの取得に成功しました。")
                 access_token = response_json.get("access_token")
                 new_refresh_token = response_json.get("refresh_token")
-                # 新しいリフレッシュトークンをDropboxに保存
                 self._save_new_refresh_token(new_refresh_token)
                 return access_token
             else:
@@ -96,7 +93,15 @@ class FitbitClient:
             response_json = await resp.json()
             if resp.status == 200 and response_json.get('sleep'):
                 logging.info(f"{target_date} の睡眠データを正常に取得しました。")
+                
+                # isMainがtrueのものを探す
+                for sleep_log in response_json['sleep']:
+                    if sleep_log.get('isMain'):
+                        return sleep_log
+                
+                # isMainがない場合、最も長い睡眠を返す (フォールバック)
                 return max(response_json['sleep'], key=lambda x: x.get('minutesAsleep', 0))
+
             else:
                 logging.error(f"睡眠データAPIからのエラー (ステータス: {resp.status}): {response_json}")
                 return None

@@ -3,7 +3,6 @@ import json
 import logging
 import asyncio
 from datetime import datetime, time, timedelta, timezone
-import time
 
 import discord
 from discord.ext import commands, tasks
