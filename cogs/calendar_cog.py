@@ -209,7 +209,7 @@ class CalendarCog(commands.Cog):
                 _, res = self.dbx.files_download(log_path)
                 daily_events = json.loads(res.content.decode('utf-8'))
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path().is_not_found():
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     logging.info(f"[CalendarCog] {today_str} の通知ログは見つかりませんでした。")
                     return
                 raise
@@ -372,7 +372,7 @@ class CalendarCog(commands.Cog):
             data = json.loads(res.content.decode('utf-8'))
             return set(data.get('processed_ids', []))
         except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path().is_not_found():
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                 return set()
             logging.error(f"処理済みイベントIDファイルの読み込みに失敗: {e}")
             return set()
@@ -399,7 +399,7 @@ class CalendarCog(commands.Cog):
             _, res = self.dbx.files_download(log_path)
             daily_events = json.loads(res.content.decode('utf-8'))
         except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path().is_not_found():
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                 daily_events = []
             else:
                 logging.error(f"デイリーログの読み込みに失敗: {e}")
@@ -435,7 +435,7 @@ class CalendarCog(commands.Cog):
                 _, res = self.dbx.files_download(daily_note_path)
                 current_content = res.content.decode('utf-8')
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path().is_not_found():
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     current_content = "" # ファイルがなければ新規作成
                 else: raise
 
@@ -460,7 +460,7 @@ class CalendarCog(commands.Cog):
                 _, res = self.dbx.files_download(daily_note_path)
                 current_content = res.content.decode('utf-8')
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path().is_not_found():
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     current_content = ""
                 else: raise
 
