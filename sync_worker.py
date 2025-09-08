@@ -11,6 +11,10 @@ import dropbox
 from dropbox.exceptions import ApiError
 from dropbox.files import WriteMode
 
+# utils.obsidian_utilsからupdate_sectionをインポート
+# sys.path.append(str(Path(__file__).resolve().parent))
+from utils.obsidian_utils import update_section
+
 # --- .env 読み込み ---
 load_dotenv()
 
@@ -87,15 +91,17 @@ def process_pending_memos():
                     for memo in memos_in_date:
                         time_str = datetime.fromisoformat(memo['created_at'].replace('Z', '')).astimezone(JST).strftime('%H:%M')
                         content_lines = memo['content'].strip().split('\n')
-                        formatted_content = f"- {content_lines[0]}"
+                        
+                        # 箇条書きを整形
+                        formatted_lines = [f"- {current_time} {content_lines[0]}"]
                         if len(content_lines) > 1:
-                            formatted_content += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
-                        lines_to_append.append(f"- {time_str}\n\t{formatted_content}")
+                            for line in content_lines[1:]:
+                                formatted_lines.append(f"\t- {line}")
+                        lines_to_append.append("\n".join(formatted_lines))
 
-                    new_content = current_content
-                    if new_content and not new_content.endswith("\n"):
-                        new_content += "\n\n"
-                    new_content += "\n".join(lines_to_append)
+                    # update_sectionを使って "## Memo" の下に追記
+                    memos_as_text = "\n".join(lines_to_append)
+                    new_content = update_section(current_content, memos_as_text, "## Memo")
 
                     dbx.files_upload(new_content.encode('utf-8'), file_path, mode=WriteMode('overwrite'))
                     logging.info(f"[DROPBOX] {file_path} の更新に成功しました。")
@@ -105,7 +111,6 @@ def process_pending_memos():
                     dbx.files_upload(str(last_id).encode('utf-8'), LAST_PROCESSED_ID_FILE_PATH, mode=WriteMode('overwrite'))
                     logging.info(f"[PROCESS] 最終処理IDをDropboxに保存しました: {last_id}")
                 
-                # 処理が成功したので一時ファイルを空にする
                 with open(PENDING_MEMOS_FILE, "w") as f:
                     json.dump([], f)
             
