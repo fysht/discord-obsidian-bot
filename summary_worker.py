@@ -61,19 +61,22 @@ def generate_summary(date_str: str):
             
             prompt = f"""
             あなたは私の成長をサポートするコーチです。
-            以下の断片的なメモ群から、今日一日の経験から学びや気づきを抽出し、自己理解を深めるためのサマリーを作成してください。
-            私の思考や感情を読み取り、以下の観点で整理してください。
-            - 今日のハイライト
-            - 新しい学び・気づき
-            - 感情の動き
-            - 課題と改善点
-            - 明日試してみたいこと
+            以下の断片的なメモ群から、自己理解を深めるためのシンプルなサマリーを作成してください。
+
+            # 指示
+            - サマリーは簡潔に、最も重要なポイントに絞ってください。
+            - 以下の英語の見出しを使用してください。
+            - 挨拶や前置きは一切含めず、本文のみを生成してください。
+
+            # 出力フォーマット
+            - **Highlights**: 今日の最も重要な出来事や感情
+            - **Key Learnings**: 最も重要な学びや気づき
+            - **Action Items**: 今日の経験から明日試すべきこと一つ
 
             # 本日のメモ
             {notes}
             """
             
-            # 安全な応答の取得
             response = model.generate_content(prompt)
             if not response.candidates:
                 print("ERROR: AIからの応答がありませんでした（安全フィルタの可能性）。")
@@ -81,7 +84,8 @@ def generate_summary(date_str: str):
             
             summary_text = ''.join(part.text for part in response.candidates[0].content.parts)
 
-            summary_to_append = f"\n\n## 本日のサマリー\n{summary_text}"
+            # Daily Summaryの見出しを英語に変更
+            summary_to_append = f"\n\n## Daily Summary\n{summary_text}"
             new_content = notes + summary_to_append
             
             dbx.files_upload(
