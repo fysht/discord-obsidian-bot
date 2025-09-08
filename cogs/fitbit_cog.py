@@ -17,8 +17,7 @@ from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-# 実行時間を午前9時に変更（データ同期の完了を待つため）
-HEALTH_LOG_TIME = datetime.time(hour=21, minute=0, tzinfo=JST)
+HEALTH_LOG_TIME = datetime.time(hour=21, minute=30, tzinfo=JST)
 
 class FitbitCog(commands.Cog):
     """Fitbitのデータを取得し、Obsidianへの記録とAIによる健康アドバイスを行うCog"""
@@ -46,12 +45,12 @@ class FitbitCog(commands.Cog):
                     self.health_log_channel_id, self.dropbox_refresh_token, self.gemini_api_key]):
             return False
         try:
-            self.fitbit_client = FitbitClient(
-                self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token, self.fitbit_user_id
-            )
             self.dbx = dropbox.Dropbox(
                 oauth2_refresh_token=self.dropbox_refresh_token,
                 app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret
+            )
+            self.fitbit_client = FitbitClient(
+                self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token, self.dbx, self.fitbit_user_id
             )
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
@@ -84,7 +83,6 @@ class FitbitCog(commands.Cog):
         try:
             target_date = datetime.datetime.now(JST).date() - datetime.timedelta(days=1)
             
-            # データを並行して取得
             sleep_data, activity_data = await asyncio.gather(
                 self.fitbit_client.get_sleep_data(target_date),
                 self.fitbit_client.get_activity_summary(target_date)
@@ -109,7 +107,6 @@ class FitbitCog(commands.Cog):
             logging.error(f"FitbitCog: 定期タスクの実行中にエラーが発生しました: {e}", exc_info=True)
             if channel:
                 await channel.send(f"FitbitCog: 定期タスクの実行中にエラーが発生しました。\n```\n{e}\n```")
-
 
     def _parse_note_content(self, content: str) -> (dict, str):
         try:
@@ -205,7 +202,7 @@ class FitbitCog(commands.Cog):
         today_sleep_text = ""
         if sleep_data:
             today_sleep_text = (f"今日の睡眠: スコア {sleep_data.get('efficiency', 'N/A')}, "
-                              f"合計睡眠時間 {self._format_minutes(sleep_data.get('minutesAsleep', 'N/A'))}")
+                              f"合計睡眠時間 {self._format_minutes(sleep_data.get('minutesAsleep', 0))}")
         today_activity_text = ""
         if activity_data:
             summary = activity_data.get('summary', {})

@@ -3,6 +3,7 @@ import json
 import logging
 import asyncio
 from datetime import datetime, time, timedelta, timezone
+import time
 
 import discord
 from discord.ext import commands, tasks
@@ -155,7 +156,7 @@ class CalendarCog(commands.Cog):
 
             for event in new_events:
                 advice = await self._generate_event_advice(event)
-                embed = self._create_event_embed(event, advice)
+                embed = await self._create_event_embed(event, advice)
                 await channel.send(embed=embed)
                 processed_ids.add(event['id'])
                 await self._add_to_daily_log(event) # 今日の通知ログに追加
@@ -285,6 +286,16 @@ class CalendarCog(commands.Cog):
 
     # --- ヘルパー関数 ---
 
+    async def _summarize_text(self, text: str, max_length: int = 1000) -> str:
+        """テキストが長すぎる場合にAIで要約する"""
+        try:
+            prompt = f"以下のテキストを、Discordで表示するために{max_length}文字以内で簡潔に要約してください:\n\n---\n{text}"
+            response = await self.gemini_model.generate_content_async(prompt)
+            return response.text
+        except Exception as e:
+            logging.error(f"テキストの要約に失敗: {e}")
+            return text[:max_length] + "..."
+
     async def _generate_event_advice(self, event: dict) -> str:
         """個別のイベントに対するAIアドバイスを生成する"""
         try:
@@ -326,7 +337,7 @@ class CalendarCog(commands.Cog):
             logging.error(f"総合アドバイスの生成に失敗: {e}")
             return "アドバイスの生成中にエラーが発生しました。"
 
-    def _create_event_embed(self, event: dict, advice: str) -> discord.Embed:
+    async def _create_event_embed(self, event: dict, advice: str) -> discord.Embed:
         """直近の予定通知用のEmbedを作成する"""
         start_str = self._format_datetime(event.get('start'))
         end_str = self._format_datetime(event.get('end'))
@@ -336,9 +347,17 @@ class CalendarCog(commands.Cog):
             color=discord.Color.blue()
         )
         embed.add_field(name="時間", value=f"{start_str} - {end_str}", inline=False)
-        if event.get('description'):
-            embed.add_field(name="説明", value=event['description'], inline=False)
-        embed.add_field(name="🤖 AIからのアドバイス", value=advice, inline=False)
+        
+        description = event.get('description')
+        if description:
+            if len(description) > 1024:
+                description = await self._summarize_text(description, 1024)
+            embed.add_field(name="説明", value=description, inline=False)
+            
+        advice_text = advice
+        if len(advice_text) > 1024:
+            advice_text = await self._summarize_text(advice_text, 1024)
+        embed.add_field(name="🤖 AIからのアドバイス", value=advice_text, inline=False)
         return embed
 
     def _create_tomorrow_embed(self, date: datetime.date, events: list, advice: str) -> discord.Embed:
@@ -429,51 +448,64 @@ class CalendarCog(commands.Cog):
         for event in events:
             task_list_md += f"- [ ] {event.get('summary', '名称未設定')}\n"
         
-        try:
-            # 既存のノート内容を取得
+        for attempt in range(3): # 最大3回試行
             try:
-                _, res = self.dbx.files_download(daily_note_path)
-                current_content = res.content.decode('utf-8')
-            except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    current_content = "" # ファイルがなければ新規作成
-                else: raise
+                # 既存のノート内容を取得
+                try:
+                    _, res = self.dbx.files_download(daily_note_path)
+                    current_content = res.content.decode('utf-8')
+                except ApiError as e:
+                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                        current_content = "" # ファイルがなければ新規作成
+                    else: raise
 
-            new_content = update_section(current_content, task_list_md.strip(), "## Task List")
+                new_content = update_section(current_content, task_list_md.strip(), "## Task List")
 
-            self.dbx.files_upload(
-                new_content.encode('utf-8'),
-                daily_note_path,
-                mode=WriteMode('overwrite')
-            )
-            logging.info(f"Obsidianの明日のデイリーノートを更新しました: {daily_note_path}")
-        except Exception as e:
-            logging.error(f"Obsidianの明日のデイリーノート更新に失敗: {e}")
+                self.dbx.files_upload(
+                    new_content.encode('utf-8'),
+                    daily_note_path,
+                    mode=WriteMode('overwrite')
+                )
+                logging.info(f"Obsidianの明日のデイリーノートを更新しました: {daily_note_path}")
+                return # 成功したらループを抜ける
+            except Exception as e:
+                logging.error(f"Obsidianの明日のデイリーノート更新に失敗 (試行 {attempt + 1}/3): {e}")
+                if attempt < 2: # 最後のエラーでなければ待機
+                    await asyncio.sleep(5 * (attempt + 1)) # 5秒, 10秒と待機時間を増やす
+                else:
+                    logging.error("リトライの上限に達しました。アップロードを断念します。")
+
             
     async def _update_obsidian_task_log(self, date: datetime.date, log_content: str):
         """ObsidianのデイリーノートのTask Logセクションを更新する"""
         date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
 
-        try:
+        for attempt in range(3): # 最大3回試行
             try:
-                _, res = self.dbx.files_download(daily_note_path)
-                current_content = res.content.decode('utf-8')
-            except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    current_content = ""
-                else: raise
+                try:
+                    _, res = self.dbx.files_download(daily_note_path)
+                    current_content = res.content.decode('utf-8')
+                except ApiError as e:
+                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                        current_content = ""
+                    else: raise
 
-            new_content = update_section(current_content, log_content.strip(), "## Task Log")
+                new_content = update_section(current_content, log_content.strip(), "## Task Log")
 
-            self.dbx.files_upload(
-                new_content.encode('utf-8'),
-                daily_note_path,
-                mode=WriteMode('overwrite')
-            )
-            logging.info(f"Obsidianのタスクログを更新しました: {daily_note_path}")
-        except Exception as e:
-            logging.error(f"Obsidianタスクログの更新に失敗: {e}")
+                self.dbx.files_upload(
+                    new_content.encode('utf-8'),
+                    daily_note_path,
+                    mode=WriteMode('overwrite')
+                )
+                logging.info(f"Obsidianのタスクログを更新しました: {daily_note_path}")
+                return # 成功したらループを抜ける
+            except Exception as e:
+                logging.error(f"Obsidianタスクログの更新に失敗 (試行 {attempt + 1}/3): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))
+                else:
+                    logging.error("リトライの上限に達しました。アップロードを断念します。")
 
 
 async def setup(bot: commands.Bot):

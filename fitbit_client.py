@@ -13,7 +13,7 @@ class FitbitClient:
     """
     Fitbit APIとの通信を管理し、アクセストークンの更新を自動的に行うクライアント
     """
-    def __init__(self, client_id: str, client_secret: str, refresh_token: str, user_id: str = "-"):
+    def __init__(self, client_id: str, client_secret: str, refresh_token: str, dbx: dropbox.Dropbox, user_id: str = "-"):
         self.client_id = client_id
         self.client_secret = client_secret
         self.initial_refresh_token = refresh_token # 環境変数からの初期トークン
@@ -21,8 +21,9 @@ class FitbitClient:
         self.session = aiohttp.ClientSession()
         self.lock = asyncio.Lock()
         
-        # Dropboxクライアントをトークン管理用に初期化
-        self.dbx = dropbox.Dropbox(os.getenv("DROPBOX_REFRESH_TOKEN"))
+        # Dropboxクライアントを引数で受け取る
+        self.dbx = dbx
+        
         self.vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         self.token_path = f"{self.vault_path}/.bot/fitbit_refresh_token.txt"
 
