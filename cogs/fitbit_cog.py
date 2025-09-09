@@ -18,7 +18,7 @@ from utils.obsidian_utils import update_section
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SLEEP_REPORT_TIME = datetime.time(hour=8, minute=0, tzinfo=JST)
-FULL_HEALTH_REPORT_TIME = datetime.time(hour=23, minute=0, tzinfo=JST)
+FULL_HEALTH_REPORT_TIME = datetime.time(hour=22, minute=0, tzinfo=JST)
 
 class FitbitCog(commands.Cog):
     """Fitbitのデータを取得し、Obsidianへの記録とAIによる健康アドバイスを行うCog"""

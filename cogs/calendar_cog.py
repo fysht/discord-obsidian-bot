@@ -20,9 +20,8 @@ from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
 JST = timezone(timedelta(hours=+9), 'JST')
-ALL_DAY_SCHEDULE_TIME = time(hour=7, minute=0, tzinfo=JST)
-TOMORROW_SCHEDULE_TIME = time(hour=21, minute=0, tzinfo=JST)
-DAILY_REVIEW_TIME = time(hour=22, minute=0, tzinfo=JST)
+TODAY_SCHEDULE_TIME = time(hour=7, minute=0, tzinfo=JST)
+DAILY_REVIEW_TIME = time(hour=21, minute=30, tzinfo=JST)
 
 # Google Calendar APIのスコープ
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
@@ -99,56 +98,18 @@ class CalendarCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
-            if not self.notify_upcoming_events.is_running(): self.notify_upcoming_events.start()
-            if not self.notify_all_day_events.is_running(): self.notify_all_day_events.start()
-            if not self.notify_tomorrow_events.is_running(): self.notify_tomorrow_events.start()
-            if not self.send_daily_review.is_running(): self.send_daily_review.start()
+            if not self.notify_today_events.is_running():
+                self.notify_today_events.start()
+            if not self.send_daily_review.is_running():
+                self.send_daily_review.start()
 
     def cog_unload(self):
-        self.notify_upcoming_events.cancel()
-        self.notify_all_day_events.cancel()
-        self.notify_tomorrow_events.cancel()
+        self.notify_today_events.cancel()
         self.send_daily_review.cancel()
 
-    @tasks.loop(minutes=15)
-    async def notify_upcoming_events(self):
-        logging.info("[CalendarCog] 15分以内の直近の予定をチェックします...")
-        try:
-            now = datetime.now(timezone.utc)
-            time_max = now + timedelta(minutes=15)
-            
-            service = build('calendar', 'v3', credentials=self.creds)
-            events_result = service.events().list(
-                calendarId='primary', timeMin=now.isoformat(), timeMax=time_max.isoformat(),
-                singleEvents=True, orderBy='startTime'
-            ).execute()
-            events = [e for e in events_result.get('items', []) if 'dateTime' in e.get('start', {})]
-
-
-            if not events: return
-
-            processed_ids = await self._get_processed_event_ids()
-            new_events = [e for e in events if e['id'] not in processed_ids]
-
-            if not new_events: return
-
-            channel = self.bot.get_channel(self.calendar_channel_id)
-            if not channel: return
-
-            for event in new_events:
-                embed = self._create_simple_event_embed(event)
-                await channel.send(embed=embed)
-                processed_ids.add(event['id'])
-                await self._add_to_daily_log(event)
-
-            await self._save_processed_event_ids(processed_ids)
-
-        except Exception as e:
-            logging.error(f"[CalendarCog] 直近の予定通知中にエラー: {e}", exc_info=True)
-
-    @tasks.loop(time=ALL_DAY_SCHEDULE_TIME)
-    async def notify_all_day_events(self):
-        logging.info("[CalendarCog] 本日の終日の予定をチェックします...")
+    @tasks.loop(time=TODAY_SCHEDULE_TIME)
+    async def notify_today_events(self):
+        logging.info("[CalendarCog] 今日の予定の通知タスクを開始します...")
         try:
             today = datetime.now(JST).date()
             time_min_dt = datetime.combine(today, time.min, tzinfo=JST)
@@ -159,61 +120,27 @@ class CalendarCog(commands.Cog):
                 calendarId='primary', timeMin=time_min_dt.isoformat(), timeMax=time_max_dt.isoformat(),
                 singleEvents=True, orderBy='startTime'
             ).execute()
-            
-            all_day_events = [e for e in events_result.get('items', []) if 'date' in e.get('start', {})]
-
-            if not all_day_events:
-                logging.info("[CalendarCog] 本日の終日の予定はありませんでした。")
-                return
-
-            channel = self.bot.get_channel(self.calendar_channel_id)
-            if not channel: return
-
-            event_list_str = ""
-            for event in all_day_events:
-                event_list_str += f"- {event.get('summary', '名称未設定')}\n"
-                await self._add_to_daily_log(event)
-
-            embed = discord.Embed(
-                title=f"🗓️ 今日の終日予定",
-                description=event_list_str,
-                color=discord.Color.orange()
-            )
-            await channel.send(embed=embed)
-
-        except Exception as e:
-            logging.error(f"[CalendarCog] 終日の予定通知中にエラー: {e}", exc_info=True)
-
-    @tasks.loop(time=TOMORROW_SCHEDULE_TIME)
-    async def notify_tomorrow_events(self):
-        logging.info("[CalendarCog] 明日の予定の事前通知タスクを開始します...")
-        try:
-            tomorrow = datetime.now(JST).date() + timedelta(days=1)
-            time_min_dt = datetime.combine(tomorrow, time.min, tzinfo=JST)
-            time_max_dt = datetime.combine(tomorrow, time.max, tzinfo=JST)
-
-            service = build('calendar', 'v3', credentials=self.creds)
-            events_result = service.events().list(
-                calendarId='primary', timeMin=time_min_dt.isoformat(), timeMax=time_max_dt.isoformat(),
-                singleEvents=True, orderBy='startTime'
-            ).execute()
             events = events_result.get('items', [])
 
             if not events:
-                logging.info(f"[CalendarCog] {tomorrow} の予定はありませんでした。")
+                logging.info(f"[CalendarCog] {today} の予定はありませんでした。")
                 return
 
             advice = await self._generate_overall_advice(events)
-            embed = self._create_tomorrow_embed(tomorrow, events, advice)
+            embed = self._create_today_embed(today, events, advice)
             
             channel = self.bot.get_channel(self.calendar_channel_id)
             if channel:
                 await channel.send(embed=embed)
 
-            await self._update_obsidian_tomorrow_task_list(tomorrow, events)
+            await self._update_obsidian_today_task_list(today, events)
             
+            # 通知したイベントをログに記録
+            for event in events:
+                await self._add_to_daily_log(event)
+
         except Exception as e:
-            logging.error(f"[CalendarCog] 明日の予定通知中にエラー: {e}", exc_info=True)
+            logging.error(f"[CalendarCog] 今日の予定通知中にエラー: {e}", exc_info=True)
 
     @tasks.loop(time=DAILY_REVIEW_TIME)
     async def send_daily_review(self):
@@ -278,7 +205,6 @@ class CalendarCog(commands.Cog):
         except Exception as e:
             logging.error(f"[CalendarCog] リアクション処理中にエラー: {e}", exc_info=True)
 
-
     # --- ヘルパー関数 ---
     async def _generate_overall_advice(self, events: list) -> str:
         event_list_str = ""
@@ -286,11 +212,11 @@ class CalendarCog(commands.Cog):
             start = self._format_datetime(event.get('start'))
             event_list_str += f"- {start}: {event.get('summary', '名称未設定')}\n"
         prompt = f"""
-        以下の明日の予定リスト全体を見て、一日を最も生産的に過ごすための総合的なアドバイスを提案してください。
+        以下の今日の予定リスト全体を見て、一日を最も生産的に過ごすための総合的なアドバイスを提案してください。
         # 指示
         - 挨拶や前置きは不要です。
         - 箇条書きで、簡潔に3点ほどアドバイスを生成してください。
-        # 明日の予定リスト
+        # 今日の予定リスト
         {event_list_str}
         """
         try:
@@ -300,17 +226,7 @@ class CalendarCog(commands.Cog):
             logging.error(f"総合アドバイスの生成に失敗: {e}")
             return "アドバイスの生成中にエラーが発生しました。"
 
-    def _create_simple_event_embed(self, event: dict) -> discord.Embed:
-        start_str = self._format_datetime(event.get('start'))
-        end_str = self._format_datetime(event.get('end'))
-        embed = discord.Embed(
-            title=f"곧: {event.get('summary', '名称未設定')}",
-            color=discord.Color.red()
-        )
-        embed.add_field(name="時間", value=f"{start_str} - {end_str}", inline=False)
-        return embed
-
-    def _create_tomorrow_embed(self, date: datetime.date, events: list, advice: str) -> discord.Embed:
+    def _create_today_embed(self, date: datetime.date, events: list, advice: str) -> discord.Embed:
         embed = discord.Embed(
             title=f"🗓️ {date.strftime('%Y-%m-%d')} の予定",
             description=f"**🤖 AIによる一日の過ごし方アドバイス**\n{advice}",
@@ -331,30 +247,6 @@ class CalendarCog(commands.Cog):
             return "終日"
         return ""
 
-    async def _get_processed_event_ids(self) -> set:
-        path = f"{self.dropbox_vault_path}/.bot/processed_calendar_events.json"
-        try:
-            _, res = self.dbx.files_download(path)
-            data = json.loads(res.content.decode('utf-8'))
-            return set(data.get('processed_ids', []))
-        except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                return set()
-            logging.error(f"処理済みイベントIDファイルの読み込みに失敗: {e}")
-            return set()
-
-    async def _save_processed_event_ids(self, ids: set):
-        path = f"{self.dropbox_vault_path}/.bot/processed_calendar_events.json"
-        data = {'processed_ids': list(ids)}
-        try:
-            self.dbx.files_upload(
-                json.dumps(data, indent=2).encode('utf-8'),
-                path,
-                mode=WriteMode('overwrite')
-            )
-        except Exception as e:
-            logging.error(f"処理済みイベントIDファイルの保存に失敗: {e}")
-
     async def _add_to_daily_log(self, event: dict):
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
         log_path = f"{self.dropbox_vault_path}/.bot/calendar_log/{today_str}.json"
@@ -369,7 +261,6 @@ class CalendarCog(commands.Cog):
                 logging.error(f"デイリーログの読み込みに失敗: {e}")
                 return
 
-        # 重複を避ける
         if not any(e['id'] == event['id'] for e in daily_events):
             daily_events.append({
                 'id': event['id'],
@@ -384,7 +275,7 @@ class CalendarCog(commands.Cog):
             except Exception as e:
                 logging.error(f"デイリーログの保存に失敗: {e}")
             
-    async def _update_obsidian_tomorrow_task_list(self, date: datetime.date, events: list):
+    async def _update_obsidian_today_task_list(self, date: datetime.date, events: list):
         date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
         
@@ -409,16 +300,15 @@ class CalendarCog(commands.Cog):
                     daily_note_path,
                     mode=WriteMode('overwrite')
                 )
-                logging.info(f"Obsidianの明日のデイリーノートを更新しました: {daily_note_path}")
+                logging.info(f"Obsidianの今日のデイリーノートを更新しました: {daily_note_path}")
                 return
             except Exception as e:
-                logging.error(f"Obsidianの明日のデイリーノート更新に失敗 (試行 {attempt + 1}/3): {e}")
+                logging.error(f"Obsidianの今日のデイリーノート更新に失敗 (試行 {attempt + 1}/3): {e}")
                 if attempt < 2:
                     await asyncio.sleep(5 * (attempt + 1))
                 else:
                     logging.error("リトライの上限に達しました。アップロードを断念します。")
 
-            
     async def _update_obsidian_task_log(self, date: datetime.date, log_content: str):
         date_str = date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
@@ -433,7 +323,6 @@ class CalendarCog(commands.Cog):
                         current_content = ""
                     else: raise
 
-                # 既存のタスクログに追記する形に変更
                 new_content = update_section(current_content, log_content.strip(), "## Task Log")
 
                 self.dbx.files_upload(

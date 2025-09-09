@@ -46,12 +46,12 @@ def process_pending_memos():
                 memos = json.load(f)
         except (json.JSONDecodeError, FileNotFoundError, ValueError):
             memos = []
-
+            
         if not memos:
             return True
 
         logging.info(f"[PROCESS] {len(memos)} 件のメモをDropboxに保存します...")
-
+        
         try:
             with dropbox.Dropbox(
                 oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
@@ -70,7 +70,7 @@ def process_pending_memos():
                         memos_by_date.setdefault(date_str, []).append(memo)
                     except (KeyError, ValueError):
                         pass
-
+                
                 all_success = True
                 for date_str, memos_in_date in memos_by_date.items():
                     file_path = f"{DROPBOX_VAULT_PATH}/DailyNotes/{date_str}.md"
@@ -85,14 +85,15 @@ def process_pending_memos():
                             logging.error(f"[DROPBOX] {file_path} のダウンロードに失敗しました: {e}")
                             all_success = False
                             continue
-
+                    
                     # 追記するメモのテキストブロックを作成
                     content_to_add = []
                     for memo in memos_in_date:
                         time_str = datetime.fromisoformat(memo['created_at'].replace('Z', '')).astimezone(JST).strftime('%H:%M')
                         content_lines = memo['content'].strip().split('\n')
-
-                        formatted_memo = f"- {time_str} {content_lines[0]}"
+                        
+                        # 箇条書きを整形
+                        formatted_memo = f"- {time_str}\n\t- {content_lines[0]}"
                         if len(content_lines) > 1:
                             formatted_memo += "\n" + "\n".join([f"\t- {line}" for line in content_lines[1:]])
                         content_to_add.append(formatted_memo)
@@ -103,16 +104,16 @@ def process_pending_memos():
 
                     dbx.files_upload(new_content.encode('utf-8'), file_path, mode=WriteMode('overwrite'))
                     logging.info(f"[DROPBOX] {file_path} の更新に成功しました。")
-
+                
                 if all_success and sorted_memos:
                     last_id = sorted_memos[-1]['id']
                     dbx.files_upload(str(last_id).encode('utf-8'), LAST_PROCESSED_ID_FILE_PATH, mode=WriteMode('overwrite'))
                     logging.info(f"[PROCESS] 最終処理IDをDropboxに保存しました: {last_id}")
-
+                
                 # 処理が成功したので一時ファイルを空にする
                 with open(PENDING_MEMOS_FILE, "w") as f:
                     json.dump([], f)
-
+            
             return all_success
 
         except Exception as e:
