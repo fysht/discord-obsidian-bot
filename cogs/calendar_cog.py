@@ -34,21 +34,15 @@ class CalendarCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.is_ready = False
-
-        # --- 環境変数の読み込み ---
         self._load_environment_variables()
-
         if not self._are_credentials_valid():
             logging.error("CalendarCog: 必須の環境変数が不足しています。このCogは無効化されます。")
             return
-
-        # --- APIクライアントの初期化 ---
         try:
             self.creds = self._get_google_credentials()
             if not self.creds:
                 logging.error("CalendarCog: Google Calendarの認証に失敗しました。")
                 return
-
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
             self.dbx = self._initialize_dropbox_client()
@@ -58,7 +52,6 @@ class CalendarCog(commands.Cog):
             logging.error(f"❌ CalendarCogの初期化中にエラーが発生しました: {e}", exc_info=True)
 
     def _load_environment_variables(self):
-        """環境変数をインスタンス変数に読み込む"""
         self.calendar_channel_id = int(os.getenv("CALENDAR_CHANNEL_ID", 0))
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
@@ -69,14 +62,12 @@ class CalendarCog(commands.Cog):
         self.google_token_path = os.getenv("GOOGLE_TOKEN_PATH", "token.json")
 
     def _are_credentials_valid(self) -> bool:
-        """必須の環境変数がすべて設定されているかを確認する"""
         return all([
             self.calendar_channel_id, self.gemini_api_key, self.dropbox_refresh_token,
             self.dropbox_vault_path, self.google_credentials_path, self.google_token_path
         ])
 
     def _initialize_dropbox_client(self) -> dropbox.Dropbox:
-        """Dropboxクライアントを初期化する"""
         return dropbox.Dropbox(
             app_key=self.dropbox_app_key,
             app_secret=self.dropbox_app_secret,
@@ -84,7 +75,6 @@ class CalendarCog(commands.Cog):
         )
 
     def _get_google_credentials(self):
-        """Google APIの認証情報を取得・更新する"""
         creds = None
         if os.path.exists(self.google_token_path):
             creds = Credentials.from_authorized_user_file(self.google_token_path, SCOPES)
@@ -94,9 +84,8 @@ class CalendarCog(commands.Cog):
                     creds.refresh(Request())
                 except Exception as e:
                     logging.error(f"Googleトークンのリフレッシュに失敗しました: {e}")
-                    # 古いtoken.jsonを削除して再認証を促す
                     os.remove(self.google_token_path)
-                    return self._get_google_credentials() # 再帰呼び出し
+                    return self._get_google_credentials()
             else:
                 if not os.path.exists(self.google_credentials_path):
                     logging.error(f"{self.google_credentials_path} が見つかりません。")
@@ -109,25 +98,18 @@ class CalendarCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Cogの準備が完了したときにタスクを開始する"""
         if self.is_ready:
-            if not self.notify_upcoming_events.is_running():
-                self.notify_upcoming_events.start()
-            if not self.notify_all_day_events.is_running():
-                self.notify_all_day_events.start()
-            if not self.notify_tomorrow_events.is_running():
-                self.notify_tomorrow_events.start()
-            if not self.send_daily_review.is_running():
-                self.send_daily_review.start()
+            if not self.notify_upcoming_events.is_running(): self.notify_upcoming_events.start()
+            if not self.notify_all_day_events.is_running(): self.notify_all_day_events.start()
+            if not self.notify_tomorrow_events.is_running(): self.notify_tomorrow_events.start()
+            if not self.send_daily_review.is_running(): self.send_daily_review.start()
 
     def cog_unload(self):
-        """Cogがアンロードされるときにタスクをキャンセルする"""
         self.notify_upcoming_events.cancel()
         self.notify_all_day_events.cancel()
         self.notify_tomorrow_events.cancel()
         self.send_daily_review.cancel()
 
-    # --- 1. 直近の予定のリアルタイム通知 ---
     @tasks.loop(minutes=15)
     async def notify_upcoming_events(self):
         logging.info("[CalendarCog] 15分以内の直近の予定をチェックします...")
@@ -164,7 +146,6 @@ class CalendarCog(commands.Cog):
         except Exception as e:
             logging.error(f"[CalendarCog] 直近の予定通知中にエラー: {e}", exc_info=True)
 
-    # --- 2. 終日の予定を通知 (新規) ---
     @tasks.loop(time=ALL_DAY_SCHEDULE_TIME)
     async def notify_all_day_events(self):
         logging.info("[CalendarCog] 本日の終日の予定をチェックします...")
@@ -188,19 +169,21 @@ class CalendarCog(commands.Cog):
             channel = self.bot.get_channel(self.calendar_channel_id)
             if not channel: return
 
+            event_list_str = ""
             for event in all_day_events:
-                embed = discord.Embed(
-                    title=f"🗓️ 今日の予定: {event.get('summary', '名称未設定')}",
-                    description="本日が期日のタスクです。",
-                    color=discord.Color.orange()
-                )
-                await channel.send(embed=embed)
+                event_list_str += f"- {event.get('summary', '名称未設定')}\n"
                 await self._add_to_daily_log(event)
+
+            embed = discord.Embed(
+                title=f"🗓️ 今日の終日予定",
+                description=event_list_str,
+                color=discord.Color.orange()
+            )
+            await channel.send(embed=embed)
 
         except Exception as e:
             logging.error(f"[CalendarCog] 終日の予定通知中にエラー: {e}", exc_info=True)
 
-    # --- 3. 明日の予定の事前通知 ---
     @tasks.loop(time=TOMORROW_SCHEDULE_TIME)
     async def notify_tomorrow_events(self):
         logging.info("[CalendarCog] 明日の予定の事前通知タスクを開始します...")
@@ -232,7 +215,6 @@ class CalendarCog(commands.Cog):
         except Exception as e:
             logging.error(f"[CalendarCog] 明日の予定通知中にエラー: {e}", exc_info=True)
 
-    # --- 4. 一日の振り返り機能 ---
     @tasks.loop(time=DAILY_REVIEW_TIME)
     async def send_daily_review(self):
         logging.info("[CalendarCog] 一日の振り返り通知タスクを開始します...")
@@ -266,7 +248,6 @@ class CalendarCog(commands.Cog):
         except Exception as e:
             logging.error(f"[CalendarCog] 振り返り通知中にエラー: {e}", exc_info=True)
 
-    # --- 5. 進捗の記録 ---
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.user_id == self.bot.user.id or payload.channel_id != self.calendar_channel_id:

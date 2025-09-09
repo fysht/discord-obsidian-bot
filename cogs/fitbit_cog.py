@@ -17,7 +17,8 @@ from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-HEALTH_LOG_TIME = datetime.time(hour=9, minute=0, tzinfo=JST)
+SLEEP_REPORT_TIME = datetime.time(hour=8, minute=0, tzinfo=JST)
+FULL_HEALTH_REPORT_TIME = datetime.time(hour=23, minute=0, tzinfo=JST)
 
 class FitbitCog(commands.Cog):
     """Fitbitのデータを取得し、Obsidianへの記録とAIによる健康アドバイスを行うCog"""
@@ -61,27 +62,67 @@ class FitbitCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if self.is_ready and not self.daily_health_log.is_running():
-            self.daily_health_log.start()
-            logging.info(f"FitbitCog: ヘルスログタスクを {HEALTH_LOG_TIME} にスケジュールしました。")
+        if self.is_ready:
+            if not self.sleep_report.is_running():
+                self.sleep_report.start()
+                logging.info(f"FitbitCog: 睡眠レポートタスクを {SLEEP_REPORT_TIME} にスケジュールしました。")
+            if not self.full_health_report.is_running():
+                self.full_health_report.start()
+                logging.info(f"FitbitCog: 統合ヘルスレポートタスクを {FULL_HEALTH_REPORT_TIME} にスケジュールしました。")
 
     def cog_unload(self):
-        self.daily_health_log.cancel()
+        self.sleep_report.cancel()
+        self.full_health_report.cancel()
 
     def _format_minutes(self, minutes: int) -> str:
         if minutes is None: return "N/A"
         h, m = divmod(minutes, 60)
         return f"{h}時間{m}分" if h > 0 else f"{m}分"
 
-    @tasks.loop(time=HEALTH_LOG_TIME)
-    async def daily_health_log(self):
+    @tasks.loop(time=SLEEP_REPORT_TIME)
+    async def sleep_report(self):
+        """朝にその日の睡眠データだけを速報として通知する"""
         if not self.is_ready: return
         
-        logging.info(f"FitbitCog: 定時タスクを実行します。対象日: {datetime.datetime.now(JST).date() - datetime.timedelta(days=1)}")
+        logging.info(f"FitbitCog: 睡眠レポートタスクを実行します。")
         channel = self.bot.get_channel(self.health_log_channel_id)
         
         try:
-            target_date = datetime.datetime.now(JST).date() - datetime.timedelta(days=1)
+            target_date = datetime.datetime.now(JST).date()
+            sleep_data = await self.fitbit_client.get_sleep_data(target_date)
+
+            if not sleep_data:
+                logging.warning(f"FitbitCog: {target_date} の睡眠データが取得できませんでした。")
+                if channel:
+                    await channel.send(f" FitbitCog: {target_date.strftime('%Y-%m-%d')} の睡眠データがまだ同期されていないようです。")
+                return
+
+            if channel:
+                embed = discord.Embed(
+                    title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (速報)",
+                    color=discord.Color.purple()
+                )
+                embed.add_field(name="睡眠スコア", value=f"**{sleep_data.get('efficiency', 0)}** 点", inline=True)
+                embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_data.get('minutesAsleep', 0))}**", inline=True)
+                embed.set_footer(text="活動データを含む1日のまとめは夜に通知されます。")
+                await channel.send(embed=embed)
+                logging.info(f"FitbitCog: {target_date} の睡眠レポートをDiscordに投稿しました。")
+
+        except Exception as e:
+            logging.error(f"FitbitCog: 睡眠レポートタスクの実行中にエラーが発生しました: {e}", exc_info=True)
+            if channel:
+                await channel.send(f"FitbitCog: 睡眠レポートタスクの実行中にエラーが発生しました。\n```\n{e}\n```")
+
+    @tasks.loop(time=FULL_HEALTH_REPORT_TIME)
+    async def full_health_report(self):
+        """夜に1日の健康データをまとめて通知・保存する"""
+        if not self.is_ready: return
+
+        logging.info(f"FitbitCog: 統合ヘルスレポートタスクを実行します。")
+        channel = self.bot.get_channel(self.health_log_channel_id)
+
+        try:
+            target_date = datetime.datetime.now(JST).date()
             
             sleep_data, activity_data = await asyncio.gather(
                 self.fitbit_client.get_sleep_data(target_date),
@@ -90,8 +131,6 @@ class FitbitCog(commands.Cog):
 
             if not sleep_data and not activity_data:
                 logging.warning(f"FitbitCog: {target_date} の全データが取得できませんでした。")
-                if channel:
-                    await channel.send(f" FitbitCog: {target_date.strftime('%Y-%m-%d')} のデータがまだ同期されていないようです。後で再試行します。")
                 return
             
             advice_text = await self._generate_ai_advice(target_date, sleep_data, activity_data)
@@ -101,12 +140,12 @@ class FitbitCog(commands.Cog):
             if channel:
                 embed = await self._create_discord_embed(target_date, sleep_data, activity_data, advice_text)
                 await channel.send(embed=embed)
-                logging.info(f"FitbitCog: {target_date} のヘルスログをDiscordに投稿しました。")
+                logging.info(f"FitbitCog: {target_date} の統合ヘルスレポートをDiscordに投稿しました。")
 
         except Exception as e:
-            logging.error(f"FitbitCog: 定期タスクの実行中にエラーが発生しました: {e}", exc_info=True)
+            logging.error(f"FitbitCog: 統合ヘルスレポートタスクの実行中にエラーが発生しました: {e}", exc_info=True)
             if channel:
-                await channel.send(f"FitbitCog: 定期タスクの実行中にエラーが発生しました。\n```\n{e}\n```")
+                await channel.send(f"FitbitCog: 統合ヘルスレポートタスクの実行中にエラーが発生しました。\n```\n{e}\n```")
 
     def _parse_note_content(self, content: str) -> (dict, str):
         try:
