@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=1, minute=10, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=1, minute=20, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -102,7 +102,7 @@ class NewsCog(commands.Cog):
         if not self.gemini_model or not content:
             return "要約の生成に失敗した。"
         try:
-            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だである調」で要約せよ。\n---{content[:8000]}"
+            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だ・である調」で要約せよ。\n---{content[:8000]}"
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e:
@@ -226,4 +226,22 @@ class NewsCog(commands.Cog):
     @app_commands.describe(company="追加する企業名または銘柄コード")
     async def stock_add(self, interaction: discord.Interaction, company: str):
         watchlist = await self._get_watchlist()
-        if company not in
+        if company not in watchlist:
+            watchlist.append(company)
+            await self._save_watchlist(watchlist)
+            await interaction.response.send_message(f"✅ ` {company} ` を監視リストに追加しました。", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⚠️ ` {company} ` は既にリストに存在します。", ephemeral=True)
+
+    @stock_group.command(name="remove", description="監視リストから企業を削除します。")
+    @app_commands.describe(company="削除する企業名または銘柄コード")
+    async def stock_remove(self, interaction: discord.Interaction, company: str):
+        watchlist = await self._get_watchlist()
+        if company in watchlist:
+            watchlist.remove(company)
+            await self._save_watchlist(watchlist)
+            await interaction.response.send_message(f"🗑️ ` {company} ` を監視リストから削除しました。", ephemeral=True)
+
+async def setup(bot: commands.Bot):
+    """Cogをボットに登録するためのセットアップ関数"""
+    await bot.add_cog(NewsCog(bot))
