@@ -93,15 +93,7 @@ class FitbitClient:
             response_json = await resp.json()
             if resp.status == 200 and response_json.get('sleep'):
                 logging.info(f"{target_date} の睡眠データを正常に取得しました。")
-                
-                # isMainがtrueのものを探す
-                for sleep_log in response_json['sleep']:
-                    if sleep_log.get('isMain'):
-                        return sleep_log
-                
-                # isMainがない場合、最も長い睡眠を返す (フォールバック)
-                return max(response_json['sleep'], key=lambda x: x.get('minutesAsleep', 0))
-
+                return response_json
             else:
                 logging.error(f"睡眠データAPIからのエラー (ステータス: {resp.status}): {response_json}")
                 return None

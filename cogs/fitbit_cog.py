@@ -12,6 +12,7 @@ import yaml
 from io import StringIO
 import asyncio
 from discord import app_commands
+from typing import Optional, Dict, Any
 
 from fitbit_client import FitbitClient
 from utils.obsidian_utils import update_section
@@ -61,6 +62,40 @@ class FitbitCog(commands.Cog):
             logging.error(f"FitbitCogのクライアント初期化中にエラー: {e}", exc_info=True)
             return False
 
+    def _process_sleep_data(self, sleep_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """複数の睡眠ログを統合し、サマリーデータを作成する"""
+        if not sleep_data or 'sleep' not in sleep_data or not sleep_data['sleep']:
+            return None
+
+        total_minutes_asleep = 0
+        total_time_in_bed = 0
+        total_weighted_efficiency = 0
+        stage_summary = {'deep': 0, 'light': 0, 'rem': 0, 'wake': 0}
+
+        for log in sleep_data['sleep']:
+            minutes_asleep = log.get('minutesAsleep', 0)
+            total_minutes_asleep += minutes_asleep
+            total_time_in_bed += log.get('timeInBed', 0)
+            
+            # 睡眠時間で重み付けした効率スコアを計算
+            efficiency = log.get('efficiency', 0)
+            total_weighted_efficiency += efficiency * minutes_asleep
+            
+            if 'levels' in log and 'summary' in log['levels']:
+                for stage, data in log['levels']['summary'].items():
+                    if stage in stage_summary:
+                        stage_summary[stage] += data.get('minutes', 0)
+
+        # 加重平均で総合スコアを算出
+        overall_efficiency = round(total_weighted_efficiency / total_minutes_asleep) if total_minutes_asleep > 0 else 0
+        
+        return {
+            'efficiency': overall_efficiency,
+            'minutesAsleep': total_minutes_asleep,
+            'timeInBed': total_time_in_bed,
+            'levels': {'summary': stage_summary}
+        }
+
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
@@ -90,9 +125,10 @@ class FitbitCog(commands.Cog):
         
         try:
             target_date = datetime.datetime.now(JST).date()
-            sleep_data = await self.fitbit_client.get_sleep_data(target_date)
+            raw_sleep_data = await self.fitbit_client.get_sleep_data(target_date)
+            sleep_summary = self._process_sleep_data(raw_sleep_data)
 
-            if not sleep_data:
+            if not sleep_summary:
                 logging.warning(f"FitbitCog: {target_date} の睡眠データが取得できませんでした。")
                 if channel:
                     await channel.send(f" FitbitCog: {target_date.strftime('%Y-%m-%d')} の睡眠データがまだ同期されていないようです。")
@@ -103,8 +139,8 @@ class FitbitCog(commands.Cog):
                     title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (速報)",
                     color=discord.Color.purple()
                 )
-                embed.add_field(name="睡眠スコア", value=f"**{sleep_data.get('efficiency', 0)}** 点", inline=True)
-                embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_data.get('minutesAsleep', 0))}**", inline=True)
+                embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('efficiency', 0)}** 点", inline=True)
+                embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_summary.get('minutesAsleep', 0))}**", inline=True)
                 embed.set_footer(text="活動データを含む1日のまとめは夜に通知されます。")
                 await channel.send(embed=embed)
                 logging.info(f"FitbitCog: {target_date} の睡眠レポートをDiscordに投稿しました。")
@@ -125,21 +161,23 @@ class FitbitCog(commands.Cog):
         try:
             target_date = datetime.datetime.now(JST).date()
             
-            sleep_data, activity_data = await asyncio.gather(
+            raw_sleep_data, activity_data = await asyncio.gather(
                 self.fitbit_client.get_sleep_data(target_date),
                 self.fitbit_client.get_activity_summary(target_date)
             )
+            
+            sleep_summary = self._process_sleep_data(raw_sleep_data)
 
-            if not sleep_data and not activity_data:
+            if not sleep_summary and not activity_data:
                 logging.warning(f"FitbitCog: {target_date} の全データが取得できませんでした。")
                 return
             
-            advice_text = await self._generate_ai_advice(target_date, sleep_data, activity_data)
+            advice_text = await self._generate_ai_advice(target_date, sleep_summary, activity_data)
             
-            await self._save_data_to_obsidian(target_date, sleep_data, activity_data, advice_text)
+            await self._save_data_to_obsidian(target_date, sleep_summary, activity_data, advice_text)
             
             if channel:
-                embed = await self._create_discord_embed(target_date, sleep_data, activity_data, advice_text)
+                embed = await self._create_discord_embed(target_date, sleep_summary, activity_data, advice_text)
                 await channel.send(embed=embed)
                 logging.info(f"FitbitCog: {target_date} の統合ヘルスレポートをDiscordに投稿しました。")
 
@@ -164,9 +202,10 @@ class FitbitCog(commands.Cog):
             return
 
         channel = self.bot.get_channel(self.health_log_channel_id)
-        sleep_data = await self.fitbit_client.get_sleep_data(target_date)
+        raw_sleep_data = await self.fitbit_client.get_sleep_data(target_date)
+        sleep_summary = self._process_sleep_data(raw_sleep_data)
 
-        if not sleep_data:
+        if not sleep_summary:
             msg = f"FitbitCog: {target_date.strftime('%Y-%m-%d')} の睡眠データがまだ同期されていないようです。"
             if channel: await channel.send(msg)
             await interaction.followup.send(msg)
@@ -177,8 +216,8 @@ class FitbitCog(commands.Cog):
                 title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (手動取得)",
                 color=discord.Color.purple()
             )
-            embed.add_field(name="睡眠スコア", value=f"**{sleep_data.get('efficiency', 0)}** 点", inline=True)
-            embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_data.get('minutesAsleep', 0))}**", inline=True)
+            embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('efficiency', 0)}** 点", inline=True)
+            embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_summary.get('minutesAsleep', 0))}**", inline=True)
             await channel.send(embed=embed)
             await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の睡眠レポートを送信しました。")
         else:
@@ -202,23 +241,24 @@ class FitbitCog(commands.Cog):
         
         channel = self.bot.get_channel(self.health_log_channel_id)
         
-        sleep_data, activity_data = await asyncio.gather(
+        raw_sleep_data, activity_data = await asyncio.gather(
             self.fitbit_client.get_sleep_data(target_date),
             self.fitbit_client.get_activity_summary(target_date)
         )
+        sleep_summary = self._process_sleep_data(raw_sleep_data)
 
-        if not sleep_data and not activity_data:
+        if not sleep_summary and not activity_data:
             msg = f"FitbitCog: {target_date} の全データが取得できませんでした。"
             if channel: await channel.send(msg)
             await interaction.followup.send(msg)
             return
         
-        advice_text = await self._generate_ai_advice(target_date, sleep_data, activity_data)
+        advice_text = await self._generate_ai_advice(target_date, sleep_summary, activity_data)
         
-        await self._save_data_to_obsidian(target_date, sleep_data, activity_data, advice_text)
+        await self._save_data_to_obsidian(target_date, sleep_summary, activity_data, advice_text)
         
         if channel:
-            embed = await self._create_discord_embed(target_date, sleep_data, activity_data, advice_text, is_manual=True)
+            embed = await self._create_discord_embed(target_date, sleep_summary, activity_data, advice_text, is_manual=True)
             await channel.send(embed=embed)
             await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の総合ヘルスレポートを送信・保存しました。")
         else:
@@ -252,9 +292,9 @@ class FitbitCog(commands.Cog):
                 'sleep_score': sleep_data.get('efficiency'),
                 'total_sleep_minutes': sleep_data.get('minutesAsleep'),
                 'time_in_bed_minutes': sleep_data.get('timeInBed'),
-                'deep_sleep_minutes': levels.get('deep', {}).get('minutes'),
-                'rem_sleep_minutes': levels.get('rem', {}).get('minutes'),
-                'light_sleep_minutes': levels.get('light', {}).get('minutes')
+                'deep_sleep_minutes': levels.get('deep'),
+                'rem_sleep_minutes': levels.get('rem'),
+                'light_sleep_minutes': levels.get('light')
             })
         if activity_data:
             summary = activity_data.get('summary', {})
@@ -275,9 +315,9 @@ class FitbitCog(commands.Cog):
                 f"- **Score:** {sleep_data.get('efficiency', 'N/A')} / 100\n"
                 f"- **Total Sleep:** {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
                 f"- **Time in Bed:** {self._format_minutes(sleep_data.get('timeInBed'))}\n"
-                f"- **Stages:** Deep {self._format_minutes(levels.get('deep', {}).get('minutes'))}, "
-                f"REM {self._format_minutes(levels.get('rem', {}).get('minutes'))}, "
-                f"Light {self._format_minutes(levels.get('light', {}).get('minutes'))}"
+                f"- **Stages:** Deep {self._format_minutes(levels.get('deep'))}, "
+                f"REM {self._format_minutes(levels.get('rem'))}, "
+                f"Light {self._format_minutes(levels.get('light'))}"
             )
             metrics_sections.append(sleep_text)
         
@@ -372,9 +412,9 @@ class FitbitCog(commands.Cog):
                 f"**スコア**: **{sleep_data.get('efficiency', 'N/A')}** / 100\n"
                 f"**合計睡眠時間**: {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
                 f"**ベッドにいた時間**: {self._format_minutes(sleep_data.get('timeInBed'))}\n"
-                f"**ステージ**: 深い {self._format_minutes(levels.get('deep', {}).get('minutes'))}, "
-                f"レム {self._format_minutes(levels.get('rem', {}).get('minutes'))}, "
-                f"浅い {self._format_minutes(levels.get('light', {}).get('minutes'))}"
+                f"**ステージ**: 深い {self._format_minutes(levels.get('deep'))}, "
+                f"レム {self._format_minutes(levels.get('rem'))}, "
+                f"浅い {self._format_minutes(levels.get('light'))}"
             )
             embed.add_field(name="🌙 睡眠", value=sleep_text, inline=False)
         
