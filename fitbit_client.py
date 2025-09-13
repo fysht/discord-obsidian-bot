@@ -13,10 +13,9 @@ class FitbitClient:
     """
     Fitbit APIとの通信を管理し、アクセストークンの更新を自動的に行うクライアント
     """
-    def __init__(self, client_id: str, client_secret: str, refresh_token: str, dbx: dropbox.Dropbox, user_id: str = "-"):
+    def __init__(self, client_id: str, client_secret: str, dbx: dropbox.Dropbox, user_id: str = "-"):
         self.client_id = client_id
         self.client_secret = client_secret
-        self.initial_refresh_token = refresh_token # 環境変数からの初期トークン
         self.user_id = user_id
         self.session = aiohttp.ClientSession()
         self.lock = asyncio.Lock()
@@ -36,10 +35,10 @@ class FitbitClient:
         except ApiError as e:
             if e.error.is_path() and e.error.get_path().is_not_found():
                 logging.warning("Dropboxにトークンファイルが見つかりません。環境変数の初期トークンを使用します。")
-                return self.initial_refresh_token
+                return os.getenv("FITBIT_REFRESH_TOKEN")
             else:
                 logging.error(f"Dropboxからのトークン読み込みに失敗: {e}")
-                return self.initial_refresh_token
+                return os.getenv("FITBIT_REFRESH_TOKEN")
 
     def _save_new_refresh_token(self, new_token: str):
         """新しいリフレッシュトークンをDropboxに保存して永続化する"""

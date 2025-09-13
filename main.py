@@ -8,6 +8,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from obsidian_handler import add_memo_async
 import dropbox
+from google_search import search as google_search_function
 
 # --- 1. 設定読み込み ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -33,6 +34,7 @@ class MyBot(commands.Bot):
         intents.members = True
         intents.reactions = True
         super().__init__(command_prefix="!", intents=intents)
+        self.google_search = google_search_function
 
     async def setup_hook(self):
         """Cogをロードする"""

@@ -53,7 +53,7 @@ class FitbitCog(commands.Cog):
                 app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret
             )
             self.fitbit_client = FitbitClient(
-                self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token, self.dbx, self.fitbit_user_id
+                self.fitbit_client_id, self.fitbit_client_secret, self.dbx, self.fitbit_user_id
             )
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
