@@ -20,7 +20,7 @@ from google_search import search as google_search_tool
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=17, minute=15, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=17, minute=35, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
