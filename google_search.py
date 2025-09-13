@@ -15,7 +15,7 @@ class SearchResult:
         self.description = snippet
 
 class SearchResults:
-    def __init__(self, items: List[Dict, Any]]):
+    def __init__(self, items: List[Dict[str, Any]]):
         self.results = [SearchResult(item.get('title'), item.get('link'), item.get('snippet')) for item in items]
 
 async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[str, Any]:
