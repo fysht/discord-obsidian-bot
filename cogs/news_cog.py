@@ -215,3 +215,7 @@ class NewsCog(commands.Cog):
             watchlist.remove(company)
             await self._save_watchlist(watchlist)
             await interaction.response.send_message(f"🗑️ ` {company} ` を監視リストから削除しました。", ephemeral=True)
+
+async def setup(bot: commands.Bot):
+    """Cogをボットに登録するためのセットアップ関数"""
+    await bot.add_cog(NewsCog(bot))
