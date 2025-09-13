@@ -35,23 +35,13 @@ async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[st
     except Exception:
         return {"items": []}
 
-def search(queries: List[str]) -> List[SearchResults]:
-    """同期関数として非同期検索を実行し、結果を返す"""
+async def search(queries: List[str]) -> List[SearchResults]:
+    """非同期で検索を実行し、結果を返す"""
     if not all([API_KEY, SEARCH_ENGINE_ID]):
         print("警告: GOOGLE_API_KEYまたはGOOGLE_SEARCH_ENGINE_IDが設定されていません。")
         return []
 
-    # 既に実行中のasyncioイベントループがある場合は、それを利用する
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-    async def main():
-        async with aiohttp.ClientSession() as session:
-            tasks = [_perform_search(session, q) for q in queries]
-            results = await asyncio.gather(*tasks)
-            return [SearchResults(res.get("items", [])) for res in results]
-
-    return loop.run_until_complete(main())
+    async with aiohttp.ClientSession() as session:
+        tasks = [_perform_search(session, q) for q in queries]
+        results = await asyncio.gather(*tasks)
+        return [SearchResults(res.get("items", [])) for res in results]

@@ -112,7 +112,7 @@ class NewsCog(commands.Cog):
     async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
         news_items = []
         try:
-            search_results = self.bot.google_search(queries=queries)
+            search_results = await self.bot.google_search(queries=queries)
             
             seen_urls = set()
             urls_to_process = []
