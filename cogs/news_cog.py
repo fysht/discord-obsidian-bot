@@ -15,10 +15,12 @@ import google.generativeai as genai
 
 # 他のファイルから関数をインポート
 from web_parser import parse_url_with_readability
+# google_search.pyから検索関数をインポート
+from google_search import search as google_search_tool
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=16, minute=10, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=16, minute=45, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -43,7 +45,7 @@ class NewsCog(commands.Cog):
             
             if self.gemini_api_key:
                 genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+                self.gemini_model = genai.GenerativeModel("gemini-1.5-pro")
             else:
                 self.gemini_model = None
                 logging.warning("NewsCog: GEMINI_API_KEYが設定されていないため、ニュース要約機能は無効です。")
@@ -68,7 +70,11 @@ class NewsCog(commands.Cog):
         self.watchlist_path = f"{self.dropbox_vault_path}/.bot/stock_watchlist.json"
 
     def _are_credentials_valid(self) -> bool:
-        return all([self.news_channel_id, self.home_coords, self.work_coords, self.openweathermap_api_key, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key])
+        return all([
+            self.news_channel_id, self.home_coords, self.work_coords, 
+            self.openweathermap_api_key, self.dropbox_app_key, 
+            self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key
+        ])
 
     def _parse_coordinates(self, coord_str: str | None) -> dict | None:
         if not coord_str: return None
@@ -113,7 +119,7 @@ class NewsCog(commands.Cog):
         """指定されたクエリでニュースを検索し、内容を要約する汎用関数"""
         news_items = []
         try:
-            search_results = await asyncio.to_thread(google_search.search, queries=queries)
+            search_results = await asyncio.to_thread(google_search_tool, queries=queries)
             
             seen_urls = set()
             urls_to_process = []
@@ -149,14 +155,12 @@ class NewsCog(commands.Cog):
         
         embed = discord.Embed(title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ", color=discord.Color.blue())
         
-        # --- 天気予報 ---
         home_weather, work_weather = await asyncio.gather(
             self._get_weather_forecast(self.home_coords, self.home_name),
             self._get_weather_forecast(self.work_coords, self.work_name)
         )
         embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
         
-        # --- 市場全体のニュース ---
         market_queries = ["日本株市場 見通し", "日経平均株価 影響 ニュース", "日本銀行 金融政策"]
         market_news = await self._search_and_summarize_news(market_queries, max_articles=2)
         if market_news:
@@ -166,7 +170,6 @@ class NewsCog(commands.Cog):
                 news_text += f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
             embed.add_field(name="🌐 市場全体のニュース", value=news_text, inline=False)
 
-        # --- 保有銘柄のニュース ---
         watchlist = await self._get_watchlist()
         if watchlist:
             company_news_text = ""
@@ -184,7 +187,6 @@ class NewsCog(commands.Cog):
         await channel.send(embed=embed)
         logging.info("デイリーニュースブリーフィングを送信しました。")
         
-    # --- ウォッチリスト管理 ---
     async def _get_watchlist(self) -> list:
         try:
             _, res = self.dbx.files_download(self.watchlist_path)
