@@ -296,4 +296,91 @@ class CalendarCog(commands.Cog):
         {event_list_str}
         """
         try:
-            response = await self.gem
+            response = await self.gemini_model.generate_content_async(prompt)
+            return response.text
+        except Exception as e:
+            logging.error(f"総合アドバイスの生成に失敗: {e}")
+            return "アドバイスの生成中にエラーが発生しました。"
+
+    def _create_today_embed(self, date: datetime.date, events: list, advice: str) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🗓️ {date.strftime('%Y-%m-%d')} の予定",
+            description=f"**🤖 AIによる一日の過ごし方アドバイス**\n{advice}",
+            color=discord.Color.green()
+        )
+        event_list = ""
+        for event in events:
+            start_str = self._format_datetime(event.get('start'))
+            event_list += f"**{start_str}** {event.get('summary', '名称未設定')}\n"
+        embed.add_field(name="タイムライン", value=event_list, inline=False)
+        return embed
+
+    def _format_datetime(self, dt_obj: dict) -> str:
+        if 'dateTime' in dt_obj:
+            dt = datetime.fromisoformat(dt_obj['dateTime']).astimezone(JST)
+            return dt.strftime('%H:%M')
+        elif 'date' in dt_obj:
+            return "終日"
+        return ""
+
+    async def _add_to_daily_log(self, event: dict):
+        today_str = datetime.now(JST).strftime('%Y-%m-%d')
+        log_path = f"{self.dropbox_vault_path}/.bot/calendar_log/{today_str}.json"
+        
+        try:
+            _, res = self.dbx.files_download(log_path)
+            daily_events = json.loads(res.content.decode('utf-8'))
+        except ApiError as e:
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                daily_events = []
+            else:
+                logging.error(f"デイリーログの読み込みに失敗: {e}")
+                return
+
+        if not any(e['id'] == event['id'] for e in daily_events):
+            daily_events.append({
+                'id': event['id'],
+                'summary': event.get('summary', '名称未設定')
+            })
+            try:
+                self.dbx.files_upload(
+                    json.dumps(daily_events, indent=2, ensure_ascii=False).encode('utf-8'),
+                    log_path,
+                    mode=WriteMode('overwrite')
+                )
+            except Exception as e:
+                logging.error(f"デイリーログの保存に失敗: {e}")
+            
+    async def _update_obsidian_task_log(self, date: datetime.date, log_content: str):
+        date_str = date.strftime('%Y-%m-%d')
+        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+
+        for attempt in range(3):
+            try:
+                try:
+                    _, res = self.dbx.files_download(daily_note_path)
+                    current_content = res.content.decode('utf-8')
+                except ApiError as e:
+                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                        current_content = ""
+                    else: raise
+
+                new_content = update_section(current_content, log_content.strip(), "## Task Log")
+
+                self.dbx.files_upload(
+                    new_content.encode('utf-8'),
+                    daily_note_path,
+                    mode=WriteMode('overwrite')
+                )
+                logging.info(f"Obsidianのタスクログを更新しました: {daily_note_path}")
+                return
+            except Exception as e:
+                logging.error(f"Obsidianタスクログの更新に失敗 (試行 {attempt + 1}/3): {e}")
+                if attempt < 2:
+                    await asyncio.sleep(5 * (attempt + 1))
+                else:
+                    logging.error("リトライの上限に達しました。アップロードを断念します。")
+
+async def setup(bot: commands.Bot):
+    """Cogをボットに登録するためのセットアップ関数"""
+    await bot.add_cog(CalendarCog(bot))
