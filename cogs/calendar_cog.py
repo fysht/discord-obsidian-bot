@@ -264,10 +264,12 @@ class CalendarCog(commands.Cog):
         logging.info("[CalendarCog] 未完了タスクの繰り越しが完了しました。")
 
     async def _create_google_calendar_event(self, summary: str, date: datetime.date):
+        """指定された日に通知なしの終日予定を作成する"""
+        end_date = date + timedelta(days=1)
         event = {
             'summary': summary,
             'start': {'date': date.isoformat()},
-            'end': {'date': date.isoformat()},
+            'end': {'date': end_date.isoformat()},
             'reminders': {
                 'useDefault': False,
                 'overrides': [],
