@@ -15,12 +15,10 @@ import google.generativeai as genai
 
 # 他のファイルから関数をインポート
 from web_parser import parse_url_with_readability
-# google_search.pyから検索関数をインポート
-from google_search import search as google_search_tool
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=17, minute=40, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=17, minute=57, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -45,7 +43,7 @@ class NewsCog(commands.Cog):
             
             if self.gemini_api_key:
                 genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+                self.gemini_model = genai.GenerativeModel("gemini-1.5-pro")
             else:
                 self.gemini_model = None
                 logging.warning("NewsCog: GEMINI_API_KEYが設定されていないため、ニュース要約機能は無効です。")
@@ -114,7 +112,7 @@ class NewsCog(commands.Cog):
     async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
         news_items = []
         try:
-            search_results = await asyncio.to_thread(google_search_tool, queries=queries)
+            search_results = await asyncio.to_thread(self.bot.google_search.search, queries=queries)
             
             seen_urls = set()
             urls_to_process = []
@@ -199,6 +197,7 @@ class NewsCog(commands.Cog):
     stock_group = app_commands.Group(name="stock", description="株価ニュースの監視リストを管理します。")
 
     @stock_group.command(name="add", description="監視リストに新しい企業を追加します。")
+    @app_commands.describe(company="追加する企業名または銘柄コード")
     async def stock_add(self, interaction: discord.Interaction, company: str):
         watchlist = await self._get_watchlist()
         if company not in watchlist:
@@ -209,6 +208,7 @@ class NewsCog(commands.Cog):
             await interaction.response.send_message(f"⚠️ ` {company} ` は既にリストに存在します。", ephemeral=True)
 
     @stock_group.command(name="remove", description="監視リストから企業を削除します。")
+    @app_commands.describe(company="削除する企業名または銘柄コード")
     async def stock_remove(self, interaction: discord.Interaction, company: str):
         watchlist = await self._get_watchlist()
         if company in watchlist:
