@@ -1,126 +1,217 @@
 import os
-import asyncio
-import logging
-from pathlib import Path
-from datetime import datetime, timezone
 import discord
-from discord.ext import commands
-from dotenv import load_dotenv
-from obsidian_handler import add_memo_async
+from discord import app_commands
+from discord.ext import commands, tasks
+import logging
+import json
+from datetime import datetime, time
+import zoneinfo
 import dropbox
-from google_search import search as google_search
+from dropbox.files import WriteMode, DownloadError
+from dropbox.exceptions import ApiError
+import asyncio
+from pyowm import OWM
+import google.generativeai as genai
 
-# --- 1. 設定読み込み ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-load_dotenv()
+# 他のファイルから関数をインポート
+from web_parser import parse_url_with_readability
 
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", "0"))
+# --- 定数定義 ---
+JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+NEWS_BRIEFING_TIME = time(hour=7, minute=30, tzinfo=JST)
 
-# --- Dropbox関連設定 ---
-DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_VAULT_PATH = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-LAST_PROCESSED_ID_FILE_PATH = f"{DROPBOX_VAULT_PATH}/.bot/last_processed_id.txt"
+class NewsCog(commands.Cog):
+    """天気予報と株式関連ニュースを定時通知するCog"""
 
-
-# --- 2. Bot本体のクラス定義 ---
-class MyBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        intents.reactions = True
-        super().__init__(command_prefix="!", intents=intents)
-        self.google_search = google_search
-
-    async def setup_hook(self):
-        """Cogをロードする"""
-        logging.info("Cogの読み込みを開始します...")
-        cogs_dir = Path(__file__).parent / 'cogs'
-        for filename in os.listdir(cogs_dir):
-            # youtube_cog.py はスキップする
-            if filename == 'youtube_cog.py':
-                logging.info(f" -> {filename} はローカルBot用のためスキップします。")
-                continue
-
-            if filename.endswith('.py'):
-                try:
-                    await self.load_extension(f'cogs.{filename[:-3]}')
-                    logging.info(f" -> {filename} を読み込みました。")
-                except Exception as e:
-                    logging.error(f" -> {filename} の読み込みに失敗しました: {e}", exc_info=True)
-
-        await self.tree.sync()
-        logging.info(f"{len(self.tree.get_commands())}個のスラッシュコマンドを同期しました。")
-
-    async def on_ready(self):
-        """Botの準備が完了したときの処理"""
-        logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.is_ready = False
+        self._load_environment_variables()
         
-        # オフライン中のメモを処理
-        await self.process_offline_memos()
-        
-        logging.info("すべての起動時処理が完了しました。")
-
-    async def process_offline_memos(self):
-        """オフライン中の未取得メモがないか確認し、処理する"""
-        logging.info("オフライン中の未取得メモがないか確認します...")
-        after_message = None
-        last_id_str = None
-
-        try:
-            with dropbox.Dropbox(
-                oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
-                app_key=DROPBOX_APP_KEY,
-                app_secret=DROPBOX_APP_SECRET
-            ) as dbx:
-                _, res = dbx.files_download(LAST_PROCESSED_ID_FILE_PATH)
-                last_id_str = res.content.decode('utf-8').strip()
-                if last_id_str:
-                    after_message = discord.Object(id=int(last_id_str))
-                    logging.info(f"Dropboxから最終処理ID: {last_id_str} を読み込みました。")
-        except dropbox.exceptions.ApiError as e:
-            if isinstance(e.error, dropbox.files.DownloadError) and e.error.get_path().is_not_found():
-                logging.info("最終処理IDファイルが見つかりません。すべての履歴から取得します。")
-            else:
-                logging.error(f"Dropboxからの最終処理IDファイルの読み込みに失敗: {e}")
-        except Exception as e:
-            logging.error(f"最終処理IDの解析に失敗: {e}")
-
-        channel = self.get_channel(MEMO_CHANNEL_ID)
-        if not channel:
-            logging.error(f"MEMO_CHANNEL_ID: {MEMO_CHANNEL_ID} のチャンネルが見つかりません。")
+        if not self._are_credentials_valid():
+            logging.error("NewsCog: 必須の環境変数が不足しています。このCogは無効化されます。")
             return
-
+            
         try:
-            history = [m async for m in channel.history(limit=None, after=after_message)]
-            if history:
-                logging.info(f"{len(history)}件の未取得メモが見つかりました。保存します...")
-                for message in sorted(history, key=lambda m: m.created_at):
-                    if not message.author.bot:
-                        await add_memo_async(
-                            content=message.content,
-                            author=f"{message.author} ({message.author.id})",
-                            created_at=message.created_at.isoformat(),
-                            message_id=message.id
-                        )
-                logging.info("未取得メモの保存が完了しました。")
+            self.dbx = dropbox.Dropbox(
+                oauth2_refresh_token=self.dropbox_refresh_token,
+                app_key=self.dropbox_app_key,
+                app_secret=self.dropbox_app_secret
+            )
+            self.owm = OWM(self.openweathermap_api_key)
+            self.mgr = self.owm.weather_manager()
+            
+            if self.gemini_api_key:
+                genai.configure(api_key=self.gemini_api_key)
+                self.gemini_model = genai.GenerativeModel("gemini-1.5-pro")
             else:
-                logging.info("処理対象の新しいメモはありませんでした。")
+                self.gemini_model = None
+                logging.warning("NewsCog: GEMINI_API_KEYが設定されていないため、ニュース要約機能は無効です。")
+
+            self.is_ready = True
+            logging.info("✅ NewsCogが正常に初期化されました。")
         except Exception as e:
-            logging.error(f"履歴の取得または処理中にエラーが発生しました: {e}", exc_info=True)
+            logging.error(f"❌ NewsCogの初期化中にエラーが発生しました: {e}", exc_info=True)
 
+    def _load_environment_variables(self):
+        self.news_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
+        self.home_coords = self._parse_coordinates(os.getenv("HOME_COORDINATES"))
+        self.work_coords = self._parse_coordinates(os.getenv("WORK_COORDINATES"))
+        self.home_name = os.getenv("HOME_NAME", "自宅")
+        self.work_name = os.getenv("WORK_NAME", "勤務先")
+        self.openweathermap_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
+        self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
+        self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
+        self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
+        self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.watchlist_path = f"{self.dropbox_vault_path}/.bot/stock_watchlist.json"
 
-# --- 3. 起動処理 ---
-async def main():
-    bot = MyBot()
-    await bot.start(TOKEN)
+    def _are_credentials_valid(self) -> bool:
+        return all([self.news_channel_id, self.home_coords, self.work_coords, self.openweathermap_api_key, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key])
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("プログラムが強制終了されました。")
+    def _parse_coordinates(self, coord_str: str | None) -> dict | None:
+        if not coord_str: return None
+        try:
+            lat, lon = map(float, coord_str.split(','))
+            return {'lat': lat, 'lon': lon}
+        except (ValueError, TypeError):
+            logging.error(f"座標の解析に失敗: {coord_str}")
+            return None
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        if self.is_ready and not self.daily_news_briefing.is_running():
+            self.daily_news_briefing.start()
+
+    def cog_unload(self):
+        self.daily_news_briefing.cancel()
+        
+    async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
+        try:
+            one_call = await asyncio.to_thread(self.mgr.one_call, lat=coords['lat'], lon=coords['lon'], exclude='current,minutely,hourly', units='metric')
+            daily_weather = one_call.forecast_daily[0]
+            temp = daily_weather.temperature('celsius')
+            pop = daily_weather.precipitation_probability * 100
+            return f"**{location_name}**: {daily_weather.detailed_status} | 最高 {temp['max']:.0f}℃ / 最低 {temp['min']:.0f}℃ | 降水確率 {pop:.0f}%"
+        except Exception as e:
+            logging.error(f"{location_name}の天気予報取得に失敗: {e}")
+            return f"**{location_name}**: 天気情報の取得に失敗しました。"
+
+    async def _summarize_article(self, content: str) -> str:
+        if not self.gemini_model or not content:
+            return "要約の生成に失敗しました。"
+        try:
+            prompt = f"以下のニュース記事を3～4文程度で簡潔に要約してください。\n---{content[:8000]}"
+            response = await self.gemini_model.generate_content_async(prompt)
+            return response.text.strip()
+        except Exception as e:
+            logging.error(f"ニュースの要約中にエラー: {e}")
+            return "要約中にエラーが発生しました。"
+
+    async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
+        news_items = []
+        try:
+            search_results = self.bot.google_search(queries=queries)
+            
+            seen_urls = set()
+            urls_to_process = []
+            
+            for result_list in search_results:
+                for item in result_list.results:
+                    if item.url not in seen_urls:
+                        urls_to_process.append(item)
+                        seen_urls.add(item.url)
+                    if len(urls_to_process) >= max_articles:
+                        break
+                if len(urls_to_process) >= max_articles:
+                    break
+
+            for item in urls_to_process:
+                _, content = await asyncio.to_thread(parse_url_with_readability, item.url)
+                summary = await self._summarize_article(content)
+                news_items.append({"title": item.source_title, "link": item.url, "summary": summary})
+
+            return news_items
+        except Exception as e:
+            logging.error(f"ニュース処理中に失敗: {queries}, {e}")
+            return []
+
+    @tasks.loop(time=NEWS_BRIEFING_TIME)
+    async def daily_news_briefing(self):
+        channel = self.bot.get_channel(self.news_channel_id)
+        if not channel:
+            logging.error(f"ニュースチャンネル(ID: {self.news_channel_id})が見つかりません。")
+            return
+            
+        logging.info("デイリーニュースブリーフィングを開始します...")
+        
+        embed = discord.Embed(title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ", color=discord.Color.blue())
+        
+        home_weather, work_weather = await asyncio.gather(
+            self._get_weather_forecast(self.home_coords, self.home_name),
+            self._get_weather_forecast(self.work_coords, self.work_name)
+        )
+        embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
+        
+        market_queries = ["日本株市場 見通し", "日経平均株価 影響 ニュース", "日本銀行 金融政策"]
+        market_news = await self._search_and_summarize_news(market_queries, max_articles=2)
+        if market_news:
+            news_text = ""
+            for item in market_news:
+                summary = item['summary'][:250] + "..." if len(item['summary']) > 250 else item['summary']
+                news_text += f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
+            embed.add_field(name="🌐 市場全体のニュース", value=news_text, inline=False)
+
+        watchlist = await self._get_watchlist()
+        if watchlist:
+            company_news_text = ""
+            for company in watchlist:
+                company_queries = [f"{company} 株価 ニュース", f"{company} 業績発表"]
+                company_news = await self._search_and_summarize_news(company_queries, max_articles=1)
+                if company_news:
+                    item = company_news[0]
+                    summary = item['summary'][:200] + "..." if len(item['summary']) > 200 else item['summary']
+                    company_news_text += f"**📈 {company}**\n**[{item['title']}]({item['link']})**\n```{summary}```\n"
+            
+            if company_news_text:
+                embed.add_field(name="📰 保有銘柄のニュース", value=company_news_text, inline=False)
+
+        await channel.send(embed=embed)
+        logging.info("デイリーニュースブリーフィングを送信しました。")
+        
+    async def _get_watchlist(self) -> list:
+        try:
+            _, res = self.dbx.files_download(self.watchlist_path)
+            return json.loads(res.content)
+        except ApiError:
+            return []
+
+    async def _save_watchlist(self, watchlist: list):
+        try:
+            self.dbx.files_upload(json.dumps(watchlist, ensure_ascii=False, indent=2).encode('utf-8'),
+                                  self.watchlist_path, mode=WriteMode('overwrite'))
+        except Exception as e:
+            logging.error(f"ウォッチリストの保存に失敗: {e}")
+
+    stock_group = app_commands.Group(name="stock", description="株価ニュースの監視リストを管理します。")
+
+    @stock_group.command(name="add", description="監視リストに新しい企業を追加します。")
+    @app_commands.describe(company="追加する企業名または銘柄コード")
+    async def stock_add(self, interaction: discord.Interaction, company: str):
+        watchlist = await self._get_watchlist()
+        if company not in watchlist:
+            watchlist.append(company)
+            await self._save_watchlist(watchlist)
+            await interaction.response.send_message(f"✅ ` {company} ` を監視リストに追加しました。", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⚠️ ` {company} ` は既にリストに存在します。", ephemeral=True)
+
+    @stock_group.command(name="remove", description="監視リストから企業を削除します。")
+    @app_commands.describe(company="削除する企業名または銘柄コード")
+    async def stock_remove(self, interaction: discord.Interaction, company: str):
+        watchlist = await self._get_watchlist()
+        if company in watchlist:
+            watchlist.remove(company)
+            await self._save_watchlist(watchlist)
+            await interaction.response.send_message(f"🗑️ ` {company} ` を監視リストから削除しました。", ephemeral=True)

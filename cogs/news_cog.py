@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=18, minute=02, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=18, minute=15, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -43,7 +43,7 @@ class NewsCog(commands.Cog):
             
             if self.gemini_api_key:
                 genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-1.5-pro")
+                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
             else:
                 self.gemini_model = None
                 logging.warning("NewsCog: GEMINI_API_KEYが設定されていないため、ニュース要約機能は無効です。")
@@ -112,7 +112,7 @@ class NewsCog(commands.Cog):
     async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
         news_items = []
         try:
-            search_results = await asyncio.to_thread(self.bot.google_search.search, queries=queries)
+            search_results = self.bot.google_search(queries=queries)
             
             seen_urls = set()
             urls_to_process = []
@@ -215,17 +215,3 @@ class NewsCog(commands.Cog):
             watchlist.remove(company)
             await self._save_watchlist(watchlist)
             await interaction.response.send_message(f"🗑️ ` {company} ` を監視リストから削除しました。", ephemeral=True)
-        else:
-            await interaction.response.send_message(f"❓ ` {company} ` はリストに見つかりませんでした。", ephemeral=True)
-
-    @stock_group.command(name="list", description="現在の監視リストを表示します。")
-    async def stock_list(self, interaction: discord.Interaction):
-        watchlist = await self._get_watchlist()
-        if watchlist:
-            list_text = "\n".join([f"- {company}" for company in watchlist])
-            await interaction.response.send_message(f"**現在の監視リスト:**\n{list_text}", ephemeral=True)
-        else:
-            await interaction.response.send_message("監視リストは現在空です。", ephemeral=True)
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(NewsCog(bot))
