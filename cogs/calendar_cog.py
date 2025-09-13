@@ -9,7 +9,6 @@ from discord.ext import commands, tasks
 import google.generativeai as genai
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import dropbox
@@ -24,7 +23,7 @@ TODAY_SCHEDULE_TIME = time(hour=7, minute=0, tzinfo=JST)
 DAILY_REVIEW_TIME = time(hour=21, minute=30, tzinfo=JST)
 MEMO_TO_CALENDAR_EMOJI = '📅'
 
-# Google Calendar APIのスコープ (書き込み権限を追加)
+# Google Calendar APIのスコープ
 SCOPES = ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events']
 
 class CalendarCog(commands.Cog):
@@ -35,15 +34,20 @@ class CalendarCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
-        self.uncompleted_tasks = [] # 未完了タスクを保持するリスト
+        self.uncompleted_tasks = []
         if not self._are_credentials_valid():
             logging.error("CalendarCog: 必須の環境変数が不足しています。このCogは無効化されます。")
             return
         try:
             self.creds = self._get_google_credentials()
-            if not self.creds:
-                logging.error("CalendarCog: Google Calendarの認証に失敗しました。")
-                return
+            if not self.creds or not self.creds.valid:
+                 # トークンが期限切れの可能性があればリフレッシュを試みる
+                if self.creds and self.creds.expired and self.creds.refresh_token:
+                    self.creds.refresh(Request())
+                    logging.info("Google APIのアクセストークンをリフレッシュしました。")
+                else:
+                    raise Exception("Google Calendarの認証情報が無効です。")
+
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
             self.dbx = self._initialize_dropbox_client()
@@ -54,19 +58,19 @@ class CalendarCog(commands.Cog):
 
     def _load_environment_variables(self):
         self.calendar_channel_id = int(os.getenv("CALENDAR_CHANNEL_ID", 0))
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0)) # メモチャンネルIDを追加
+        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH")
-        self.google_credentials_path = os.getenv("GOOGLE_CREDENTIALS_PATH", "credentials.json")
+        # .envファイルからtoken.jsonのパスを取得（ローカル用）、なければ'token.json'をデフォルトに
         self.google_token_path = os.getenv("GOOGLE_TOKEN_PATH", "token.json")
 
     def _are_credentials_valid(self) -> bool:
         return all([
             self.calendar_channel_id, self.memo_channel_id, self.gemini_api_key, self.dropbox_refresh_token,
-            self.dropbox_vault_path, self.google_credentials_path, self.google_token_path
+            self.dropbox_vault_path, self.google_token_path
         ])
 
     def _initialize_dropbox_client(self) -> dropbox.Dropbox:
@@ -77,30 +81,16 @@ class CalendarCog(commands.Cog):
         )
 
     def _get_google_credentials(self):
-        creds = None
-        if os.path.exists(self.google_token_path):
+        """RenderのSecret Fileまたはローカルのファイルから認証情報を読み込む"""
+        if not os.path.exists(self.google_token_path):
+            logging.error(f"Googleの認証ファイルが見つかりません。パス: {self.google_token_path}")
+            return None
+        try:
             creds = Credentials.from_authorized_user_file(self.google_token_path, SCOPES)
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                except Exception as e:
-                    logging.error(f"Googleトークンのリフレッシュに失敗しました: {e}。'token.json'を削除して再認証してください。")
-                    # 古いトークンファイルを削除して再生成を促す
-                    try:
-                        os.remove(self.google_token_path)
-                    except OSError as e_os:
-                        logging.error(f"token.jsonの削除に失敗: {e_os}")
-                    return self._get_google_credentials()
-            else:
-                if not os.path.exists(self.google_credentials_path):
-                    logging.error(f"{self.google_credentials_path} が見つかりません。")
-                    return None
-                flow = InstalledAppFlow.from_client_secrets_file(self.google_credentials_path, SCOPES)
-                creds = flow.run_local_server(port=0)
-            with open(self.google_token_path, 'w') as token:
-                token.write(creds.to_json())
-        return creds
+            return creds
+        except Exception as e:
+            logging.error(f"認証ファイルからの認証情報読み込みに失敗しました: {e}")
+            return None
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -159,7 +149,6 @@ class CalendarCog(commands.Cog):
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     logging.info(f"[CalendarCog] {today_str} の通知ログは見つかりませんでした。")
-                    # 未完了タスクの処理はログがなくても実行
                     await self._carry_over_uncompleted_tasks()
                     return
                 raise
@@ -181,7 +170,6 @@ class CalendarCog(commands.Cog):
                     await message.add_reaction("❌")
                 await channel.send("--------------------")
 
-            # 振り返り通知が終わった後、未完了タスクを翌日に回す
             await self._carry_over_uncompleted_tasks()
 
         except Exception as e:
@@ -192,17 +180,12 @@ class CalendarCog(commands.Cog):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.user_id == self.bot.user.id:
             return
-
-        # カレンダーレビューチャンネルの処理
         if payload.channel_id == self.calendar_channel_id:
             await self._handle_calendar_reaction(payload)
-        
-        # メモチャンネルの処理
         elif payload.channel_id == self.memo_channel_id:
             await self._handle_memo_reaction(payload)
 
     async def _handle_calendar_reaction(self, payload: discord.RawReactionActionEvent):
-        """カレンダーチャンネルのリアクションを処理する"""
         try:
             channel = self.bot.get_channel(payload.channel_id)
             message = await channel.fetch_message(payload.message_id)
@@ -216,7 +199,6 @@ class CalendarCog(commands.Cog):
             target_date = datetime.strptime(today_str, '%Y-%m-%d').date()
 
             if str(payload.emoji) == '❌':
-                # 未完了タスクをリストに追加
                 self.uncompleted_tasks.append(task_summary)
                 logging.info(f"[CalendarCog] 未完了タスクを追加: {task_summary}")
 
@@ -236,7 +218,6 @@ class CalendarCog(commands.Cog):
             logging.error(f"[CalendarCog] カレンダーリアクション処理中にエラー: {e}", exc_info=True)
             
     async def _handle_memo_reaction(self, payload: discord.RawReactionActionEvent):
-        """メモチャンネルのリアクションを処理する"""
         if str(payload.emoji) != MEMO_TO_CALENDAR_EMOJI:
             return
             
@@ -247,7 +228,6 @@ class CalendarCog(commands.Cog):
             if not message.content:
                 return
 
-            # 複数行のメモを個別のタスクとして登録
             tasks = [line.strip() for line in message.content.split('\n') if line.strip()]
             if not tasks:
                 return
@@ -270,7 +250,6 @@ class CalendarCog(commands.Cog):
                 await message.add_reaction("❌")
 
     async def _carry_over_uncompleted_tasks(self):
-        """未完了タスクを翌日の終日予定としてGoogleカレンダーに登録する"""
         if not self.uncompleted_tasks:
             logging.info("[CalendarCog] 繰り越す未完了タスクはありません。")
             return
@@ -281,12 +260,10 @@ class CalendarCog(commands.Cog):
         for task in self.uncompleted_tasks:
             await self._create_google_calendar_event(task, tomorrow)
         
-        # 処理後にリストをクリア
         self.uncompleted_tasks.clear()
         logging.info("[CalendarCog] 未完了タスクの繰り越しが完了しました。")
 
     async def _create_google_calendar_event(self, summary: str, date: datetime.date):
-        """指定された日に通知なしの終日予定を作成する"""
         event = {
             'summary': summary,
             'start': {'date': date.isoformat()},
@@ -305,7 +282,6 @@ class CalendarCog(commands.Cog):
         except Exception as e:
             logging.error(f"予期せぬエラーが発生しました: {e}", exc_info=True)
 
-    # --- ヘルパー関数 (既存のまま) ---
     async def _generate_overall_advice(self, events: list) -> str:
         event_list_str = ""
         for event in events:
@@ -320,91 +296,4 @@ class CalendarCog(commands.Cog):
         {event_list_str}
         """
         try:
-            response = await self.gemini_model.generate_content_async(prompt)
-            return response.text
-        except Exception as e:
-            logging.error(f"総合アドバイスの生成に失敗: {e}")
-            return "アドバイスの生成中にエラーが発生しました。"
-
-    def _create_today_embed(self, date: datetime.date, events: list, advice: str) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"🗓️ {date.strftime('%Y-%m-%d')} の予定",
-            description=f"**🤖 AIによる一日の過ごし方アドバイス**\n{advice}",
-            color=discord.Color.green()
-        )
-        event_list = ""
-        for event in events:
-            start_str = self._format_datetime(event.get('start'))
-            event_list += f"**{start_str}** {event.get('summary', '名称未設定')}\n"
-        embed.add_field(name="タイムライン", value=event_list, inline=False)
-        return embed
-
-    def _format_datetime(self, dt_obj: dict) -> str:
-        if 'dateTime' in dt_obj:
-            dt = datetime.fromisoformat(dt_obj['dateTime']).astimezone(JST)
-            return dt.strftime('%H:%M')
-        elif 'date' in dt_obj:
-            return "終日"
-        return ""
-
-    async def _add_to_daily_log(self, event: dict):
-        today_str = datetime.now(JST).strftime('%Y-%m-%d')
-        log_path = f"{self.dropbox_vault_path}/.bot/calendar_log/{today_str}.json"
-        
-        try:
-            _, res = self.dbx.files_download(log_path)
-            daily_events = json.loads(res.content.decode('utf-8'))
-        except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                daily_events = []
-            else:
-                logging.error(f"デイリーログの読み込みに失敗: {e}")
-                return
-
-        if not any(e['id'] == event['id'] for e in daily_events):
-            daily_events.append({
-                'id': event['id'],
-                'summary': event.get('summary', '名称未設定')
-            })
-            try:
-                self.dbx.files_upload(
-                    json.dumps(daily_events, indent=2, ensure_ascii=False).encode('utf-8'),
-                    log_path,
-                    mode=WriteMode('overwrite')
-                )
-            except Exception as e:
-                logging.error(f"デイリーログの保存に失敗: {e}")
-
-    async def _update_obsidian_task_log(self, date: datetime.date, log_content: str):
-        date_str = date.strftime('%Y-%m-%d')
-        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-
-        for attempt in range(3):
-            try:
-                try:
-                    _, res = self.dbx.files_download(daily_note_path)
-                    current_content = res.content.decode('utf-8')
-                except ApiError as e:
-                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                        current_content = ""
-                    else: raise
-
-                new_content = update_section(current_content, log_content.strip(), "## Task Log")
-
-                self.dbx.files_upload(
-                    new_content.encode('utf-8'),
-                    daily_note_path,
-                    mode=WriteMode('overwrite')
-                )
-                logging.info(f"Obsidianのタスクログを更新しました: {daily_note_path}")
-                return
-            except Exception as e:
-                logging.error(f"Obsidianタスクログの更新に失敗 (試行 {attempt + 1}/3): {e}")
-                if attempt < 2:
-                    await asyncio.sleep(5 * (attempt + 1))
-                else:
-                    logging.error("リトライの上限に達しました。アップロードを断念します。")
-
-async def setup(bot: commands.Bot):
-    """Cogをボットに登録するためのセットアップ関数"""
-    await bot.add_cog(CalendarCog(bot))
+            response = await self.gem
