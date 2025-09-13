@@ -15,11 +15,10 @@ import google.generativeai as genai
 
 # 他のファイルから関数をインポート
 from web_parser import parse_url_with_readability
-from __main__ import google_search
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=7, minute=30, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=16, minute=10, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
