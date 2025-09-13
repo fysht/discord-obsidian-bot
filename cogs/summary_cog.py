@@ -11,7 +11,7 @@ import logging
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-SUMMARY_TIME = datetime.time(hour=23, minute=59, tzinfo=JST)
+SUMMARY_TIME = datetime.time(hour=22, minute=30, tzinfo=JST)
 
 class SummaryCog(commands.Cog):
     """毎日定時に外部のサマリー生成ワーカーを呼び出すCog"""

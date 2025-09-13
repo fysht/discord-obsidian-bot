@@ -15,11 +15,10 @@ import google.generativeai as genai
 
 # 他のファイルから関数をインポート
 from web_parser import parse_url_with_readability
-from google_search import search as google_search_tool
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=15, minute=50, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=16, minute=00, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -106,9 +105,10 @@ class NewsCog(commands.Cog):
 
     async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
         """指定されたクエリでニュースを検索し、内容を要約する汎用関数"""
+        from __main__ import google_search
         news_items = []
         try:
-            search_results = await asyncio.to_thread(google_search_tool.search, queries=queries)
+            search_results = await asyncio.to_thread(google_search.search, queries=queries)
             
             seen_urls = set()
             urls_to_process = []
@@ -179,6 +179,7 @@ class NewsCog(commands.Cog):
         await channel.send(embed=embed)
         logging.info("デイリーニュースブリーフィングを送信しました。")
         
+    # --- ウォッチリスト管理 ---
     async def _get_watchlist(self) -> list:
         try:
             _, res = self.dbx.files_download(self.watchlist_path)
