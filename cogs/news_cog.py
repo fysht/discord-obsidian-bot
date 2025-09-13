@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=23, minute=10, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=23, minute=25, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -160,7 +160,22 @@ class NewsCog(commands.Cog):
         )
         embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
         
-        market_queries = ["日本株市場 見通し", "日経平均株価 影響 ニュース", "日本銀行 金融政策"]
+        # 検索対象サイトを定義
+        target_sites = [
+            "site:nikkei.com",
+            "site:toyokeizai.net",
+            "site:weekly-economist.mainichi.jp",
+            "site:jp.reuters.com",
+            "site:bloomberg.co.jp",
+            "site:pwc.com",
+            "site:murc.jp"
+        ]
+        sites_query = " OR ".join(target_sites)
+        
+        # 市場全体（マクロ）のニュースクエリを生成
+        market_topics = ["日本経済 マクロ 指標", "日経平均株価 見通し", "日本銀行 金融政策", "米国市場 日本株への影響"]
+        market_queries = [f"({sites_query}) {topic}" for topic in market_topics]
+        
         market_news = await self._search_and_summarize_news(market_queries, max_articles=2)
         if market_news:
             news_text = ""
