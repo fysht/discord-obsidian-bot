@@ -20,13 +20,13 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=7, minute=33, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=8, minute=10, tzinfo=JST)
 
 # マクロ経済ニュースのRSSフィードURLリスト
 MACRO_NEWS_RSS_URLS = [
-    "https://jp.reuters.com/rss/businessNews.xml", # ロイター ビジネス
-    "https://jp.reuters.com/rss/jp_market.xml", # ロイター 日本市場
-    "https://www.boj.or.jp/rss/whatsnew.xml", # 日本銀行 What's New
+    "https://www.nhk.or.jp/rss/news/cat2.xml",               # NHKニュース 経済
+    "https://news.yahoo.co.jp/rss/categories/business.xml", # Yahoo!ニュース 経済
+    "https://www.boj.or.jp/rss/whatsnew.xml",               # 日本銀行 What's New
 ]
 # 個別銘柄ニュース（TDnet 適時開示）
 TDNET_RSS_URL = "https://www.release.tdnet.info/inbs/rss/all"
@@ -103,7 +103,7 @@ class NewsCog(commands.Cog):
     def cog_unload(self):
         self.daily_news_briefing.cancel()
 
-    # --- 天気予報 ---
+    # --- 天気予報 (修正版) ---
     async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
         """天気予報を取得する (pyowm 3.x / OWM API 3.0 one_call 対応)"""
         try:
@@ -124,7 +124,7 @@ class NewsCog(commands.Cog):
                  return f"**{location_name}**: 天気情報の取得に失敗 (APIキーが無効か、プランが適切でない可能性があります)。"
             return f"**{location_name}**: 天気情報の取得に失敗しました。"
 
-    # --- ニュース要約 ---
+    # --- ニュース要約 (修正なし) ---
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:
             return "要約できませんでした。"
@@ -203,7 +203,7 @@ class NewsCog(commands.Cog):
         # 取得対象時刻（24時間前）
         since_time = datetime.now(JST) - timedelta(days=1)
 
-        # --- マクロ経済ニュースを投稿 ---
+        # --- マクロ経済ニュースを投稿 (RSSベースに変更) ---
         market_news = await self._fetch_macro_news(MACRO_NEWS_RSS_URLS, since_time)
         if market_news:
             macro_embed = discord.Embed(title="🌐 市場全体のニュース", color=discord.Color.dark_gold())
@@ -217,7 +217,7 @@ class NewsCog(commands.Cog):
         else:
             logging.info("マクロ経済ニュースは見つかりませんでした。")
 
-        # --- 保有銘柄ニュースを投稿 ---
+        # --- 保有銘柄ニュースを投稿 (RSSベースに変更) ---
         watchlist = await self._get_watchlist()
         if watchlist:
             logging.info(f"{len(watchlist)}件の保有銘柄ニュースをチェックします。")
