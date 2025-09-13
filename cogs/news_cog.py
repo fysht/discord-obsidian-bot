@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=0, minute=40, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=0, minute=55, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -102,7 +102,7 @@ class NewsCog(commands.Cog):
         if not self.gemini_model or not content:
             return "要約の生成に失敗した。"
         try:
-            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だである調」で要約せよ。\n---{content[:8000]}"
+            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だ・である調」で要約せよ。\n---{content[:8000]}"
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e:
@@ -131,7 +131,6 @@ class NewsCog(commands.Cog):
                 if len(urls_to_process) >= max_articles * len(queries):
                     break
             
-            # Limit to max_articles overall
             urls_to_process = urls_to_process[:max_articles]
 
             logging.info(f"要約対象の記事は {len(urls_to_process)} 件です。")
@@ -167,11 +166,7 @@ class NewsCog(commands.Cog):
         await channel.send(embed=weather_embed)
 
         # --- マクロ経済ニュースを投稿 ---
-        target_sites = [
-            "site:nikkei.com", "site:toyokeizai.net", "site:weekly-economist.mainichi.jp",
-            "site:jp.reuters.com", "site:bloomberg.co.jp", "site:pwc.com", "site:murc.jp"
-        ]
-        market_queries = [f"{site} 経済" for site in target_sites]
+        market_queries = ["経済 ニュース"]
         
         market_news = await self._search_and_summarize_news(market_queries, max_articles=3)
         if market_news:
@@ -190,7 +185,8 @@ class NewsCog(commands.Cog):
         if watchlist:
             logging.info(f"{len(watchlist)}件の保有銘柄ニュースをチェックします。")
             for company in watchlist:
-                company_queries = [f"{company} 株価 ニュース", f"{company} 業績発表"]
+                # 検索クエリを「銘柄コード ニュース」に修正
+                company_queries = [f"{company} ニュース"]
                 company_news = await self._search_and_summarize_news(company_queries, max_articles=1)
                 
                 if company_news:
