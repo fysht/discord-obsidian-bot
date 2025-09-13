@@ -62,39 +62,76 @@ class FitbitCog(commands.Cog):
             logging.error(f"FitbitCogのクライアント初期化中にエラー: {e}", exc_info=True)
             return False
 
+    def _calculate_sleep_score(self, summary: Dict[str, Any]) -> int:
+        """Fitbitアプリのスコアを模倣した総合睡眠スコアを計算する"""
+        total_asleep_min = summary['minutesAsleep']
+        total_in_bed_min = summary['timeInBed']
+        deep_min = summary['levels']['summary'].get('deep', 0)
+        rem_min = summary['levels']['summary'].get('rem', 0)
+        wake_min = summary['levels']['summary'].get('wake', 0)
+
+        # 1. 睡眠時間スコア (最大50点)
+        duration_score = min(50, (total_asleep_min / 480) * 50)
+
+        # 2. 睡眠の質スコア (最大25点)
+        deep_percentage = (deep_min / total_asleep_min) * 100 if total_asleep_min > 0 else 0
+        rem_percentage = (rem_min / total_asleep_min) * 100 if total_asleep_min > 0 else 0
+        
+        deep_score = 0
+        if deep_percentage >= 20: deep_score = 12.5
+        elif deep_percentage >= 15: deep_score = 10
+        elif deep_percentage >= 10: deep_score = 7.5
+        else: deep_score = 5
+
+        rem_score = 0
+        if rem_percentage >= 25: rem_score = 12.5
+        elif rem_percentage >= 20: rem_score = 10
+        elif rem_percentage >= 15: rem_score = 7.5
+        else: rem_score = 5
+        
+        quality_score = deep_score + rem_score
+
+        # 3. 回復度スコア (最大25点) - 落ち着きのなさで代用
+        restlessness_percentage = (wake_min / total_in_bed_min) * 100 if total_in_bed_min > 0 else 100
+        
+        restoration_score = 0
+        if restlessness_percentage <= 5: restoration_score = 25
+        elif restlessness_percentage <= 10: restoration_score = 22
+        elif restlessness_percentage <= 15: restoration_score = 18
+        elif restlessness_percentage <= 20: restoration_score = 14
+        else: restoration_score = 10
+
+        total_score = round(duration_score + quality_score + restoration_score)
+        return min(100, total_score) # 100点を超えないように
+
     def _process_sleep_data(self, sleep_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """複数の睡眠ログを統合し、サマリーデータを作成する"""
+        """複数の睡眠ログを統合し、サマリーデータと新しいスコアを作成する"""
         if not sleep_data or 'sleep' not in sleep_data or not sleep_data['sleep']:
             return None
 
         total_minutes_asleep = 0
         total_time_in_bed = 0
-        total_weighted_efficiency = 0
         stage_summary = {'deep': 0, 'light': 0, 'rem': 0, 'wake': 0}
 
         for log in sleep_data['sleep']:
-            minutes_asleep = log.get('minutesAsleep', 0)
-            total_minutes_asleep += minutes_asleep
+            total_minutes_asleep += log.get('minutesAsleep', 0)
             total_time_in_bed += log.get('timeInBed', 0)
-            
-            # 睡眠時間で重み付けした効率スコアを計算
-            efficiency = log.get('efficiency', 0)
-            total_weighted_efficiency += efficiency * minutes_asleep
             
             if 'levels' in log and 'summary' in log['levels']:
                 for stage, data in log['levels']['summary'].items():
                     if stage in stage_summary:
                         stage_summary[stage] += data.get('minutes', 0)
 
-        # 加重平均で総合スコアを算出
-        overall_efficiency = round(total_weighted_efficiency / total_minutes_asleep) if total_minutes_asleep > 0 else 0
-        
-        return {
-            'efficiency': overall_efficiency,
+        summary = {
             'minutesAsleep': total_minutes_asleep,
             'timeInBed': total_time_in_bed,
             'levels': {'summary': stage_summary}
         }
+        
+        # 新しいスコア計算ロジックを呼び出す
+        summary['sleep_score'] = self._calculate_sleep_score(summary)
+
+        return summary
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -139,7 +176,7 @@ class FitbitCog(commands.Cog):
                     title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (速報)",
                     color=discord.Color.purple()
                 )
-                embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('efficiency', 0)}** 点", inline=True)
+                embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('sleep_score', 0)}** 点", inline=True)
                 embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_summary.get('minutesAsleep', 0))}**", inline=True)
                 embed.set_footer(text="活動データを含む1日のまとめは夜に通知されます。")
                 await channel.send(embed=embed)
@@ -216,7 +253,7 @@ class FitbitCog(commands.Cog):
                 title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (手動取得)",
                 color=discord.Color.purple()
             )
-            embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('efficiency', 0)}** 点", inline=True)
+            embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('sleep_score', 0)}** 点", inline=True)
             embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_summary.get('minutesAsleep', 0))}**", inline=True)
             await channel.send(embed=embed)
             await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の睡眠レポートを送信しました。")
@@ -289,7 +326,7 @@ class FitbitCog(commands.Cog):
         if sleep_data:
             levels = sleep_data.get('levels', {}).get('summary', {})
             frontmatter.update({
-                'sleep_score': sleep_data.get('efficiency'),
+                'sleep_score': sleep_data.get('sleep_score'),
                 'total_sleep_minutes': sleep_data.get('minutesAsleep'),
                 'time_in_bed_minutes': sleep_data.get('timeInBed'),
                 'deep_sleep_minutes': levels.get('deep'),
@@ -312,7 +349,7 @@ class FitbitCog(commands.Cog):
             levels = sleep_data.get('levels', {}).get('summary', {})
             sleep_text = (
                 f"#### Sleep\n"
-                f"- **Score:** {sleep_data.get('efficiency', 'N/A')} / 100\n"
+                f"- **Score:** {sleep_data.get('sleep_score', 'N/A')} / 100\n"
                 f"- **Total Sleep:** {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
                 f"- **Time in Bed:** {self._format_minutes(sleep_data.get('timeInBed'))}\n"
                 f"- **Stages:** Deep {self._format_minutes(levels.get('deep'))}, "
@@ -359,7 +396,7 @@ class FitbitCog(commands.Cog):
     async def _generate_ai_advice(self, target_date: datetime.date, sleep_data: dict, activity_data: dict) -> str:
         today_sleep_text = ""
         if sleep_data:
-            today_sleep_text = (f"今日の睡眠: スコア {sleep_data.get('efficiency', 'N/A')}, "
+            today_sleep_text = (f"今日の睡眠: スコア {sleep_data.get('sleep_score', 'N/A')}, "
                               f"合計睡眠時間 {self._format_minutes(sleep_data.get('minutesAsleep', 0))}")
         today_activity_text = ""
         if activity_data:
@@ -409,7 +446,7 @@ class FitbitCog(commands.Cog):
         if sleep_data:
             levels = sleep_data.get('levels', {}).get('summary', {})
             sleep_text = (
-                f"**スコア**: **{sleep_data.get('efficiency', 'N/A')}** / 100\n"
+                f"**スコア**: **{sleep_data.get('sleep_score', 'N/A')}** / 100\n"
                 f"**合計睡眠時間**: {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
                 f"**ベッドにいた時間**: {self._format_minutes(sleep_data.get('timeInBed'))}\n"
                 f"**ステージ**: 深い {self._format_minutes(levels.get('deep'))}, "
