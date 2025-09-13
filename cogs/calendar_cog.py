@@ -22,9 +22,10 @@ from utils.obsidian_utils import update_section
 JST = timezone(timedelta(hours=+9), 'JST')
 TODAY_SCHEDULE_TIME = time(hour=7, minute=0, tzinfo=JST)
 DAILY_REVIEW_TIME = time(hour=21, minute=30, tzinfo=JST)
+MEMO_TO_CALENDAR_EMOJI = '📅'
 
-# Google Calendar APIのスコープ
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
+# Google Calendar APIのスコープ (書き込み権限を追加)
+SCOPES = ['https://www.googleapis.com/auth/calendar.readonly', 'https://www.googleapis.com/auth/calendar.events']
 
 class CalendarCog(commands.Cog):
     """
@@ -34,6 +35,7 @@ class CalendarCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
+        self.uncompleted_tasks = [] # 未完了タスクを保持するリスト
         if not self._are_credentials_valid():
             logging.error("CalendarCog: 必須の環境変数が不足しています。このCogは無効化されます。")
             return
@@ -52,6 +54,7 @@ class CalendarCog(commands.Cog):
 
     def _load_environment_variables(self):
         self.calendar_channel_id = int(os.getenv("CALENDAR_CHANNEL_ID", 0))
+        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0)) # メモチャンネルIDを追加
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
@@ -62,7 +65,7 @@ class CalendarCog(commands.Cog):
 
     def _are_credentials_valid(self) -> bool:
         return all([
-            self.calendar_channel_id, self.gemini_api_key, self.dropbox_refresh_token,
+            self.calendar_channel_id, self.memo_channel_id, self.gemini_api_key, self.dropbox_refresh_token,
             self.dropbox_vault_path, self.google_credentials_path, self.google_token_path
         ])
 
@@ -82,8 +85,12 @@ class CalendarCog(commands.Cog):
                 try:
                     creds.refresh(Request())
                 except Exception as e:
-                    logging.error(f"Googleトークンのリフレッシュに失敗しました: {e}")
-                    os.remove(self.google_token_path)
+                    logging.error(f"Googleトークンのリフレッシュに失敗しました: {e}。'token.json'を削除して再認証してください。")
+                    # 古いトークンファイルを削除して再生成を促す
+                    try:
+                        os.remove(self.google_token_path)
+                    except OSError as e_os:
+                        logging.error(f"token.jsonの削除に失敗: {e_os}")
                     return self._get_google_credentials()
             else:
                 if not os.path.exists(self.google_credentials_path):
@@ -135,7 +142,6 @@ class CalendarCog(commands.Cog):
 
             await self._update_obsidian_today_task_list(today, events)
             
-            # 通知したイベントをログに記録
             for event in events:
                 await self._add_to_daily_log(event)
 
@@ -155,10 +161,14 @@ class CalendarCog(commands.Cog):
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     logging.info(f"[CalendarCog] {today_str} の通知ログは見つかりませんでした。")
+                    # 未完了タスクの処理はログがなくても実行
+                    await self._carry_over_uncompleted_tasks()
                     return
                 raise
 
-            if not daily_events: return
+            if not daily_events: 
+                await self._carry_over_uncompleted_tasks()
+                return
 
             channel = self.bot.get_channel(self.calendar_channel_id)
             if channel:
@@ -172,13 +182,29 @@ class CalendarCog(commands.Cog):
                     await message.add_reaction("✅")
                     await message.add_reaction("❌")
                 await channel.send("--------------------")
+
+            # 振り返り通知が終わった後、未完了タスクを翌日に回す
+            await self._carry_over_uncompleted_tasks()
+
         except Exception as e:
             logging.error(f"[CalendarCog] 振り返り通知中にエラー: {e}", exc_info=True)
 
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        if payload.user_id == self.bot.user.id or payload.channel_id != self.calendar_channel_id:
+        if payload.user_id == self.bot.user.id:
             return
+
+        # カレンダーレビューチャンネルの処理
+        if payload.channel_id == self.calendar_channel_id:
+            await self._handle_calendar_reaction(payload)
+        
+        # メモチャンネルの処理
+        elif payload.channel_id == self.memo_channel_id:
+            await self._handle_memo_reaction(payload)
+
+    async def _handle_calendar_reaction(self, payload: discord.RawReactionActionEvent):
+        """カレンダーチャンネルのリアクションを処理する"""
         try:
             channel = self.bot.get_channel(payload.channel_id)
             message = await channel.fetch_message(payload.message_id)
@@ -191,19 +217,91 @@ class CalendarCog(commands.Cog):
             today_str = datetime.now(JST).strftime('%Y-%m-%d')
             target_date = datetime.strptime(today_str, '%Y-%m-%d').date()
 
+            if str(payload.emoji) == '❌':
+                # 未完了タスクをリストに追加
+                self.uncompleted_tasks.append(task_summary)
+                logging.info(f"[CalendarCog] 未完了タスクを追加: {task_summary}")
+
             task_list_md = f"- [{ 'x' if str(payload.emoji) == '✅' else ' ' }] {task_summary}\n"
             await self._update_obsidian_task_log(target_date, task_list_md)
             
             user = self.bot.get_user(payload.user_id)
+            feedback_msg_content = f"「{task_summary}」のフィードバックありがとうございます！"
             if user:
-                await message.remove_reaction(payload.emoji, user)
+                feedback_msg_content = f"{user.mention}さん、{feedback_msg_content}"
             
-            feedback_msg = await channel.send(f"{user.mention}さん、「{task_summary}」のフィードバックありがとうございます！", delete_after=10)
+            feedback_msg = await channel.send(feedback_msg_content, delete_after=10)
             await message.delete(delay=10)
 
         except (discord.NotFound, discord.Forbidden): pass
         except Exception as e:
-            logging.error(f"[CalendarCog] リアクション処理中にエラー: {e}", exc_info=True)
+            logging.error(f"[CalendarCog] カレンダーリアクション処理中にエラー: {e}", exc_info=True)
+            
+    async def _handle_memo_reaction(self, payload: discord.RawReactionActionEvent):
+        """メモチャンネルのリアクションを処理する"""
+        if str(payload.emoji) != MEMO_TO_CALENDAR_EMOJI:
+            return
+            
+        try:
+            channel = self.bot.get_channel(payload.channel_id)
+            message = await channel.fetch_message(payload.message_id)
+            
+            if not message.content:
+                return
+
+            # 複数行のメモを個別のタスクとして登録
+            tasks = [line.strip() for line in message.content.split('\n') if line.strip()]
+            if not tasks:
+                return
+            
+            await message.add_reaction("⏳")
+            
+            today = datetime.now(JST).date()
+            for task in tasks:
+                await self._create_google_calendar_event(task, today)
+
+            await message.remove_reaction("⏳", self.bot.user)
+            await message.add_reaction("✅")
+            
+            feedback_msg = await channel.send(f"`{len(tasks)}`件のタスクを本日の終日予定としてGoogleカレンダーに登録しました。", delete_after=15)
+
+        except (discord.NotFound, discord.Forbidden): pass
+        except Exception as e:
+            logging.error(f"[CalendarCog] メモリアクション処理中にエラー: {e}", exc_info=True)
+            if 'message' in locals():
+                await message.add_reaction("❌")
+
+    async def _carry_over_uncompleted_tasks(self):
+        """未完了タスクを翌日の終日予定としてGoogleカレンダーに登録する"""
+        if not self.uncompleted_tasks:
+            logging.info("[CalendarCog] 繰り越す未完了タスクはありません。")
+            return
+
+        logging.info(f"[CalendarCog] {len(self.uncompleted_tasks)}件の未完了タスクを翌日に繰り越します...")
+        tomorrow = datetime.now(JST).date() + timedelta(days=1)
+        
+        for task in self.uncompleted_tasks:
+            await self._create_google_calendar_event(task, tomorrow)
+        
+        # 処理後にリストをクリア
+        self.uncompleted_tasks.clear()
+        logging.info("[CalendarCog] 未完了タスクの繰り越しが完了しました。")
+
+    async def _create_google_calendar_event(self, summary: str, date: datetime.date):
+        """指定された日に終日の予定を作成する"""
+        event = {
+            'summary': summary,
+            'start': {'date': date.isoformat()},
+            'end': {'date': date.isoformat()},
+        }
+        try:
+            service = build('calendar', 'v3', credentials=self.creds)
+            service.events().insert(calendarId='primary', body=event).execute()
+            logging.info(f"[CalendarCog] Googleカレンダーに予定を追加しました: '{summary}' on {date}")
+        except HttpError as e:
+            logging.error(f"Googleカレンダーへのイベント作成中にエラー: {e}")
+        except Exception as e:
+            logging.error(f"予期せぬエラーが発生しました: {e}", exc_info=True)
 
     # --- ヘルパー関数 ---
     async def _generate_overall_advice(self, events: list) -> str:
@@ -250,95 +348,3 @@ class CalendarCog(commands.Cog):
     async def _add_to_daily_log(self, event: dict):
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
         log_path = f"{self.dropbox_vault_path}/.bot/calendar_log/{today_str}.json"
-        
-        try:
-            _, res = self.dbx.files_download(log_path)
-            daily_events = json.loads(res.content.decode('utf-8'))
-        except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                daily_events = []
-            else:
-                logging.error(f"デイリーログの読み込みに失敗: {e}")
-                return
-
-        if not any(e['id'] == event['id'] for e in daily_events):
-            daily_events.append({
-                'id': event['id'],
-                'summary': event.get('summary', '名称未設定')
-            })
-            try:
-                self.dbx.files_upload(
-                    json.dumps(daily_events, indent=2, ensure_ascii=False).encode('utf-8'),
-                    log_path,
-                    mode=WriteMode('overwrite')
-                )
-            except Exception as e:
-                logging.error(f"デイリーログの保存に失敗: {e}")
-            
-    async def _update_obsidian_today_task_list(self, date: datetime.date, events: list):
-        date_str = date.strftime('%Y-%m-%d')
-        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-        
-        task_list_md = ""
-        for event in events:
-            task_list_md += f"- [ ] {event.get('summary', '名称未設定')}\n"
-        
-        for attempt in range(3):
-            try:
-                try:
-                    _, res = self.dbx.files_download(daily_note_path)
-                    current_content = res.content.decode('utf-8')
-                except ApiError as e:
-                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                        current_content = ""
-                    else: raise
-
-                new_content = update_section(current_content, task_list_md.strip(), "## Task List")
-
-                self.dbx.files_upload(
-                    new_content.encode('utf-8'),
-                    daily_note_path,
-                    mode=WriteMode('overwrite')
-                )
-                logging.info(f"Obsidianの今日のデイリーノートを更新しました: {daily_note_path}")
-                return
-            except Exception as e:
-                logging.error(f"Obsidianの今日のデイリーノート更新に失敗 (試行 {attempt + 1}/3): {e}")
-                if attempt < 2:
-                    await asyncio.sleep(5 * (attempt + 1))
-                else:
-                    logging.error("リトライの上限に達しました。アップロードを断念します。")
-
-    async def _update_obsidian_task_log(self, date: datetime.date, log_content: str):
-        date_str = date.strftime('%Y-%m-%d')
-        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-
-        for attempt in range(3):
-            try:
-                try:
-                    _, res = self.dbx.files_download(daily_note_path)
-                    current_content = res.content.decode('utf-8')
-                except ApiError as e:
-                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                        current_content = ""
-                    else: raise
-
-                new_content = update_section(current_content, log_content.strip(), "## Task Log")
-
-                self.dbx.files_upload(
-                    new_content.encode('utf-8'),
-                    daily_note_path,
-                    mode=WriteMode('overwrite')
-                )
-                logging.info(f"Obsidianのタスクログを更新しました: {daily_note_path}")
-                return
-            except Exception as e:
-                logging.error(f"Obsidianタスクログの更新に失敗 (試行 {attempt + 1}/3): {e}")
-                if attempt < 2:
-                    await asyncio.sleep(5 * (attempt + 1))
-                else:
-                    logging.error("リトライの上限に達しました。アップロードを断念します。")
-
-async def setup(bot: commands.Bot):
-    """Cogをボットに登録するためのセットアップ関数"""
-    await bot.add_cog(CalendarCog(bot))
