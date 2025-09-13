@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=22, minute=58, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=23, minute=10, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -100,14 +100,14 @@ class NewsCog(commands.Cog):
 
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:
-            return "要約の生成に失敗しました。"
+            return "要約の生成に失敗した。"
         try:
-            prompt = f"以下のニュース記事を3～4文程度で簡潔に要約してください。\n---{content[:8000]}"
+            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だ・である調」で要約せよ。\n---{content[:8000]}"
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e:
             logging.error(f"ニュースの要約中にエラー: {e}")
-            return "要約中にエラーが発生しました。"
+            return "要約中にエラーが発生した。"
 
     async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
         news_items = []

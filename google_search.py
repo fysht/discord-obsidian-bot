@@ -25,7 +25,8 @@ async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[st
         'key': API_KEY,
         'cx': SEARCH_ENGINE_ID,
         'q': query,
-        'num': 5 # 検索結果の数
+        'num': 5, # 検索結果の数
+        'dateRestrict': 'd1' # 直近24時間（1日）以内に限定
     }
     try:
         async with session.get(url, params=params) as response:
@@ -40,7 +41,6 @@ async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[st
 async def search(queries: List[str]) -> List[SearchResults]:
     """非同期で検索を実行し、結果を返す"""
     if not all([API_KEY, SEARCH_ENGINE_ID]):
-        # 警告メッセージも GOOGLE_API_KEY を参照するように修正
         logging.warning("警告: GOOGLE_API_KEYまたはGOOGLE_SEARCH_ENGINE_IDが設定されていません。")
         return []
 
