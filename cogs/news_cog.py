@@ -15,10 +15,11 @@ import google.generativeai as genai
 
 # 他のファイルから関数をインポート
 from web_parser import parse_url_with_readability
+from __main__ import google_search
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=16, minute=00, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=7, minute=30, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -33,7 +34,11 @@ class NewsCog(commands.Cog):
             return
             
         try:
-            self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token)
+            self.dbx = dropbox.Dropbox(
+                oauth2_refresh_token=self.dropbox_refresh_token,
+                app_key=self.dropbox_app_key,
+                app_secret=self.dropbox_app_secret
+            )
             self.owm = OWM(self.openweathermap_api_key)
             self.mgr = self.owm.weather_manager()
             
@@ -56,13 +61,15 @@ class NewsCog(commands.Cog):
         self.home_name = os.getenv("HOME_NAME", "自宅")
         self.work_name = os.getenv("WORK_NAME", "勤務先")
         self.openweathermap_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
+        self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
+        self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.watchlist_path = f"{self.dropbox_vault_path}/.bot/stock_watchlist.json"
 
     def _are_credentials_valid(self) -> bool:
-        return all([self.news_channel_id, self.home_coords, self.work_coords, self.openweathermap_api_key, self.dropbox_refresh_token, self.gemini_api_key])
+        return all([self.news_channel_id, self.home_coords, self.work_coords, self.openweathermap_api_key, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key])
 
     def _parse_coordinates(self, coord_str: str | None) -> dict | None:
         if not coord_str: return None
@@ -105,7 +112,6 @@ class NewsCog(commands.Cog):
 
     async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
         """指定されたクエリでニュースを検索し、内容を要約する汎用関数"""
-        from __main__ import google_search
         news_items = []
         try:
             search_results = await asyncio.to_thread(google_search.search, queries=queries)
