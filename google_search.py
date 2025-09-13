@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 import logging
 
 # --- 環境変数からAPI情報を読み込み ---
-API_KEY = os.getenv("GOOGLE_API_KEY")
+API_KEY = os.getenv("GEMINI_API_KEY")
 SEARCH_ENGINE_ID = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
 
 class SearchResult:
@@ -15,7 +15,7 @@ class SearchResult:
         self.description = snippet
 
 class SearchResults:
-    def __init__(self, items: List[Dict[str, Any]]):
+    def __init__(self, items: List[Dict, Any]]):
         self.results = [SearchResult(item.get('title'), item.get('link'), item.get('snippet')) for item in items]
 
 async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[str, Any]:
@@ -40,7 +40,7 @@ async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[st
 async def search(queries: List[str]) -> List[SearchResults]:
     """非同期で検索を実行し、結果を返す"""
     if not all([API_KEY, SEARCH_ENGINE_ID]):
-        logging.warning("警告: GOOGLE_API_KEYまたはGOOGLE_SEARCH_ENGINE_IDが設定されていません。")
+        logging.warning("警告: GEMINI_API_KEYまたはGOOGLE_SEARCH_ENGINE_IDが設定されていません。")
         return []
 
     async with aiohttp.ClientSession() as session:
