@@ -26,7 +26,7 @@ async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[st
         'cx': SEARCH_ENGINE_ID,
         'q': query,
         'num': 5, # 検索結果の数
-        'dateRestrict': 'd1' # 直近24時間（1日）以内に限定
+        'dateRestrict': 'd7' # 直近1週間に限定
     }
     try:
         async with session.get(url, params=params) as response:
