@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=0, minute=20, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=0, minute=32, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -102,14 +102,14 @@ class NewsCog(commands.Cog):
         if not self.gemini_model or not content:
             return "要約の生成に失敗した。"
         try:
-            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だ・である調」で要約せよ。\n---{content[:8000]}"
+            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だである調」で要約せよ。\n---{content[:8000]}"
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e:
             logging.error(f"ニュースの要約中にエラー: {e}")
             return "要約中にエラーが発生した。"
 
-    async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
+    async def _search_and_summarize_news(self, queries: list, max_articles: int = 1) -> list:
         news_items = []
         try:
             logging.info(f"Google検索を開始します。クエリ: {queries}")
@@ -120,17 +120,19 @@ class NewsCog(commands.Cog):
             urls_to_process = []
             
             for result_list in search_results:
-                # 検索結果が空の場合はスキップ
                 if not result_list.results:
                     continue
                 for item in result_list.results:
                     if item.url not in seen_urls:
                         urls_to_process.append(item)
                         seen_urls.add(item.url)
-                    if len(urls_to_process) >= max_articles:
+                    if len(urls_to_process) >= max_articles * len(queries): # Ensure we don't process too many
                         break
-                if len(urls_to_process) >= max_articles:
+                if len(urls_to_process) >= max_articles * len(queries):
                     break
+            
+            # Limit to max_articles overall
+            urls_to_process = urls_to_process[:max_articles]
 
             logging.info(f"要約対象の記事は {len(urls_to_process)} 件です。")
             for item in urls_to_process:
@@ -152,52 +154,54 @@ class NewsCog(commands.Cog):
             
         logging.info("デイリーニュースブリーフィングを開始します...")
         
-        embed = discord.Embed(title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ", color=discord.Color.blue())
-        
+        # --- 天気予報を投稿 ---
         home_weather, work_weather = await asyncio.gather(
             self._get_weather_forecast(self.home_coords, self.home_name),
             self._get_weather_forecast(self.work_coords, self.work_name)
         )
-        embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
-        
-        # 検索対象サイトを定義
+        weather_embed = discord.Embed(
+            title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ",
+            color=discord.Color.blue()
+        )
+        weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
+        await channel.send(embed=weather_embed)
+
+        # --- マクロ経済ニュースを投稿 ---
         target_sites = [
-            "site:nikkei.com",
-            "site:toyokeizai.net",
-            "site:weekly-economist.mainichi.jp",
-            "site:jp.reuters.com",
-            "site:bloomberg.co.jp",
-            "site:pwc.com",
-            "site:murc.jp"
+            "site:nikkei.com", "site:toyokeizai.net", "site:weekly-economist.mainichi.jp",
+            "site:jp.reuters.com", "site:bloomberg.co.jp", "site:pwc.com", "site:murc.jp"
         ]
-        sites_query = " OR ".join(target_sites)
-        
-        # マクロ経済ニュース用に、サイト指定に加えて「経済」というキーワードを追加
-        market_queries = [f"({sites_query}) 経済"]
+        market_queries = [f"{site} 経済" for site in target_sites]
         
         market_news = await self._search_and_summarize_news(market_queries, max_articles=3)
         if market_news:
+            macro_embed = discord.Embed(title="🌐 市場全体のニュース", color=discord.Color.dark_gold())
             news_text = ""
             for item in market_news:
                 summary = item['summary'][:250] + "..." if len(item['summary']) > 250 else item['summary']
                 news_text += f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
-            embed.add_field(name="🌐 市場全体のニュース", value=news_text, inline=False)
+            macro_embed.description = news_text
+            await channel.send(embed=macro_embed)
+        else:
+            logging.info("マクロ経済ニュースは見つかりませんでした。")
 
+        # --- 保有銘柄ニュースを投稿 ---
         watchlist = await self._get_watchlist()
         if watchlist:
-            company_news_text = ""
+            logging.info(f"{len(watchlist)}件の保有銘柄ニュースをチェックします。")
             for company in watchlist:
                 company_queries = [f"{company} 株価 ニュース", f"{company} 業績発表"]
                 company_news = await self._search_and_summarize_news(company_queries, max_articles=1)
+                
                 if company_news:
                     item = company_news[0]
+                    stock_embed = discord.Embed(title=f"📈 保有銘柄ニュース: {company}", color=discord.Color.green())
                     summary = item['summary'][:200] + "..." if len(item['summary']) > 200 else item['summary']
-                    company_news_text += f"**📈 {company}**\n**[{item['title']}]({item['link']})**\n```{summary}```\n"
-            
-            if company_news_text:
-                embed.add_field(name="📰 保有銘柄のニュース", value=company_news_text, inline=False)
-
-        await channel.send(embed=embed)
+                    stock_embed.description = f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
+                    await channel.send(embed=stock_embed)
+                
+                await asyncio.sleep(2) # 連続リクエストを避けるための待機
+        
         logging.info("デイリーニュースブリーフィングを送信しました。")
         
     async def _get_watchlist(self) -> list:
