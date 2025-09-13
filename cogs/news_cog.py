@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=23, minute=45, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=0, minute=20, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -172,8 +172,8 @@ class NewsCog(commands.Cog):
         ]
         sites_query = " OR ".join(target_sites)
         
-        # 市場全体（マクロ）のニュースクエリを生成（キーワード絞り込みを削除）
-        market_queries = [sites_query]
+        # マクロ経済ニュース用に、サイト指定に加えて「経済」というキーワードを追加
+        market_queries = [f"({sites_query}) 経済"]
         
         market_news = await self._search_and_summarize_news(market_queries, max_articles=3)
         if market_news:
