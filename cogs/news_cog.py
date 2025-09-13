@@ -4,7 +4,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import logging
 import json
-from datetime import datetime, time
+from datetime import datetime, time, timezone, timedelta
 import zoneinfo
 import dropbox
 from dropbox.files import WriteMode, DownloadError
@@ -12,13 +12,25 @@ from dropbox.exceptions import ApiError
 import asyncio
 from pyowm import OWM
 import google.generativeai as genai
+import feedparser
+from bs4 import BeautifulSoup
 
 # 他のファイルから関数をインポート
 from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=1, minute=20, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=7, minute=33, tzinfo=JST)
+
+# マクロ経済ニュースのRSSフィードURLリスト
+MACRO_NEWS_RSS_URLS = [
+    "https://jp.reuters.com/rss/businessNews.xml", # ロイター ビジネス
+    "https://jp.reuters.com/rss/jp_market.xml", # ロイター 日本市場
+    "https://www.boj.or.jp/rss/whatsnew.xml", # 日本銀行 What's New
+]
+# 個別銘柄ニュース（TDnet 適時開示）
+TDNET_RSS_URL = "https://www.release.tdnet.info/inbs/rss/all"
+
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -27,20 +39,23 @@ class NewsCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
-        
+
         if not self._are_credentials_valid():
             logging.error("NewsCog: 必須の環境変数が不足しています。このCogは無効化されます。")
             return
-            
+
         try:
             self.dbx = dropbox.Dropbox(
                 oauth2_refresh_token=self.dropbox_refresh_token,
                 app_key=self.dropbox_app_key,
                 app_secret=self.dropbox_app_secret
             )
+            # APIキーの存在チェックを追加
+            if not self.openweathermap_api_key:
+                 raise ValueError("OPENWEATHERMAP_API_KEYが設定されていません。")
             self.owm = OWM(self.openweathermap_api_key)
             self.mgr = self.owm.weather_manager()
-            
+
             if self.gemini_api_key:
                 genai.configure(api_key=self.gemini_api_key)
                 self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
@@ -68,6 +83,7 @@ class NewsCog(commands.Cog):
         self.watchlist_path = f"{self.dropbox_vault_path}/.bot/stock_watchlist.json"
 
     def _are_credentials_valid(self) -> bool:
+        # openweathermap_api_key もチェック対象に
         return all([self.news_channel_id, self.home_coords, self.work_coords, self.openweathermap_api_key, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key])
 
     def _parse_coordinates(self, coord_str: str | None) -> dict | None:
@@ -86,63 +102,82 @@ class NewsCog(commands.Cog):
 
     def cog_unload(self):
         self.daily_news_briefing.cancel()
-        
+
+    # --- 天気予報 ---
     async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
+        """天気予報を取得する (pyowm 3.x / OWM API 3.0 one_call 対応)"""
         try:
-            one_call = await asyncio.to_thread(self.mgr.one_call, lat=coords['lat'], lon=coords['lon'], exclude='current,minutely,hourly', units='metric')
+            # OWM API 3.0 one_call を利用
+            one_call = await asyncio.to_thread(
+                self.mgr.one_call, lat=coords['lat'], lon=coords['lon'],
+                exclude='current,minutely,hourly', units='metric'
+            )
             daily_weather = one_call.forecast_daily[0]
             temp = daily_weather.temperature('celsius')
-            pop = daily_weather.precipitation_probability * 100
+            # 降水確率は precipitation_probability として取得
+            pop = getattr(daily_weather, "precipitation_probability", 0) * 100
             return f"**{location_name}**: {daily_weather.detailed_status} | 最高 {temp['max']:.0f}℃ / 最低 {temp['min']:.0f}℃ | 降水確率 {pop:.0f}%"
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}")
+            # APIキーエラーの可能性を明記
+            if "Invalid API Key" in str(e):
+                 return f"**{location_name}**: 天気情報の取得に失敗 (APIキーが無効か、プランが適切でない可能性があります)。"
             return f"**{location_name}**: 天気情報の取得に失敗しました。"
 
+    # --- ニュース要約 ---
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:
-            return "要約の生成に失敗した。"
+            return "要約できませんでした。"
+        # BeautifulSoupでHTMLタグを除去
+        soup = BeautifulSoup(content, 'html.parser')
+        text_content = soup.get_text()
         try:
-            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だ・である調」で要約せよ。\n---{content[:8000]}"
+            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だ・である調」で要約せよ。\n---{text_content[:8000]}"
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e:
             logging.error(f"ニュースの要約中にエラー: {e}")
-            return "要約中にエラーが発生した。"
+            return "要約中にエラーが発生しました。"
 
-    async def _search_and_summarize_news(self, queries: list, max_articles: int = 1) -> list:
+    # --- RSSベースのニュース取得関数 (新規) ---
+    async def _fetch_macro_news(self, rss_urls: list, since: datetime) -> list:
+        """マクロ経済ニュースをRSSから取得・要約する"""
+        news_items = []
+        for url in rss_urls:
+            try:
+                feed = await asyncio.to_thread(feedparser.parse, url)
+                for entry in feed.entries:
+                    # タイムゾーンを考慮して比較
+                    pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
+                    if pub_time > since:
+                        summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
+                        news_items.append({
+                            "title": entry.title,
+                            "link": entry.link,
+                            "summary": summary
+                        })
+            except Exception as e:
+                logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
+        return news_items
+
+    async def _fetch_stock_news(self, company: str, rss_url: str, since: datetime) -> list:
+        """個別銘柄ニュースをTDnet RSSから取得・要約する"""
         news_items = []
         try:
-            logging.info(f"Google検索を開始します。クエリ: {queries}")
-            search_results = await self.bot.google_search(queries=queries)
-            logging.info(f"Google検索が完了しました。{len(search_results)}件の結果リストを取得しました。")
-            
-            seen_urls = set()
-            urls_to_process = []
-            
-            for result_list in search_results:
-                if not result_list.results:
-                    continue
-                for item in result_list.results:
-                    if item.url not in seen_urls:
-                        urls_to_process.append(item)
-                        seen_urls.add(item.url)
-                    if len(urls_to_process) >= max_articles * len(queries): # Ensure we don't process too many
-                        break
-                if len(urls_to_process) >= max_articles * len(queries):
-                    break
-            
-            urls_to_process = urls_to_process[:max_articles]
-
-            logging.info(f"要約対象の記事は {len(urls_to_process)} 件です。")
-            for item in urls_to_process:
-                _, content = await asyncio.to_thread(parse_url_with_readability, item.url)
-                summary = await self._summarize_article(content)
-                news_items.append({"title": item.source_title, "link": item.url, "summary": summary})
-
-            return news_items
+            feed = await asyncio.to_thread(feedparser.parse, rss_url)
+            for entry in feed.entries:
+                 pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
+                 # 会社名が含まれ、かつ指定時刻より新しいもの
+                 if company in entry.title and pub_time > since:
+                    summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
+                    news_items.append({
+                        "title": entry.title,
+                        "link": entry.link,
+                        "summary": summary
+                    })
         except Exception as e:
-            logging.error(f"ニュース処理中に失敗: {queries}, {e}", exc_info=True)
-            return []
+            logging.error(f"TDnet RSSの取得に失敗: Error: {e}")
+        return news_items
 
     @tasks.loop(time=NEWS_BRIEFING_TIME)
     async def daily_news_briefing(self):
@@ -150,7 +185,7 @@ class NewsCog(commands.Cog):
         if not channel:
             logging.error(f"ニュースチャンネル(ID: {self.news_channel_id})が見つかりません。")
             return
-            
+
         logging.info("デイリーニュースブリーフィングを開始します...")
         
         # --- 天気予報を投稿 ---
@@ -164,25 +199,21 @@ class NewsCog(commands.Cog):
         )
         weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
         await channel.send(embed=weather_embed)
+        
+        # 取得対象時刻（24時間前）
+        since_time = datetime.now(JST) - timedelta(days=1)
 
         # --- マクロ経済ニュースを投稿 ---
-        target_sites = [
-            "site:nikkei.com", "site:toyokeizai.net", "site:weekly-economist.mainichi.jp",
-            "site:jp.reuters.com", "site:bloomberg.co.jp", "site:pwc.com", "site:murc.jp"
-        ]
-        sites_query = " OR ".join(target_sites)
-        
-        market_queries = [f"({sites_query}) 経済"]
-        
-        market_news = await self._search_and_summarize_news(market_queries, max_articles=3)
+        market_news = await self._fetch_macro_news(MACRO_NEWS_RSS_URLS, since_time)
         if market_news:
             macro_embed = discord.Embed(title="🌐 市場全体のニュース", color=discord.Color.dark_gold())
             news_text = ""
-            for item in market_news:
+            for item in market_news[:5]: # 5件に制限
                 summary = item['summary'][:250] + "..." if len(item['summary']) > 250 else item['summary']
                 news_text += f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
-            macro_embed.description = news_text
-            await channel.send(embed=macro_embed)
+            if news_text:
+                macro_embed.description = news_text
+                await channel.send(embed=macro_embed)
         else:
             logging.info("マクロ経済ニュースは見つかりませんでした。")
 
@@ -191,21 +222,17 @@ class NewsCog(commands.Cog):
         if watchlist:
             logging.info(f"{len(watchlist)}件の保有銘柄ニュースをチェックします。")
             for company in watchlist:
-                # 検索クエリを公式発表（決算、適時開示、IR）に絞り込む
-                company_queries = [f"{company} (決算 OR 適時開示 OR IR)"]
-                company_news = await self._search_and_summarize_news(company_queries, max_articles=1)
-                
+                company_news = await self._fetch_stock_news(company, TDNET_RSS_URL, since_time)
                 if company_news:
-                    item = company_news[0]
+                    item = company_news[0] # 最新の1件のみ
                     stock_embed = discord.Embed(title=f"📈 保有銘柄ニュース: {company}", color=discord.Color.green())
                     summary = item['summary'][:200] + "..." if len(item['summary']) > 200 else item['summary']
                     stock_embed.description = f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
                     await channel.send(embed=stock_embed)
-                
-                await asyncio.sleep(2) # 連続リクエストを避けるための待機
-        
+                await asyncio.sleep(2)
+
         logging.info("デイリーニュースブリーフィングを送信しました。")
-        
+
     async def _get_watchlist(self) -> list:
         try:
             _, res = self.dbx.files_download(self.watchlist_path)
@@ -241,6 +268,18 @@ class NewsCog(commands.Cog):
             watchlist.remove(company)
             await self._save_watchlist(watchlist)
             await interaction.response.send_message(f"🗑️ ` {company} ` を監視リストから削除しました。", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⚠️ ` {company} ` はリストに存在しません。", ephemeral=True)
+            
+    @stock_group.command(name="list", description="現在の監視リストを表示します。")
+    async def stock_list(self, interaction: discord.Interaction):
+        watchlist = await self._get_watchlist()
+        if watchlist:
+            list_str = "\n".join([f"- {company}" for company in watchlist])
+            await interaction.response.send_message(f"現在の監視リスト:\n{list_str}", ephemeral=True)
+        else:
+            await interaction.response.send_message("監視リストは現在空です。", ephemeral=True)
+
 
 async def setup(bot: commands.Bot):
     """Cogをボットに登録するためのセットアップ関数"""
