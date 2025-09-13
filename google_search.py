@@ -2,6 +2,7 @@ import os
 import aiohttp
 import asyncio
 from typing import List, Dict, Any
+import logging
 
 # --- 環境変数からAPI情報を読み込み ---
 API_KEY = os.getenv("GOOGLE_API_KEY")
@@ -28,17 +29,18 @@ async def _perform_search(session: aiohttp.ClientSession, query: str) -> Dict[st
     }
     try:
         async with session.get(url, params=params) as response:
-            if response.status == 200:
-                return await response.json()
-            else:
-                return {"items": []}
-    except Exception:
+            # ステータスコードが200番台でない場合もエラーとして扱う
+            response.raise_for_status()
+            return await response.json()
+    except Exception as e:
+        # エラー内容をログに出力する
+        logging.error(f"Google Custom Search APIの呼び出し中にエラーが発生しました: {e}")
         return {"items": []}
 
 async def search(queries: List[str]) -> List[SearchResults]:
     """非同期で検索を実行し、結果を返す"""
     if not all([API_KEY, SEARCH_ENGINE_ID]):
-        print("警告: GOOGLE_API_KEYまたはGOOGLE_SEARCH_ENGINE_IDが設定されていません。")
+        logging.warning("警告: GOOGLE_API_KEYまたはGOOGLE_SEARCH_ENGINE_IDが設定されていません。")
         return []
 
     async with aiohttp.ClientSession() as session:

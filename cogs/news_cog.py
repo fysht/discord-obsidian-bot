@@ -18,7 +18,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=19, minute=38, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=19, minute=55, tzinfo=JST)
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -112,12 +112,17 @@ class NewsCog(commands.Cog):
     async def _search_and_summarize_news(self, queries: list, max_articles: int = 2) -> list:
         news_items = []
         try:
+            logging.info(f"Google検索を開始します。クエリ: {queries}")
             search_results = await self.bot.google_search(queries=queries)
+            logging.info(f"Google検索が完了しました。{len(search_results)}件の結果リストを取得しました。")
             
             seen_urls = set()
             urls_to_process = []
             
             for result_list in search_results:
+                # 検索結果が空の場合はスキップ
+                if not result_list.results:
+                    continue
                 for item in result_list.results:
                     if item.url not in seen_urls:
                         urls_to_process.append(item)
@@ -127,6 +132,7 @@ class NewsCog(commands.Cog):
                 if len(urls_to_process) >= max_articles:
                     break
 
+            logging.info(f"要約対象の記事は {len(urls_to_process)} 件です。")
             for item in urls_to_process:
                 _, content = await asyncio.to_thread(parse_url_with_readability, item.url)
                 summary = await self._summarize_article(content)
@@ -134,7 +140,7 @@ class NewsCog(commands.Cog):
 
             return news_items
         except Exception as e:
-            logging.error(f"ニュース処理中に失敗: {queries}, {e}")
+            logging.error(f"ニュース処理中に失敗: {queries}, {e}", exc_info=True)
             return []
 
     @tasks.loop(time=NEWS_BRIEFING_TIME)
