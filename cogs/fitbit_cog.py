@@ -11,6 +11,7 @@ import google.generativeai as genai
 import yaml
 from io import StringIO
 import asyncio
+from discord import app_commands
 
 from fitbit_client import FitbitClient
 from utils.obsidian_utils import update_section
@@ -147,6 +148,82 @@ class FitbitCog(commands.Cog):
             if channel:
                 await channel.send(f"FitbitCog: 統合ヘルスレポートタスクの実行中にエラーが発生しました。\n```\n{e}\n```")
 
+    @app_commands.command(name="get_morning_report", description="指定日の睡眠レポートを手動で取得します。")
+    @app_commands.describe(date="取得したい日付 (YYYY-MM-DD形式、省略で今日)")
+    async def get_morning_report(self, interaction: discord.Interaction, date: str = None):
+        """朝の睡眠レポートを手動で取得するスラッシュコマンド"""
+        await interaction.response.defer(ephemeral=True)
+        if not self.is_ready:
+            await interaction.followup.send("Fitbit Cogが初期化されていません。")
+            return
+        
+        try:
+            target_date = datetime.datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.datetime.now(JST).date()
+        except ValueError:
+            await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
+            return
+
+        channel = self.bot.get_channel(self.health_log_channel_id)
+        sleep_data = await self.fitbit_client.get_sleep_data(target_date)
+
+        if not sleep_data:
+            msg = f"FitbitCog: {target_date.strftime('%Y-%m-%d')} の睡眠データがまだ同期されていないようです。"
+            if channel: await channel.send(msg)
+            await interaction.followup.send(msg)
+            return
+
+        if channel:
+            embed = discord.Embed(
+                title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (手動取得)",
+                color=discord.Color.purple()
+            )
+            embed.add_field(name="睡眠スコア", value=f"**{sleep_data.get('efficiency', 0)}** 点", inline=True)
+            embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_data.get('minutesAsleep', 0))}**", inline=True)
+            await channel.send(embed=embed)
+            await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の睡眠レポートを送信しました。")
+        else:
+            await interaction.followup.send("レポートを送信するチャンネルが見つかりません。")
+
+
+    @app_commands.command(name="get_evening_report", description="指定日の総合ヘルスレポートを手動で取得します。")
+    @app_commands.describe(date="取得したい日付 (YYYY-MM-DD形式、省略で今日)")
+    async def get_evening_report(self, interaction: discord.Interaction, date: str = None):
+        """夜の総合レポートを手動で取得するスラッシュコマンド"""
+        await interaction.response.defer(ephemeral=True)
+        if not self.is_ready:
+            await interaction.followup.send("Fitbit Cogが初期化されていません。")
+            return
+
+        try:
+            target_date = datetime.datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.datetime.now(JST).date()
+        except ValueError:
+            await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
+            return
+        
+        channel = self.bot.get_channel(self.health_log_channel_id)
+        
+        sleep_data, activity_data = await asyncio.gather(
+            self.fitbit_client.get_sleep_data(target_date),
+            self.fitbit_client.get_activity_summary(target_date)
+        )
+
+        if not sleep_data and not activity_data:
+            msg = f"FitbitCog: {target_date} の全データが取得できませんでした。"
+            if channel: await channel.send(msg)
+            await interaction.followup.send(msg)
+            return
+        
+        advice_text = await self._generate_ai_advice(target_date, sleep_data, activity_data)
+        
+        await self._save_data_to_obsidian(target_date, sleep_data, activity_data, advice_text)
+        
+        if channel:
+            embed = await self._create_discord_embed(target_date, sleep_data, activity_data, advice_text, is_manual=True)
+            await channel.send(embed=embed)
+            await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の総合ヘルスレポートを送信・保存しました。")
+        else:
+            await interaction.followup.send("レポートを送信するチャンネルが見つかりません。")
+
     def _parse_note_content(self, content: str) -> (dict, str):
         try:
             if content.startswith('---'):
@@ -174,8 +251,10 @@ class FitbitCog(commands.Cog):
             frontmatter.update({
                 'sleep_score': sleep_data.get('efficiency'),
                 'total_sleep_minutes': sleep_data.get('minutesAsleep'),
+                'time_in_bed_minutes': sleep_data.get('timeInBed'),
                 'deep_sleep_minutes': levels.get('deep', {}).get('minutes'),
                 'rem_sleep_minutes': levels.get('rem', {}).get('minutes'),
+                'light_sleep_minutes': levels.get('light', {}).get('minutes')
             })
         if activity_data:
             summary = activity_data.get('summary', {})
@@ -279,20 +358,47 @@ class FitbitCog(commands.Cog):
             logging.error(f"テキストの要約に失敗: {e}")
             return text[:max_length] + "..."
 
-    async def _create_discord_embed(self, target_date: datetime.date, sleep_data: dict, activity_data: dict, advice: str) -> discord.Embed:
+    async def _create_discord_embed(self, target_date: datetime.date, sleep_data: dict, activity_data: dict, advice: str, is_manual: bool = False) -> discord.Embed:
         title = f"📅 {target_date.strftime('%Y年%m月%d日')}のヘルスレポート"
-        
-        data_description = ""
+        if is_manual:
+            title += " (手動取得)"
+
+        embed = discord.Embed(title=title, color=discord.Color.blue())
+
+        # Sleep
         if sleep_data:
-            data_description += f"**🌙 睡眠スコア**: **{sleep_data.get('efficiency', 0)}** 点\n"
-            data_description += f"**⏰ 合計睡眠時間**: **{self._format_minutes(sleep_data.get('minutesAsleep', 0))}**\n"
+            levels = sleep_data.get('levels', {}).get('summary', {})
+            sleep_text = (
+                f"**スコア**: **{sleep_data.get('efficiency', 'N/A')}** / 100\n"
+                f"**合計睡眠時間**: {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
+                f"**ベッドにいた時間**: {self._format_minutes(sleep_data.get('timeInBed'))}\n"
+                f"**ステージ**: 深い {self._format_minutes(levels.get('deep', {}).get('minutes'))}, "
+                f"レム {self._format_minutes(levels.get('rem', {}).get('minutes'))}, "
+                f"浅い {self._format_minutes(levels.get('light', {}).get('minutes'))}"
+            )
+            embed.add_field(name="🌙 睡眠", value=sleep_text, inline=False)
+        
+        # Activity & Heart Rate
         if activity_data:
             summary = activity_data.get('summary', {})
-            data_description += f"**👟 歩数**: **{summary.get('steps', 0)}** 歩\n"
-            data_description += f"**🔥 消費カロリー**: **{summary.get('caloriesOut', 0)}** kcal\n"
-        
-        embed = discord.Embed(title=title, description=data_description.strip(), color=discord.Color.blue())
-        
+            activity_text = (
+                f"**歩数**: {summary.get('steps', 'N/A')}歩\n"
+                f"**距離**: {next((d['distance'] for d in summary.get('distances', []) if d['activity'] == 'total'), 'N/A')} km\n"
+                f"**消費カロリー**: {summary.get('caloriesOut', 'N/A')} kcal\n"
+                f"**アクティブな時間**: {self._format_minutes(summary.get('fairlyActiveMinutes', 0) + summary.get('veryActiveMinutes', 0))}"
+            )
+            embed.add_field(name="🏃 アクティビティ", value=activity_text, inline=True)
+
+            hr_zones = summary.get('heartRateZones', {})
+            heart_rate_text = (
+                f"**安静時心拍数**: {summary.get('restingHeartRate', 'N/A')} bpm\n"
+                f"**脂肪燃焼**: {self._format_minutes(hr_zones.get('Fat Burn', {}).get('minutes'))}\n"
+                f"**有酸素運動**: {self._format_minutes(hr_zones.get('Cardio', {}).get('minutes'))}\n"
+                f"**ピーク**: {self._format_minutes(hr_zones.get('Peak', {}).get('minutes'))}"
+            )
+            embed.add_field(name="❤️ 心拍数", value=heart_rate_text, inline=True)
+
+        # AI Coach
         advice_text = advice
         if len(advice_text) > 1024:
             advice_text = await self._summarize_text(advice, 1024)
