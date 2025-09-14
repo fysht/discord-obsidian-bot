@@ -20,9 +20,8 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=10, minute=00, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=10, minute=30, tzinfo=JST)
 
-# ニュースソースをYahoo!ニュースに一本化
 MACRO_NEWS_RSS_URLS = [
     "https://news.yahoo.co.jp/rss/categories/business.xml",  # Yahoo!ニュース 経済カテゴリ
 ]
@@ -115,28 +114,40 @@ class NewsCog(commands.Cog):
 
     async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
         try:
-            one_call = await asyncio.to_thread(
-                self.mgr.one_call, lat=coords['lat'], lon=coords['lon'],
-                exclude='current,minutely,hourly', units='metric'
-            )
-            daily_weather = one_call.forecast_daily[0]
-            temp = daily_weather.temperature('celsius')
-            pop = getattr(daily_weather, "precipitation_probability", 0) * 100
+            # 現在の天気
+            observation = await asyncio.to_thread(self.mgr.weather_at_coords, coords['lat'], coords['lon'])
+            current_weather = observation.weather
+            current_temp = current_weather.temperature('celsius').get('temp', None)
+            current_status = current_weather.detailed_status if hasattr(current_weather, 'detailed_status') else ""
+
+            # 3時間毎予報
+            forecast = await asyncio.to_thread(self.mgr.forecast_at_coords, coords['lat'], coords['lon'], '3h')
+            forecast_weathers = getattr(forecast, "forecast", None)
+            today_forecast_weathers = getattr(forecast_weathers, "weathers", []) if forecast_weathers else []
+
+            # 今日の予報を抽出
+            today = datetime.now(JST).date()
+            temps = [temp for w in today_forecast_weathers if (rt := w.reference_time('date').astimezone(JST)).date() == today and (temp := w.temperature('celsius').get('temp')) is not None]
             
-            status = daily_weather.detailed_status.lower()
-            icon = WEATHER_ICON_MAP.get(status, "")
+            # 天気ステータスに絵文字を追加
+            icon = WEATHER_ICON_MAP.get(current_status.lower(), "")
             if not icon:
                 for key, emoji in WEATHER_ICON_MAP.items():
-                    if key in status:
+                    if key in current_status.lower():
                         icon = emoji
                         break
+            
+            # 表示文の組み立て
+            main_line = f"**{location_name}**: {current_status} {icon} | 現在 {current_temp:.0f}℃"
+            if temps:
+                main_line += f" (最高 {max(temps):.0f}℃ / 最低 {min(temps):.0f}℃)"
+            
+            return main_line
 
-            return f"**{location_name}**: {daily_weather.detailed_status} {icon} | 最高 {temp['max']:.0f}℃ / 最低 {temp['min']:.0f}℃ | 降水確率 {pop:.0f}%"
         except Exception as e:
-            logging.error(f"{location_name}の天気予報取得に失敗: {e}")
-            if "Invalid API Key" in str(e):
-                 return f"**{location_name}**: 天気情報の取得に失敗 (APIキーが無効か、プランが適切でない可能性があります)。"
+            logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
             return f"**{location_name}**: 天気情報の取得に失敗しました。"
+
 
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:
@@ -179,6 +190,7 @@ class NewsCog(commands.Cog):
                  if not getattr(entry, "published_parsed", None):
                      continue
                  pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
+                 # タイトルに企業名が含まれ、かつ指定時刻より新しいもの
                  if company in entry.title and pub_time > since:
                     summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
                     news_items.append({
