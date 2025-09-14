@@ -20,14 +20,29 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=9, minute=10, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=10, minute=00, tzinfo=JST)
 
+# ニュースソースをYahoo!ニュースに一本化
 MACRO_NEWS_RSS_URLS = [
     "https://news.yahoo.co.jp/rss/categories/business.xml",  # Yahoo!ニュース 経済カテゴリ
 ]
-TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
-# -------------------------------------------------------------------------------
+TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml" # 個別銘柄もYahoo!ニュースから取得
 
+# 天気予報の絵文字マップ
+WEATHER_ICON_MAP = {
+    "clear sky": "☀️",
+    "few clouds": "🌤️",
+    "scattered clouds": "⛅",
+    "overcast clouds": "☁️",
+    "broken clouds": "☁️",
+    "shower rain": "🌧️",
+    "rain": "🌦️",
+    "light rain": "🌦️",
+    "moderate rain": "🌧️",
+    "thunderstorm": "⛈️",
+    "snow": "❄️",
+    "mist": "🌫️"
+}
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -100,73 +115,28 @@ class NewsCog(commands.Cog):
 
     async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
         try:
-            # 現在の天気
-            observation = await asyncio.to_thread(self.mgr.weather_at_coords, coords['lat'], coords['lon'])
-            current_weather = observation.weather
-            current_temp = current_weather.temperature('celsius').get('temp', None)
-            current_status = current_weather.detailed_status if hasattr(current_weather, 'detailed_status') else None
+            one_call = await asyncio.to_thread(
+                self.mgr.one_call, lat=coords['lat'], lon=coords['lon'],
+                exclude='current,minutely,hourly', units='metric'
+            )
+            daily_weather = one_call.forecast_daily[0]
+            temp = daily_weather.temperature('celsius')
+            pop = getattr(daily_weather, "precipitation_probability", 0) * 100
+            
+            status = daily_weather.detailed_status.lower()
+            icon = WEATHER_ICON_MAP.get(status, "")
+            if not icon:
+                for key, emoji in WEATHER_ICON_MAP.items():
+                    if key in status:
+                        icon = emoji
+                        break
 
-            # 3時間毎予報（当日分を抽出）
-            try:
-                forecast = await asyncio.to_thread(self.mgr.forecast_at_coords, coords['lat'], coords['lon'], '3h')
-                forecasts = getattr(forecast, "forecast", None)
-                # forecasts.weathers が予報リスト（Weatherオブジェクト）になる想定
-                forecast_weathers = getattr(forecasts, "weathers", []) if forecasts else []
-            except Exception:
-                # 予報が取得できない場合は空にする（エラーにしない）
-                forecast_weathers = []
-
-            # 本日（JST）の予報のみ抽出
-            today = datetime.now(JST).date()
-            today_forecasts = []
-            for w in forecast_weathers:
-                try:
-                    rt = w.reference_time('date')  # datetime
-                    rt_jst = rt.astimezone(JST)
-                    if rt_jst.date() == today:
-                        today_forecasts.append((rt_jst, w))
-                except Exception:
-                    continue
-
-            # 予報から温度リストと表示行を作成（取得できない要素はスキップ）
-            temps = []
-            forecast_lines = []
-            for rt_jst, w in today_forecasts:
-                tdict = w.temperature('celsius')
-                if not tdict:
-                    continue
-                temp = tdict.get('temp', None)
-                if temp is None:
-                    continue
-                temps.append(temp)
-                time_str = rt_jst.strftime('%H:%M')
-                status = getattr(w, 'detailed_status', '') or ''
-                forecast_lines.append(f"{time_str} {temp:.0f}℃{f' ({status})' if status else ''}")
-
-            # 表示文を組み立てる（取得できたものだけを表示）
-            parts = []
-            if current_status and current_temp is not None:
-                parts.append(f"**{location_name}**: {current_status} | 現在 {current_temp:.0f}℃")
-            elif current_temp is not None:
-                parts.append(f"**{location_name}**: 現在 {current_temp:.0f}℃")
-            elif current_status:
-                parts.append(f"**{location_name}**: {current_status}")
-            else:
-                parts.append(f"**{location_name}**: 天気情報（現在値）は取得できませんでした。")
-
-            if temps:
-                tmax = max(temps)
-                tmin = min(temps)
-                parts[0] += f" (最高 {tmax:.0f}℃ / 最低 {tmin:.0f}℃)"
-
-            if forecast_lines:
-                parts.append("本日の予報: " + ", ".join(forecast_lines))
-
-            return "\n".join(parts)
+            return f"**{location_name}**: {daily_weather.detailed_status} {icon} | 最高 {temp['max']:.0f}℃ / 最低 {temp['min']:.0f}℃ | 降水確率 {pop:.0f}%"
         except Exception as e:
-            logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
+            logging.error(f"{location_name}の天気予報取得に失敗: {e}")
+            if "Invalid API Key" in str(e):
+                 return f"**{location_name}**: 天気情報の取得に失敗 (APIキーが無効か、プランが適切でない可能性があります)。"
             return f"**{location_name}**: 天気情報の取得に失敗しました。"
-    # ---------------------------------------------------------------------------
 
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:
@@ -187,26 +157,19 @@ class NewsCog(commands.Cog):
             try:
                 feed = await asyncio.to_thread(feedparser.parse, url)
                 for entry in feed.entries:
-                    # published_parsed が無い場合はスキップ
                     if not getattr(entry, "published_parsed", None):
                         continue
                     pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
                     if pub_time > since:
-                        # 記事本文を可能なら取得して要約（なければRSSのsummaryを渡す）
-                        try:
-                            _, content = await asyncio.to_thread(parse_url_with_readability, entry.link)
-                        except Exception:
-                            content = entry.get("summary", "")
-                        summary = await self._summarize_article(content)
+                        summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
                         news_items.append({
                             "title": entry.title,
                             "link": entry.link,
                             "summary": summary
                         })
             except Exception as e:
-                logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}", exc_info=True)
+                logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
         return news_items
-    # ---------------------------------------------------------------------------
 
     async def _fetch_stock_news(self, company: str, rss_url: str, since: datetime) -> list:
         news_items = []
@@ -216,26 +179,16 @@ class NewsCog(commands.Cog):
                  if not getattr(entry, "published_parsed", None):
                      continue
                  pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
-                 if pub_time <= since:
-                     continue
-                 title = entry.title or ""
-                 summary_text = entry.get("summary", "") or ""
-                 # タイトルまたは要約に企業名が含まれる記事を対象
-                 if company in title or company in summary_text:
-                    try:
-                        _, content = await asyncio.to_thread(parse_url_with_readability, entry.link)
-                    except Exception:
-                        content = summary_text
-                    summary = await self._summarize_article(content)
+                 if company in entry.title and pub_time > since:
+                    summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
                     news_items.append({
                         "title": entry.title,
                         "link": entry.link,
                         "summary": summary
                     })
         except Exception as e:
-            logging.error(f"TDnet/Yahoo RSS の取得に失敗: Error: {e}", exc_info=True)
+            logging.error(f"Yahoo!ニュース RSSの取得に失敗: Error: {e}")
         return news_items
-    # ---------------------------------------------------------------------------
 
     @tasks.loop(time=NEWS_BRIEFING_TIME)
     async def daily_news_briefing(self):
@@ -246,7 +199,6 @@ class NewsCog(commands.Cog):
 
         logging.info("デイリーニュースブリーフィングを開始します...")
         
-        # --- 天気予報を投稿 ---
         try:
             home_weather, work_weather = await asyncio.gather(
                 self._get_weather_forecast(self.home_coords, self.home_name),
@@ -264,17 +216,14 @@ class NewsCog(commands.Cog):
         
         since_time = datetime.now(JST) - timedelta(days=1)
 
-        # --- マクロ経済ニュースを投稿 ---
         try:
             market_news = await self._fetch_macro_news(MACRO_NEWS_RSS_URLS, since_time)
             if market_news:
                 macro_embed = discord.Embed(title="🌐 市場全体のニュース", color=discord.Color.dark_gold())
                 news_text = ""
-                # --- 変更点: 制限なし（すべて表示） ---
                 for item in market_news:
                     summary = item['summary'][:250] + "..." if len(item['summary']) > 250 else item['summary']
                     news_text += f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
-                # -----------------------------------------------------------------
                 if news_text:
                     macro_embed.description = news_text
                     await channel.send(embed=macro_embed)
@@ -284,27 +233,30 @@ class NewsCog(commands.Cog):
         except Exception as e:
             logging.error(f"マクロ経済ニュースの処理でエラーが発生しました: {e}", exc_info=True)
 
-        # --- 保有銘柄ニュースを投稿 ---
         try:
             watchlist = await self._get_watchlist()
+            no_article_companies = []
             if watchlist:
                 logging.info(f"{len(watchlist)}件の保有銘柄ニュースをチェックします。")
                 for company in watchlist:
                     company_news = await self._fetch_stock_news(company, TDNET_RSS_URL, since_time)
                     if company_news:
-                        # すべての該当記事のうち最初の1件のみを埋め込む（元コードの仕様を保持）
                         item = company_news[0]
                         stock_embed = discord.Embed(title=f"📈 保有銘柄ニュース: {company}", color=discord.Color.green())
                         summary = item['summary'][:200] + "..." if len(item['summary']) > 200 else item['summary']
                         stock_embed.description = f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
                         await channel.send(embed=stock_embed)
                     else:
-                        # 該当記事がなければ明示的に通知
-                        no_embed = discord.Embed(title=f"📈 保有銘柄ニュース: {company}", color=discord.Color.greyple())
-                        no_embed.description = "該当する記事は見つかりませんでした。"
-                        await channel.send(embed=no_embed)
-
+                        no_article_companies.append(company)
                     await asyncio.sleep(2)
+                
+                if no_article_companies:
+                    no_news_embed = discord.Embed(
+                        title="📈 保有銘柄ニュース",
+                        description=f"以下の企業の新規記事は見つかりませんでした:\n- " + "\n- ".join(no_article_companies),
+                        color=discord.Color.greyple()
+                    )
+                    await channel.send(embed=no_news_embed)
         except Exception as e:
             logging.error(f"保有銘柄ニュースの処理でエラーが発生しました: {e}", exc_info=True)
         
@@ -345,7 +297,9 @@ class NewsCog(commands.Cog):
             watchlist.remove(company)
             await self._save_watchlist(watchlist)
             await interaction.response.send_message(f"🗑️ ` {company} ` を監視リストから削除しました。", ephemeral=True)
-
+        else:
+            await interaction.response.send_message(f"⚠️ ` {company} ` はリストに存在しません。", ephemeral=True)
+            
     @stock_group.command(name="list", description="現在の監視リストを表示します。")
     async def stock_list(self, interaction: discord.Interaction):
         watchlist = await self._get_watchlist()
