@@ -20,7 +20,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=11, minute=20, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=11, minute=35, tzinfo=JST)
 
 MACRO_NEWS_RSS_URLS = [
     "https://news.yahoo.co.jp/rss/categories/business.xml",
@@ -121,39 +121,40 @@ class NewsCog(commands.Cog):
                 return value
         return status_en
 
-    # 3時間ごとの詳細予報を表示する関数
+    # 1日の予報と3時間ごとの予報を両方表示する関数
     async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
         try:
-            forecast = await asyncio.to_thread(self.mgr.forecast_at_coords, **coords, interval='3h')
+            # 1日のサマリー予報を取得するために one_call を使用
+            one_call = await asyncio.to_thread(
+                self.mgr.one_call, lat=coords['lat'], lon=coords['lon'],
+                exclude='current,minutely,hourly', units='metric'
+            )
+            daily_weather = one_call.forecast_daily[0]
+            daily_status = self._translate_weather_status(daily_weather.detailed_status)
+            max_temp = daily_weather.temperature('celsius')['max']
+            min_temp = daily_weather.temperature('celsius')['min']
             
+            # 3時間ごとの詳細予報を取得
+            forecast_3h = await asyncio.to_thread(self.mgr.forecast_at_coords, **coords, interval='3h')
             today = datetime.now(JST).date()
-            today_weathers = [w for w in forecast.forecast if w.reference_time('date').astimezone(JST).date() == today]
+            today_weathers_3h = [w for w in forecast_3h.forecast if w.reference_time('date').astimezone(JST).date() == today]
 
-            if not today_weathers:
-                return f"**{location_name}**: 今日の予報データが取得できませんでした。"
-
-            temps = [w.temperature('celsius')['temp'] for w in today_weathers]
-            max_temp = max(temps)
-            min_temp = min(temps)
-            
             # 3時間ごとの予報リストを作成
             forecast_lines = []
-            for w in today_weathers:
-                time_str = w.reference_time('date').astimezone(JST).strftime('%H:%M')
-                temp = w.temperature('celsius')['temp']
-                status = self._translate_weather_status(w.detailed_status)
-                
-                # 雨量情報があれば追加
-                rain_mm = w.rain.get('3h', 0)
-                rain_info = f" ({rain_mm:.1f}mm)" if rain_mm > 0 else ""
-                
-                forecast_lines.append(f"・{time_str}: {status}, {temp:.0f}℃{rain_info}")
+            if today_weathers_3h:
+                for w in today_weathers_3h:
+                    time_str = w.reference_time('date').astimezone(JST).strftime('%H時')
+                    temp = w.temperature('celsius')['temp']
+                    status = self._translate_weather_status(w.detailed_status)
+                    forecast_lines.append(f"・{time_str}: {status}, {temp:.0f}℃")
 
             # 表示テキストを組み立て
-            summary_line = f"**{location_name}**: 最高 {max_temp:.0f}℃ / 最低 {min_temp:.0f}℃"
-            detail_lines = "\n".join(forecast_lines)
-            
-            return f"{summary_line}\n{detail_lines}"
+            summary_line = f"**{location_name}**: {daily_status} | 最高 {max_temp:.0f}℃ / 最低 {min_temp:.0f}℃"
+            if forecast_lines:
+                detail_lines = "\n".join(forecast_lines)
+                return f"{summary_line}\n{detail_lines}"
+            else:
+                return summary_line
 
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
