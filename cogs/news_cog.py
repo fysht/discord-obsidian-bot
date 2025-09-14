@@ -21,11 +21,13 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=11, minute=42, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=16, minute=33, tzinfo=JST)
 
+# ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
-    "https://news.yahoo.co.jp/rss/categories/business.xml",
+    "https://www.nhk.or.jp/rss/news/cat2.xml",  # NHKニュース 経済
 ]
+# 個別銘柄はこちらから取得
 TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
 WEATHER_STATUS_MAP = {
@@ -122,7 +124,6 @@ class NewsCog(commands.Cog):
                 return value
         return status_en
 
-    # FreeプランAPIのみで1日の予報と詳細予報を表示する関数
     async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
         try:
             forecast_3h = await asyncio.to_thread(self.mgr.forecast_at_coords, **coords, interval='3h')
@@ -133,17 +134,13 @@ class NewsCog(commands.Cog):
             if not today_weathers:
                 return f"**{location_name}**: 今日の予報データが取得できませんでした。"
 
-            # 1日の全体予報を計算
-            # 1日で最も頻度の高い天気をその日の天気とする
             status_counts = Counter(self._translate_weather_status(w.detailed_status) for w in today_weathers)
             daily_status = status_counts.most_common(1)[0][0]
 
-            # 最高・最低気温
             temps = [w.temperature('celsius')['temp'] for w in today_weathers]
             max_temp = max(temps)
             min_temp = min(temps)
             
-            # 3時間ごとの予報リストを作成
             forecast_lines = []
             for w in today_weathers:
                 time_str = w.reference_time('date').astimezone(JST).strftime('%H時')
@@ -151,7 +148,6 @@ class NewsCog(commands.Cog):
                 status = self._translate_weather_status(w.detailed_status)
                 forecast_lines.append(f"・{time_str}: {status}, {temp:.0f}℃")
 
-            # 表示テキストを組み立て
             summary_line = f"**{location_name}**: {daily_status} | 最高 {max_temp:.0f}℃ / 最低 {min_temp:.0f}℃"
             detail_lines = "\n".join(forecast_lines)
             
@@ -198,6 +194,7 @@ class NewsCog(commands.Cog):
                 logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
         return news_items
 
+    # 個別銘柄ニュース取得関数を復活
     async def _fetch_stock_news(self, company: str, rss_url: str, since: datetime) -> list:
         news_items = []
         try:
@@ -247,20 +244,26 @@ class NewsCog(commands.Cog):
             market_news = await self._fetch_macro_news(MACRO_NEWS_RSS_URLS, since_time)
             if market_news:
                 embeds_to_send = []
-                current_embed = discord.Embed(title="🌐 市場全体のニュース", color=discord.Color.dark_gold())
+                current_embed = discord.Embed(title="🌐 NHK経済ニュース", color=discord.Color.dark_gold())
                 current_length = 0
 
                 for item in market_news:
-                    title = item['title'][:256]
-                    summary = item['summary']
-                    field_value = f"```{summary}```[記事を読む]({item['link']})"
+                    title = item.get('title', '').strip()
+                    summary = item.get('summary', '').strip()
+                    link = item.get('link')
+
+                    if not title or not summary or not link:
+                        continue
+
+                    field_value = f"```{summary}```[記事を読む]({link})"
                     
                     if len(current_embed.fields) >= 25 or (current_length + len(title) + len(field_value)) > 5500:
-                        embeds_to_send.append(current_embed)
-                        current_embed = discord.Embed(title="🌐 市場全体のニュース (続き)", color=discord.Color.dark_gold())
+                        if current_embed.fields:
+                            embeds_to_send.append(current_embed)
+                        current_embed = discord.Embed(title="🌐 NHK経済ニュース (続き)", color=discord.Color.dark_gold())
                         current_length = 0
 
-                    current_embed.add_field(name=title, value=field_value, inline=False)
+                    current_embed.add_field(name=title[:256], value=field_value[:1024], inline=False)
                     current_length += len(title) + len(field_value)
 
                 if current_embed.fields:
@@ -269,12 +272,13 @@ class NewsCog(commands.Cog):
                 for embed in embeds_to_send:
                     await channel.send(embed=embed)
                 
-                logging.info(f"{len(market_news)}件のマクロ経済ニュースを処理しました。")
+                logging.info(f"{len(market_news)}件のNHK経済ニュースを処理しました。")
             else:
-                logging.info("新しいマクロ経済ニュースは見つかりませんでした。")
+                logging.info("新しいNHK経済ニュースは見つかりませんでした。")
         except Exception as e:
-            logging.error(f"マクロ経済ニュースの処理でエラーが発生しました: {e}", exc_info=True)
+            logging.error(f"NHK経済ニュースの処理でエラーが発生しました: {e}", exc_info=True)
 
+        # 個別銘柄ニュースの処理を復活
         try:
             watchlist = await self._get_watchlist()
             no_article_companies = []
@@ -350,7 +354,6 @@ class NewsCog(commands.Cog):
             await interaction.response.send_message(f"現在の監視リスト:\n{list_str}", ephemeral=True)
         else:
             await interaction.response.send_message("監視リストは現在空です。", ephemeral=True)
-
 
 async def setup(bot: commands.Bot):
     """Cogをボットに登録するためのセットアップ関数"""
