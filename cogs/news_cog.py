@@ -20,27 +20,27 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=10, minute=30, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=11, minute=20, tzinfo=JST)
 
 MACRO_NEWS_RSS_URLS = [
-    "https://news.yahoo.co.jp/rss/categories/business.xml",  # Yahoo!ニュース 経済カテゴリ
+    "https://news.yahoo.co.jp/rss/categories/business.xml",
 ]
-TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml" # 個別銘柄もYahoo!ニュースから取得
+TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
-# 天気予報の絵文字マップ
-WEATHER_ICON_MAP = {
-    "clear sky": "☀️",
-    "few clouds": "🌤️",
-    "scattered clouds": "⛅",
-    "overcast clouds": "☁️",
-    "broken clouds": "☁️",
-    "shower rain": "🌧️",
-    "rain": "🌦️",
-    "light rain": "🌦️",
-    "moderate rain": "🌧️",
-    "thunderstorm": "⛈️",
-    "snow": "❄️",
-    "mist": "🌫️"
+WEATHER_STATUS_MAP = {
+    "clear sky": "快晴 ☀️",
+    "few clouds": "晴れ時々曇り 🌤️",
+    "scattered clouds": "曇りがち ⛅",
+    "broken clouds": "曇り ☁️",
+    "overcast clouds": "曇り ☁️",
+    "shower rain": "にわか雨 🌧️",
+    "rain": "雨 🌦️",
+    "light rain": "小雨 🌦️",
+    "moderate rain": "雨 🌧️",
+    "thunderstorm": "雷雨 ⛈️",
+    "snow": "雪 ❄️",
+    "mist": "霧 🌫️",
+    "fog": "霧 🌫️",
 }
 
 class NewsCog(commands.Cog):
@@ -112,37 +112,48 @@ class NewsCog(commands.Cog):
     def cog_unload(self):
         self.daily_news_briefing.cancel()
 
+    def _translate_weather_status(self, status_en: str) -> str:
+        status_en = status_en.lower()
+        if status_en in WEATHER_STATUS_MAP:
+            return WEATHER_STATUS_MAP[status_en]
+        for key, value in WEATHER_STATUS_MAP.items():
+            if key in status_en:
+                return value
+        return status_en
+
+    # 3時間ごとの詳細予報を表示する関数
     async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
         try:
-            # 現在の天気
-            observation = await asyncio.to_thread(self.mgr.weather_at_coords, coords['lat'], coords['lon'])
-            current_weather = observation.weather
-            current_temp = current_weather.temperature('celsius').get('temp', None)
-            current_status = current_weather.detailed_status if hasattr(current_weather, 'detailed_status') else ""
-
-            # 3時間毎予報
-            forecast = await asyncio.to_thread(self.mgr.forecast_at_coords, coords['lat'], coords['lon'], '3h')
-            forecast_weathers = getattr(forecast, "forecast", None)
-            today_forecast_weathers = getattr(forecast_weathers, "weathers", []) if forecast_weathers else []
-
-            # 今日の予報を抽出
+            forecast = await asyncio.to_thread(self.mgr.forecast_at_coords, **coords, interval='3h')
+            
             today = datetime.now(JST).date()
-            temps = [temp for w in today_forecast_weathers if (rt := w.reference_time('date').astimezone(JST)).date() == today and (temp := w.temperature('celsius').get('temp')) is not None]
+            today_weathers = [w for w in forecast.forecast if w.reference_time('date').astimezone(JST).date() == today]
+
+            if not today_weathers:
+                return f"**{location_name}**: 今日の予報データが取得できませんでした。"
+
+            temps = [w.temperature('celsius')['temp'] for w in today_weathers]
+            max_temp = max(temps)
+            min_temp = min(temps)
             
-            # 天気ステータスに絵文字を追加
-            icon = WEATHER_ICON_MAP.get(current_status.lower(), "")
-            if not icon:
-                for key, emoji in WEATHER_ICON_MAP.items():
-                    if key in current_status.lower():
-                        icon = emoji
-                        break
+            # 3時間ごとの予報リストを作成
+            forecast_lines = []
+            for w in today_weathers:
+                time_str = w.reference_time('date').astimezone(JST).strftime('%H:%M')
+                temp = w.temperature('celsius')['temp']
+                status = self._translate_weather_status(w.detailed_status)
+                
+                # 雨量情報があれば追加
+                rain_mm = w.rain.get('3h', 0)
+                rain_info = f" ({rain_mm:.1f}mm)" if rain_mm > 0 else ""
+                
+                forecast_lines.append(f"・{time_str}: {status}, {temp:.0f}℃{rain_info}")
+
+            # 表示テキストを組み立て
+            summary_line = f"**{location_name}**: 最高 {max_temp:.0f}℃ / 最低 {min_temp:.0f}℃"
+            detail_lines = "\n".join(forecast_lines)
             
-            # 表示文の組み立て
-            main_line = f"**{location_name}**: {current_status} {icon} | 現在 {current_temp:.0f}℃"
-            if temps:
-                main_line += f" (最高 {max(temps):.0f}℃ / 最低 {min(temps):.0f}℃)"
-            
-            return main_line
+            return f"{summary_line}\n{detail_lines}"
 
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
@@ -155,7 +166,11 @@ class NewsCog(commands.Cog):
         soup = BeautifulSoup(content, 'html.parser')
         text_content = soup.get_text()
         try:
-            prompt = f"以下のニュース記事を3～4文程度の簡潔な「だ・である調」で要約せよ。\n---{text_content[:8000]}"
+            prompt = f"""以下のニュース記事を分析し、この記事を読むべきか判断できるように、最も重要な要点だけを1〜2文で教えてください。
+            出力は「だ・である調」で、要約本文のみとしてください。
+            ---
+            {text_content[:8000]}
+            """
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
         except Exception as e:
@@ -190,7 +205,6 @@ class NewsCog(commands.Cog):
                  if not getattr(entry, "published_parsed", None):
                      continue
                  pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
-                 # タイトルに企業名が含まれ、かつ指定時刻より新しいもの
                  if company in entry.title and pub_time > since:
                     summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
                     news_items.append({
@@ -220,7 +234,7 @@ class NewsCog(commands.Cog):
                 title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ",
                 color=discord.Color.blue()
             )
-            weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
+            weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n\n{work_weather}", inline=False)
             await channel.send(embed=weather_embed)
             logging.info("天気予報を投稿しました。")
         except Exception as e:
@@ -231,14 +245,29 @@ class NewsCog(commands.Cog):
         try:
             market_news = await self._fetch_macro_news(MACRO_NEWS_RSS_URLS, since_time)
             if market_news:
-                macro_embed = discord.Embed(title="🌐 市場全体のニュース", color=discord.Color.dark_gold())
-                news_text = ""
+                embeds_to_send = []
+                current_embed = discord.Embed(title="🌐 市場全体のニュース", color=discord.Color.dark_gold())
+                current_length = 0
+
                 for item in market_news:
-                    summary = item['summary'][:250] + "..." if len(item['summary']) > 250 else item['summary']
-                    news_text += f"**[{item['title']}]({item['link']})**\n```{summary}```\n"
-                if news_text:
-                    macro_embed.description = news_text
-                    await channel.send(embed=macro_embed)
+                    title = item['title'][:256]
+                    summary = item['summary']
+                    field_value = f"```{summary}```[記事を読む]({item['link']})"
+                    
+                    if len(current_embed.fields) >= 25 or (current_length + len(title) + len(field_value)) > 5500:
+                        embeds_to_send.append(current_embed)
+                        current_embed = discord.Embed(title="🌐 市場全体のニュース (続き)", color=discord.Color.dark_gold())
+                        current_length = 0
+
+                    current_embed.add_field(name=title, value=field_value, inline=False)
+                    current_length += len(title) + len(field_value)
+
+                if current_embed.fields:
+                    embeds_to_send.append(current_embed)
+
+                for embed in embeds_to_send:
+                    await channel.send(embed=embed)
+                
                 logging.info(f"{len(market_news)}件のマクロ経済ニュースを処理しました。")
             else:
                 logging.info("新しいマクロ経済ニュースは見つかりませんでした。")
