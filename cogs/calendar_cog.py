@@ -27,7 +27,7 @@ CONFIRM_EMOJI = '👍'
 CANCEL_EMOJI = '👎'
 
 # Google Calendar APIのスコープ
-SCOPES = ['https://www.googleapis.com/auth/calendar'] # 書き込みも行うためスコープを変更
+SCOPES = ['https://www.googleapis.com/auth/calendar'] 
 
 # --- 作業時間帯のデフォルト設定 ---
 WORK_START_HOUR = 9
