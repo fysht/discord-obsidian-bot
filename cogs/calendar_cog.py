@@ -26,8 +26,8 @@ MEMO_TO_CALENDAR_EMOJI = '📅'
 CONFIRM_EMOJI = '👍'
 CANCEL_EMOJI = '👎'
 
-# Google Calendar APIのスコープ
-SCOPES = ['https://www.googleapis.com/auth/calendar'] 
+# Google Calendar APIのスコープ (読み書き可能な権限)
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 # --- 作業時間帯のデフォルト設定 ---
 WORK_START_HOUR = 9
@@ -43,24 +43,27 @@ class CalendarCog(commands.Cog):
         self.is_ready = False
         self._load_environment_variables()
         self.uncompleted_tasks = []
-        # タスク提案を一時的に保存する辞書
         self.pending_schedules = {}
 
         if not self._are_credentials_valid():
             logging.error("CalendarCog: 必須の環境変数が不足しています。このCogは無効化されます。")
             return
         try:
+            # --- サーバー用の認証ロジック ---
             self.creds = self._get_google_credentials()
             if not self.creds or not self.creds.valid:
                 if self.creds and self.creds.expired and self.creds.refresh_token:
                     self.creds.refresh(Request())
-                    self._save_google_credentials(self.creds) # 更新された認証情報を保存
+                    self._save_google_credentials(self.creds)
                     logging.info("Google APIのアクセストークンをリフレッシュしました。")
                 else:
-                    raise Exception("Google Calendarの認証情報が無効です。")
+                    # サーバー上では手動認証できないため、エラーとして初期化を中断
+                    raise Exception("Google Calendarの認証情報(token.json)が見つからないか、リフレッシュできません。")
+            # --- ここまで ---
 
             genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") 
+            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.dbx = self._initialize_dropbox_client()
             self.is_ready = True
             logging.info("✅ CalendarCogが正常に初期化され、準備が完了しました。")
         except Exception as e:
@@ -90,24 +93,28 @@ class CalendarCog(commands.Cog):
         )
 
     def _get_google_credentials(self):
-        if not os.path.exists(self.google_token_path):
-            logging.error(f"Googleの認証ファイルが見つかりません。パス: {self.google_token_path}")
-            return None
-        try:
-            return Credentials.from_authorized_user_file(self.google_token_path, SCOPES)
-        except Exception as e:
-            logging.error(f"認証ファイルからの認証情報読み込みに失敗しました: {e}")
-            return None
+        # RenderではSecret Fileのパスを/etc/secrets/token.jsonのように指定する必要がある
+        token_path = self.google_token_path
+        if os.getenv("RENDER"):
+             token_path = f"/etc/secrets/{os.path.basename(token_path)}"
+
+        if os.path.exists(token_path):
+            try:
+                return Credentials.from_authorized_user_file(token_path, SCOPES)
+            except Exception as e:
+                logging.error(f"認証ファイル({token_path})からの認証情報読み込みに失敗しました: {e}")
+        return None
     
     def _save_google_credentials(self, creds):
-        """更新された認証情報をファイルに保存する"""
-        try:
-            with open(self.google_token_path, 'w') as token:
-                token.write(creds.to_json())
-            logging.info(f"更新されたGoogle認証情報を {self.google_token_path} に保存しました。")
-        except Exception as e:
-            logging.error(f"Google認証情報の保存に失敗しました: {e}")
-
+        # サーバー環境では動的にファイルを書き換えるのは難しいため、ログ出力に留める
+        # RenderのSecret Fileは読み取り専用
+        if not os.getenv("RENDER"):
+            try:
+                with open(self.google_token_path, 'w') as token:
+                    token.write(creds.to_json())
+                logging.info(f"更新されたGoogle認証情報を {self.google_token_path} に保存しました。")
+            except Exception as e:
+                logging.error(f"Google認証情報の保存に失敗しました: {e}")
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -178,6 +185,7 @@ class CalendarCog(commands.Cog):
 
         # 出力フォーマット
         ## タスクが複雑で、分割すべき場合:
+        ```json
         {{
           "decomposable": "Yes",
           "subtasks": [
@@ -185,13 +193,16 @@ class CalendarCog(commands.Cog):
             {{ "summary": "（サブタスク2の要約）", "duration_minutes": （所要時間） }}
           ]
         }}
+        ```
 
         ## タスクがシンプルで、分割不要な場合:
+        ```json
         {{
           "decomposable": "No",
           "summary": "（タスク全体の要約）",
           "duration_minutes": （所要時間）
         }}
+        ```
         
         ---
         # タスクメモ
@@ -409,9 +420,6 @@ class CalendarCog(commands.Cog):
         
         elif payload.channel_id == self.calendar_channel_id:
             await self._handle_calendar_reaction(payload)
-
-    # ... (以降、既存の _handle_calendar_reaction, notify_today_events, send_daily_review, _carry_over_uncompleted_tasks などはそのまま or 必要に応じて微修正) ...
-    # 変更点：_create_google_calendar_eventは終日タスク作成用として残し、時間指定タスクは新ロジックで作成
     
     async def _handle_calendar_reaction(self, payload: discord.RawReactionActionEvent):
         try:
@@ -460,8 +468,6 @@ class CalendarCog(commands.Cog):
         except HttpError as e:
             logging.error(f"Googleカレンダーへのイベント作成中にエラー: {e}")
 
-    # (notify_today_events, send_daily_review, _carry_over_uncompleted_tasks, _update_obsidian_task_log などは変更なし)
-    # ... (省略) ...
     @tasks.loop(time=TODAY_SCHEDULE_TIME)
     async def notify_today_events(self):
         logging.info("[CalendarCog] 今日の予定の通知タスクを開始します...")
