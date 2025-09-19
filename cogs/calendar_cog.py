@@ -30,9 +30,9 @@ CANCEL_EMOJI = '👎'
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 
 # --- 作業時間帯のデフォルト設定 ---
-WORK_START_HOUR = 9
-WORK_END_HOUR = 18
-MIN_TASK_DURATION_MINUTES = 15 # 最低確保するタスク時間
+WORK_START_HOUR = 8
+WORK_END_HOUR = 22
+MIN_TASK_DURATION_MINUTES = 10 # 最低確保するタスク時間
 
 class CalendarCog(commands.Cog):
     """
@@ -93,11 +93,9 @@ class CalendarCog(commands.Cog):
         )
 
     def _get_google_credentials(self):
-        # RenderではSecret Fileのパスを/etc/secrets/token.jsonのように指定する必要がある
         token_path = self.google_token_path
         if os.getenv("RENDER"):
              token_path = f"/etc/secrets/{os.path.basename(token_path)}"
-
         if os.path.exists(token_path):
             try:
                 return Credentials.from_authorized_user_file(token_path, SCOPES)
@@ -106,8 +104,6 @@ class CalendarCog(commands.Cog):
         return None
     
     def _save_google_credentials(self, creds):
-        # サーバー環境では動的にファイルを書き換えるのは難しいため、ログ出力に留める
-        # RenderのSecret Fileは読み取り専用
         if not os.getenv("RENDER"):
             try:
                 with open(self.google_token_path, 'w') as token:
@@ -137,20 +133,32 @@ class CalendarCog(commands.Cog):
             if not message.content: return
             
             await message.add_reaction("⏳")
+            
             task_analysis = await self._analyze_task_with_ai(message.content)
 
             if not task_analysis:
                 await message.reply("❌ AIによるタスク分析に失敗しました。フォールバックとして終日予定で登録します。")
-                await self._schedule_as_all_day_task(message, message.content)
+                await self._schedule_as_all_day_task(message, message.content, datetime.now(JST).date())
                 return
 
-            target_date = datetime.now(JST).date()
+            target_date_str = task_analysis.get("target_date")
+            if target_date_str:
+                try:
+                    target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
+                except (ValueError, TypeError):
+                    await message.reply(f"❌ AIが日付 `{target_date_str}` を認識しましたが、形式が不正です。処理を中断します。")
+                    await message.remove_reaction("⏳", self.bot.user)
+                    await message.add_reaction("❌")
+                    return
+            else:
+                target_date = datetime.now(JST).date()
+
             free_slots = await self._find_free_slots(target_date)
 
             if task_analysis.get("decomposable", "No") == "Yes":
-                await self._propose_decomposed_schedule(message, task_analysis, free_slots)
+                await self._propose_decomposed_schedule(message, task_analysis, free_slots, target_date)
             else:
-                await self._schedule_simple_task(message, task_analysis, free_slots)
+                await self._schedule_simple_task(message, task_analysis, free_slots, target_date)
 
         except (discord.NotFound, discord.Forbidden): pass
         except Exception as e:
@@ -161,17 +169,23 @@ class CalendarCog(commands.Cog):
                 await message.add_reaction("❌")
 
     async def _analyze_task_with_ai(self, task_content: str) -> dict | None:
+        today_str = datetime.now(JST).strftime('%Y-%m-%d')
         prompt = f"""
-        あなたは優秀なプロジェクトマネージャーです。以下のユーザーからのタスクメモを分析してください。
+        あなたは優秀なプロジェクトマネージャーです。以下のユーザーからのタスクメモを分析し、指定された日付とタスク内容を抽出してください。
+
         # 指示
-        1.  このタスクが複数の具体的な実行ステップに分割すべき複雑なものか、それとも単一のタスクかを判断してください。
-        2.  判断結果に基づき、以下のJSON形式で出力してください。
-        3.  JSON以外の説明や前置きは一切含めないでください。
-        4.  各タスクの所要時間は現実的な分単位で、最低でも{MIN_TASK_DURATION_MINUTES}分としてください。
+        1.  まず、メモから日付に関する記述を探してください。日付は「9/21」「9月21日」「明日」「あさって」など、あらゆる形式が考えられます。今日の日付は `{today_str}` です。
+        2.  日付の記述が見つかった場合は、その日付を必ず `YYYY-MM-DD` 形式に変換してください。見つからない場合は `null` としてください。
+        3.  次に、日付に関する記述を除いた残りのテキストをタスクリストとして解釈してください。
+        4.  タスクリストを分析し、複数の具体的な実行ステップに分割すべきか、単一のタスクかを判断してください。
+        5.  最終的に、以下のJSON形式で出力してください。JSON以外の説明や前置きは一切含めないでください。
+        6.  各タスクの所要時間は現実的な分単位で、最低でも{MIN_TASK_DURATION_MINUTES}分としてください。
+
         # 出力フォーマット
         ## タスクが複雑で、分割すべき場合:
         ```json
         {{
+          "target_date": "YYYY-MM-DD" or null,
           "decomposable": "Yes",
           "subtasks": [
             {{ "summary": "（サブタスク1の要約）", "duration_minutes": （所要時間） }},
@@ -182,6 +196,7 @@ class CalendarCog(commands.Cog):
         ## タスクがシンプルで、分割不要な場合:
         ```json
         {{
+          "target_date": "YYYY-MM-DD" or null,
           "decomposable": "No",
           "summary": "（タスク全体の要約）",
           "duration_minutes": （所要時間）
@@ -247,17 +262,19 @@ class CalendarCog(commands.Cog):
             logging.error(f"Googleカレンダーからの予定取得中にエラー: {e}")
             return []
             
-    async def _propose_decomposed_schedule(self, message: discord.Message, analysis: dict, free_slots: list):
+    async def _propose_decomposed_schedule(self, message: discord.Message, analysis: dict, free_slots: list, target_date: datetime.date):
         subtasks = analysis["subtasks"]
         total_duration = sum(task['duration_minutes'] for task in subtasks)
 
         best_slot_start = next((start for start, end in free_slots if (end - start) >= timedelta(minutes=total_duration)), None)
         
         if not best_slot_start:
-            await self._schedule_as_all_day_task(message, message.content)
+            # 日付指定がないメモの内容全体を終日タスクとして登録
+            summary = "\n".join([task['summary'] for task in subtasks])
+            await self._schedule_as_all_day_task(message, summary, target_date)
             return
             
-        proposal_text = "AIがタスクを以下のように分割しました。この内容でスケジュールしますか？\n\n"
+        proposal_text = f"AIが **{target_date.strftime('%Y年%m月%d日')}** のタスクを以下のように分割しました。この内容でスケジュールしますか？\n\n"
         current_time = best_slot_start
         scheduled_tasks = []
         for task in subtasks:
@@ -272,14 +289,14 @@ class CalendarCog(commands.Cog):
         self.pending_schedules[proposal_msg.id] = scheduled_tasks
         await message.remove_reaction("⏳", self.bot.user)
 
-    async def _schedule_simple_task(self, message: discord.Message, analysis: dict, free_slots: list):
+    async def _schedule_simple_task(self, message: discord.Message, analysis: dict, free_slots: list, target_date: datetime.date):
         duration = analysis['duration_minutes']
         summary = analysis['summary']
 
         best_slot_start = next((start for start, end in free_slots if (end - start) >= timedelta(minutes=duration)), None)
 
         if not best_slot_start:
-            await self._schedule_as_all_day_task(message, summary)
+            await self._schedule_as_all_day_task(message, summary, target_date)
             return
 
         start_time = best_slot_start
@@ -292,7 +309,7 @@ class CalendarCog(commands.Cog):
         try:
             service = build('calendar', 'v3', credentials=self.creds)
             service.events().insert(calendarId='primary', body=event).execute()
-            await message.reply(f"✅ **{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** に「{summary}」を登録しました。")
+            await message.reply(f"✅ **{target_date.strftime('%m/%d')} {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** に「{summary}」を登録しました。")
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
         except HttpError as e:
@@ -300,9 +317,8 @@ class CalendarCog(commands.Cog):
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("❌")
 
-    async def _schedule_as_all_day_task(self, message: discord.Message, summary: str):
-        """タスクを終日予定として登録するフォールバック関数"""
-        target_date = datetime.now(JST).date()
+    async def _schedule_as_all_day_task(self, message: discord.Message, summary: str, target_date: datetime.date):
+        """タスクを指定された日の終日予定として登録するフォールバック関数"""
         try:
             end_date = target_date + timedelta(days=1)
             event = {
@@ -313,7 +329,12 @@ class CalendarCog(commands.Cog):
             service = build('calendar', 'v3', credentials=self.creds)
             service.events().insert(calendarId='primary', body=event).execute()
             
-            await message.reply(f"💬 今日の作業時間内に最適な空き時間が見つからなかったため、終日予定として「{summary}」を登録しました。")
+            if target_date == datetime.now(JST).date():
+                reply_text = f"💬 今日の作業時間内に最適な空き時間が見つからなかったため、終日予定として「{summary}」を登録しました。"
+            else:
+                reply_text = f"💬 **{target_date.strftime('%Y年%m月%d日')}** の作業時間内に最適な空き時間が見つからなかったため、終日予定として「{summary}」を登録しました。"
+
+            await message.reply(reply_text)
             logging.info(f"[CalendarCog] タスクを終日予定として登録しました: '{summary}' on {target_date}")
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
