@@ -11,7 +11,7 @@ from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import asyncio
 import aiohttp
-import google.genergenerativeai as genai
+import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
 from collections import Counter
@@ -22,7 +22,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=18, minute=15, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=18, minute=32, tzinfo=JST)
 
 # ニュースソース
 MACRO_NEWS_RSS_URLS = [
