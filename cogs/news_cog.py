@@ -22,7 +22,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=12, minute=30, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=17, minute=40, tzinfo=JST)
 
 # ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
@@ -124,16 +124,18 @@ class NewsCog(commands.Cog):
             temp_timeseries = None
             daily_temp_summary_timeseries = None
 
+            # 予報データの中から必要な時系列情報を探す
             for ts in data[0]["timeSeries"]:
-                if "weathers" in ts["areas"][0]:
+                areas = ts.get("areas", [{}])
+                if "weathers" in areas[0]:
                     weather_timeseries = ts
-                if "temps" in ts["areas"][0] and len(ts["timeDefines"]) > 4: # 時系列気温
+                if "temps" in areas[0] and len(ts.get("timeDefines", [])) > 4: # 時系列気温
                     temp_timeseries = ts
-                if "temps" in ts["areas"][0] and len(ts["timeDefines"]) == 2: # 日中最高/最低気温
+                if "temps" in areas[0] and len(ts.get("timeDefines", [])) == 2: # 日中最高/最低気温
                     daily_temp_summary_timeseries = ts
             
             if not weather_timeseries or not daily_temp_summary_timeseries:
-                 raise ValueError("必要な天気または気温データが見つかりませんでした。")
+                raise ValueError("必要な天気または気温データが見つかりませんでした。")
 
             # --- サマリー情報の抽出 ---
             today_weather_summary = weather_timeseries["areas"][0]["weathers"][0]
@@ -153,20 +155,20 @@ class NewsCog(commands.Cog):
                 weather_time_defines = weather_timeseries["timeDefines"]
                 weathers = weather_timeseries["areas"][0]["weathers"]
                 for i, time_str in enumerate(weather_time_defines):
-                    dt = datetime.fromisoformat(time_str).astimezone(JST)
-                    weather_map[dt.strftime('%H時')] = weathers[i]
+                    dt = datetime.fromisoformat(time_str)
+                    weather_map[dt.hour] = weathers[i]
 
                 forecast_lines = []
                 for i, time_str in enumerate(time_defines):
-                    dt = datetime.fromisoformat(time_str).astimezone(JST)
-                    if dt.date() != datetime.now(JST).date():
-                        continue
+                    dt = datetime.fromisoformat(time_str)
+                    if dt.date() != datetime.now(JST).date(): continue
 
                     time_formatted = dt.strftime('%H時')
                     temp_str = f"{temps[i]}℃"
 
-                    # 対応する時間の天気を取得
-                    weather = weather_map.get(time_formatted, "").split("　")[0]
+                    # 対応する時間の天気を探す (3時間ごとの予報なので直近のものを採用)
+                    weather_hour = (dt.hour // 3) * 3
+                    weather = weather_map.get(weather_hour, "").split("　")[0]
                     emoji = self._get_emoji_for_weather(weather)
                     
                     forecast_lines.append(f"・🕒 {time_formatted}: {emoji} {weather}, {temp_str}")
