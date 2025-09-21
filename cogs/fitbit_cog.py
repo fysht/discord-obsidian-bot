@@ -13,6 +13,7 @@ from io import StringIO
 import asyncio
 from discord import app_commands
 from typing import Optional, Dict, Any
+import statistics
 
 from fitbit_client import FitbitClient
 from utils.obsidian_utils import update_section
@@ -21,6 +22,7 @@ from utils.obsidian_utils import update_section
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SLEEP_REPORT_TIME = datetime.time(hour=8, minute=0, tzinfo=JST)
 FULL_HEALTH_REPORT_TIME = datetime.time(hour=22, minute=0, tzinfo=JST)
+WEEKLY_HEALTH_REPORT_TIME = datetime.time(hour=22, minute=0, tzinfo=JST) # 日曜の22時
 
 class FitbitCog(commands.Cog):
     """Fitbitのデータを取得し、Obsidianへの記録とAIによる健康アドバイスを行うCog"""
@@ -142,10 +144,16 @@ class FitbitCog(commands.Cog):
             if not self.full_health_report.is_running():
                 self.full_health_report.start()
                 logging.info(f"FitbitCog: 統合ヘルスレポートタスクを {FULL_HEALTH_REPORT_TIME} にスケジュールしました。")
+            if not self.weekly_health_report.is_running():
+                self.weekly_health_report.start()
+                logging.info(f"FitbitCog: 週間ヘルスレポートタスクを {WEEKLY_HEALTH_REPORT_TIME} (日曜)にスケジュールしました。")
+
 
     def cog_unload(self):
         self.sleep_report.cancel()
         self.full_health_report.cancel()
+        self.weekly_health_report.cancel()
+
 
     def _format_minutes(self, minutes: int) -> str:
         if minutes is None: return "N/A"
@@ -222,6 +230,56 @@ class FitbitCog(commands.Cog):
             logging.error(f"FitbitCog: 統合ヘルスレポートタスクの実行中にエラーが発生しました: {e}", exc_info=True)
             if channel:
                 await channel.send(f"FitbitCog: 統合ヘルスレポートタスクの実行中にエラーが発生しました。\n```\n{e}\n```")
+
+    @tasks.loop(time=WEEKLY_HEALTH_REPORT_TIME)
+    async def weekly_health_report(self):
+        """日曜の夜に週間の健康データをまとめて通知・保存する"""
+        if not self.is_ready or datetime.datetime.now(JST).weekday() != 6:  # 6は日曜日
+            return
+
+        logging.info("FitbitCog: 週間ヘルスレポートタスクを実行します。")
+        channel = self.bot.get_channel(self.health_log_channel_id)
+        today = datetime.datetime.now(JST).date()
+        
+        weekly_sleep_data = []
+        weekly_activity_data = []
+
+        for i in range(7):
+            target_date = today - datetime.timedelta(days=i)
+            sleep_data, activity_data = await asyncio.gather(
+                self.fitbit_client.get_sleep_data(target_date),
+                self.fitbit_client.get_activity_summary(target_date)
+            )
+            if sleep_data:
+                weekly_sleep_data.append(self._process_sleep_data(sleep_data))
+            if activity_data:
+                weekly_activity_data.append(activity_data)
+        
+        # 週間データの集計
+        avg_sleep_score = statistics.mean([s['sleep_score'] for s in weekly_sleep_data if s and 'sleep_score' in s])
+        avg_sleep_duration = statistics.mean([s['minutesAsleep'] for s in weekly_sleep_data if s and 'minutesAsleep' in s])
+        total_steps = sum([a['summary']['steps'] for a in weekly_activity_data if a and 'summary' in a and 'steps' in a['summary']])
+        avg_resting_hr = statistics.mean([a['summary']['restingHeartRate'] for a in weekly_activity_data if a and 'summary' in a and 'restingHeartRate' in a['summary']])
+
+        summary_text = (f"週間平均睡眠スコア: {avg_sleep_score:.1f}点\n"
+                        f"週間平均睡眠時間: {self._format_minutes(avg_sleep_duration)}\n"
+                        f"週間合計歩数: {total_steps}歩\n"
+                        f"週間平均安静時心拍数: {avg_resting_hr:.1f} bpm")
+        
+        advice_text = await self._generate_weekly_ai_advice(summary_text)
+
+        # Discordに投稿
+        if channel:
+            embed = discord.Embed(
+                title=f"📅 週間ヘルスレポート ({today - datetime.timedelta(days=6)} ~ {today})",
+                description=f"**🤖 AI Health Coach**\n{advice_text}",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="📈 週間サマリー", value=summary_text, inline=False)
+            await channel.send(embed=embed)
+        
+        # Obsidianに保存
+        # (実装は省略。デイリーと同様にWeeklyNoteに保存する処理を追加)
 
     @app_commands.command(name="get_morning_report", description="指定日の睡眠レポートを手動で取得します。")
     @app_commands.describe(date="取得したい日付 (YYYY-MM-DD形式、省略で今日)")
@@ -424,6 +482,28 @@ class FitbitCog(commands.Cog):
         except Exception as e:
             logging.error(f"FitbitCog: Gemini APIからのアドバイス生成中にエラー: {e}")
             return "AIによるアドバイスの生成中にエラーが発生しました。"
+
+    async def _generate_weekly_ai_advice(self, weekly_summary: str) -> str:
+        prompt = f"""
+        あなたは私の成長をサポートするヘルスコーチです。
+        以下は私の一週間の健康データのサマリーです。この内容を分析し、
+        来週に向けたポジティブで具体的なアドバイスを生成してください。
+
+        # 指示
+        - **挨拶や前置きは一切含めないでください。**
+        - **まず、この一週間で特に良かった点を一つ褒めてください。**
+        - **次に、来週さらに改善できる点を一つ挙げ、具体的なアクションを提案してください。**
+        - 全体として、ポジティブでやる気の出るようなトーンで記述してください。
+
+        # 今週のサマリー
+        {weekly_summary}
+        """
+        try:
+            response = await self.gemini_model.generate_content_async(prompt)
+            return response.text.strip()
+        except Exception as e:
+            logging.error(f"FitbitCog: 週間のAIアドバイス生成中にエラー: {e}")
+            return "AIによる週間アドバイスの生成中にエラーが発生しました。"
     
     async def _summarize_text(self, text: str, max_length: int = 1000) -> str:
         """テキストが長すぎる場合にAIで要約する"""

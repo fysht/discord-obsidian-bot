@@ -42,7 +42,7 @@ class CalendarCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
-        self.uncompleted_tasks = []
+        self.uncompleted_tasks = {} # { task_summary: original_date }
         self.pending_schedules = {}
 
         if not self._are_credentials_valid():
@@ -391,12 +391,17 @@ class CalendarCog(commands.Cog):
             if not embed.title or not embed.title.startswith("タスク: "): return
 
             task_summary = embed.title.replace("タスク: ", "")
-            today_str = datetime.now(JST).strftime('%Y-%m-%d')
-            target_date = datetime.strptime(today_str, '%Y-%m-%d').date()
+            # embedのフッターから日付を取得
+            date_str_match = re.search(r'(\d{4}-\d{2}-\d{2})', embed.footer.text or '')
+            if not date_str_match:
+                # フッターに日付がない場合はメッセージの作成日から判断
+                target_date = message.created_at.astimezone(JST).date()
+            else:
+                target_date = datetime.strptime(date_str_match.group(1), '%Y-%m-%d').date()
 
             if str(payload.emoji) == '❌':
-                self.uncompleted_tasks.append(task_summary)
-                logging.info(f"[CalendarCog] 未完了タスクを追加: {task_summary}")
+                self.uncompleted_tasks[task_summary] = target_date
+                logging.info(f"[CalendarCog] 未完了タスクを追加: {task_summary} (期日: {target_date})")
 
             task_list_md = f"- [{ 'x' if str(payload.emoji) == '✅' else ' ' }] {task_summary}\n"
             await self._update_obsidian_task_log(target_date, task_list_md)
@@ -464,6 +469,7 @@ class CalendarCog(commands.Cog):
                 await channel.send(f"--- **🗓️ {today_str} のタスクレビュー** ---\nお疲れ様でした！今日のタスクの達成度をリアクションで教えてください。")
                 for event in daily_events:
                     embed = discord.Embed(title=f"タスク: {event['summary']}", color=discord.Color.gold())
+                    embed.set_footer(text=f"Task for: {today_str}") # 日付情報をフッターに埋め込む
                     message = await channel.send(embed=embed)
                     await message.add_reaction("✅")
                     await message.add_reaction("❌")
@@ -474,10 +480,15 @@ class CalendarCog(commands.Cog):
 
     async def _carry_over_uncompleted_tasks(self):
         if not self.uncompleted_tasks: return
-        tomorrow = datetime.now(JST).date() + timedelta(days=1)
-        for task in self.uncompleted_tasks:
-            await self._create_google_calendar_event(task, tomorrow)
+        
+        tasks_to_carry_over = self.uncompleted_tasks.copy()
         self.uncompleted_tasks.clear()
+
+        for task, original_date in tasks_to_carry_over.items():
+            # Googleカレンダーには翌日の日付で登録
+            carry_over_date = datetime.now(JST).date() + timedelta(days=1)
+            await self._create_google_calendar_event(task, carry_over_date)
+        
         logging.info("[CalendarCog] 未完了タスクの繰り越しが完了しました。")
 
     async def _generate_overall_advice(self, events: list) -> str:

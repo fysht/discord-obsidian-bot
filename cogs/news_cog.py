@@ -10,7 +10,7 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import asyncio
-from pyowm import OWM
+import aiohttp
 import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
@@ -21,7 +21,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=6, minute=0, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=11, minute=10, tzinfo=JST)
 
 # ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
@@ -30,21 +30,11 @@ MACRO_NEWS_RSS_URLS = [
 # 個別銘柄はこちらから取得
 TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
-WEATHER_STATUS_MAP = {
-    "clear sky": "快晴 ☀️",
-    "few clouds": "晴れ時々曇り 🌤️",
-    "scattered clouds": "曇りがち ⛅",
-    "broken clouds": "曇り ☁️",
-    "overcast clouds": "曇り ☁️",
-    "shower rain": "にわか雨 🌧️",
-    "rain": "雨 🌦️",
-    "light rain": "小雨 🌦️",
-    "moderate rain": "雨 🌧️",
-    "thunderstorm": "雷雨 ⛈️",
-    "snow": "雪 ❄️",
-    "mist": "霧 🌫️",
-    "fog": "霧 🌫️",
-}
+# 気象庁のエリアコード (例: 東京地方、大阪府)
+# 参考: https://www.jma.go.jp/bosai/common/const/area.json
+JMA_AREA_CODE_HOME = "3321300" # 赤磐市
+JMA_AREA_CODE_WORK = "3310000" # 岡山市
+
 
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
@@ -53,6 +43,7 @@ class NewsCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
+        self.session = aiohttp.ClientSession()
 
         if not self._are_credentials_valid():
             logging.error("NewsCog: 必須の環境変数が不足しています。このCogは無効化されます。")
@@ -64,10 +55,6 @@ class NewsCog(commands.Cog):
                 app_key=self.dropbox_app_key,
                 app_secret=self.dropbox_app_secret
             )
-            if not self.openweathermap_api_key:
-                 raise ValueError("OPENWEATHERMAP_API_KEYが設定されていません。")
-            self.owm = OWM(self.openweathermap_api_key)
-            self.mgr = self.owm.weather_manager()
 
             if self.gemini_api_key:
                 genai.configure(api_key=self.gemini_api_key)
@@ -81,13 +68,13 @@ class NewsCog(commands.Cog):
         except Exception as e:
             logging.error(f"❌ NewsCogの初期化中にエラーが発生しました: {e}", exc_info=True)
 
+    async def cog_unload(self):
+        await self.session.close()
+
     def _load_environment_variables(self):
         self.news_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
-        self.home_coords = self._parse_coordinates(os.getenv("HOME_COORDINATES"))
-        self.work_coords = self._parse_coordinates(os.getenv("WORK_COORDINATES"))
         self.home_name = os.getenv("HOME_NAME", "自宅")
         self.work_name = os.getenv("WORK_NAME", "勤務先")
-        self.openweathermap_api_key = os.getenv("OPENWEATHERMAP_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -96,16 +83,7 @@ class NewsCog(commands.Cog):
         self.watchlist_path = f"{self.dropbox_vault_path}/.bot/stock_watchlist.json"
 
     def _are_credentials_valid(self) -> bool:
-        return all([self.news_channel_id, self.home_coords, self.work_coords, self.openweathermap_api_key, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key])
-
-    def _parse_coordinates(self, coord_str: str | None) -> dict | None:
-        if not coord_str: return None
-        try:
-            lat, lon = map(float, coord_str.split(','))
-            return {'lat': lat, 'lon': lon}
-        except (ValueError, TypeError):
-            logging.error(f"座標の解析に失敗: {coord_str}")
-            return None
+        return all([self.news_channel_id, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key])
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -115,43 +93,24 @@ class NewsCog(commands.Cog):
     def cog_unload(self):
         self.daily_news_briefing.cancel()
 
-    def _translate_weather_status(self, status_en: str) -> str:
-        status_en = status_en.lower()
-        if status_en in WEATHER_STATUS_MAP:
-            return WEATHER_STATUS_MAP[status_en]
-        for key, value in WEATHER_STATUS_MAP.items():
-            if key in status_en:
-                return value
-        return status_en
-
-    async def _get_weather_forecast(self, coords: dict, location_name: str) -> str:
+    async def _get_jma_weather_forecast(self, area_code: str, location_name: str) -> str:
+        """気象庁のAPIから天気予報を取得する"""
+        url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
         try:
-            forecast_3h = await asyncio.to_thread(self.mgr.forecast_at_coords, **coords, interval='3h')
+            async with self.session.get(url) as response:
+                response.raise_for_status()
+                data = await response.json()
+
+            # 今日の天気情報を抽出
+            today_weather_data = data[0]["timeSeries"][0]["areas"][0]
+            weather_today = today_weather_data["weathers"][0]
             
-            today = datetime.now(JST).date()
-            today_weathers = [w for w in forecast_3h.forecast if w.reference_time('date').astimezone(JST).date() == today]
+            # 気温情報を抽出
+            temps_data = data[0]["timeSeries"][2]["areas"][0]
+            min_temp = temps_data["temps"][0]
+            max_temp = temps_data["temps"][1]
 
-            if not today_weathers:
-                return f"**{location_name}**: 今日の予報データが取得できませんでした。"
-
-            status_counts = Counter(self._translate_weather_status(w.detailed_status) for w in today_weathers)
-            daily_status = status_counts.most_common(1)[0][0]
-
-            temps = [w.temperature('celsius')['temp'] for w in today_weathers]
-            max_temp = max(temps)
-            min_temp = min(temps)
-            
-            forecast_lines = []
-            for w in today_weathers:
-                time_str = w.reference_time('date').astimezone(JST).strftime('%H時')
-                temp = w.temperature('celsius')['temp']
-                status = self._translate_weather_status(w.detailed_status)
-                forecast_lines.append(f"・{time_str}: {status}, {temp:.0f}℃")
-
-            summary_line = f"**{location_name}**: {daily_status} | 最高 {max_temp:.0f}℃ / 最低 {min_temp:.0f}℃"
-            detail_lines = "\n".join(forecast_lines)
-            
-            return f"{summary_line}\n{detail_lines}"
+            return f"**{location_name}**: {weather_today} | 最高 {max_temp}℃ / 最低 {min_temp}℃"
 
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
@@ -194,7 +153,6 @@ class NewsCog(commands.Cog):
                 logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
         return news_items
 
-    # 個別銘柄ニュース取得関数を復活
     async def _fetch_stock_news(self, company: str, rss_url: str, since: datetime) -> list:
         news_items = []
         try:
@@ -225,14 +183,14 @@ class NewsCog(commands.Cog):
         
         try:
             home_weather, work_weather = await asyncio.gather(
-                self._get_weather_forecast(self.home_coords, self.home_name),
-                self._get_weather_forecast(self.work_coords, self.work_name)
+                self._get_jma_weather_forecast(JMA_AREA_CODE_HOME, self.home_name),
+                self._get_jma_weather_forecast(JMA_AREA_CODE_WORK, self.work_name)
             )
             weather_embed = discord.Embed(
                 title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ",
                 color=discord.Color.blue()
             )
-            weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n\n{work_weather}", inline=False)
+            weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
             await channel.send(embed=weather_embed)
             logging.info("天気予報を投稿しました。")
         except Exception as e:
@@ -278,7 +236,6 @@ class NewsCog(commands.Cog):
         except Exception as e:
             logging.error(f"NHK経済ニュースの処理でエラーが発生しました: {e}", exc_info=True)
 
-        # 個別銘柄ニュースの処理を復活
         try:
             watchlist = await self._get_watchlist()
             no_article_companies = []
