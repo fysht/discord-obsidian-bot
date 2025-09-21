@@ -15,13 +15,14 @@ import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
 from collections import Counter
+import re
 
 # 他のファイルから関数をインポート
 from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=11, minute=25, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=11, minute=35, tzinfo=JST)
 
 # ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
@@ -30,10 +31,20 @@ MACRO_NEWS_RSS_URLS = [
 # 個別銘柄はこちらから取得
 TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
-# 気象庁のエリアコード (例: 東京地方、大阪府)
+# 気象庁のエリアコード
 # 参考: https://www.jma.go.jp/bosai/common/const/area.json
-JMA_AREA_CODE_HOME = "3321300" # 赤磐市
-JMA_AREA_CODE_WORK = "3310000" # 岡山市
+JMA_AREA_CODE_HOME = "330010"  # 岡山県南部
+JMA_AREA_CODE_WORK = "330010"  # 岡山県南部
+
+# 天気の絵文字マッピング
+WEATHER_EMOJI_MAP = {
+    "晴": "☀️",
+    "曇": "☁️",
+    "雨": "☔️",
+    "雪": "❄️",
+    "雷": "⚡️",
+    "霧": "🌫️",
+}
 
 
 class NewsCog(commands.Cog):
@@ -93,28 +104,73 @@ class NewsCog(commands.Cog):
     def cog_unload(self):
         self.daily_news_briefing.cancel()
 
+    def _get_emoji_for_weather(self, weather_text: str) -> str:
+        """天気テキストに対応する絵文字を返す"""
+        for key, emoji in WEATHER_EMOJI_MAP.items():
+            if key in weather_text:
+                return emoji
+        return "❓"
+
     async def _get_jma_weather_forecast(self, area_code: str, location_name: str) -> str:
-        """気象庁のAPIから天気予報を取得する"""
+        """気象庁のAPIから詳細な天気予報を取得する"""
         url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
         try:
             async with self.session.get(url) as response:
                 response.raise_for_status()
                 data = await response.json()
 
-            # 今日の天気情報を抽出
-            today_weather_data = data[0]["timeSeries"][0]["areas"][0]
-            weather_today = today_weather_data["weathers"][0]
-            
-            # 気温情報を抽出
-            temps_data = data[0]["timeSeries"][2]["areas"][0]
-            min_temp = temps_data["temps"][0]
-            max_temp = temps_data["temps"][1]
+            # --- サマリー情報の抽出 ---
+            today_weather_summary = data[0]["timeSeries"][0]["areas"][0]["weathers"][0]
+            weather_emoji = self._get_emoji_for_weather(today_weather_summary)
+            temps_summary = data[0]["timeSeries"][2]["areas"][0]
+            min_temp = temps_summary["temps"][0]
+            max_temp = temps_summary["temps"][1]
 
-            return f"**{location_name}**: {weather_today} | 最高 {max_temp}℃ / 最低 {min_temp}℃"
+            summary_line = f"**{location_name}**: {weather_emoji} {today_weather_summary} | 🌡️ 最高 {max_temp}℃ / 最低 {min_temp}℃"
+
+            # --- 時系列情報の抽出 ---
+            weather_timeseries_data = data[0]["timeSeries"][0]
+            temp_timeseries_data = data[0]["timeSeries"][2]
+
+            time_defines = weather_timeseries_data["timeDefines"]
+            weathers = weather_timeseries_data["areas"][0]["weathers"]
+            temps = temp_timeseries_data["areas"][0]["temps"]
+            
+            # 気温データは間隔が異なるため、時間でマッピングする辞書を作成
+            temp_map = {}
+            temp_time_defines = temp_timeseries_data["timeDefines"]
+            for i, time_str in enumerate(temp_time_defines):
+                 dt = datetime.fromisoformat(time_str).astimezone(JST)
+                 temp_map[dt.strftime('%H時')] = temps[i]
+
+            forecast_lines = []
+            for i, time_str in enumerate(time_defines):
+                dt = datetime.fromisoformat(time_str).astimezone(JST)
+                
+                # 今日の日付の予報のみを対象
+                if dt.date() != datetime.now(JST).date():
+                    continue
+
+                time_formatted = dt.strftime('%H時')
+                weather = weathers[i].split("　")[0] # 「晴れ　後　くもり」のような場合、最初の天気を採用
+                emoji = self._get_emoji_for_weather(weather)
+                
+                temp_str = f"{temp_map.get(time_formatted, '--')}℃"
+                
+                # 00時の気温データがない場合、最低気温で代用
+                if time_formatted == "00時" and temp_map.get(time_formatted) is None:
+                    temp_str = f"{min_temp}℃"
+
+                forecast_lines.append(f"・🕒 {time_formatted}: {emoji} {weather}, {temp_str}")
+
+            detail_lines = "\n".join(forecast_lines)
+            
+            return f"{summary_line}\n{detail_lines}"
 
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
-            return f"**{location_name}**: 天気情報の取得に失敗しました。"
+            return f"**{location_name}**: ⚠️ 天気情報の取得に失敗しました。"
+
 
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:
@@ -190,7 +246,7 @@ class NewsCog(commands.Cog):
                 title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ",
                 color=discord.Color.blue()
             )
-            weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n{work_weather}", inline=False)
+            weather_embed.add_field(name="🌦️ 今日の天気", value=f"{home_weather}\n\n{work_weather}", inline=False)
             await channel.send(embed=weather_embed)
             logging.info("天気予報を投稿しました。")
         except Exception as e:
