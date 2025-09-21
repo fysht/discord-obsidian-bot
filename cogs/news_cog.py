@@ -21,7 +21,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=11, minute=10, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=11, minute=25, tzinfo=JST)
 
 # ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
