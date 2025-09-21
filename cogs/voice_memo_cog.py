@@ -11,6 +11,9 @@ from pathlib import Path
 import dropbox
 from dropbox.files import WriteMode
 
+# 共通関数をインポート
+from utils.obsidian_utils import update_section
+
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 TRIGGER_EMOJI = '📝'
@@ -116,8 +119,8 @@ class VoiceMemoCog(commands.Cog):
             indented_content = "\n".join([f"\t{line.strip()}" for line in content_lines])
 
             # 手入力メモと同様のフォーマットを作成
-            content_to_append = (
-                f"\n- {current_time} (voice memo)\n"
+            content_to_add = (
+                f"- {current_time} (voice memo)\n"
                 f"{indented_content}"
             )
 
@@ -137,8 +140,9 @@ class VoiceMemoCog(commands.Cog):
                     else:
                         raise
 
-                # ファイルの末尾に追記
-                new_content = daily_note_content.rstrip() + "\n" + content_to_append
+                # 共通関数を使って ## Memo セクションに追記する
+                section_header = "## Memo"
+                new_content = update_section(daily_note_content, content_to_add, section_header)
                 
                 dbx.files_upload(
                     new_content.encode('utf-8'),

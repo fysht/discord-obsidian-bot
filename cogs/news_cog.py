@@ -22,7 +22,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=11, minute=48, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=12, minute=10, tzinfo=JST)
 
 # ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
@@ -31,7 +31,7 @@ MACRO_NEWS_RSS_URLS = [
 # 個別銘柄はこちらから取得
 TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
-# 気象庁のエリアコード
+# 気象庁のエリアコード (例: 岡山県)
 # 参考: https://www.jma.go.jp/bosai/common/const/area.json
 JMA_AREA_CODE_HOME = "330000" # 岡山県の予報区コード
 JMA_AREA_CODE_WORK = "330000" # 岡山県の予報区コード
@@ -122,6 +122,7 @@ class NewsCog(commands.Cog):
             # --- サマリー情報の抽出 ---
             today_weather_summary = data[0]["timeSeries"][0]["areas"][0]["weathers"][0]
             weather_emoji = self._get_emoji_for_weather(today_weather_summary)
+            # timeSeries[2]が日中の最高・最低気温
             temps_summary = data[0]["timeSeries"][2]["areas"][0]
             min_temp = temps_summary["temps"][0]
             max_temp = temps_summary["temps"][1]
@@ -130,15 +131,17 @@ class NewsCog(commands.Cog):
 
             # --- 時系列情報の抽出 ---
             weather_timeseries_data = data[0]["timeSeries"][0]
-            temp_timeseries_data = data[0]["timeSeries"][2]
+            # timeSeries[1]が3時間ごとの気温
+            temp_timeseries_data = data[0]["timeSeries"][1] 
 
             time_defines = weather_timeseries_data["timeDefines"]
             weathers = weather_timeseries_data["areas"][0]["weathers"]
+            
+            temp_time_defines = temp_timeseries_data["timeDefines"]
             temps = temp_timeseries_data["areas"][0]["temps"]
             
-            # 気温データは間隔が異なるため、時間でマッピングする辞書を作成
+            # 気温データを時間でマッピングする辞書を作成
             temp_map = {}
-            temp_time_defines = temp_timeseries_data["timeDefines"]
             for i, time_str in enumerate(temp_time_defines):
                  dt = datetime.fromisoformat(time_str).astimezone(JST)
                  temp_map[dt.strftime('%H時')] = temps[i]
@@ -156,12 +159,11 @@ class NewsCog(commands.Cog):
                 emoji = self._get_emoji_for_weather(weather)
                 
                 temp_str = f"{temp_map.get(time_formatted, '--')}℃"
-                
-                # 00時の気温データがない場合、最低気温で代用
-                if time_formatted == "00時" and temp_map.get(time_formatted) is None:
-                    temp_str = f"{min_temp}℃"
 
                 forecast_lines.append(f"・🕒 {time_formatted}: {emoji} {weather}, {temp_str}")
+
+            if not forecast_lines:
+                return summary_line # 時系列データがなければサマリーのみ返す
 
             detail_lines = "\n".join(forecast_lines)
             
@@ -170,7 +172,6 @@ class NewsCog(commands.Cog):
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
             return f"**{location_name}**: ⚠️ 天気情報の取得に失敗しました。"
-
 
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:

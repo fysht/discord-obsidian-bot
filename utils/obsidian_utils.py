@@ -1,14 +1,14 @@
 # --- 定数定義 ---
 # デイリーノートの見出しの順序をここで一元管理します
 SECTION_ORDER = [
+    "## WebClips",
+    "## YouTube Summaries"
+    "## Memo",
+    "## Zero-Second Thinking",
+    "## Task Log",
     "## Health Metrics",
     "## Location Logs",
     "## Daily Summary",
-    "## WebClips",
-    "## YouTube Summaries",
-    "## Zero-Second Thinking",
-    "## Memo",
-    "## Task Log"
 ]
 
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
