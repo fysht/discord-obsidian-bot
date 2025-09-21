@@ -13,8 +13,8 @@ import dropbox
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-HIGHLIGHT_PROMPT_TIME = datetime.time(hour=18, minute=15, tzinfo=JST)  # ハイライトを促す時間
-TUNING_PROMPT_TIME = datetime.time(hour=18, minute=20, tzinfo=JST)     # 振り返りを促す時間
+HIGHLIGHT_PROMPT_TIME = datetime.time(hour=7, minute=30, tzinfo=JST)  # ハイライトを促す時間
+TUNING_PROMPT_TIME = datetime.time(hour=21, minute=30, tzinfo=JST)     # 振り返りを促す時間
 HIGHLIGHT_EMOJI = "✨" # カレンダーで目立たせるための絵文字
 
 class MakeTimeCog(commands.Cog):

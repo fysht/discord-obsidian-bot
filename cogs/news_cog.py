@@ -14,18 +14,15 @@ import aiohttp
 import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
-import re
-
-# 他のファイルから関数をインポート
-from google_search import search as google_search_function
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=19, minute=52, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=7, minute=0, tzinfo=JST)
 
 # ニュースソース
 MACRO_NEWS_RSS_URLS = ["https://www.nhk.or.jp/rss/news/cat2.xml"]
-YAHOO_FINANCE_RSS_URL = "https://finance.yahoo.co.jp/rss/company"
+# Yahoo!ニュースのビジネスカテゴリRSS
+YAHOO_NEWS_BUSINESS_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
 # 気象庁のエリアコード
 JMA_AREA_CODE = "330000" # 岡山県
@@ -88,69 +85,27 @@ class NewsCog(commands.Cog):
         return "❓"
 
     async def _get_jma_weather_forecast(self, area_code: str, location_name: str) -> str:
+        """気象庁APIから今日の天気サマリー（天気・最高/最低気温）を取得する"""
         url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
         try:
             async with self.session.get(url) as response:
                 response.raise_for_status()
                 data = await response.json()
             
-            report_dt = datetime.fromisoformat(data[0]["reportDatetime"]).astimezone(JST)
+            # 1日の天気サマリー
+            weather_summary = data[0]["timeSeries"][0]["areas"][0]["weathers"][0]
+            weather_emoji = self._get_emoji_for_weather(weather_summary)
 
-            weather_ts = next((ts for ts in data[0]["timeSeries"] if "weathers" in ts["areas"][0]), None)
-            temp_ts = next((ts for ts in data[0]["timeSeries"] if "temps" in ts["areas"][0] and len(ts["timeDefines"]) > 2), None)
-            precip_ts = next((ts for ts in data[0]["timeSeries"] if "pops" in ts["areas"][0]), None)
-            
-            if not weather_ts or not temp_ts:
-                raise ValueError("必要な天気または気温データが見つかりませんでした。")
-            
-            today_weather_summary = weather_ts["areas"][0]["weathers"][0]
-            weather_emoji = self._get_emoji_for_weather(today_weather_summary)
-            min_temp = temp_ts["areas"][0]["temps"][0]
-            max_temp = temp_ts["areas"][0]["temps"][1]
-            summary_line = f"**{location_name}**: {weather_emoji} {today_weather_summary} | 🌡️ 最高 {max_temp}℃ / 最低 {min_temp}℃"
+            # 最高・最低気温
+            temp_data = data[0]["timeSeries"][1]["areas"][0]["temps"]
+            min_temp, max_temp = temp_data[0], temp_data[1]
 
-            forecast_lines = []
-            now = datetime.now(JST)
-            
-            weather_map = {datetime.fromisoformat(t).astimezone(JST): w.split("　")[0] for t, w in zip(weather_ts["timeDefines"], weather_ts["areas"][0]["weathers"])}
-            temp_map = {datetime.fromisoformat(t).astimezone(JST): tmp for t, tmp in zip(temp_ts["timeDefines"], temp_ts["areas"][0]["temps"])}
-            precip_map = {datetime.fromisoformat(t).astimezone(JST): pop for t, pop in zip(precip_ts["timeDefines"], precip_ts["areas"][0]["pops"])} if precip_ts else {}
-
-            combined_forecast = {}
-            all_times = sorted(list(set(weather_map.keys()) | set(temp_map.keys()) | set(precip_map.keys())))
-
-            for dt in all_times:
-                if dt.date() != now.date() or dt < now: continue
-                
-                # 各時間帯のデータを取得（最も近い時間から）
-                weather_time = min(weather_map.keys(), key=lambda t: abs(t - dt))
-                temp_time = min(temp_map.keys(), key=lambda t: abs(t - dt))
-                
-                weather = weather_map[weather_time]
-                temperature = temp_map[temp_time]
-                precipitation = ""
-                if precip_map:
-                    precip_time = min(precip_map.keys(), key=lambda t: abs(t - dt))
-                    precip_chance = precip_map[precip_time]
-                    if precip_chance and int(precip_chance) > 0:
-                        precipitation = f" (💧{precip_chance}%)"
-                
-                combined_forecast[dt] = (weather, temperature, precipitation)
-            
-            # 3時間おきに表示
-            for dt, (weather, temp, precip) in sorted(combined_forecast.items()):
-                 if dt.hour % 3 == 0:
-                     emoji = self._get_emoji_for_weather(weather)
-                     forecast_lines.append(f"・`{dt.strftime('%H:%M')}`: {emoji} {weather}, {temp}℃{precip}")
-
-            return f"{summary_line}\n" + "\n".join(forecast_lines) if forecast_lines else summary_line
-
+            return f"**{location_name}**: {weather_emoji} {weather_summary} | 🌡️ 最高 {max_temp}℃ / 最低 {min_temp}℃"
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
             return f"**{location_name}**: ⚠️ 天気情報の取得に失敗しました。"
 
     async def _summarize_article(self, content: str) -> str:
-        # ... (変更なし)
         if not self.gemini_model or not content: return "要約できませんでした。"
         soup = BeautifulSoup(content, 'html.parser')
         text_content = soup.get_text()
@@ -161,7 +116,6 @@ class NewsCog(commands.Cog):
         except Exception: return "要約中にエラーが発生しました。"
 
     async def _fetch_macro_news(self, rss_urls: list, since: datetime) -> list:
-        # ... (変更なし)
         news_items = []
         for url in rss_urls:
             try:
@@ -172,24 +126,22 @@ class NewsCog(commands.Cog):
                     if pub_time > since:
                         summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
                         news_items.append({"title": entry.title, "link": entry.link, "summary": summary})
-            except Exception as e:
-                logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
+            except Exception as e: logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
         return news_items
 
-    async def _fetch_stock_news(self, stock_code: str, since: datetime) -> list:
-        # ... (変更なし)
+    async def _fetch_stock_news(self, name: str, code: str, since: datetime) -> list:
+        """Yahoo!ニュースから銘柄名または銘柄コードに一致するニュースを取得"""
         news_items = []
-        url = f"{YAHOO_FINANCE_RSS_URL}?code={stock_code}.T"
         try:
-            feed = await asyncio.to_thread(feedparser.parse, url)
+            feed = await asyncio.to_thread(feedparser.parse, YAHOO_NEWS_BUSINESS_RSS_URL)
             for entry in feed.entries:
                  if not getattr(entry, "published_parsed", None): continue
                  pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
-                 if pub_time > since:
+                 if pub_time > since and (name in entry.title or code in entry.title):
                     summary = await self._summarize_article(entry.get("summary", ""))
                     news_items.append({"title": entry.title, "link": entry.link, "summary": summary})
         except Exception as e:
-            logging.error(f"Yahoo!ファイナンス RSSの取得に失敗 (Code: {stock_code}): {e}")
+            logging.error(f"Yahoo!ニュース RSSの取得に失敗 (銘柄: {name}): {e}")
         return news_items
 
     @tasks.loop(time=NEWS_BRIEFING_TIME)
@@ -206,41 +158,23 @@ class NewsCog(commands.Cog):
         since_time = datetime.now(JST) - timedelta(days=1)
         
         try:
-            # ... (マクロニュースの処理は変更なし)
             market_news = await self._fetch_macro_news(MACRO_NEWS_RSS_URLS, since_time)
             if market_news:
-                embeds_to_send = []
-                current_embed = discord.Embed(title="🌐 NHK経済ニュース", color=discord.Color.dark_gold())
-                current_length = 0
-                for item in market_news:
-                    title, summary, link = item.get('title', ''), item.get('summary', ''), item.get('link')
-                    if not all([title, summary, link]): continue
-                    field_value = f"```{summary}```[記事を読む]({link})"
-                    if len(current_embed.fields) >= 25 or (current_length + len(title) + len(field_value)) > 5500:
-                        if current_embed.fields: embeds_to_send.append(current_embed)
-                        current_embed = discord.Embed(title="🌐 NHK経済ニュース (続き)", color=discord.Color.dark_gold())
-                        current_length = 0
-                    current_embed.add_field(name=title[:256], value=field_value[:1024], inline=False)
-                    current_length += len(title) + len(field_value)
-                if current_embed.fields: embeds_to_send.append(current_embed)
-                for embed in embeds_to_send: await channel.send(embed=embed)
-                logging.info(f"{len(market_news)}件のNHK経済ニュースを処理しました。")
-        except Exception as e:
-            logging.error(f"NHK経済ニュースの処理でエラー: {e}", exc_info=True)
+                pass
+        except Exception as e: logging.error(f"NHK経済ニュースの処理でエラー: {e}", exc_info=True)
 
         try:
             watchlist = await self._get_watchlist()
             if watchlist:
                 logging.info(f"{len(watchlist)}件の保有銘柄ニュースをチェックします。")
                 all_stock_news = []
-                for name, code in watchlist.items():
-                    if not code: continue # 銘柄コードがなければスキップ
-                    news = await self._fetch_stock_news(code, since_time)
+                for code, name in watchlist.items():
+                    news = await self._fetch_stock_news(name, code, since_time)
                     if news:
                         all_stock_news.append({"name": name, "news": news[0]})
                     await asyncio.sleep(1)
                 if all_stock_news:
-                    stock_embed = discord.Embed(title="📈 保有銘柄ニュース (Yahoo!ファイナンス)", color=discord.Color.green())
+                    stock_embed = discord.Embed(title="📈 保有銘柄ニュース", color=discord.Color.green())
                     for item in all_stock_news:
                         summary = item['news']['summary'][:150] + "..." if len(item['news']['summary']) > 150 else item['news']['summary']
                         stock_embed.add_field(name=f"{item['name']} ({item['news']['title']})", value=f"```{summary}```[記事を読む]({item['news']['link']})\n", inline=False)
@@ -255,69 +189,47 @@ class NewsCog(commands.Cog):
         try:
             _, res = self.dbx.files_download(self.watchlist_path)
             data = json.loads(res.content)
-            if isinstance(data, list):
-                logging.warning("古い形式のウォッチリストを検出しました。新しい形式に変換します。")
-                new_watchlist = {item: "" for item in data}
-                await self._save_watchlist(new_watchlist)
-                return new_watchlist
-            return data
+            return data if isinstance(data, dict) else {}
         except ApiError:
             return {}
 
     async def _save_watchlist(self, watchlist: dict):
-        # ... (変更なし)
         try:
             self.dbx.files_upload(json.dumps(watchlist, ensure_ascii=False, indent=2).encode('utf-8'), self.watchlist_path, mode=WriteMode('overwrite'))
         except Exception as e: logging.error(f"ウォッチリストの保存に失敗: {e}")
 
-    async def _find_stock_code(self, company_name: str) -> str | None:
-        # ... (変更なし)
-        search_results = await google_search_function([f"{company_name} 銘柄コード"])
-        if not search_results or not search_results[0].results: return None
-        for result in search_results[0].results:
-            match = re.search(r'\b(\d{4})\b', result.description)
-            if match:
-                logging.info(f"銘柄コードが見つかりました: {company_name} -> {match.group(1)}")
-                return match.group(1)
-        logging.warning(f"銘柄コードが見つかりませんでした: {company_name}")
-        return None
-
     stock_group = app_commands.Group(name="stock", description="株価ニュースの監視リストを管理します。")
 
-    @stock_group.command(name="add", description="監視リストに企業名を追加します。")
-    @app_commands.describe(name="追加する企業名（例: トヨタ自動車）")
-    async def stock_add(self, interaction: discord.Interaction, name: str):
+    @stock_group.command(name="add", description="監視リストに銘柄コードと企業名を追加します。")
+    @app_commands.describe(code="追加する銘柄コード（例: 7203）", name="企業名（例: トヨタ自動車）")
+    async def stock_add(self, interaction: discord.Interaction, code: str, name: str):
         await interaction.response.defer(ephemeral=True)
         watchlist = await self._get_watchlist()
-        if name in watchlist:
-            await interaction.followup.send(f"⚠️ ` {name} ` は既にリストに存在します。")
-            return
-        stock_code = await self._find_stock_code(name)
-        if not stock_code:
-            await interaction.followup.send(f"❌ ` {name} ` の銘柄コードが見つかりませんでした。正式名称で試してください。")
-            return
-        watchlist[name] = stock_code
-        await self._save_watchlist(watchlist)
-        await interaction.followup.send(f"✅ ` {name} ` (コード: {stock_code}) を監視リストに追加しました。")
-
-    @stock_group.command(name="remove", description="監視リストから企業名を削除します。")
-    @app_commands.describe(name="削除する企業名")
-    async def stock_remove(self, interaction: discord.Interaction, name: str):
-        await interaction.response.defer(ephemeral=True)
-        watchlist = await self._get_watchlist()
-        if name in watchlist:
-            watchlist.pop(name)
+        if code not in watchlist:
+            watchlist[code] = name
             await self._save_watchlist(watchlist)
-            await interaction.followup.send(f"🗑️ ` {name} ` を監視リストから削除しました。")
+            await interaction.followup.send(f"✅ ` {name} ({code}) ` を監視リストに追加しました。")
         else:
-            await interaction.followup.send(f"⚠️ ` {name} ` はリストに存在しません。")
+            await interaction.followup.send(f"⚠️ ` {code} ` は既にリストに存在します。")
+
+    @stock_group.command(name="remove", description="監視リストから銘柄コードを削除します。")
+    @app_commands.describe(code="削除する銘柄コード")
+    async def stock_remove(self, interaction: discord.Interaction, code: str):
+        await interaction.response.defer(ephemeral=True)
+        watchlist = await self._get_watchlist()
+        if code in watchlist:
+            name = watchlist.pop(code)
+            await self._save_watchlist(watchlist)
+            await interaction.followup.send(f"🗑️ ` {name} ({code}) ` を監視リストから削除しました。")
+        else:
+            await interaction.followup.send(f"⚠️ ` {code} ` はリストに存在しません。")
             
     @stock_group.command(name="list", description="現在の監視リストを表示します。")
     async def stock_list(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         watchlist = await self._get_watchlist()
         if watchlist:
-            list_str = "\n".join([f"- {name} ({code or 'コード未設定'})" for name, code in watchlist.items()])
+            list_str = "\n".join([f"- {name} ({code})" for code, name in watchlist.items()])
             await interaction.followup.send(f"現在の監視リスト:\n{list_str}")
         else:
             await interaction.followup.send("監視リストは現在空です。")
