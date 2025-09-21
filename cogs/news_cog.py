@@ -22,7 +22,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=12, minute=10, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=12, minute=30, tzinfo=JST)
 
 # ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
@@ -112,62 +112,70 @@ class NewsCog(commands.Cog):
         return "❓"
 
     async def _get_jma_weather_forecast(self, area_code: str, location_name: str) -> str:
-        """気象庁のAPIから詳細な天気予報を取得する"""
+        """気象庁のAPIから詳細な天気予報を取得する（ロバスト版）"""
         url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
         try:
             async with self.session.get(url) as response:
                 response.raise_for_status()
                 data = await response.json()
 
+            # --- データの動的検索 ---
+            weather_timeseries = None
+            temp_timeseries = None
+            daily_temp_summary_timeseries = None
+
+            for ts in data[0]["timeSeries"]:
+                if "weathers" in ts["areas"][0]:
+                    weather_timeseries = ts
+                if "temps" in ts["areas"][0] and len(ts["timeDefines"]) > 4: # 時系列気温
+                    temp_timeseries = ts
+                if "temps" in ts["areas"][0] and len(ts["timeDefines"]) == 2: # 日中最高/最低気温
+                    daily_temp_summary_timeseries = ts
+            
+            if not weather_timeseries or not daily_temp_summary_timeseries:
+                 raise ValueError("必要な天気または気温データが見つかりませんでした。")
+
             # --- サマリー情報の抽出 ---
-            today_weather_summary = data[0]["timeSeries"][0]["areas"][0]["weathers"][0]
+            today_weather_summary = weather_timeseries["areas"][0]["weathers"][0]
             weather_emoji = self._get_emoji_for_weather(today_weather_summary)
-            # timeSeries[2]が日中の最高・最低気温
-            temps_summary = data[0]["timeSeries"][2]["areas"][0]
-            min_temp = temps_summary["temps"][0]
-            max_temp = temps_summary["temps"][1]
+            min_temp = daily_temp_summary_timeseries["areas"][0]["temps"][0]
+            max_temp = daily_temp_summary_timeseries["areas"][0]["temps"][1]
 
             summary_line = f"**{location_name}**: {weather_emoji} {today_weather_summary} | 🌡️ 最高 {max_temp}℃ / 最低 {min_temp}℃"
-
-            # --- 時系列情報の抽出 ---
-            weather_timeseries_data = data[0]["timeSeries"][0]
-            # timeSeries[1]が3時間ごとの気温
-            temp_timeseries_data = data[0]["timeSeries"][1] 
-
-            time_defines = weather_timeseries_data["timeDefines"]
-            weathers = weather_timeseries_data["areas"][0]["weathers"]
             
-            temp_time_defines = temp_timeseries_data["timeDefines"]
-            temps = temp_timeseries_data["areas"][0]["temps"]
-            
-            # 気温データを時間でマッピングする辞書を作成
-            temp_map = {}
-            for i, time_str in enumerate(temp_time_defines):
-                 dt = datetime.fromisoformat(time_str).astimezone(JST)
-                 temp_map[dt.strftime('%H時')] = temps[i]
-
-            forecast_lines = []
-            for i, time_str in enumerate(time_defines):
-                dt = datetime.fromisoformat(time_str).astimezone(JST)
+            # --- 時系列情報の抽出（気温データがある場合のみ） ---
+            if temp_timeseries:
+                time_defines = temp_timeseries["timeDefines"]
+                temps = temp_timeseries["areas"][0]["temps"]
                 
-                # 今日の日付の予報のみを対象
-                if dt.date() != datetime.now(JST).date():
-                    continue
+                # 天気データも時間でマッピング
+                weather_map = {}
+                weather_time_defines = weather_timeseries["timeDefines"]
+                weathers = weather_timeseries["areas"][0]["weathers"]
+                for i, time_str in enumerate(weather_time_defines):
+                    dt = datetime.fromisoformat(time_str).astimezone(JST)
+                    weather_map[dt.strftime('%H時')] = weathers[i]
 
-                time_formatted = dt.strftime('%H時')
-                weather = weathers[i].split("　")[0] # 「晴れ　後　くもり」のような場合、最初の天気を採用
-                emoji = self._get_emoji_for_weather(weather)
+                forecast_lines = []
+                for i, time_str in enumerate(time_defines):
+                    dt = datetime.fromisoformat(time_str).astimezone(JST)
+                    if dt.date() != datetime.now(JST).date():
+                        continue
+
+                    time_formatted = dt.strftime('%H時')
+                    temp_str = f"{temps[i]}℃"
+
+                    # 対応する時間の天気を取得
+                    weather = weather_map.get(time_formatted, "").split("　")[0]
+                    emoji = self._get_emoji_for_weather(weather)
+                    
+                    forecast_lines.append(f"・🕒 {time_formatted}: {emoji} {weather}, {temp_str}")
                 
-                temp_str = f"{temp_map.get(time_formatted, '--')}℃"
+                if forecast_lines:
+                    detail_lines = "\n".join(forecast_lines)
+                    return f"{summary_line}\n{detail_lines}"
 
-                forecast_lines.append(f"・🕒 {time_formatted}: {emoji} {weather}, {temp_str}")
-
-            if not forecast_lines:
-                return summary_line # 時系列データがなければサマリーのみ返す
-
-            detail_lines = "\n".join(forecast_lines)
-            
-            return f"{summary_line}\n{detail_lines}"
+            return summary_line # 時系列データがなければサマリーのみ返す
 
         except Exception as e:
             logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
