@@ -17,12 +17,11 @@ from bs4 import BeautifulSoup
 import re
 
 # 他のファイルから関数をインポート
-from web_parser import parse_url_with_readability
-from google_search import search as google_search_function # Google検索機能
+from google_search import search as google_search_function
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=19, minute=30, tzinfo=JST) 
+NEWS_BRIEFING_TIME = time(hour=19, minute=52, tzinfo=JST)
 
 # ニュースソース
 MACRO_NEWS_RSS_URLS = ["https://www.nhk.or.jp/rss/news/cat2.xml"]
@@ -97,7 +96,6 @@ class NewsCog(commands.Cog):
             
             report_dt = datetime.fromisoformat(data[0]["reportDatetime"]).astimezone(JST)
 
-            # --- 時系列データをすべて探し出す ---
             weather_ts = next((ts for ts in data[0]["timeSeries"] if "weathers" in ts["areas"][0]), None)
             temp_ts = next((ts for ts in data[0]["timeSeries"] if "temps" in ts["areas"][0] and len(ts["timeDefines"]) > 2), None)
             precip_ts = next((ts for ts in data[0]["timeSeries"] if "pops" in ts["areas"][0]), None)
@@ -105,45 +103,45 @@ class NewsCog(commands.Cog):
             if not weather_ts or not temp_ts:
                 raise ValueError("必要な天気または気温データが見つかりませんでした。")
             
-            # --- 1日のサマリーを生成 ---
             today_weather_summary = weather_ts["areas"][0]["weathers"][0]
             weather_emoji = self._get_emoji_for_weather(today_weather_summary)
             min_temp = temp_ts["areas"][0]["temps"][0]
             max_temp = temp_ts["areas"][0]["temps"][1]
             summary_line = f"**{location_name}**: {weather_emoji} {today_weather_summary} | 🌡️ 最高 {max_temp}℃ / 最低 {min_temp}℃"
 
-            # --- 時間ごとの詳細予報を生成 ---
             forecast_lines = []
             now = datetime.now(JST)
             
-            # 各時間帯のデータを辞書にまとめる
             weather_map = {datetime.fromisoformat(t).astimezone(JST): w.split("　")[0] for t, w in zip(weather_ts["timeDefines"], weather_ts["areas"][0]["weathers"])}
             temp_map = {datetime.fromisoformat(t).astimezone(JST): tmp for t, tmp in zip(temp_ts["timeDefines"], temp_ts["areas"][0]["temps"])}
             precip_map = {datetime.fromisoformat(t).astimezone(JST): pop for t, pop in zip(precip_ts["timeDefines"], precip_ts["areas"][0]["pops"])} if precip_ts else {}
 
-            # 表示する時間帯 (3時間ごと)
-            display_hours = [h for h in range(now.hour, 25, 3)]
-            
-            for hour in display_hours:
-                target_time = report_dt.replace(hour=hour, minute=0, second=0, microsecond=0)
-                if target_time.hour >= 24: continue
+            combined_forecast = {}
+            all_times = sorted(list(set(weather_map.keys()) | set(temp_map.keys()) | set(precip_map.keys())))
 
-                # 各時間帯に最も近いデータを取得
-                weather_time = min(weather_map.keys(), key=lambda t: abs(t - target_time))
-                temp_time = min(temp_map.keys(), key=lambda t: abs(t - target_time))
+            for dt in all_times:
+                if dt.date() != now.date() or dt < now: continue
+                
+                # 各時間帯のデータを取得（最も近い時間から）
+                weather_time = min(weather_map.keys(), key=lambda t: abs(t - dt))
+                temp_time = min(temp_map.keys(), key=lambda t: abs(t - dt))
                 
                 weather = weather_map[weather_time]
-                emoji = self._get_emoji_for_weather(weather)
-                temp_str = f"{temp_map[temp_time]}℃"
-                
-                precip_str = ""
+                temperature = temp_map[temp_time]
+                precipitation = ""
                 if precip_map:
-                    precip_time = min(precip_map.keys(), key=lambda t: abs(t - target_time))
+                    precip_time = min(precip_map.keys(), key=lambda t: abs(t - dt))
                     precip_chance = precip_map[precip_time]
-                    if precip_chance and precip_chance != "0": # 降水確率が0でなければ表示
-                        precip_str = f" (💧{precip_chance}%)"
-
-                forecast_lines.append(f"・`{target_time.strftime('%H:%M')}`: {emoji} {weather}, {temp_str}{precip_str}")
+                    if precip_chance and int(precip_chance) > 0:
+                        precipitation = f" (💧{precip_chance}%)"
+                
+                combined_forecast[dt] = (weather, temperature, precipitation)
+            
+            # 3時間おきに表示
+            for dt, (weather, temp, precip) in sorted(combined_forecast.items()):
+                 if dt.hour % 3 == 0:
+                     emoji = self._get_emoji_for_weather(weather)
+                     forecast_lines.append(f"・`{dt.strftime('%H:%M')}`: {emoji} {weather}, {temp}℃{precip}")
 
             return f"{summary_line}\n" + "\n".join(forecast_lines) if forecast_lines else summary_line
 
@@ -161,7 +159,7 @@ class NewsCog(commands.Cog):
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
         except Exception: return "要約中にエラーが発生しました。"
-    
+
     async def _fetch_macro_news(self, rss_urls: list, since: datetime) -> list:
         # ... (変更なし)
         news_items = []
@@ -208,6 +206,7 @@ class NewsCog(commands.Cog):
         since_time = datetime.now(JST) - timedelta(days=1)
         
         try:
+            # ... (マクロニュースの処理は変更なし)
             market_news = await self._fetch_macro_news(MACRO_NEWS_RSS_URLS, since_time)
             if market_news:
                 embeds_to_send = []
@@ -235,6 +234,7 @@ class NewsCog(commands.Cog):
                 logging.info(f"{len(watchlist)}件の保有銘柄ニュースをチェックします。")
                 all_stock_news = []
                 for name, code in watchlist.items():
+                    if not code: continue # 銘柄コードがなければスキップ
                     news = await self._fetch_stock_news(code, since_time)
                     if news:
                         all_stock_news.append({"name": name, "news": news[0]})
@@ -255,10 +255,9 @@ class NewsCog(commands.Cog):
         try:
             _, res = self.dbx.files_download(self.watchlist_path)
             data = json.loads(res.content)
-            # 古いリスト形式を辞書形式に変換する処理
             if isinstance(data, list):
                 logging.warning("古い形式のウォッチリストを検出しました。新しい形式に変換します。")
-                new_watchlist = {item: "" for item in data} # 銘柄名をキー、コードを空にする
+                new_watchlist = {item: "" for item in data}
                 await self._save_watchlist(new_watchlist)
                 return new_watchlist
             return data
@@ -266,17 +265,15 @@ class NewsCog(commands.Cog):
             return {}
 
     async def _save_watchlist(self, watchlist: dict):
+        # ... (変更なし)
         try:
             self.dbx.files_upload(json.dumps(watchlist, ensure_ascii=False, indent=2).encode('utf-8'), self.watchlist_path, mode=WriteMode('overwrite'))
         except Exception as e: logging.error(f"ウォッチリストの保存に失敗: {e}")
 
     async def _find_stock_code(self, company_name: str) -> str | None:
-        """企業名から銘柄コードを検索する"""
+        # ... (変更なし)
         search_results = await google_search_function([f"{company_name} 銘柄コード"])
-        if not search_results or not search_results[0].results:
-            return None
-        
-        # 検索結果のスニペットから4桁の数字（銘柄コード）を探す
+        if not search_results or not search_results[0].results: return None
         for result in search_results[0].results:
             match = re.search(r'\b(\d{4})\b', result.description)
             if match:
@@ -292,16 +289,13 @@ class NewsCog(commands.Cog):
     async def stock_add(self, interaction: discord.Interaction, name: str):
         await interaction.response.defer(ephemeral=True)
         watchlist = await self._get_watchlist()
-        
         if name in watchlist:
             await interaction.followup.send(f"⚠️ ` {name} ` は既にリストに存在します。")
             return
-            
         stock_code = await self._find_stock_code(name)
         if not stock_code:
             await interaction.followup.send(f"❌ ` {name} ` の銘柄コードが見つかりませんでした。正式名称で試してください。")
             return
-
         watchlist[name] = stock_code
         await self._save_watchlist(watchlist)
         await interaction.followup.send(f"✅ ` {name} ` (コード: {stock_code}) を監視リストに追加しました。")
@@ -323,7 +317,7 @@ class NewsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         watchlist = await self._get_watchlist()
         if watchlist:
-            list_str = "\n".join([f"- {name} ({code})" for name, code in watchlist.items()])
+            list_str = "\n".join([f"- {name} ({code or 'コード未設定'})" for name, code in watchlist.items()])
             await interaction.followup.send(f"現在の監視リスト:\n{list_str}")
         else:
             await interaction.followup.send("監視リストは現在空です。")
