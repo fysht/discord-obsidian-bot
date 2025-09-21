@@ -40,13 +40,14 @@ class MyBot(commands.Bot):
         """Cogをロードする"""
         logging.info("Cogの読み込みを開始します...")
         cogs_dir = Path(__file__).parent / 'cogs'
+        
+        # --- 全てのCogを自動で読み込むように修正 ---
         for filename in os.listdir(cogs_dir):
-            # youtube_cog.py はスキップする
-            if filename == 'youtube_cog.py':
-                logging.info(f" -> {filename} はローカルBot用のためスキップします。")
-                continue
-
-            if filename.endswith('.py'):
+            if filename.endswith('.py') and not filename.startswith('__'):
+                # youtube_cog.py はスキップする
+                if filename == 'youtube_cog.py':
+                    logging.info(f" -> {filename} はローカルBot用のためスキップします。")
+                    continue
                 try:
                     await self.load_extension(f'cogs.{filename[:-3]}')
                     logging.info(f" -> {filename} を読み込みました。")
