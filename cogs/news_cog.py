@@ -22,7 +22,7 @@ from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=11, minute=35, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=11, minute=48, tzinfo=JST)
 
 # ニュースソースを役割分担
 MACRO_NEWS_RSS_URLS = [
@@ -33,8 +33,8 @@ TDNET_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
 # 気象庁のエリアコード
 # 参考: https://www.jma.go.jp/bosai/common/const/area.json
-JMA_AREA_CODE_HOME = "330010"  # 岡山県南部
-JMA_AREA_CODE_WORK = "330010"  # 岡山県南部
+JMA_AREA_CODE_HOME = "330000" # 岡山県の予報区コード
+JMA_AREA_CODE_WORK = "330000" # 岡山県の予報区コード
 
 # 天気の絵文字マッピング
 WEATHER_EMOJI_MAP = {
