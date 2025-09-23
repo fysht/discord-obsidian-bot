@@ -4,6 +4,7 @@ SECTION_ORDER = [
     "## WebClips",
     "## YouTube Summaries",
     "## Memo",
+    "## Handwritten Memos",
     "## Zero-Second Thinking",
     "## Task Log",
     "## Health Metrics",
