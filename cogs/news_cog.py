@@ -17,11 +17,10 @@ from bs4 import BeautifulSoup
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=12, minute=40, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=7, minute=0, tzinfo=JST)
 
-# ニュースソース
-MACRO_NEWS_RSS_URLS = ["https://www.nhk.or.jp/rss/news/cat2.xml"]
-YAHOO_NEWS_BUSINESS_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
+# ニュースソースをYahoo!ファイナンス（ロイター提供）に変更
+YAHOO_FINANCE_RSS_URL = "https://finance.yahoo.co.jp/rss/provider/reuters/list.xml"
 
 # 気象庁のエリアコード
 JMA_AREA_CODE = "330000"  # 岡山県
@@ -115,7 +114,6 @@ class NewsCog(commands.Cog):
                 response.raise_for_status()
                 data = await response.json()
 
-            # --- 今日の天気を取得 ---
             area_weather_today = next((area for area in data[0]["timeSeries"][0]["areas"] if area["area"]["name"] == self.jma_area_name), None)
             area_temp_today = next((area for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
 
@@ -133,7 +131,6 @@ class NewsCog(commands.Cog):
             else:
                 embed.add_field(name=f"今日の天気 ({self.location_name})", value="⚠️ エリア情報を取得できませんでした。", inline=False)
 
-            # --- 時間ごとの降水確率と気温を取得 ---
             time_defines_pop = data[0]["timeSeries"][1]["timeDefines"]
             area_pops = next((area["pops"] for area in data[0]["timeSeries"][1]["areas"] if area["area"]["name"] == self.jma_area_name), None)
             
@@ -141,24 +138,17 @@ class NewsCog(commands.Cog):
             area_temps = next((area["temps"] for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
 
             if area_pops and area_temps:
-                pop_text = ""
+                pop_text, temp_text = "", ""
                 for i, time_str in enumerate(time_defines_pop):
                     dt = datetime.fromisoformat(time_str)
                     if dt.date() == datetime.now(JST).date():
-                        hour = dt.strftime('%H時')
-                        pop_text += f"**{hour}**: {area_pops[i]}% "
-                
-                temp_text = ""
+                        pop_text += f"**{dt.strftime('%H時')}**: {area_pops[i]}% "
                 for i, time_str in enumerate(time_defines_temp):
                      dt = datetime.fromisoformat(time_str)
                      if dt.date() == datetime.now(JST).date():
-                        hour = dt.strftime('%H時')
-                        temp_text += f"**{hour}**: {area_temps[i]}℃ "
-
-                if pop_text:
-                    embed.add_field(name="☂️ 降水確率", value=pop_text.strip(), inline=False)
-                if temp_text:
-                    embed.add_field(name="🕒 時間別気温", value=temp_text.strip(), inline=False)
+                        temp_text += f"**{dt.strftime('%H時')}**: {area_temps[i]}℃ "
+                if pop_text: embed.add_field(name="☂️ 降水確率", value=pop_text.strip(), inline=False)
+                if temp_text: embed.add_field(name="🕒 時間別気温", value=temp_text.strip(), inline=False)
 
         except Exception as e:
             logging.error(f"天気予報取得に失敗: {e}", exc_info=True)
@@ -166,43 +156,95 @@ class NewsCog(commands.Cog):
             
         return embed
 
-    async def _summarize_article(self, content: str) -> str:
-        if not self.gemini_model or not content:
-            return "要約できませんでした。"
-
-        soup = BeautifulSoup(content, 'html.parser')
-        text_content = soup.get_text()
+    async def _summarize_article_content(self, article_url: str) -> str:
+        """記事のURLから本文を取得し、AIで要約する"""
+        if not self.gemini_model: return "要約機能が無効です。"
         try:
+            async with self.session.get(article_url, timeout=10) as response:
+                if response.status != 200: return "記事の取得に失敗しました。"
+                html_content = await response.text()
+            
+            soup = BeautifulSoup(html_content, 'html.parser')
+            text_content = soup.get_text()
+            
             prompt = (
-                f"以下のニュース記事を分析し、この記事を読むべきか判断できるように、"
-                f"最も重要な要点だけを1〜2文で教えてください。出力は「だ・である調」で、"
-                f"要約本文のみとしてください。\n---\n{text_content[:8000]}"
+                f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n"
+                f"出力は「です・ます調」で、要約本文のみとしてください。\n---\n{text_content[:6000]}"
             )
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
-        except Exception:
+        except asyncio.TimeoutError:
+            return "記事の読み込みがタイムアウトしました。"
+        except Exception as e:
+            logging.error(f"記事の要約中にエラーが発生: {e}")
             return "要約中にエラーが発生しました。"
 
     @tasks.loop(time=NEWS_BRIEFING_TIME)
     async def daily_news_briefing(self):
         channel = self.bot.get_channel(self.news_channel_id)
-        if not channel:
-            return
+        if not channel: return
 
         logging.info("デイリーニュースブリーフィングを開始します...")
 
-        # 天気予報のEmbedを取得して投稿
+        # --- 天気予報 ---
         weather_embed = await self._get_jma_weather_forecast()
         await channel.send(embed=weather_embed)
         logging.info("天気予報を投稿しました。")
 
-        # 株式ニュース (この部分は変更なし)
+        # --- 株式ニュース ---
+        watchlist = await self._get_watchlist()
+        if not watchlist:
+            logging.info("株式ウォッチリストが空のため、ニュースの取得をスキップします。")
+            return
+
+        logging.info(f"ウォッチリスト内の銘柄ニュースを取得します: {list(watchlist.values())}")
+        
+        try:
+            async with self.session.get(YAHOO_FINANCE_RSS_URL) as response:
+                if response.status != 200:
+                    logging.error(f"Yahoo!ファイナンスRSSの取得に失敗: Status {response.status}")
+                    return
+                
+                feed_text = await response.text()
+                feed = feedparser.parse(feed_text)
+
+            found_news = False
+            for entry in feed.entries:
+                for code, name in watchlist.items():
+                    # 記事タイトルに企業名が含まれているかチェック
+                    if name in entry.title:
+                        found_news = True
+                        logging.info(f"関連ニュースを発見: {entry.title}")
+                        
+                        summary = await self._summarize_article_content(entry.link)
+                        
+                        news_embed = discord.Embed(
+                            title=f"📈関連ニュース: {entry.title}",
+                            url=entry.link,
+                            description=summary,
+                            color=discord.Color.green()
+                        )
+                        news_embed.set_footer(text=f"銘柄: {name} ({code})")
+                        await channel.send(embed=news_embed)
+                        await asyncio.sleep(2) # APIへの連続リクエストを避ける
+
+            if not found_news:
+                logging.info("ウォッチリストに合致するニュースは見つかりませんでした。")
+                
+        except Exception as e:
+            logging.error(f"株式ニュースの処理中にエラーが発生しました: {e}", exc_info=True)
+            await channel.send("⚠️ 株式ニュースの取得中にエラーが発生しました。")
+
+    # --- 株式ウォッチリスト管理機能 ---
     async def _get_watchlist(self) -> dict:
         try:
             _, res = self.dbx.files_download(self.watchlist_path)
             data = json.loads(res.content)
             return data if isinstance(data, dict) else {}
-        except ApiError:
+        except ApiError as e:
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                return {} # ファイルが存在しない場合は空の辞書を返す
+            logging.error(f"ウォッチリストの読み込みに失敗: {e}")
             return {}
 
     async def _save_watchlist(self, watchlist: dict):
