@@ -4,6 +4,7 @@ import logging
 import asyncio
 from datetime import datetime, time, timedelta, timezone
 import re
+from typing import Optional
 
 import discord
 from discord.ext import commands, tasks
@@ -192,7 +193,7 @@ class CalendarCog(commands.Cog):
              logging.error(f"[CalendarCog] スケジュール継続処理中にエラー: {e}", exc_info=True)
              await message.reply(f"❌ スケジューリング処理中にエラーが発生しました: {e}")
 
-    async def _parse_date_from_text(self, text: str) -> datetime.date | None:
+    async def _parse_date_from_text(self, text: str) -> Optional[datetime.date]:
         """AIを使ってテキストから日付を解析する"""
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
         prompt = f"""

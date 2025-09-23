@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=10, minute=55, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=11, minute=10, tzinfo=JST)
 HTTP_TIMEOUT = 15 # 外部APIへの接続タイムアウト（秒）
 
 # ニュースソース
