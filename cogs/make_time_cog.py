@@ -7,15 +7,20 @@ import zoneinfo
 import google.generativeai as genai
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+import aiohttp
+import openai
+from pathlib import Path
 
 from utils.obsidian_utils import update_section
 import dropbox
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-HIGHLIGHT_PROMPT_TIME = datetime.time(hour=7, minute=30, tzinfo=JST)  # ハイライトを促す時間
-TUNING_PROMPT_TIME = datetime.time(hour=21, minute=30, tzinfo=JST)     # 振り返りを促す時間
-HIGHLIGHT_EMOJI = "✨" # カレンダーで目立たせるための絵文字
+HIGHLIGHT_PROMPT_TIME = datetime.time(hour=7, minute=30, tzinfo=JST)
+TUNING_PROMPT_TIME = datetime.time(hour=21, minute=30, tzinfo=JST)
+HIGHLIGHT_EMOJI = "✨"
+SUPPORTED_AUDIO_TYPES = ['audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm']
+
 
 class MakeTimeCog(commands.Cog):
     """書籍『とっぱらう』の習慣を実践するためのCog"""
@@ -24,9 +29,10 @@ class MakeTimeCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
+        self.session = aiohttp.ClientSession()
 
         # ユーザーの状態を一時的に保存
-        self.user_states = {} # e.g., { "user_id": { "highlight_candidates": [...] } }
+        self.user_states = {}
 
         if not self._are_credentials_valid():
             logging.error("MakeTimeCog: 必須の環境変数が不足。Cogを無効化します。")
@@ -36,6 +42,8 @@ class MakeTimeCog(commands.Cog):
             self.creds = self._get_google_credentials()
             self.gemini_model = self._initialize_ai_model()
             self.dbx = self._initialize_dropbox_client()
+            if self.openai_api_key:
+                self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
             self.is_ready = True
             logging.info("✅ MakeTimeCogが正常に初期化されました。")
         except Exception as e:
@@ -45,6 +53,7 @@ class MakeTimeCog(commands.Cog):
         self.maketime_channel_id = int(os.getenv("MAKETIME_CHANNEL_ID", 0))
         self.google_token_path = os.getenv("GOOGLE_TOKEN_PATH", "token.json")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
@@ -53,7 +62,7 @@ class MakeTimeCog(commands.Cog):
     def _are_credentials_valid(self) -> bool:
         return all([
             self.maketime_channel_id, self.google_token_path, self.gemini_api_key,
-            self.dropbox_refresh_token, self.dropbox_vault_path
+            self.openai_api_key, self.dropbox_refresh_token, self.dropbox_vault_path
         ])
 
     def _get_google_credentials(self):
@@ -73,6 +82,9 @@ class MakeTimeCog(commands.Cog):
             app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret,
             oauth2_refresh_token=self.dropbox_refresh_token
         )
+    
+    async def cog_unload(self):
+        await self.session.close()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -96,7 +108,7 @@ class MakeTimeCog(commands.Cog):
             "1. **緊急性**: 今日やらなければならないことは何ですか？\n"
             "2. **満足感**: 一日の終わりに「これをやって良かった」と思えることは何ですか？\n"
             "3. **喜び**: 純粋に楽しいこと、ワクワクすることは何ですか？\n\n"
-            "今日のハイライト候補をいくつか、このメッセージに返信する形で教えてください。"
+            "今日のハイライト候補をいくつか、このメッセージに**返信する形**で教えてください（音声入力も可能です）。"
         )
         embed = discord.Embed(
             title=f"{HIGHLIGHT_EMOJI} 今日のハイライトを決めましょう",
@@ -113,7 +125,7 @@ class MakeTimeCog(commands.Cog):
         
         questions = (
             "お疲れ様でした。今日一日を振り返り、明日のためのチューニングをしましょう。\n\n"
-            "以下の質問に、このメッセージに返信する形で答えてください。\n\n"
+            "以下の質問に、このメッセージに**返信する形**で答えてください（音声入力も可能です）。\n\n"
             "1. 今日のハイライトは何でしたか？（達成できたかどうか）\n"
             "2. エネルギーレベルは10段階でいくつでしたか？\n"
             "3. 集中度は10段階でいくつでしたか？\n"
@@ -141,6 +153,31 @@ class MakeTimeCog(commands.Cog):
             return
         
         embed_title = original_msg.embeds[0].title
+        
+        # 音声入力の処理
+        if message.attachments and any(att.content_type in SUPPORTED_AUDIO_TYPES for att in message.attachments):
+            await message.add_reaction("⏳")
+            temp_audio_path = Path(f"./temp_{message.attachments[0].filename}")
+            try:
+                async with self.session.get(message.attachments[0].url) as resp:
+                    if resp.status == 200:
+                        with open(temp_audio_path, 'wb') as f: f.write(await resp.read())
+                
+                with open(temp_audio_path, "rb") as audio_file:
+                    transcription = await self.openai_client.audio.transcriptions.create(model="whisper-1", file=audio_file)
+                message.content = transcription.text
+                await message.remove_reaction("⏳", self.bot.user)
+                await message.add_reaction("✅")
+            except Exception as e:
+                logging.error(f"音声認識エラー: {e}", exc_info=True)
+                await message.remove_reaction("⏳", self.bot.user)
+                await message.add_reaction("❌")
+                return
+            finally:
+                if os.path.exists(temp_audio_path):
+                    os.remove(temp_audio_path)
+        
+        if not message.content: return
 
         # ハイライト候補への返信を処理
         if "今日のハイライトを決めましょう" in embed_title:
@@ -195,7 +232,7 @@ class MakeTimeCog(commands.Cog):
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{today_str}.md"
         
         reflection_text = f"\n{message.content.strip()}\n"
-        section_header = "## 振り返り (Make Time Note)"
+        section_header = "## Make Time Note"
 
         try:
             try:

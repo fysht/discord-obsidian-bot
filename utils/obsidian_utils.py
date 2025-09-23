@@ -2,13 +2,14 @@
 # デイリーノートの見出しの順序をここで一元管理します
 SECTION_ORDER = [
     "## WebClips",
-    "## YouTube Summaries"
+    "## YouTube Summaries",
     "## Memo",
     "## Zero-Second Thinking",
     "## Task Log",
     "## Health Metrics",
     "## Location Logs",
     "## Daily Summary",
+    "## Make Time Note",
 ]
 
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
@@ -52,7 +53,7 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
 
     except ValueError:
         # セクションが存在しない場合、正しい位置に新規作成
-        new_section_with_header = f"\n\n---\n\n{section_header}\n{text_to_add}"
+        new_section_with_header = f"\n\n{section_header}\n{text_to_add}"
         
         existing_sections = {line.strip(): i for i, line in enumerate(original_lines) if line.strip() in SECTION_ORDER}
         

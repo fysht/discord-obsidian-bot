@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 import dropbox
 from dropbox.exceptions import ApiError
+import asyncio
 import statistics
 
 # --- .env 読み込み ---
@@ -30,29 +31,34 @@ FITBIT_USER_ID = os.getenv("FITBIT_USER_ID", "-")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fitbit_client import FitbitClient
 
-def get_fitbit_data_for_period(dbx, start_date, end_date):
-    """指定期間のFitbitデータを取得・集計する"""
+async def get_fitbit_data_for_period_async(dbx, start_date, end_date):
+    """指定期間のFitbitデータを非同期で取得・集計する"""
     fitbit_client = FitbitClient(FITBIT_CLIENT_ID, FITBIT_CLIENT_SECRET, dbx, FITBIT_USER_ID)
     
-    all_sleep_data = []
-    all_activity_data = []
-    
+    tasks = []
     current_date = start_date
     while current_date <= end_date:
-        # この部分は非同期ではないので、async/awaitは使わない
-        # FitbitClientのメソッドが非同期の場合は、run_in_executorなどで実行する必要がある
-        # ここでは、簡単のため同期的に実行されると仮定する
-        # sleep_data = fitbit_client.get_sleep_data(current_date)
-        # activity_data = fitbit_client.get_activity_summary(current_date)
-        # all_sleep_data.append(sleep_data)
-        # all_activity_data.append(activity_data)
+        tasks.append(fitbit_client.get_sleep_data(current_date))
+        tasks.append(fitbit_client.get_activity_summary(current_date))
         current_date += datetime.timedelta(days=1)
         
-    # ダミーデータを返す（実際のFitbit連携部分は未実装）
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    all_sleep_data = [res for res in results[0::2] if res and not isinstance(res, Exception)]
+    all_activity_data = [res for res in results[1::2] if res and not isinstance(res, Exception)]
+
+    # 簡単な集計（ダミーデータではなく実際のデータを使うように変更）
+    sleep_scores = [s['summary'].get('sleep_score', 0) for s in all_sleep_data if s and 'summary' in s]
+    total_steps = sum(a['summary'].get('steps', 0) for a in all_activity_data if a and 'summary' in a)
+    
     return {
-        "avg_sleep_score": 75,
-        "total_steps": 50000,
+        "avg_sleep_score": round(statistics.mean(sleep_scores), 1) if sleep_scores else 0,
+        "total_steps": total_steps,
     }
+
+def get_fitbit_data_for_period(dbx, start_date, end_date):
+    """非同期関数を呼び出すための同期ラッパー"""
+    return asyncio.run(get_fitbit_data_for_period_async(dbx, start_date, end_date))
 
 
 def generate_summary(period: str, date_str: str):

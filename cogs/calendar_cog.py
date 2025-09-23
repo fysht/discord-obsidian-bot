@@ -45,6 +45,8 @@ class CalendarCog(commands.Cog):
         self._load_environment_variables()
         self.uncompleted_tasks = {} # { task_summary: original_date }
         self.pending_schedules = {}
+        self.pending_date_prompts = {} # { original_message_id: {"task_analysis": ..., "prompt_msg_id": ...} }
+
 
         if not self._are_credentials_valid():
             logging.error("CalendarCog: 必須の環境変数が不足しています。このCogは無効化されます。")
@@ -153,20 +155,21 @@ class CalendarCog(commands.Cog):
             if target_date_str:
                 try:
                     target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
+                    await self._continue_scheduling(message, task_analysis, target_date)
                 except (ValueError, TypeError):
                     await message.reply(f"❌ AIが日付 `{target_date_str}` を認識しましたが、形式が不正です。処理を中断します。")
                     await message.remove_reaction("⏳", self.bot.user)
                     await message.add_reaction("❌")
-                    return
             else:
-                target_date = datetime.now(JST).date()
+                # 日付が見つからなかった場合、ユーザーに質問する
+                prompt_msg = await message.reply(f"{message.author.mention} いつタスクを登録しますか？ (例: 明日, 10/25, 来週の月曜日)")
+                self.pending_date_prompts[message.id] = {
+                    "task_analysis": task_analysis,
+                    "prompt_msg_id": prompt_msg.id,
+                    "author_id": message.author.id
+                }
+                await message.remove_reaction("⏳", self.bot.user)
 
-            free_slots = await self._find_free_slots(target_date)
-
-            if task_analysis.get("decomposable", "No") == "Yes":
-                await self._propose_decomposed_schedule(message, task_analysis, free_slots, target_date)
-            else:
-                await self._schedule_simple_task(message, task_analysis, free_slots, target_date)
 
         except (discord.NotFound, discord.Forbidden): pass
         except Exception as e:
@@ -175,6 +178,40 @@ class CalendarCog(commands.Cog):
                 await message.reply(f"❌ スケジュール処理中にエラーが発生しました: {e}")
                 await message.remove_reaction("⏳", self.bot.user)
                 await message.add_reaction("❌")
+    
+    async def _continue_scheduling(self, message: discord.Message, task_analysis: dict, target_date: datetime.date):
+        """日付が確定した後のスケジューリング処理を続行する"""
+        try:
+            free_slots = await self._find_free_slots(target_date)
+
+            if task_analysis.get("decomposable", "No") == "Yes":
+                await self._propose_decomposed_schedule(message, task_analysis, free_slots, target_date)
+            else:
+                await self._schedule_simple_task(message, task_analysis, free_slots, target_date)
+        except Exception as e:
+             logging.error(f"[CalendarCog] スケジュール継続処理中にエラー: {e}", exc_info=True)
+             await message.reply(f"❌ スケジューリング処理中にエラーが発生しました: {e}")
+
+    async def _parse_date_from_text(self, text: str) -> datetime.date | None:
+        """AIを使ってテキストから日付を解析する"""
+        today_str = datetime.now(JST).strftime('%Y-%m-%d')
+        prompt = f"""
+        ユーザーが入力した以下のテキストから日付を読み取り、`YYYY-MM-DD` 形式で出力してください。
+        今日の日付は `{today_str}` です。
+        日付が読み取れない場合は `null` とだけ出力してください。
+        JSONやマークダウンは含めず、日付文字列またはnullのみを出力してください。
+        ---
+        テキスト: {text}
+        """
+        try:
+            response = await self.gemini_model.generate_content_async(prompt)
+            date_str = response.text.strip()
+            if date_str and date_str.lower() != 'null':
+                return datetime.strptime(date_str, '%Y-%m-%d').date()
+        except (ValueError, TypeError, Exception) as e:
+            logging.error(f"AIによる日付解析に失敗: {e}")
+        return None
+
 
     async def _analyze_task_with_ai(self, task_content: str) -> dict | None:
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
@@ -377,6 +414,32 @@ class CalendarCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden): pass
         except Exception as e:
             logging.error(f"スケジュール提案リアクションの処理中にエラー: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if not self.is_ready or message.author.bot: return
+        
+        # --- 日付指定の返信を処理 ---
+        if message.reference and message.reference.message_id:
+            # 自分が送信した日付質問メッセージへの返信かチェック
+            pending_item = next((item for item in self.pending_date_prompts.values() if item["prompt_msg_id"] == message.reference.message_id), None)
+            if pending_item and message.author.id == pending_item["author_id"]:
+                original_message_id = next(key for key, val in self.pending_date_prompts.items() if val == pending_item)
+                
+                await message.add_reaction("⏳")
+                target_date = await self._parse_date_from_text(message.content)
+                
+                if target_date:
+                    task_analysis = pending_item["task_analysis"]
+                    original_message = await message.channel.fetch_message(original_message_id)
+                    del self.pending_date_prompts[original_message_id]
+                    await message.channel.delete_messages([message, await message.channel.fetch_message(pending_item["prompt_msg_id"])])
+                    await self._continue_scheduling(original_message, task_analysis, target_date)
+                else:
+                    await message.reply("日付を認識できませんでした。もう一度入力してください。（例：明日、10/25）")
+                
+                await message.remove_reaction("⏳", self.bot.user)
+                return
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
