@@ -17,11 +17,11 @@ from bs4 import BeautifulSoup
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=7, minute=0, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=10, minute=55, tzinfo=JST)
+HTTP_TIMEOUT = 15 # 外部APIへの接続タイムアウト（秒）
 
 # ニュースソース
 MACRO_NEWS_RSS_URLS = ["https://www.nhk.or.jp/rss/news/cat2.xml"]
-# Yahoo!ニュースのビジネスカテゴリRSS
 YAHOO_NEWS_BUSINESS_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
 # 気象庁のエリアコード
@@ -35,28 +35,23 @@ class NewsCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.is_ready = False
+        self._session: aiohttp.ClientSession | None = None
+        self.gemini_model: genai.GenerativeModel | None = None
+        
         self._load_environment_variables()
-        self.session = aiohttp.ClientSession()
+        self.is_ready = self._validate_credentials()
 
-        if not self._are_credentials_valid():
-            logging.error("NewsCog: 必須の環境変数が不足。Cogを無効化します。")
-            return
-
-        try:
-            self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
-            if self.gemini_api_key:
-                genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
-            else:
-                self.gemini_model = None
-            self.is_ready = True
+        if self.is_ready:
+            self._initialize_clients()
             logging.info("✅ NewsCogが正常に初期化されました。")
-        except Exception as e:
-            logging.error(f"❌ NewsCogの初期化中にエラー: {e}", exc_info=True)
+        else:
+            logging.error("❌ NewsCog: 初期化に失敗しました。上記のログを確認してください。")
 
-    async def cog_unload(self):
-        await self.session.close()
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """aiohttpセッションを遅延初期化して取得する"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
 
     def _load_environment_variables(self):
         self.news_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
@@ -68,16 +63,46 @@ class NewsCog(commands.Cog):
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.watchlist_path = f"{self.dropbox_vault_path}/.bot/stock_watchlist.json"
 
-    def _are_credentials_valid(self) -> bool:
-        return all([self.news_channel_id, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key])
+    def _validate_credentials(self) -> bool:
+        """必須の環境変数が設定されているか個別にチェックする"""
+        required_vars = {
+            "NEWS_CHANNEL_ID": self.news_channel_id,
+            "DROPBOX_APP_KEY": self.dropbox_app_key,
+            "DROPBOX_APP_SECRET": self.dropbox_app_secret,
+            "DROPBOX_REFRESH_TOKEN": self.dropbox_refresh_token,
+        }
+        all_set = True
+        for name, value in required_vars.items():
+            if not value:
+                logging.error(f"NewsCog: 環境変数 '{name}' が設定されていません。")
+                all_set = False
+        return all_set
+
+    def _initialize_clients(self):
+        """APIクライアントを初期化する"""
+        try:
+            self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
+            if self.gemini_api_key:
+                genai.configure(api_key=self.gemini_api_key)
+                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+                logging.info("NewsCog: Gemini APIクライアントを初期化しました。")
+            else:
+                logging.warning("NewsCog: GEMINI_API_KEYが設定されていません。AI要約機能は無効になります。")
+        except Exception as e:
+            logging.error(f"❌ NewsCogのクライアント初期化中にエラー: {e}", exc_info=True)
+            self.is_ready = False # 初期化失敗
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready and not self.daily_news_briefing.is_running():
             self.daily_news_briefing.start()
 
-    def cog_unload(self):
-        self.daily_news_briefing.cancel()
+    async def cog_unload(self):
+        """Cogのアンロード時にタスクを停止し、セッションを閉じる"""
+        if self.daily_news_briefing.is_running():
+            self.daily_news_briefing.cancel()
+        if self._session and not self._session.closed:
+            await self._session.close()
 
     def _get_emoji_for_weather(self, weather_text: str) -> str:
         for key, emoji in WEATHER_EMOJI_MAP.items():
@@ -88,64 +113,102 @@ class NewsCog(commands.Cog):
         """気象庁APIから今日の天気サマリー（天気・最高/最低気温）を取得する"""
         url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
         try:
-            async with self.session.get(url) as response:
+            session = await self._get_session()
+            async with session.get(url, timeout=HTTP_TIMEOUT) as response:
                 response.raise_for_status()
                 data = await response.json()
             
-            # 1日の天気サマリー
-            weather_summary = data[0]["timeSeries"][0]["areas"][0]["weathers"][0]
+            # データ構造の存在チェックを強化
+            today_forecast = data[0]["timeSeries"][0]["areas"][0]
+            weather_summary = today_forecast.get("weathers", [""])[0]
             weather_emoji = self._get_emoji_for_weather(weather_summary)
 
-            # 最高・最低気温
-            temp_data = data[0]["timeSeries"][1]["areas"][0]["temps"]
-            min_temp, max_temp = temp_data[0], temp_data[1]
+            today_temps = data[0]["timeSeries"][1]["areas"][0].get("temps", ["-", "-"])
+            min_temp, max_temp = today_temps[0], today_temps[1]
+            
+            if not weather_summary or max_temp == "-":
+                raise ValueError("必要な天気または気温データがJSON内に見つかりませんでした。")
 
             return f"**{location_name}**: {weather_emoji} {weather_summary} | 🌡️ 最高 {max_temp}℃ / 最低 {min_temp}℃"
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logging.error(f"{location_name}の天気予報取得中に通信エラー: {e}", exc_info=True)
+        except (KeyError, IndexError, ValueError) as e:
+            logging.error(f"{location_name}の天気予報JSON解析に失敗: {e}", exc_info=True)
         except Exception as e:
-            logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
-            return f"**{location_name}**: ⚠️ 天気情報の取得に失敗しました。"
+            logging.error(f"{location_name}の天気予報取得中に予期せぬエラー: {e}", exc_info=True)
+        
+        return f"**{location_name}**: ⚠️ 天気情報の取得に失敗しました。"
+
 
     async def _summarize_article(self, content: str) -> str:
-        if not self.gemini_model or not content: return "要約できませんでした。"
+        if not self.gemini_model or not content: return "（要約機能は無効です）"
+        
         soup = BeautifulSoup(content, 'html.parser')
-        text_content = soup.get_text()
+        text_content = soup.get_text(separator="\n", strip=True)
+        if not text_content: return ""
+
         try:
             prompt = f"以下のニュース記事を分析し、この記事を読むべきか判断できるように、最も重要な要点だけを1〜2文で教えてください。出力は「だ・である調」で、要約本文のみとしてください。\n---\n{text_content[:8000]}"
-            response = await self.gemini_model.generate_content_async(prompt)
+            
+            # generate_content_asyncが存在するかチェックし、なければ同期メソッドをスレッドで実行
+            if hasattr(self.gemini_model, 'generate_content_async'):
+                 response = await self.gemini_model.generate_content_async(prompt)
+            else:
+                 response = await asyncio.to_thread(self.gemini_model.generate_content, prompt)
+                 
             return response.text.strip()
-        except Exception: return "要約中にエラーが発生しました。"
+        except Exception as e:
+            logging.error(f"Geminiでの記事要約中にエラー: {e}")
+            return "（記事の要約中にエラーが発生しました）"
+
+
+    async def _fetch_rss_feed(self, url: str) -> str | None:
+        """非同期でRSSフィードの内容をテキストとして取得する"""
+        try:
+            session = await self._get_session()
+            async with session.get(url, timeout=HTTP_TIMEOUT) as response:
+                response.raise_for_status()
+                return await response.text()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
+            return None
 
     async def _fetch_macro_news(self, rss_urls: list, since: datetime) -> list:
         news_items = []
         for url in rss_urls:
-            try:
-                feed = await asyncio.to_thread(feedparser.parse, url)
-                for entry in feed.entries:
-                    if not getattr(entry, "published_parsed", None): continue
-                    pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
-                    if pub_time > since:
-                        summary = await self._summarize_article(entry.get("summary", entry.get("content", "")))
-                        news_items.append({"title": entry.title, "link": entry.link, "summary": summary})
-            except Exception as e: logging.error(f"RSSフィードの取得に失敗: {url}, Error: {e}")
+            feed_text = await self._fetch_rss_feed(url)
+            if not feed_text: continue
+            
+            feed = await asyncio.to_thread(feedparser.parse, feed_text)
+            for entry in feed.entries:
+                if not getattr(entry, "published_parsed", None): continue
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
+                if pub_time > since:
+                    summary = await self._summarize_article(entry.get("summary", ""))
+                    news_items.append({"title": entry.title, "link": entry.link, "summary": summary})
         return news_items
 
     async def _fetch_stock_news(self, name: str, code: str, since: datetime) -> list:
         """Yahoo!ニュースから銘柄名または銘柄コードに一致するニュースを取得"""
         news_items = []
-        try:
-            feed = await asyncio.to_thread(feedparser.parse, YAHOO_NEWS_BUSINESS_RSS_URL)
-            for entry in feed.entries:
-                 if not getattr(entry, "published_parsed", None): continue
-                 pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
-                 if pub_time > since and (name in entry.title or code in entry.title):
+        feed_text = await self._fetch_rss_feed(YAHOO_NEWS_BUSINESS_RSS_URL)
+        if not feed_text: return []
+        
+        feed = await asyncio.to_thread(feedparser.parse, feed_text)
+        for entry in feed.entries:
+                if not getattr(entry, "published_parsed", None): continue
+                pub_time = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc).astimezone(JST)
+                if pub_time > since and (name in entry.title or code in entry.title):
                     summary = await self._summarize_article(entry.get("summary", ""))
                     news_items.append({"title": entry.title, "link": entry.link, "summary": summary})
-        except Exception as e:
-            logging.error(f"Yahoo!ニュース RSSの取得に失敗 (銘柄: {name}): {e}")
         return news_items
 
     @tasks.loop(time=NEWS_BRIEFING_TIME)
     async def daily_news_briefing(self):
+        if not self.is_ready:
+            logging.warning("NewsCogが準備できていないため、ブリーフィングをスキップします。")
+            return
+            
         channel = self.bot.get_channel(self.news_channel_id)
         if not channel: return
 
@@ -172,7 +235,7 @@ class NewsCog(commands.Cog):
                     news = await self._fetch_stock_news(name, code, since_time)
                     if news:
                         all_stock_news.append({"name": name, "news": news[0]})
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(1) # APIへの配慮
                 if all_stock_news:
                     stock_embed = discord.Embed(title="📈 保有銘柄ニュース", color=discord.Color.green())
                     for item in all_stock_news:
