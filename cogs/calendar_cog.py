@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 import google.generativeai as genai
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import dropbox
@@ -57,11 +58,13 @@ class CalendarCog(commands.Cog):
                         self.creds.refresh(Request())
                         self._save_google_credentials(self.creds)
                         logging.info("Google APIのアクセストークンをリフレッシュしました。")
-                    except Exception as e:
-                         raise Exception(f"Google Calendarのトークンリフレッシュに失敗しました: {e}")
+                    except RefreshError as e:
+                        logging.error(f"❌ Google APIトークンのリフレッシュに失敗: {e}")
+                        logging.error("-> token.jsonを再生成し、サーバーにアップロードする必要があります。")
+                        return # is_readyをFalseのまま終了
                 else:
-                    # サーバー上では手動認証できないため、エラーとして初期化を中断
-                    raise Exception("Google Calendarの認証情報(token.json)が見つからないか、リフレッシュできません。")
+                    logging.error("❌ Google Calendarの有効な認証情報(token.json)が見つかりません。")
+                    return # is_readyをFalseのまま終了
             # --- ここまで ---
 
             genai.configure(api_key=self.gemini_api_key)
@@ -70,7 +73,8 @@ class CalendarCog(commands.Cog):
             self.is_ready = True
             logging.info("✅ CalendarCogが正常に初期化され、準備が完了しました。")
         except Exception as e:
-            logging.error(f"❌ CalendarCogの初期化中にエラーが発生しました: {e}", exc_info=True)
+            logging.error(f"❌ CalendarCogの初期化中に予期せぬエラーが発生しました: {e}", exc_info=True)
+
 
     def _load_environment_variables(self):
         self.calendar_channel_id = int(os.getenv("CALENDAR_CHANNEL_ID", 0))
@@ -107,7 +111,6 @@ class CalendarCog(commands.Cog):
         return None
     
     def _save_google_credentials(self, creds):
-        # Render環境ではファイルシステムが揮発性のため、保存処理はローカル環境でのデバッグ時のみに限定
         if not os.getenv("RENDER"):
             try:
                 with open(self.google_token_path, 'w') as token:
@@ -116,7 +119,6 @@ class CalendarCog(commands.Cog):
             except Exception as e:
                 logging.error(f"Google認証情報の保存に失敗しました: {e}")
 
-
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
@@ -124,8 +126,9 @@ class CalendarCog(commands.Cog):
             if not self.send_daily_review.is_running(): self.send_daily_review.start()
 
     def cog_unload(self):
-        self.notify_today_events.cancel()
-        self.send_daily_review.cancel()
+        if self.is_ready:
+            self.notify_today_events.cancel()
+            self.send_daily_review.cancel()
 
     async def _handle_memo_reaction(self, payload: discord.RawReactionActionEvent):
         if str(payload.emoji) != MEMO_TO_CALENDAR_EMOJI: return
@@ -377,7 +380,7 @@ class CalendarCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        if payload.user_id == self.bot.user.id: return
+        if not self.is_ready or payload.user_id == self.bot.user.id: return
         if payload.channel_id == self.memo_channel_id:
             if payload.message_id in self.pending_schedules:
                 await self._handle_proposal_reaction(payload)
@@ -434,6 +437,7 @@ class CalendarCog(commands.Cog):
 
     @tasks.loop(time=TODAY_SCHEDULE_TIME)
     async def notify_today_events(self):
+        if not self.is_ready: return
         try:
             today = datetime.now(JST).date()
             time_min_dt = datetime.combine(today, time.min, tzinfo=JST)
@@ -455,6 +459,7 @@ class CalendarCog(commands.Cog):
 
     @tasks.loop(time=DAILY_REVIEW_TIME)
     async def send_daily_review(self):
+        if not self.is_ready: return
         try:
             today_str = datetime.now(JST).strftime('%Y-%m-%d')
             log_path = f"{self.dropbox_vault_path}/.bot/calendar_log/{today_str}.json"
