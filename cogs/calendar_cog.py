@@ -422,24 +422,36 @@ class CalendarCog(commands.Cog):
         
         # --- 日付指定の返信を処理 ---
         if message.reference and message.reference.message_id:
-            # 自分が送信した日付質問メッセージへの返信かチェック
             pending_item = next((item for item in self.pending_date_prompts.values() if item["prompt_msg_id"] == message.reference.message_id), None)
             if pending_item and message.author.id == pending_item["author_id"]:
                 original_message_id = next(key for key, val in self.pending_date_prompts.items() if val == pending_item)
                 
-                await message.add_reaction("⏳")
-                target_date = await self._parse_date_from_text(message.content)
-                
-                if target_date:
-                    task_analysis = pending_item["task_analysis"]
-                    original_message = await message.channel.fetch_message(original_message_id)
-                    del self.pending_date_prompts[original_message_id]
-                    await message.channel.delete_messages([message, await message.channel.fetch_message(pending_item["prompt_msg_id"])])
-                    await self._continue_scheduling(original_message, task_analysis, target_date)
-                else:
-                    await message.reply("日付を認識できませんでした。もう一度入力してください。（例：明日、10/25）")
-                
-                await message.remove_reaction("⏳", self.bot.user)
+                try:
+                    await message.add_reaction("⏳")
+                    target_date = await self._parse_date_from_text(message.content)
+                    
+                    if target_date:
+                        task_analysis = pending_item["task_analysis"]
+                        original_message = await message.channel.fetch_message(original_message_id)
+                        
+                        prompt_msg_to_delete = await message.channel.fetch_message(pending_item["prompt_msg_id"])
+
+                        del self.pending_date_prompts[original_message_id]
+                        await message.channel.delete_messages([message, prompt_msg_to_delete])
+                        
+                        await self._continue_scheduling(original_message, task_analysis, target_date)
+                    else:
+                        await message.reply("日付を認識できませんでした。もう一度入力してください。（例：明日、10/25）")
+                        await message.remove_reaction("⏳", self.bot.user)
+
+                except discord.NotFound:
+                    logging.warning("日付指定の返信処理中にメッセージが削除されました。")
+                except Exception as e:
+                    logging.error(f"日付指定の返信処理中にエラー: {e}", exc_info=True)
+                    try:
+                        await message.remove_reaction("⏳", self.bot.user)
+                    except discord.NotFound:
+                        pass # リアクション削除前にメッセージが消された場合
                 return
 
     @commands.Cog.listener()
