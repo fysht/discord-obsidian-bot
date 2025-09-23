@@ -53,9 +53,12 @@ class CalendarCog(commands.Cog):
             self.creds = self._get_google_credentials()
             if not self.creds or not self.creds.valid:
                 if self.creds and self.creds.expired and self.creds.refresh_token:
-                    self.creds.refresh(Request())
-                    self._save_google_credentials(self.creds)
-                    logging.info("Google APIのアクセストークンをリフレッシュしました。")
+                    try:
+                        self.creds.refresh(Request())
+                        self._save_google_credentials(self.creds)
+                        logging.info("Google APIのアクセストークンをリフレッシュしました。")
+                    except Exception as e:
+                         raise Exception(f"Google Calendarのトークンリフレッシュに失敗しました: {e}")
                 else:
                     # サーバー上では手動認証できないため、エラーとして初期化を中断
                     raise Exception("Google Calendarの認証情報(token.json)が見つからないか、リフレッシュできません。")
@@ -104,6 +107,7 @@ class CalendarCog(commands.Cog):
         return None
     
     def _save_google_credentials(self, creds):
+        # Render環境ではファイルシステムが揮発性のため、保存処理はローカル環境でのデバッグ時のみに限定
         if not os.getenv("RENDER"):
             try:
                 with open(self.google_token_path, 'w') as token:
@@ -111,6 +115,7 @@ class CalendarCog(commands.Cog):
                 logging.info(f"更新されたGoogle認証情報を {self.google_token_path} に保存しました。")
             except Exception as e:
                 logging.error(f"Google認証情報の保存に失敗しました: {e}")
+
 
     @commands.Cog.listener()
     async def on_ready(self):
