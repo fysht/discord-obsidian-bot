@@ -39,12 +39,12 @@ class AddToListView(discord.ui.View):
         await interaction.response.defer()
         success = await self.memo_cog.add_item_to_list_file(self.category, self.item_to_add)
         if success:
-            await interaction.edit_original_message(
+            await interaction.edit_original_response(
                 content=f"✅ **{CATEGORY_MAP[self.category]['prompt']}** に「{self.item_to_add}」を追加しました。",
                 view=None
             )
         else:
-            await interaction.edit_original_message(content="❌リストへの追加中にエラーが発生しました。", view=None)
+            await interaction.edit_original_response(content="❌リストへの追加中にエラーが発生しました。", view=None)
         self.stop()
 
     @discord.ui.button(label="いいえ", style=discord.ButtonStyle.secondary)
@@ -58,7 +58,7 @@ class RemoveFromListView(discord.ui.View):
         super().__init__(timeout=300)
         self.memo_cog = memo_cog_instance
         self.category = category
-        
+
         if not items:
             self.add_item(discord.ui.Button(label="このリストに項目はありません", style=discord.ButtonStyle.secondary, disabled=True))
         else:
@@ -69,9 +69,9 @@ class RemoveFromListView(discord.ui.View):
         custom_id = interaction.data.get("custom_id")
         if custom_id and custom_id.startswith("remove_"):
             item_to_remove = custom_id.replace("remove_", "")
-            
+
             success = await self.memo_cog.remove_item_from_list_file(self.category, item_to_remove)
-            
+
             if success:
                 await interaction.response.send_message(f"🗑️ 「{item_to_remove}」をリストから削除しました。", ephemeral=True)
                 new_items = await self.memo_cog.get_list_items(self.category)
@@ -107,9 +107,9 @@ class MemoCog(commands.Cog):
         """Obsidianのリストファイルから未完了の項目を読み込む"""
         list_info = CATEGORY_MAP.get(category)
         if not list_info: return []
-        
+
         file_path = f"{self.dropbox_vault_path}{LISTS_PATH}/{list_info['file']}"
-        
+
         try:
             _, res = self.dbx.files_download(file_path)
             content = res.content.decode('utf-8')
@@ -117,7 +117,7 @@ class MemoCog(commands.Cog):
             items = re.findall(r"-\s*\[\s*\]\s*(.+)", content)
             return [item.strip() for item in items]
         except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.get_path().is_not_found():
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                 return [] # ファイルが存在しない場合は空リスト
             logging.error(f"Dropboxファイルのダウンロードに失敗: {e}")
             return []
@@ -126,9 +126,9 @@ class MemoCog(commands.Cog):
         """Obsidianのリストファイルに項目を追記する"""
         list_info = CATEGORY_MAP.get(category)
         if not list_info: return False
-        
+
         file_path = f"{self.dropbox_vault_path}{LISTS_PATH}/{list_info['file']}"
-        
+
         try:
             try:
                 _, res = self.dbx.files_download(file_path)
@@ -139,7 +139,7 @@ class MemoCog(commands.Cog):
                 else: raise
 
             line_to_add = f"- [ ] {item}"
-            
+
             if content.strip().endswith("\n"):
                 new_content = content + line_to_add + "\n"
             else:
@@ -158,16 +158,16 @@ class MemoCog(commands.Cog):
         if not list_info: return False
 
         file_path = f"{self.dropbox_vault_path}{LISTS_PATH}/{list_info['file']}"
-        
+
         try:
             _, res = self.dbx.files_download(file_path)
             content = res.content.decode('utf-8')
-            
+
             # 削除対象の行を `- [x]` に置換
             # 正規表現でエスケープ処理を忘れずに
             escaped_item = re.escape(item_to_remove)
             pattern = re.compile(r"(-\s*\[\s*\]\s*)(" + escaped_item + r")", re.MULTILINE)
-            
+
             new_content, count = pattern.subn(r"- [x] \2", content)
 
             if count > 0:
@@ -230,7 +230,7 @@ class MemoCog(commands.Cog):
             json_match = re.search(r'```json\n(\{.*?\})\n```', response.text, re.DOTALL)
             json_text = json_match.group(1) if json_match else response.text
             result_json = json.loads(json_text)
-            
+
             category = result_json.get("category")
             item = result_json.get("item")
 
@@ -243,7 +243,7 @@ class MemoCog(commands.Cog):
             logging.warning(f"メモの分類結果の解析に失敗: {e}\nAI Response: {response.text}")
         except Exception as e:
             logging.error(f"メモの分類中に予期せぬエラー: {e}", exc_info=True)
-            
+
     # --- スラッシュコマンドの定義 ---
     list_group = app_commands.Group(name="list", description="タスク、アイデアなどのリストを管理します。")
 
@@ -259,16 +259,16 @@ class MemoCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         category_key = category.value
         prompt_text = CATEGORY_MAP[category_key]['prompt']
-        
+
         items = await self.get_list_items(category_key)
-        
+
         embed = discord.Embed(title=f"📋 {prompt_text}", color=discord.Color.blue())
-        
+
         if not items:
             embed.description = "このリストにはまだ何もありません。"
         else:
             embed.description = "\n".join([f"- {item}" for item in items])
-            
+
         await interaction.followup.send(embed=embed)
 
     @list_group.command(name="remove", description="指定したリストから項目を削除（完了）します。")
@@ -283,10 +283,10 @@ class MemoCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         category_key = category.value
         prompt_text = CATEGORY_MAP[category_key]['prompt']
-        
+
         items = await self.get_list_items(category_key)
         view = RemoveFromListView(self, category_key, items)
-        
+
         await interaction.followup.send(
             f"**{prompt_text}** から削除（完了）したい項目を選んでください。",
             view=view

@@ -17,24 +17,18 @@ from bs4 import BeautifulSoup
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=12, minute=0, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=12, minute=40, tzinfo=JST)
 
 # ニュースソース
 MACRO_NEWS_RSS_URLS = ["https://www.nhk.or.jp/rss/news/cat2.xml"]
-# Yahoo!ニュースのビジネスカテゴリRSS
 YAHOO_NEWS_BUSINESS_RSS_URL = "https://news.yahoo.co.jp/rss/categories/business.xml"
 
 # 気象庁のエリアコード
-JMA_AREA_CODE = "330000"  # 岡山県（JSONは県単位）
+JMA_AREA_CODE = "330000"  # 岡山県
 
 # 天気の絵文字マッピング
 WEATHER_EMOJI_MAP = {
-    "晴": "☀️",
-    "曇": "☁️",
-    "雨": "☔️",
-    "雪": "❄️",
-    "雷": "⚡️",
-    "霧": "🌫️"
+    "晴": "☀️", "曇": "☁️", "雨": "☔️", "雪": "❄️", "雷": "⚡️", "霧": "🌫️"
 }
 
 
@@ -75,7 +69,8 @@ class NewsCog(commands.Cog):
 
     def _load_environment_variables(self):
         self.news_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
-        self.location_name = os.getenv("LOCATION_NAME", "岡山県南部")
+        self.location_name = os.getenv("LOCATION_NAME", "岡山")
+        self.jma_area_name = os.getenv("JMA_AREA_NAME", "南部")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -106,48 +101,71 @@ class NewsCog(commands.Cog):
                 return emoji
         return "❓"
 
-    async def _get_jma_weather_forecast(self, area_code: str, location_name: str) -> str:
-        """気象庁APIから岡山県南部の今日の天気サマリーを取得"""
-        url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{area_code}.json"
+    async def _get_jma_weather_forecast(self) -> discord.Embed:
+        """気象庁APIから天気予報を取得し、Embedオブジェクトを生成する"""
+        url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{JMA_AREA_CODE}.json"
+        
+        embed = discord.Embed(
+            title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ",
+            color=discord.Color.blue()
+        )
+
         try:
             async with self.session.get(url) as response:
                 response.raise_for_status()
                 data = await response.json()
 
-            # エリア名で「岡山県南部」を探す
-            area_weather = None
-            area_temp = None
+            # --- 今日の天気を取得 ---
+            area_weather_today = next((area for area in data[0]["timeSeries"][0]["areas"] if area["area"]["name"] == self.jma_area_name), None)
+            area_temp_today = next((area for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
 
-            for area in data[0]["timeSeries"][0]["areas"]:
-                if area["area"]["name"] == "岡山県南部":
-                    area_weather = area
-                    break
+            if area_weather_today and area_temp_today:
+                weather_summary = area_weather_today["weathers"][0]
+                weather_emoji = self._get_emoji_for_weather(weather_summary)
+                max_temp = area_temp_today.get("temps", ["--"])[1]
+                min_temp = area_temp_today.get("temps", ["--"])[0]
 
-            for area in data[0]["timeSeries"][1]["areas"]:
-                if area["area"]["name"] == "岡山県南部":
-                    area_temp = area
-                    break
+                today_weather_text = (
+                    f"{weather_emoji} {weather_summary}\n"
+                    f"🌡️ 最高: {max_temp}℃ / 最低: {min_temp}℃"
+                )
+                embed.add_field(name=f"今日の天気 ({self.location_name})", value=today_weather_text, inline=False)
+            else:
+                embed.add_field(name=f"今日の天気 ({self.location_name})", value="⚠️ エリア情報を取得できませんでした。", inline=False)
 
-            if not area_weather or not area_temp:
-                return f"**{location_name}**: ⚠️ エリア情報を取得できませんでした。"
+            # --- 時間ごとの降水確率と気温を取得 ---
+            time_defines_pop = data[0]["timeSeries"][1]["timeDefines"]
+            area_pops = next((area["pops"] for area in data[0]["timeSeries"][1]["areas"] if area["area"]["name"] == self.jma_area_name), None)
+            
+            time_defines_temp = data[0]["timeSeries"][2]["timeDefines"]
+            area_temps = next((area["temps"] for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
 
-            weather_summary = area_weather["weathers"][0]
-            weather_emoji = self._get_emoji_for_weather(weather_summary)
+            if area_pops and area_temps:
+                pop_text = ""
+                for i, time_str in enumerate(time_defines_pop):
+                    dt = datetime.fromisoformat(time_str)
+                    if dt.date() == datetime.now(JST).date():
+                        hour = dt.strftime('%H時')
+                        pop_text += f"**{hour}**: {area_pops[i]}% "
+                
+                temp_text = ""
+                for i, time_str in enumerate(time_defines_temp):
+                     dt = datetime.fromisoformat(time_str)
+                     if dt.date() == datetime.now(JST).date():
+                        hour = dt.strftime('%H時')
+                        temp_text += f"**{hour}**: {area_temps[i]}℃ "
 
-            min_temp = area_temp.get("tempsMin", ["--"])[0]
-            max_temp = area_temp.get("tempsMax", ["--"])[0]
-
-            return (
-                f"**{location_name}**\n"
-                f"{weather_emoji} {weather_summary}\n"
-                f"🌡️ 最高: {max_temp}℃ / 最低: {min_temp}℃"
-            )
+                if pop_text:
+                    embed.add_field(name="☂️ 降水確率", value=pop_text.strip(), inline=False)
+                if temp_text:
+                    embed.add_field(name="🕒 時間別気温", value=temp_text.strip(), inline=False)
 
         except Exception as e:
-            logging.error(f"{location_name}の天気予報取得に失敗: {e}", exc_info=True)
-            return f"**{location_name}**: ⚠️ 天気情報の取得に失敗しました。"
+            logging.error(f"天気予報取得に失敗: {e}", exc_info=True)
+            embed.add_field(name="エラー", value="⚠️ 天気情報の取得に失敗しました。", inline=False)
+            
+        return embed
 
-    # --- 以下は元コードそのまま（省略せず残しています） ---
     async def _summarize_article(self, content: str) -> str:
         if not self.gemini_model or not content:
             return "要約できませんでした。"
@@ -173,17 +191,12 @@ class NewsCog(commands.Cog):
 
         logging.info("デイリーニュースブリーフィングを開始します...")
 
-        # 天気予報
-        weather_text = await self._get_jma_weather_forecast(JMA_AREA_CODE, self.location_name)
-        weather_embed = discord.Embed(
-            title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ",
-            color=discord.Color.blue()
-        )
-        weather_embed.add_field(name="🌦️ 今日の天気", value=weather_text, inline=False)
+        # 天気予報のEmbedを取得して投稿
+        weather_embed = await self._get_jma_weather_forecast()
         await channel.send(embed=weather_embed)
         logging.info("天気予報を投稿しました。")
 
-        # 株式ニュース
+        # 株式ニュース (この部分は変更なし)
     async def _get_watchlist(self) -> dict:
         try:
             _, res = self.dbx.files_download(self.watchlist_path)
