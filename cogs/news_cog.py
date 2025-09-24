@@ -28,7 +28,6 @@ WEATHER_EMOJI_MAP = {
     "晴": "☀️", "曇": "☁️", "雨": "☔️", "雪": "❄️", "雷": "⚡️", "霧": "🌫️"
 }
 
-
 class NewsCog(commands.Cog):
     """天気予報と株式関連ニュースを定時通知するCog"""
 
@@ -180,8 +179,8 @@ class NewsCog(commands.Cog):
 
         for code, name in watchlist.items():
             try:
-                # 検索クエリを作成 (例: "トヨタ OR 7203 when:1d")
-                query = f"{name} OR {code} when:1d"
+                # 検索クエリを作成 (例: ""トヨタ" AND "7203" when:1d")
+                query = f'"{name}" AND "{code}" when:1d'
                 encoded_query = quote_plus(query)
                 rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
 

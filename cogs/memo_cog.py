@@ -1,7 +1,7 @@
 import os
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import logging
 from datetime import datetime, timezone, timedelta
 import json
@@ -13,6 +13,7 @@ import re
 
 # --- 環境変数 ---
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
+TASK_LIST_CHANNEL_ID = int(os.getenv("TASK_LIST_CHANNEL_ID", "0"))
 JST = timezone(timedelta(hours=+9), 'JST')
 
 # --- 定数 ---
@@ -84,6 +85,50 @@ class RemoveFromListView(discord.ui.View):
 
         return False
 
+# カレンダー登録選択用のView
+class AddToCalendarView(discord.ui.View):
+    def __init__(self, memo_cog_instance, category: str, items: list, context: str):
+        super().__init__(timeout=300)
+        self.memo_cog = memo_cog_instance
+        self.category = category
+        self.context = context
+
+        if not items:
+            self.add_item(discord.ui.Button(label="このリストに項目はありません", style=discord.ButtonStyle.secondary, disabled=True))
+        else:
+            # 各項目をプルダウンメニューの選択肢として追加
+            options = [discord.SelectOption(label=item[:100], value=item) for item in items]
+            self.add_item(discord.ui.Select(placeholder="カレンダーに登録するタスクを選択...", options=options, custom_id="add_to_calendar_select"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.data.get("custom_id") == "add_to_calendar_select":
+            selected_item = interaction.data["values"][0]
+            
+            # CalendarCogを取得
+            calendar_cog = self.memo_cog.bot.get_cog('CalendarCog')
+            if not calendar_cog:
+                await interaction.response.send_message("カレンダー機能が利用できません。", ephemeral=True)
+                return False
+
+            await interaction.response.defer(ephemeral=True)
+            
+            try:
+                # CalendarCogのメソッドを呼び出して終日予定として登録
+                today = datetime.now(JST).date()
+                await calendar_cog._create_google_calendar_event(selected_item, today)
+                
+                # リストから項目を削除
+                success_remove = await self.memo_cog.remove_item_from_list_file(self.category, selected_item, self.context)
+                if success_remove:
+                    await interaction.followup.send(f"✅ 「{selected_item}」をカレンダーに登録し、リストから削除しました。")
+                else:
+                     await interaction.followup.send(f"✅ 「{selected_item}」をカレンダーに登録しましたが、リストからの削除に失敗しました。")
+            except Exception as e:
+                logging.error(f"カレンダー登録またはリスト削除中にエラー: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ 処理中にエラーが発生しました。")
+        
+        return False
+
 # Highlight選択用のView
 class HighlightSelectionView(discord.ui.View):
     def __init__(self, tasks: list, calendar_cog):
@@ -138,6 +183,12 @@ class MemoCog(commands.Cog):
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
         else:
             self.gemini_model = None
+
+        if TASK_LIST_CHANNEL_ID != 0:
+            self.post_task_list.start()
+
+    def cog_unload(self):
+        self.post_task_list.cancel()
 
     async def get_list_items(self, category: str, context: str) -> list[str]:
         """Obsidianのリストファイルから未完了の項目を読み込む"""
@@ -284,7 +335,10 @@ class MemoCog(commands.Cog):
             embed.description = "このリストにはまだ何もありません。"
         else:
             embed.description = "\n".join([f"- {item}" for item in items])
-        await interaction.followup.send(embed=embed)
+        
+        view = AddToCalendarView(self, category.value, items, context.value) if category.value == "Task" else None
+        
+        await interaction.followup.send(embed=embed, view=view)
 
     @list_group.command(name="remove", description="指定したリストから項目を削除（完了）します。")
     @app_commands.describe(
@@ -330,6 +384,52 @@ class MemoCog(commands.Cog):
 
         view = HighlightSelectionView(tasks, calendar_cog)
         await interaction.followup.send(f"**{context.name}** のタスクリストから、今日のハイライトを選択してください。", view=view)
+
+    @app_commands.command(name="add_memo_to_list", description="過去のメモをIDを指定してリストに追加します。")
+    @app_commands.describe(message_id="リストに追加したいメモのメッセージID")
+    async def add_memo_to_list(self, interaction: discord.Interaction, message_id: str):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            target_message = await self.bot.get_channel(MEMO_CHANNEL_ID).fetch_message(int(message_id))
+            if target_message.author.bot or not target_message.content:
+                await interaction.followup.send("指定されたIDのメッセージは処理対象外です。")
+                return
+            
+            # 分類処理を再実行
+            await self.categorize_and_propose_action(target_message)
+            await interaction.followup.send(f"メッセージID: {message_id} のメモについて、リスト追加の提案を再表示しました。")
+
+        except (ValueError, discord.NotFound):
+            await interaction.followup.send("指定されたメッセージIDが見つかりません。")
+        except Exception as e:
+            await interaction.followup.send(f"エラーが発生しました: {e}")
+
+    # --- 定期実行タスク ---
+    @tasks.loop(hours=8)
+    async def post_task_list(self):
+        channel = self.bot.get_channel(TASK_LIST_CHANNEL_ID)
+        if not channel: return
+            
+        logging.info("定期タスクリストの投稿を実行します。")
+        
+        # 仕事とプライベートの両方のタスクリストを取得
+        work_tasks = await self.get_list_items("Task", "Work")
+        personal_tasks = await self.get_list_items("Task", "Personal")
+        
+        embed = discord.Embed(title="現在のタスクリスト", color=discord.Color.orange())
+        
+        work_desc = "\n".join([f"- {item}" for item in work_tasks]) if work_tasks else "タスクはありません"
+        personal_desc = "\n".join([f"- {item}" for item in personal_tasks]) if personal_tasks else "タスクはありません"
+
+        embed.add_field(name="💼 仕事 (Work)", value=work_desc, inline=False)
+        embed.add_field(name="🏠 プライベート (Personal)", value=personal_desc, inline=False)
+        
+        await channel.send(embed=embed)
+
+    @post_task_list.before_loop
+    async def before_post_task_list(self):
+        await self.bot.wait_until_ready()
+
 
 async def setup(bot):
     await bot.add_cog(MemoCog(bot))

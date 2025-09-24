@@ -570,10 +570,15 @@ class CalendarCog(commands.Cog):
         tasks_to_carry_over = self.uncompleted_tasks.copy()
         self.uncompleted_tasks.clear()
 
+        # 未完了タスクを翌日の終日タスクとしてカレンダーに登録する
+        carry_over_date = datetime.now(JST).date() + timedelta(days=1)
         for task, original_date in tasks_to_carry_over.items():
-            # Googleカレンダーには翌日の日付で登録
-            carry_over_date = datetime.now(JST).date() + timedelta(days=1)
-            await self._create_google_calendar_event(task, carry_over_date)
+            await self._create_google_calendar_event(f"【繰越】{task}", carry_over_date)
+            logging.info(f"未完了タスク「{task}」(元期日: {original_date})を{carry_over_date}の予定として登録しました。")
+
+        channel = self.bot.get_channel(self.calendar_channel_id)
+        if channel and tasks_to_carry_over:
+             await channel.send(f"✅ {len(tasks_to_carry_over)}件の未完了タスクを、{carry_over_date.strftime('%Y-%m-%d')}の終日予定としてカレンダーに登録しました。")
         
         logging.info("[CalendarCog] 未完了タスクの繰り越しが完了しました。")
 
