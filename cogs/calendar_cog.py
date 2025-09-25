@@ -148,7 +148,7 @@ class CalendarCog(commands.Cog):
             task_analysis = await self._analyze_task_with_ai(message.content)
 
             if not task_analysis:
-                await message.reply("❌ AIによるタスク分析に失敗しました。フォールバックとして終日予定で登録します。")
+                await message.reply("❌ AIによるタスク分析に失敗しました。フォールバックとして終日予定で登録します。", delete_after=60)
                 await self._schedule_as_all_day_task(message, message.content, datetime.now(JST).date())
                 return
 
@@ -158,11 +158,10 @@ class CalendarCog(commands.Cog):
                     target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date()
                     await self._continue_scheduling(message, task_analysis, target_date)
                 except (ValueError, TypeError):
-                    await message.reply(f"❌ AIが日付 `{target_date_str}` を認識しましたが、形式が不正です。処理を中断します。")
+                    await message.reply(f"❌ AIが日付 `{target_date_str}` を認識しましたが、形式が不正です。処理を中断します。", delete_after=60)
                     await message.remove_reaction("⏳", self.bot.user)
                     await message.add_reaction("❌")
             else:
-                # 日付が見つからなかった場合、ユーザーに質問する
                 prompt_msg = await message.reply(f"{message.author.mention} いつタスクを登録しますか？ (例: 明日, 10/25, 来週の月曜日)")
                 self.pending_date_prompts[message.id] = {
                     "task_analysis": task_analysis,
@@ -171,12 +170,11 @@ class CalendarCog(commands.Cog):
                 }
                 await message.remove_reaction("⏳", self.bot.user)
 
-
         except (discord.NotFound, discord.Forbidden): pass
         except Exception as e:
             logging.error(f"[CalendarCog] AIスケジューリング処理中にエラー: {e}", exc_info=True)
             if 'message' in locals():
-                await message.reply(f"❌ スケジュール処理中にエラーが発生しました: {e}")
+                await message.reply(f"❌ スケジュール処理中にエラーが発生しました: {e}", delete_after=60)
                 await message.remove_reaction("⏳", self.bot.user)
                 await message.add_reaction("❌")
     
@@ -191,7 +189,7 @@ class CalendarCog(commands.Cog):
                 await self._schedule_simple_task(message, task_analysis, free_slots, target_date)
         except Exception as e:
              logging.error(f"[CalendarCog] スケジュール継続処理中にエラー: {e}", exc_info=True)
-             await message.reply(f"❌ スケジューリング処理中にエラーが発生しました: {e}")
+             await message.reply(f"❌ スケジューリング処理中にエラーが発生しました: {e}", delete_after=60)
 
     async def _parse_date_from_text(self, text: str) -> Optional[datetime.date]:
         """AIを使ってテキストから日付を解析する"""
@@ -212,7 +210,6 @@ class CalendarCog(commands.Cog):
         except (ValueError, TypeError, Exception) as e:
             logging.error(f"AIによる日付解析に失敗: {e}")
         return None
-
 
     async def _analyze_task_with_ai(self, task_content: str) -> dict | None:
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
@@ -315,7 +312,6 @@ class CalendarCog(commands.Cog):
         best_slot_start = next((start for start, end in free_slots if (end - start) >= timedelta(minutes=total_duration)), None)
         
         if not best_slot_start:
-            # 日付指定がないメモの内容全体を終日タスクとして登録
             summary = "\n".join([task['summary'] for task in subtasks])
             await self._schedule_as_all_day_task(message, summary, target_date)
             return
@@ -328,7 +324,7 @@ class CalendarCog(commands.Cog):
             proposal_text += f"- **{current_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** {task['summary']}\n"
             scheduled_tasks.append({'summary': task['summary'], 'start': current_time.isoformat(), 'end': end_time.isoformat()})
             current_time = end_time
-
+        
         proposal_msg = await message.reply(proposal_text)
         await proposal_msg.add_reaction(CONFIRM_EMOJI)
         await proposal_msg.add_reaction(CANCEL_EMOJI)
@@ -355,11 +351,11 @@ class CalendarCog(commands.Cog):
         try:
             service = build('calendar', 'v3', credentials=self.creds)
             service.events().insert(calendarId='primary', body=event).execute()
-            await message.reply(f"✅ **{target_date.strftime('%m/%d')} {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** に「{summary}」を登録しました。")
+            await message.reply(f"✅ **{target_date.strftime('%m/%d')} {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** に「{summary}」を登録しました。", delete_after=60)
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
         except HttpError as e:
-            await message.reply(f"❌ Googleカレンダーへの登録中にエラーが発生しました: {e}")
+            await message.reply(f"❌ Googleカレンダーへの登録中にエラーが発生しました: {e}", delete_after=60)
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("❌")
 
@@ -380,13 +376,13 @@ class CalendarCog(commands.Cog):
             else:
                 reply_text = f"💬 **{target_date.strftime('%Y年%m月%d日')}** の作業時間内に最適な空き時間が見つからなかったため、終日予定として「{summary}」を登録しました。"
 
-            await message.reply(reply_text)
+            await message.reply(reply_text, delete_after=60)
             logging.info(f"[CalendarCog] タスクを終日予定として登録しました: '{summary}' on {target_date}")
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
 
         except HttpError as e:
-            await message.reply(f"❌ 終日予定としてカレンダー登録中にエラーが発生しました: {e}")
+            await message.reply(f"❌ 終日予定としてカレンダー登録中にエラーが発生しました: {e}", delete_after=60)
             logging.error(f"Googleカレンダーへの終日イベント作成中にエラー: {e}")
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("❌")
@@ -405,12 +401,16 @@ class CalendarCog(commands.Cog):
                     event = {'summary': task['summary'], 'start': {'dateTime': task['start'], 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': task['end'], 'timeZone': 'Asia/Tokyo'}}
                     service.events().insert(calendarId='primary', body=event).execute()
                     await asyncio.sleep(0.5)
-                await proposal_msg.edit(content="✅ スケジュールをGoogleカレンダーに登録しました。", embed=None)
+                await proposal_msg.edit(content="✅ スケジュールをGoogleカレンダーに登録しました。", embed=None, view=None)
+                await asyncio.sleep(10)
+                await proposal_msg.delete()
                 original_message = await channel.fetch_message(proposal_msg.reference.message_id)
                 await original_message.add_reaction("✅")
             elif str(payload.emoji) == CANCEL_EMOJI:
                 del self.pending_schedules[payload.message_id]
-                await proposal_msg.edit(content="❌ スケジュール登録をキャンセルしました。", embed=None)
+                await proposal_msg.edit(content="❌ スケジュール登録をキャンセルしました。", embed=None, view=None)
+                await asyncio.sleep(10)
+                await proposal_msg.delete()
             await proposal_msg.clear_reactions()
         except (discord.NotFound, discord.Forbidden): pass
         except Exception as e:
@@ -420,7 +420,6 @@ class CalendarCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if not self.is_ready or message.author.bot: return
         
-        # --- 日付指定の返信を処理 ---
         if message.reference and message.reference.message_id:
             pending_item = next((item for item in self.pending_date_prompts.values() if item["prompt_msg_id"] == message.reference.message_id), None)
             if pending_item and message.author.id == pending_item["author_id"]:
@@ -441,7 +440,7 @@ class CalendarCog(commands.Cog):
                         
                         await self._continue_scheduling(original_message, task_analysis, target_date)
                     else:
-                        await message.reply("日付を認識できませんでした。もう一度入力してください。（例：明日、10/25）")
+                        await message.reply("日付を認識できませんでした。もう一度入力してください。（例：明日、10/25）", delete_after=30)
                         await message.remove_reaction("⏳", self.bot.user)
 
                 except discord.NotFound:
@@ -451,7 +450,7 @@ class CalendarCog(commands.Cog):
                     try:
                         await message.remove_reaction("⏳", self.bot.user)
                     except discord.NotFound:
-                        pass # リアクション削除前にメッセージが消された場合
+                        pass
                 return
 
     @commands.Cog.listener()
@@ -475,10 +474,8 @@ class CalendarCog(commands.Cog):
             if not embed.title or not embed.title.startswith("タスク: "): return
 
             task_summary = embed.title.replace("タスク: ", "")
-            # embedのフッターから日付を取得
             date_str_match = re.search(r'(\d{4}-\d{2}-\d{2})', embed.footer.text or '')
             if not date_str_match:
-                # フッターに日付がない場合はメッセージの作成日から判断
                 target_date = message.created_at.astimezone(JST).date()
             else:
                 target_date = datetime.strptime(date_str_match.group(1), '%Y-%m-%d').date()
@@ -496,7 +493,7 @@ class CalendarCog(commands.Cog):
                 feedback_msg_content = f"{user.mention}さん、{feedback_msg_content}"
             
             await channel.send(feedback_msg_content, delete_after=10)
-            await message.delete(delay=10)
+            await message.delete()
         except (discord.NotFound, discord.Forbidden): pass
         except Exception as e:
             logging.error(f"[CalendarCog] カレンダーリアクション処理中にエラー: {e}", exc_info=True)
@@ -507,7 +504,7 @@ class CalendarCog(commands.Cog):
         try:
             service = build('calendar', 'v3', credentials=self.creds)
             service.events().insert(calendarId='primary', body=event).execute()
-            logging.info(f"[CalendarCog] Googleカレンダーに繰り越しタスクを追加しました: '{summary}' on {date}")
+            logging.info(f"[CalendarCog] Googleカレンダーに終日予定を追加しました: '{summary}' on {date}")
         except HttpError as e:
             logging.error(f"Googleカレンダーへのイベント作成中にエラー: {e}")
 
@@ -552,14 +549,14 @@ class CalendarCog(commands.Cog):
                 return
             channel = self.bot.get_channel(self.calendar_channel_id)
             if channel:
-                await channel.send(f"--- **🗓️ {today_str} のタスクレビュー** ---\nお疲れ様でした！今日のタスクの達成度をリアクションで教えてください。")
+                await channel.send(f"--- **🗓️ {today_str} のタスクレビュー** ---\nお疲れ様でした！今日のタスクの達成度をリアクションで教えてください。", delete_after=3600) # 1時間後に削除
                 for event in daily_events:
                     embed = discord.Embed(title=f"タスク: {event['summary']}", color=discord.Color.gold())
-                    embed.set_footer(text=f"Task for: {today_str}") # 日付情報をフッターに埋め込む
+                    embed.set_footer(text=f"Task for: {today_str}")
                     message = await channel.send(embed=embed)
                     await message.add_reaction("✅")
                     await message.add_reaction("❌")
-                await channel.send("--------------------")
+                await channel.send("--------------------", delete_after=3600) # 1時間後に削除
             await self._carry_over_uncompleted_tasks()
         except Exception as e:
             logging.error(f"[CalendarCog] 振り返り通知中にエラー: {e}", exc_info=True)
@@ -570,7 +567,6 @@ class CalendarCog(commands.Cog):
         tasks_to_carry_over = self.uncompleted_tasks.copy()
         self.uncompleted_tasks.clear()
 
-        # 未完了タスクを翌日の終日タスクとしてカレンダーに登録する
         carry_over_date = datetime.now(JST).date() + timedelta(days=1)
         for task, original_date in tasks_to_carry_over.items():
             await self._create_google_calendar_event(f"【繰越】{task}", carry_over_date)
@@ -578,7 +574,7 @@ class CalendarCog(commands.Cog):
 
         channel = self.bot.get_channel(self.calendar_channel_id)
         if channel and tasks_to_carry_over:
-             await channel.send(f"✅ {len(tasks_to_carry_over)}件の未完了タスクを、{carry_over_date.strftime('%Y-%m-%d')}の終日予定としてカレンダーに登録しました。")
+             await channel.send(f"✅ {len(tasks_to_carry_over)}件の未完了タスクを、{carry_over_date.strftime('%Y-%m-%d')}の終日予定としてカレンダーに登録しました。", delete_after=300)
         
         logging.info("[CalendarCog] 未完了タスクの繰り越しが完了しました。")
 

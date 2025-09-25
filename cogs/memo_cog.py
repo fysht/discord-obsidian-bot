@@ -3,13 +3,14 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 import json
 import google.generativeai as genai
 import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import re
+import asyncio
 
 # --- 環境変数 ---
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
@@ -18,6 +19,7 @@ JST = timezone(timedelta(hours=+9), 'JST')
 
 # --- 定数 ---
 LISTS_PATH = "/Lists"
+ADD_TO_LIST_EMOJI = '➕' # メモをリストに追加するためのリアクション絵文字
 CATEGORY_MAP = {
     "Task": {"file": "Tasks.md", "prompt": "タスクリスト"},
     "Idea": {"file": "Ideas.md", "prompt": "アイデアリスト"},
@@ -25,7 +27,72 @@ CATEGORY_MAP = {
     "Bookmark": {"file": "Bookmarks.md", "prompt": "ブックマークリスト"},
 }
 
-# --- View定義 ---
+# --- View/Modal定義 ---
+
+# 日付入力用のモーダル
+class DateSelectionModal(discord.ui.Modal, title="日付を指定してください"):
+    def __init__(self, memo_cog_instance, category: str, item: str, context: str):
+        super().__init__()
+        self.memo_cog = memo_cog_instance
+        self.category = category
+        self.item = item
+        self.context = context
+
+    target_date = discord.ui.TextInput(
+        label="日付 (YYYY-MM-DD形式)",
+        placeholder="例: 2024-12-25 (空欄の場合は今日の日付)",
+        required=False,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        target_date_str = self.target_date.value
+        try:
+            target_date = datetime.strptime(target_date_str, '%Y-%m-%d').date() if target_date_str else datetime.now(JST).date()
+        except ValueError:
+            await interaction.followup.send("日付の形式が正しくありません。`YYYY-MM-DD`形式で入力してください。", ephemeral=True, delete_after=10)
+            return
+
+        calendar_cog = self.memo_cog.bot.get_cog('CalendarCog')
+        if not calendar_cog:
+            await interaction.followup.send("カレンダー機能が利用できません。", ephemeral=True, delete_after=10)
+            return
+        
+        try:
+            await calendar_cog._create_google_calendar_event(self.item, target_date)
+            success_remove = await self.memo_cog.remove_item_from_list_file(self.category, self.item, self.context)
+            if success_remove:
+                await interaction.followup.send(f"✅ 「{self.item}」を{target_date.strftime('%Y-%m-%d')}のカレンダーに登録し、リストから削除しました。", ephemeral=True, delete_after=10)
+            else:
+                await interaction.followup.send(f"✅ 「{self.item}」をカレンダーに登録しましたが、リストからの削除に失敗しました。", ephemeral=True, delete_after=10)
+        except Exception as e:
+            logging.error(f"カレンダー登録またはリスト削除中にエラー: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ 処理中にエラーが発生しました。", ephemeral=True, delete_after=10)
+
+
+# カレンダー登録選択用のView
+class AddToCalendarView(discord.ui.View):
+    def __init__(self, memo_cog_instance, category: str, items: list, context: str):
+        super().__init__(timeout=300)
+        self.memo_cog = memo_cog_instance
+        self.category = category
+        self.context = context
+
+        if not items:
+            self.add_item(discord.ui.Button(label="このリストに項目はありません", style=discord.ButtonStyle.secondary, disabled=True))
+        else:
+            options = [discord.SelectOption(label=item[:100], value=item) for item in items]
+            self.add_item(discord.ui.Select(placeholder="カレンダーに登録するタスクを選択...", options=options, custom_id="add_to_calendar_select"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.data.get("custom_id") == "add_to_calendar_select":
+            selected_item = interaction.data["values"][0]
+            # 日付選択モーダルを表示
+            modal = DateSelectionModal(self.memo_cog, self.category, selected_item, self.context)
+            await interaction.response.send_modal(modal)
+        return False
+
 class AddToListView(discord.ui.View):
     """メモをリストに追加するための確認ボタンを持つView"""
     def __init__(self, memo_cog_instance, message: discord.Message, category: str, item_to_add: str, context: str):
@@ -40,20 +107,27 @@ class AddToListView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         success = await self.memo_cog.add_item_to_list_file(self.category, self.item_to_add, self.context)
+        original_message = await interaction.channel.fetch_message(interaction.message.id)
+
         if success:
-            await interaction.edit_original_response(
+            await original_message.edit(
                 content=f"✅ **{self.context}** の **{CATEGORY_MAP[self.category]['prompt']}** に「{self.item_to_add}」を追加しました。",
                 view=None
             )
         else:
-            await interaction.edit_original_response(content="❌リストへの追加中にエラーが発生しました。", view=None)
+            await original_message.edit(content="❌リストへの追加中にエラーが発生しました。", view=None)
+        
+        await asyncio.sleep(10)
+        await original_message.delete()
         self.stop()
 
     @discord.ui.button(label="いいえ", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content="キャンセルしました。", view=None)
+        original_message = await interaction.channel.fetch_message(interaction.message.id)
+        await original_message.edit(content="キャンセルしました。", view=None)
+        await asyncio.sleep(10)
+        await original_message.delete()
         self.stop()
-
 
 class RemoveFromListView(discord.ui.View):
     """リストから項目を削除するためのボタンを持つView"""
@@ -76,57 +150,13 @@ class RemoveFromListView(discord.ui.View):
             success = await self.memo_cog.remove_item_from_list_file(self.category, item_to_remove, self.context)
 
             if success:
-                await interaction.response.send_message(f"🗑️ 「{item_to_remove}」をリストから削除しました。", ephemeral=True)
+                await interaction.response.send_message(f"🗑️ 「{item_to_remove}」をリストから削除しました。", ephemeral=True, delete_after=10)
                 new_items = await self.memo_cog.get_list_items(self.category, self.context)
                 new_view = RemoveFromListView(self.memo_cog, self.category, new_items, self.context)
                 await interaction.message.edit(view=new_view)
             else:
-                await interaction.response.send_message("❌ 削除中にエラーが発生しました。", ephemeral=True)
+                await interaction.response.send_message("❌ 削除中にエラーが発生しました。", ephemeral=True, delete_after=10)
 
-        return False
-
-# カレンダー登録選択用のView
-class AddToCalendarView(discord.ui.View):
-    def __init__(self, memo_cog_instance, category: str, items: list, context: str):
-        super().__init__(timeout=300)
-        self.memo_cog = memo_cog_instance
-        self.category = category
-        self.context = context
-
-        if not items:
-            self.add_item(discord.ui.Button(label="このリストに項目はありません", style=discord.ButtonStyle.secondary, disabled=True))
-        else:
-            # 各項目をプルダウンメニューの選択肢として追加
-            options = [discord.SelectOption(label=item[:100], value=item) for item in items]
-            self.add_item(discord.ui.Select(placeholder="カレンダーに登録するタスクを選択...", options=options, custom_id="add_to_calendar_select"))
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.data.get("custom_id") == "add_to_calendar_select":
-            selected_item = interaction.data["values"][0]
-            
-            # CalendarCogを取得
-            calendar_cog = self.memo_cog.bot.get_cog('CalendarCog')
-            if not calendar_cog:
-                await interaction.response.send_message("カレンダー機能が利用できません。", ephemeral=True)
-                return False
-
-            await interaction.response.defer(ephemeral=True)
-            
-            try:
-                # CalendarCogのメソッドを呼び出して終日予定として登録
-                today = datetime.now(JST).date()
-                await calendar_cog._create_google_calendar_event(selected_item, today)
-                
-                # リストから項目を削除
-                success_remove = await self.memo_cog.remove_item_from_list_file(self.category, selected_item, self.context)
-                if success_remove:
-                    await interaction.followup.send(f"✅ 「{selected_item}」をカレンダーに登録し、リストから削除しました。")
-                else:
-                     await interaction.followup.send(f"✅ 「{selected_item}」をカレンダーに登録しましたが、リストからの削除に失敗しました。")
-            except Exception as e:
-                logging.error(f"カレンダー登録またはリスト削除中にエラー: {e}", exc_info=True)
-                await interaction.followup.send(f"❌ 処理中にエラーが発生しました。")
-        
         return False
 
 # Highlight選択用のView
@@ -141,7 +171,7 @@ class HighlightSelectionView(discord.ui.View):
 
     async def button_callback(self, interaction: discord.Interaction):
         if not self.calendar_cog:
-            await interaction.response.send_message("カレンダー機能が利用できません。", ephemeral=True)
+            await interaction.response.send_message("カレンダー機能が利用できません。", ephemeral=True, delete_after=10)
             return
 
         selected_task = interaction.data['custom_id'].replace("highlight_", "")
@@ -152,17 +182,12 @@ class HighlightSelectionView(discord.ui.View):
         today = datetime.now(JST).date()
 
         try:
-            # calendar_cogの内部メソッドを呼び出す
             await self.calendar_cog._create_google_calendar_event(event_summary, today)
-            await interaction.followup.send(f"✅ 今日のハイライト「**{selected_task}**」をカレンダーに終日予定として登録しました！")
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
+            await interaction.followup.send(f"✅ 今日のハイライト「**{selected_task}**」をカレンダーに終日予定として登録しました！", ephemeral=True)
         except Exception as e:
             logging.error(f"ハイライトのカレンダー登録中にエラー: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ カレンダーへの登録中にエラーが発生しました。")
+            await interaction.followup.send(f"❌ カレンダーへの登録中にエラーが発生しました。", ephemeral=True)
         self.stop()
-
 # --- Cog本体 ---
 
 class MemoCog(commands.Cog):
@@ -258,8 +283,36 @@ class MemoCog(commands.Cog):
         if message.author.bot or message.channel.id != MEMO_CHANNEL_ID:
             return
 
+        if message.reference:
+            return
+
         if self.gemini_model:
             await self.categorize_and_propose_action(message)
+    
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        """リアクションによるリスト追加を処理"""
+        if payload.channel_id != MEMO_CHANNEL_ID or str(payload.emoji) != ADD_TO_LIST_EMOJI:
+            return
+        if payload.user_id == self.bot.user.id:
+            return
+            
+        try:
+            channel = self.bot.get_channel(payload.channel_id)
+            message = await channel.fetch_message(payload.message_id)
+            
+            if message.author.bot or not message.content:
+                return
+
+            await self.categorize_and_propose_action(message)
+            user = self.bot.get_user(payload.user_id)
+            await message.remove_reaction(payload.emoji, user)
+
+        except (discord.NotFound, discord.Forbidden):
+            pass
+        except Exception as e:
+            logging.error(f"リアクションによるリスト追加処理中にエラー: {e}", exc_info=True)
+
 
     async def categorize_and_propose_action(self, message: discord.Message):
         """メモを分類し、リストへの追加を提案する"""
@@ -371,38 +424,18 @@ class MemoCog(commands.Cog):
     ])
     async def set_highlight(self, interaction: discord.Interaction, context: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
-        # calendar_cogをbotから取得
         calendar_cog = self.bot.get_cog('CalendarCog')
         if not calendar_cog:
-            await interaction.followup.send("エラー: カレンダー機能がロードされていません。")
+            await interaction.followup.send("エラー: カレンダー機能がロードされていません。", ephemeral=True)
             return
 
         tasks = await self.get_list_items("Task", context.value)
         if not tasks:
-            await interaction.followup.send(f"{context.name}のタスクリストは空です。まずはタスクを追加してください。")
+            await interaction.followup.send(f"{context.name}のタスクリストは空です。まずはタスクを追加してください。", ephemeral=True)
             return
 
         view = HighlightSelectionView(tasks, calendar_cog)
-        await interaction.followup.send(f"**{context.name}** のタスクリストから、今日のハイライトを選択してください。", view=view)
-
-    @app_commands.command(name="add_memo_to_list", description="過去のメモをIDを指定してリストに追加します。")
-    @app_commands.describe(message_id="リストに追加したいメモのメッセージID")
-    async def add_memo_to_list(self, interaction: discord.Interaction, message_id: str):
-        await interaction.response.defer(ephemeral=True)
-        try:
-            target_message = await self.bot.get_channel(MEMO_CHANNEL_ID).fetch_message(int(message_id))
-            if target_message.author.bot or not target_message.content:
-                await interaction.followup.send("指定されたIDのメッセージは処理対象外です。")
-                return
-            
-            # 分類処理を再実行
-            await self.categorize_and_propose_action(target_message)
-            await interaction.followup.send(f"メッセージID: {message_id} のメモについて、リスト追加の提案を再表示しました。")
-
-        except (ValueError, discord.NotFound):
-            await interaction.followup.send("指定されたメッセージIDが見つかりません。")
-        except Exception as e:
-            await interaction.followup.send(f"エラーが発生しました: {e}")
+        await interaction.followup.send(f"**{context.name}** のタスクリストから、今日のハイライトを選択してください。", view=view, ephemeral=True)
 
     # --- 定期実行タスク ---
     @tasks.loop(hours=8)
@@ -412,7 +445,6 @@ class MemoCog(commands.Cog):
             
         logging.info("定期タスクリストの投稿を実行します。")
         
-        # 仕事とプライベートの両方のタスクリストを取得
         work_tasks = await self.get_list_items("Task", "Work")
         personal_tasks = await self.get_list_items("Task", "Personal")
         
@@ -426,10 +458,16 @@ class MemoCog(commands.Cog):
         
         await channel.send(embed=embed)
 
+        if work_tasks:
+            work_view = AddToCalendarView(self, "Task", work_tasks, "Work")
+            await channel.send("仕事のタスクをカレンダーに登録:", view=work_view)
+        if personal_tasks:
+            personal_view = AddToCalendarView(self, "Task", personal_tasks, "Personal")
+            await channel.send("プライベートのタスクをカレンダーに登録:", view=personal_view)
+
     @post_task_list.before_loop
     async def before_post_task_list(self):
         await self.bot.wait_until_ready()
-
 
 async def setup(bot):
     await bot.add_cog(MemoCog(bot))

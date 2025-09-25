@@ -12,6 +12,7 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import re
+import json
 
 from utils.obsidian_utils import update_section
 
@@ -36,7 +37,7 @@ class ZeroSecondThinkingCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # --- 環境変数からの設定読み込み ---
-        self.channel_id = int(os.getenv("ZERO_SECOND_THINKING_CHANNEL_ID", 0))
+        self.channel_id = int(os.getenv("ZERO_SECOND_THINKING_CHANNEL_ID", "0"))
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
@@ -45,8 +46,8 @@ class ZeroSecondThinkingCog(commands.Cog):
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
+        self.history_path = f"{self.dropbox_vault_path}/.bot/zero_second_thinking_history.json"
 
-        self.user_states = {} # { "user_id": { "last_question": "...", "last_answer": "...", "note_path": "..." } }
 
         # --- 初期チェックとAPIクライアント初期化 ---
         if not all([self.channel_id, self.openai_api_key, self.gemini_api_key, self.dropbox_refresh_token]):
@@ -71,6 +72,30 @@ class ZeroSecondThinkingCog(commands.Cog):
         if self.is_ready:
             await self.session.close()
             self.thinking_prompt_loop.cancel()
+    
+    async def _get_thinking_history(self) -> list:
+        """過去の思考履歴をDropboxから読み込む"""
+        try:
+            _, res = self.dbx.files_download(self.history_path)
+            return json.loads(res.content.decode('utf-8'))
+        except ApiError as e:
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                return [] # ファイルがない場合は空のリストを返す
+            logging.error(f"思考履歴の読み込みに失敗: {e}")
+            return []
+
+    async def _save_thinking_history(self, history: list):
+        """思考履歴をDropboxに保存（最新10件まで）"""
+        try:
+            # 履歴を最新10件に制限
+            limited_history = history[-10:]
+            self.dbx.files_upload(
+                json.dumps(limited_history, ensure_ascii=False, indent=2).encode('utf-8'),
+                self.history_path,
+                mode=WriteMode('overwrite')
+            )
+        except Exception as e:
+            logging.error(f"思考履歴の保存に失敗: {e}")
 
     @tasks.loop(time=THINKING_TIMES)
     async def thinking_prompt_loop(self):
@@ -79,14 +104,27 @@ class ZeroSecondThinkingCog(commands.Cog):
         if not channel: return
         
         try:
-            prompt = (
-                "あなたはこれから、私が「ゼロ秒思考」を行うのを支援します。\n"
-                "ゼロ秒思考とは、赤羽雄二氏が提唱する、A4用紙に1件1ページのメモを1分以内に書き、深く考える習慣です。\n"
-                "これから私がこのゼロ秒思考を行いますので、ゼロ秒思考を行うのに適したお題を1つ、前置きや返答を一切含めずに生成してください。\n"
-                "テーマはビジネス、自己啓発、プライベートなど多岐にわたりますが、深い洞察を促すような問いをお願いします。"
-            )
+            history = await self._get_thinking_history()
+            history_context = "\n".join([f"- {item['question']}: {item['answer'][:100]}..." for item in history])
+
+            prompt = f"""
+            あなたは思考を深めるための問いを投げかけるコーチです。
+            私が「ゼロ秒思考」を行うのを支援するため、質の高いお題を1つだけ生成してください。
+
+            # 指示
+            - ユーザーの過去の思考履歴を参考に、より深い洞察を促す問いを生成してください。
+            - 過去の回答内容を掘り下げるような質問や、関連するが異なる視点からの質問が望ましいです。
+            - 過去数回の質問と重複しないようにしてください。
+            - お題はビジネス、自己啓発、人間関係、創造性など、多岐にわたるテーマから選んでください。
+            - 前置きや挨拶は一切含めず、お題のテキストのみを生成してください。
+
+            # 過去の思考履歴（質問と回答の要約）
+            {history_context if history_context else "履歴はありません。"}
+            ---
+            お題:
+            """
             response = await self.gemini_model.generate_content_async(prompt)
-            question = response.text.strip()
+            question = response.text.strip().replace("*", "")
             
             embed = discord.Embed(title="🤔 ゼロ秒思考の時間です", description=f"お題: **{question}**", color=discord.Color.teal())
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください（音声入力も可能です）。")
@@ -132,7 +170,7 @@ class ZeroSecondThinkingCog(commands.Cog):
         temp_audio_path = None
         try:
             await message.add_reaction("⏳")
-
+            formatted_answer = ""
             if attachment: # 音声入力の場合
                 temp_audio_path = Path(f"./temp_{attachment.filename}")
                 async with self.session.get(attachment.url) as resp:
@@ -152,6 +190,11 @@ class ZeroSecondThinkingCog(commands.Cog):
                 formatted_answer = response.text.strip()
             else: # テキスト入力の場合
                 formatted_answer = message.content
+
+            # 思考履歴を更新
+            history = await self._get_thinking_history()
+            history.append({"question": last_question, "answer": formatted_answer})
+            await self._save_thinking_history(history)
 
             # --- Obsidianへの保存処理 ---
             now = datetime.now(JST)

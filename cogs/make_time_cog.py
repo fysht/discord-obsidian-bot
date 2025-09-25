@@ -10,6 +10,7 @@ from google.oauth2.credentials import Credentials
 import aiohttp
 import openai
 from pathlib import Path
+import re # 正規表現ライブラリをインポート
 
 from utils.obsidian_utils import update_section
 import dropbox
@@ -208,7 +209,13 @@ class MakeTimeCog(commands.Cog):
         """
         response = await self.gemini_model.generate_content_async(prompt)
         
-        candidates = [line.strip() for line in message.content.split('\n') if line.strip()]
+        raw_candidates = re.split(r'[\n、,]', message.content)
+        candidates = []
+        for cand in raw_candidates:
+            cleaned_cand = re.sub(r'^\s*[\d\.\-\*・]\s*', '', cand).strip()
+            if cleaned_cand:
+                candidates.append(cleaned_cand)
+        
         self.user_states[message.author.id] = { "highlight_candidates": candidates }
 
         view = HighlightSelectionView(candidates, self.bot, self.creds)
@@ -263,36 +270,32 @@ class MakeTimeCog(commands.Cog):
 class HighlightSelectionView(discord.ui.View):
     """ハイライトを選択するためのボタンを持つView"""
     def __init__(self, candidates: list, bot: commands.Bot, creds):
-        super().__init__(timeout=300) # 5分でタイムアウト
+        super().__init__(timeout=300)
         self.bot = bot
         self.creds = creds
         
-        # 候補ごとにボタンを作成
-        for i, candidate in enumerate(candidates):
-            # ボタンのラベルは50文字以内
-            button = discord.ui.Button(label=candidate[:50], style=discord.ButtonStyle.secondary, custom_id=f"highlight_{i}")
+        for candidate in candidates:
+            button = discord.ui.Button(
+                label=candidate[:80],
+                style=discord.ButtonStyle.secondary,
+                custom_id=f"highlight_{candidate[:90]}"
+            )
             button.callback = self.button_callback
             self.add_item(button)
 
     async def button_callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         
-        selected_highlight = interaction.data['custom_id'].split('_')[0]
+        selected_highlight_text = interaction.data['custom_id'].replace("highlight_", "", 1)
+        
         for child in self.children:
             if isinstance(child, discord.ui.Button):
                 child.disabled = True
-        
-        # 選択されたハイライトを取得
-        selected_highlight_text = ""
-        for child in self.children:
-             if child.custom_id == interaction.data['custom_id']:
-                  selected_highlight_text = child.label
-                  child.style = discord.ButtonStyle.success # 押されたボタンの色を変える
-                  break
+                if child.custom_id == interaction.data['custom_id']:
+                    child.style = discord.ButtonStyle.success
         
         await interaction.edit_original_response(view=self)
 
-        # Googleカレンダーに登録
         event_summary = f"{HIGHLIGHT_EMOJI} ハイライト: {selected_highlight_text}"
         today_str = datetime.datetime.now(JST).date().isoformat()
         
@@ -305,9 +308,9 @@ class HighlightSelectionView(discord.ui.View):
         try:
             service = build('calendar', 'v3', credentials=self.creds)
             service.events().insert(calendarId='primary', body=event).execute()
-            await interaction.followup.send(f"✅ 今日のハイライト「**{selected_highlight_text}**」をカレンダーに登録しました！")
+            await interaction.followup.send(f"✅ 今日のハイライト「**{selected_highlight_text}**」をカレンダーに登録しました！", ephemeral=True)
         except Exception as e:
-            await interaction.followup.send(f"❌ カレンダーへの登録中にエラーが発生しました: {e}")
+            await interaction.followup.send(f"❌ カレンダーへの登録中にエラーが発生しました: {e}", ephemeral=True)
             logging.error(f"ハイライトのカレンダー登録中にエラー: {e}", exc_info=True)
 
 
