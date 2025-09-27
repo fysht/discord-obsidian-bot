@@ -44,8 +44,8 @@ class MyBot(commands.Bot):
         # --- 全てのCogを自動で読み込むように修正 ---
         for filename in os.listdir(cogs_dir):
             if filename.endswith('.py') and not filename.startswith('__'):
-                # youtube_cog.py はスキップする
-                if filename == 'youtube_cog.py':
+                # local_worker.pyで実行するCogはスキップする
+                if filename in ['youtube_cog.py', 'reception_cog.py']:
                     logging.info(f" -> {filename} はローカルBot用のためスキップします。")
                     continue
                 try:

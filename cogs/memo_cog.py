@@ -29,6 +29,66 @@ CATEGORY_MAP = {
 
 # --- View/Modal定義 ---
 
+class ManualAddToListModal(discord.ui.Modal, title="リストに手動で追加"):
+    """手動でリストのカテゴリとコンテキストを指定するモーダル"""
+    def __init__(self, memo_cog_instance, item_to_add: str):
+        super().__init__()
+        self.memo_cog = memo_cog_instance
+        self.item_to_add = item_to_add
+
+    context = discord.ui.TextInput(label="コンテキスト", placeholder="Work または Personal")
+    category = discord.ui.TextInput(label="カテゴリ", placeholder="Task, Idea, Shopping, Bookmark")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        context_val = self.context.value.strip().capitalize()
+        category_val = self.category.value.strip().capitalize()
+
+        if context_val in ["Work", "Personal"] and category_val in CATEGORY_MAP:
+            success = await self.memo_cog.add_item_to_list_file(category_val, self.item_to_add, context_val)
+            if success:
+                await interaction.followup.send(f"✅ **{context_val}** の **{CATEGORY_MAP[category_val]['prompt']}** に「{self.item_to_add}」を追加しました。", ephemeral=True)
+            else:
+                await interaction.followup.send("❌リストへの追加中にエラーが発生しました。", ephemeral=True)
+        else:
+            await interaction.followup.send("⚠️ 不正なコンテキストまたはカテゴリです。", ephemeral=True)
+
+
+class AddToListView(discord.ui.View):
+    """メモをリストに追加するための確認ボタンを持つView"""
+    def __init__(self, memo_cog_instance, message: discord.Message, category: str, item_to_add: str, context: str):
+        super().__init__(timeout=180)
+        self.memo_cog = memo_cog_instance
+        self.message = message
+        self.category = category
+        self.item_to_add = item_to_add
+        self.context = context
+
+    @discord.ui.button(label="はい", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        success = await self.memo_cog.add_item_to_list_file(self.category, self.item_to_add, self.context)
+        original_message = await interaction.channel.fetch_message(interaction.message.id)
+
+        if success:
+            await original_message.edit(
+                content=f"✅ **{self.context}** の **{CATEGORY_MAP[self.category]['prompt']}** に「{self.item_to_add}」を追加しました。",
+                view=None
+            )
+        else:
+            await original_message.edit(content="❌リストへの追加中にエラーが発生しました。", view=None)
+        
+        await asyncio.sleep(10)
+        await original_message.delete()
+        self.stop()
+
+    @discord.ui.button(label="いいえ (手動選択)", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        original_message = await interaction.channel.fetch_message(interaction.message.id)
+        await original_message.edit(content="手動で追加先を選択してください...", view=None)
+        await interaction.response.send_modal(ManualAddToListModal(self.memo_cog, self.item_to_add))
+        self.stop()
+
 # 日付入力用のモーダル
 class DateSelectionModal(discord.ui.Modal, title="日付を指定してください"):
     def __init__(self, memo_cog_instance, category: str, item: str, context: str):
@@ -60,12 +120,13 @@ class DateSelectionModal(discord.ui.Modal, title="日付を指定してくださ
             return
         
         try:
-            await calendar_cog._create_google_calendar_event(self.item, target_date)
+            # AIに時間提案をさせるため、タスク内容を渡す
+            await calendar_cog.schedule_task_from_memo(self.item, target_date)
             success_remove = await self.memo_cog.remove_item_from_list_file(self.category, self.item, self.context)
             if success_remove:
-                await interaction.followup.send(f"✅ 「{self.item}」を{target_date.strftime('%Y-%m-%d')}のカレンダーに登録し、リストから削除しました。", ephemeral=True, delete_after=10)
+                await interaction.followup.send(f"✅ 「{self.item}」のカレンダー登録を試み、リストから削除しました。", ephemeral=True, delete_after=10)
             else:
-                await interaction.followup.send(f"✅ 「{self.item}」をカレンダーに登録しましたが、リストからの削除に失敗しました。", ephemeral=True, delete_after=10)
+                await interaction.followup.send(f"✅ 「{self.item}」のカレンダー登録を試みましたが、リストからの削除に失敗しました。", ephemeral=True, delete_after=10)
         except Exception as e:
             logging.error(f"カレンダー登録またはリスト削除中にエラー: {e}", exc_info=True)
             await interaction.followup.send(f"❌ 処理中にエラーが発生しました。", ephemeral=True, delete_after=10)
@@ -93,41 +154,6 @@ class AddToCalendarView(discord.ui.View):
             await interaction.response.send_modal(modal)
         return False
 
-class AddToListView(discord.ui.View):
-    """メモをリストに追加するための確認ボタンを持つView"""
-    def __init__(self, memo_cog_instance, message: discord.Message, category: str, item_to_add: str, context: str):
-        super().__init__(timeout=180)
-        self.memo_cog = memo_cog_instance
-        self.message = message
-        self.category = category
-        self.item_to_add = item_to_add
-        self.context = context
-
-    @discord.ui.button(label="はい", style=discord.ButtonStyle.success)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        success = await self.memo_cog.add_item_to_list_file(self.category, self.item_to_add, self.context)
-        original_message = await interaction.channel.fetch_message(interaction.message.id)
-
-        if success:
-            await original_message.edit(
-                content=f"✅ **{self.context}** の **{CATEGORY_MAP[self.category]['prompt']}** に「{self.item_to_add}」を追加しました。",
-                view=None
-            )
-        else:
-            await original_message.edit(content="❌リストへの追加中にエラーが発生しました。", view=None)
-        
-        await asyncio.sleep(10)
-        await original_message.delete()
-        self.stop()
-
-    @discord.ui.button(label="いいえ", style=discord.ButtonStyle.secondary)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        original_message = await interaction.channel.fetch_message(interaction.message.id)
-        await original_message.edit(content="キャンセルしました。", view=None)
-        await asyncio.sleep(10)
-        await original_message.delete()
-        self.stop()
 
 class RemoveFromListView(discord.ui.View):
     """リストから項目を削除するためのボタンを持つView"""
@@ -182,14 +208,15 @@ class HighlightSelectionView(discord.ui.View):
         today = datetime.now(JST).date()
 
         try:
+            # 終日予定として登録
             await self.calendar_cog._create_google_calendar_event(event_summary, today)
             await interaction.followup.send(f"✅ 今日のハイライト「**{selected_task}**」をカレンダーに終日予定として登録しました！", ephemeral=True)
         except Exception as e:
             logging.error(f"ハイライトのカレンダー登録中にエラー: {e}", exc_info=True)
             await interaction.followup.send(f"❌ カレンダーへの登録中にエラーが発生しました。", ephemeral=True)
         self.stop()
-# --- Cog本体 ---
 
+# --- Cog本体 ---
 class MemoCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -198,6 +225,8 @@ class MemoCog(commands.Cog):
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
+        self.last_task_list_message_ids = [] # 最後に投稿したメッセージIDリストを保存
+
         self.dbx = dropbox.Dropbox(
             oauth2_refresh_token=self.dropbox_refresh_token,
             app_key=self.dropbox_app_key,
@@ -213,7 +242,8 @@ class MemoCog(commands.Cog):
             self.post_task_list.start()
 
     def cog_unload(self):
-        self.post_task_list.cancel()
+        if self.post_task_list.is_running():
+            self.post_task_list.cancel()
 
     async def get_list_items(self, category: str, context: str) -> list[str]:
         """Obsidianのリストファイルから未完了の項目を読み込む"""
@@ -226,7 +256,7 @@ class MemoCog(commands.Cog):
             items = re.findall(r"-\s*\[\s*\]\s*(.+)", content)
             return [item.strip() for item in items]
         except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+            if isinstance(e.error, DownloadError) and e.error.get_path().is_not_found():
                 return []
             logging.error(f"Dropboxファイルのダウンロードに失敗: {e}")
             return []
@@ -241,7 +271,7 @@ class MemoCog(commands.Cog):
                 _, res = self.dbx.files_download(file_path)
                 content = res.content.decode('utf-8')
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                if isinstance(e.error, DownloadError) and e.error.get_path().is_not_found():
                     content = f"# {list_info['prompt']}\n\n"
                 else: raise
             line_to_add = f"- [ ] {item}"
@@ -362,10 +392,9 @@ class MemoCog(commands.Cog):
             logging.warning(f"メモの分類結果の解析に失敗: {e}\nAI Response: {response.text}")
         except Exception as e:
             logging.error(f"メモの分類中に予期せぬエラー: {e}", exc_info=True)
-
+            
     # --- スラッシュコマンド ---
     list_group = app_commands.Group(name="list", description="タスク、アイデアなどのリストを管理します。")
-
     @list_group.command(name="show", description="指定したカテゴリのリストを表示します。")
     @app_commands.describe(
         context="どちらのリストを表示しますか？",
@@ -445,10 +474,20 @@ class MemoCog(commands.Cog):
             
         logging.info("定期タスクリストの投稿を実行します。")
         
+        # 前回のメッセージを削除
+        if self.last_task_list_message_ids:
+            try:
+                # delete_messages は Bulk Delete API を使うため、一度に複数IDを渡せる
+                await channel.delete_messages([discord.Object(id=mid) for mid in self.last_task_list_message_ids])
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                logging.warning(f"古いタスクリストの削除に失敗: {e}")
+            finally:
+                self.last_task_list_message_ids.clear()
+        
         work_tasks = await self.get_list_items("Task", "Work")
         personal_tasks = await self.get_list_items("Task", "Personal")
         
-        embed = discord.Embed(title="現在のタスクリスト", color=discord.Color.orange())
+        embed = discord.Embed(title=f"📅 {datetime.now(JST).strftime('%Y-%m-%d')} のタスクリスト", color=discord.Color.orange())
         
         work_desc = "\n".join([f"- {item}" for item in work_tasks]) if work_tasks else "タスクはありません"
         personal_desc = "\n".join([f"- {item}" for item in personal_tasks]) if personal_tasks else "タスクはありません"
@@ -456,14 +495,17 @@ class MemoCog(commands.Cog):
         embed.add_field(name="💼 仕事 (Work)", value=work_desc, inline=False)
         embed.add_field(name="🏠 プライベート (Personal)", value=personal_desc, inline=False)
         
-        await channel.send(embed=embed)
+        main_message = await channel.send(embed=embed)
+        self.last_task_list_message_ids.append(main_message.id)
 
         if work_tasks:
             work_view = AddToCalendarView(self, "Task", work_tasks, "Work")
-            await channel.send("仕事のタスクをカレンダーに登録:", view=work_view)
+            work_message = await channel.send("仕事のタスクをカレンダーに登録:", view=work_view)
+            self.last_task_list_message_ids.append(work_message.id)
         if personal_tasks:
             personal_view = AddToCalendarView(self, "Task", personal_tasks, "Personal")
-            await channel.send("プライベートのタスクをカレンダーに登録:", view=personal_view)
+            personal_message = await channel.send("プライベートのタスクをカレンダーに登録:", view=personal_view)
+            self.last_task_list_message_ids.append(personal_message.id)
 
     @post_task_list.before_loop
     async def before_post_task_list(self):
