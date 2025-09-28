@@ -14,16 +14,13 @@ import aiohttp
 import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
-from urllib.parse import quote_plus # URLエンコードのために追加
+from urllib.parse import quote_plus
+from readability import Document # 本文抽出のために追加
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 NEWS_BRIEFING_TIME = time(hour=7, minute=0, tzinfo=JST)
-
-# 気象庁のエリアコード
-JMA_AREA_CODE = "330000"  # 岡山県
-
-# 天気の絵文字マッピング
+JMA_AREA_CODE = "330000"
 WEATHER_EMOJI_MAP = {
     "晴": "☀️", "曇": "☁️", "雨": "☔️", "雪": "❄️", "雷": "⚡️", "霧": "🌫️"
 }
@@ -141,19 +138,40 @@ class NewsCog(commands.Cog):
         return embed
 
     async def _summarize_article_content(self, article_url: str) -> str:
+        """readability-lxmlを使って記事本文を抽出し、要約する"""
         if not self.gemini_model: return "要約機能が無効です。"
         try:
-            async with self.session.get(article_url, timeout=10) as response:
-                if response.status != 200: return "記事の取得に失敗しました。"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            async with self.session.get(article_url, timeout=15, headers=headers) as response:
+                if response.status != 200:
+                    logging.warning(f"記事の取得に失敗 ({article_url}): Status {response.status}")
+                    return f"記事の取得に失敗しました (ステータス: {response.status})。"
                 html_content = await response.text()
-            soup = BeautifulSoup(html_content, 'html.parser')
-            text_content = soup.get_text()
-            prompt = (f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n出力は「です・ます調」で、要約本文のみとしてください。\n---\n{text_content[:6000]}")
+
+            # readability-lxmlで本文のHTMLを抽出
+            doc = Document(html_content)
+            article_html = doc.summary()
+            
+            # 抽出したHTMLからテキストのみを取り出す
+            soup = BeautifulSoup(article_html, 'html.parser')
+            text_content = soup.get_text(separator='\n', strip=True)
+
+            # 抽出した本文が短すぎる場合は、要約に適さないと判断
+            if not text_content or len(text_content) < 100:
+                logging.warning(f"記事本文の抽出に失敗、または短すぎます ({article_url})")
+                return "記事の本文が短いため、要約できませんでした。"
+
+            prompt = (f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n出力は「です・ます調」で、要約本文のみとしてください。\n---\n{text_content[:8000]}")
             response = await self.gemini_model.generate_content_async(prompt)
             return response.text.strip()
-        except asyncio.TimeoutError: return "記事の読み込みがタイムアウトしました。"
+            
+        except asyncio.TimeoutError:
+            logging.warning(f"記事の読み込みがタイムアウトしました ({article_url})")
+            return "記事の読み込みがタイムアウトしました。"
         except Exception as e:
-            logging.error(f"記事の要約中にエラーが発生: {e}")
+            logging.error(f"記事の要約中にエラーが発生 ({article_url}): {e}", exc_info=True)
             return "要約中にエラーが発生しました。"
 
     @tasks.loop(time=NEWS_BRIEFING_TIME)
@@ -166,7 +184,6 @@ class NewsCog(commands.Cog):
         await channel.send(embed=weather_embed)
         logging.info("天気予報を投稿しました。")
 
-        # --- GoogleニュースRSSを利用した株式ニュース機能 ---
         watchlist = await self._get_watchlist()
         if not watchlist:
             logging.info("株式ウォッチリストが空のため、ニュースの取得をスキップします。")
@@ -174,12 +191,10 @@ class NewsCog(commands.Cog):
 
         logging.info(f"ウォッチリストのGoogleニュースRSSを巡回します: {list(watchlist.values())}")
         
-        # 24時間以内のニュースに絞るための時間設定
         one_day_ago = datetime.now(timezone.utc) - timedelta(days=1)
 
         for code, name in watchlist.items():
             try:
-                # 検索クエリを作成 (例: ""トヨタ" AND "7203" when:1d")
                 query = f'"{name}" AND "{code}" when:1d'
                 encoded_query = quote_plus(query)
                 rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
@@ -196,7 +211,6 @@ class NewsCog(commands.Cog):
                     continue
 
                 for entry in feed.entries:
-                    # 記事の日付をパースして比較
                     published_time = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
                     if published_time < one_day_ago:
                         continue
@@ -210,13 +224,13 @@ class NewsCog(commands.Cog):
                         color=discord.Color.green()
                     ).set_footer(text=f"銘柄: {name} ({code}) | {entry.source.title}")
                     await channel.send(embed=news_embed)
-                    await asyncio.sleep(3) # APIへの連続リクエストを避ける
+                    await asyncio.sleep(3)
             
             except Exception as e:
                 logging.error(f"株式ニュースの処理中にエラーが発生 ({name}): {e}", exc_info=True)
                 await channel.send(f"⚠️ {name}のニュース取得中にエラーが発生しました。")
             
-            await asyncio.sleep(5) # 銘柄ごとの処理間隔
+            await asyncio.sleep(5)
 
     # --- 株式ウォッチリスト管理機能 ---
     async def _get_watchlist(self) -> dict:

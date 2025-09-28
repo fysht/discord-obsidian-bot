@@ -6,11 +6,13 @@ import datetime
 import zoneinfo
 import google.generativeai as genai
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 import aiohttp
 import openai
 from pathlib import Path
 import re
+import textwrap
 
 from utils.obsidian_utils import update_section
 import dropbox
@@ -23,6 +25,48 @@ HIGHLIGHT_EMOJI = "✨"
 SUPPORTED_AUDIO_TYPES = ['audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm']
 
 # --- View / Modal ---
+
+class AIHighlightSelectionView(discord.ui.View):
+    """AIが提案したハイライト候補を選択または自分で提案するためのView"""
+    def __init__(self, cog, candidates: list):
+        super().__init__(timeout=1800) # 30分でタイムアウト
+        self.cog = cog
+        
+        for candidate in candidates:
+            button = discord.ui.Button(label=candidate[:80], style=discord.ButtonStyle.secondary, custom_id=f"ai_highlight_{candidate[:90]}")
+            button.callback = self.select_callback
+            self.add_item(button)
+        
+        other_button = discord.ui.Button(label="自分で候補を提案する", style=discord.ButtonStyle.primary, custom_id="propose_other")
+        other_button.callback = self.propose_other_callback
+        self.add_item(other_button)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        selected_highlight = interaction.data['custom_id'].replace("ai_highlight_", "")
+        
+        # 選択されたボタンを成功にし、他を無効化
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+                if child.custom_id == interaction.data['custom_id']:
+                    child.style = discord.ButtonStyle.success
+
+        await interaction.edit_original_response(view=self)
+        await self.cog.set_highlight_on_calendar(selected_highlight, interaction)
+
+    async def propose_other_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        # 元のメッセージを編集して、ユーザーの入力を促す
+        new_embed = interaction.message.embeds[0]
+        new_embed.description = (
+            "✅ AIの提案以外のハイライトを設定しますね。\n\n"
+            "今日のハイライト候補をいくつか、このメッセージに**返信する形**で教えてください（音声入力も可能です）。"
+        )
+        new_embed.color = discord.Color.blurple()
+        
+        # ユーザーが返信できるように、元のメッセージのViewを削除
+        await interaction.edit_original_response(embed=new_embed, view=None)
 
 class TuningInputModal(discord.ui.Modal, title="1日の振り返り"):
     def __init__(self, cog, energy_level: str, concentration_level: str):
@@ -64,9 +108,7 @@ class TuningInputModal(discord.ui.Modal, title="1日の振り返り"):
         await self.cog.save_tuning_to_obsidian(reflection_text)
         
         await interaction.followup.send("✅ 振り返りを記録しました！お疲れ様でした。", ephemeral=True)
-        # 元のメッセージを削除
         await interaction.message.delete()
-
 
 class DailyTuningView(discord.ui.View):
     def __init__(self, cog):
@@ -75,13 +117,11 @@ class DailyTuningView(discord.ui.View):
         self.energy_level = None
         self.concentration_level = None
 
-        # エネルギーレベル選択
         self.add_item(discord.ui.Select(
             placeholder="2. エネルギーレベルを選択 (1-10)",
             options=[discord.SelectOption(label=str(i), value=str(i)) for i in range(1, 11)],
             custom_id="energy_select"
         ))
-        # 集中度選択
         self.add_item(discord.ui.Select(
             placeholder="3. 集中度を選択 (1-10)",
             options=[discord.SelectOption(label=str(i), value=str(i)) for i in range(1, 11)],
@@ -107,12 +147,13 @@ class DailyTuningView(discord.ui.View):
         modal = TuningInputModal(self.cog, self.energy_level, self.concentration_level)
         await interaction.response.send_modal(modal)
 
+
 class HighlightSelectionView(discord.ui.View):
-    """ハイライトを選択するためのボタンを持つView"""
     def __init__(self, candidates: list, bot: commands.Bot, creds):
         super().__init__(timeout=300)
         self.bot = bot
         self.creds = creds
+        self.cog = bot.get_cog("MakeTimeCog")
         
         for candidate in candidates:
             button = discord.ui.Button(
@@ -135,43 +176,23 @@ class HighlightSelectionView(discord.ui.View):
                     child.style = discord.ButtonStyle.success
         
         await interaction.edit_original_response(view=self)
-
-        event_summary = f"{HIGHLIGHT_EMOJI} ハイライト: {selected_highlight_text}"
-        today_str = datetime.datetime.now(JST).date().isoformat()
-        
-        event = {
-            'summary': event_summary,
-            'start': {'date': today_str},
-            'end': {'date': (datetime.date.fromisoformat(today_str) + datetime.timedelta(days=1)).isoformat()},
-        }
-        
-        try:
-            service = build('calendar', 'v3', credentials=self.creds)
-            service.events().insert(calendarId='primary', body=event).execute()
-            await interaction.followup.send(f"✅ 今日のハイライト「**{selected_highlight_text}**」をカレンダーに登録しました！", ephemeral=True)
-        except Exception as e:
-            await interaction.followup.send(f"❌ カレンダーへの登録中にエラーが発生しました: {e}", ephemeral=True)
-            logging.error(f"ハイライトのカレンダー登録中にエラー: {e}", exc_info=True)
+        await self.cog.set_highlight_on_calendar(selected_highlight_text, interaction)
 
 # --- Cog本体 ---
 class MakeTimeCog(commands.Cog):
     """書籍『時間術大全』の習慣を実践するためのCog"""
 
     def __init__(self, bot: commands.Bot):
-        # ... (既存のコードと変更なし)
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
         self.session = aiohttp.ClientSession()
-
-        # ユーザーの状態を一時的に保存
         self.user_states = {}
 
         if not self._are_credentials_valid():
             logging.error("MakeTimeCog: 必須の環境変数が不足。Cogを無効化します。")
             return
         try:
-            # 各APIクライアントを初期化
             self.creds = self._get_google_credentials()
             self.gemini_model = self._initialize_ai_model()
             self.dbx = self._initialize_dropbox_client()
@@ -181,7 +202,7 @@ class MakeTimeCog(commands.Cog):
             logging.info("✅ MakeTimeCogが正常に初期化されました。")
         except Exception as e:
             logging.error(f"❌ MakeTimeCogの初期化中にエラー: {e}", exc_info=True)
-
+    
     def _load_environment_variables(self):
         self.maketime_channel_id = int(os.getenv("MAKETIME_CHANNEL_ID", 0))
         self.google_token_path = os.getenv("GOOGLE_TOKEN_PATH", "token.json")
@@ -197,7 +218,7 @@ class MakeTimeCog(commands.Cog):
             self.maketime_channel_id, self.google_token_path, self.gemini_api_key,
             self.openai_api_key, self.dropbox_refresh_token, self.dropbox_vault_path
         ])
-        
+
     def _get_google_credentials(self):
         token_path = self.google_token_path
         if os.getenv("RENDER"):
@@ -229,11 +250,77 @@ class MakeTimeCog(commands.Cog):
         self.prompt_daily_highlight.cancel()
         self.prompt_daily_tuning.cancel()
 
+    async def _get_todays_events(self) -> list:
+        """今日のGoogleカレンダーの予定を取得する"""
+        try:
+            service = build('calendar', 'v3', credentials=self.creds)
+            today = datetime.datetime.now(JST).date()
+            time_min = datetime.datetime.combine(today, datetime.time.min, tzinfo=JST).isoformat()
+            time_max = datetime.datetime.combine(today, datetime.time.max, tzinfo=JST).isoformat()
+            
+            events_result = service.events().list(
+                calendarId='primary', timeMin=time_min, timeMax=time_max,
+                singleEvents=True, orderBy='startTime'
+            ).execute()
+            return events_result.get('items', [])
+        except HttpError as e:
+            logging.error(f"Googleカレンダーからの予定取得中にエラー: {e}")
+            return []
+
+    async def set_highlight_on_calendar(self, highlight_text: str, interaction: discord.Interaction):
+        """指定されたテキストをハイライトとしてカレンダーに登録する"""
+        event_summary = f"{HIGHLIGHT_EMOJI} ハイライト: {highlight_text}"
+        today_str = datetime.datetime.now(JST).date().isoformat()
+        
+        event = {
+            'summary': event_summary,
+            'start': {'date': today_str},
+            'end': {'date': (datetime.date.fromisoformat(today_str) + datetime.timedelta(days=1)).isoformat()},
+        }
+        
+        try:
+            service = build('calendar', 'v3', credentials=self.creds)
+            service.events().insert(calendarId='primary', body=event).execute()
+            await interaction.followup.send(f"✅ 今日のハイライト「**{highlight_text}**」をカレンダーに登録しました！", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"❌ カレンダーへの登録中にエラーが発生しました: {e}", ephemeral=True)
+            logging.error(f"ハイライトのカレンダー登録中にエラー: {e}", exc_info=True)
+
+
     @tasks.loop(time=HIGHLIGHT_PROMPT_TIME)
     async def prompt_daily_highlight(self):
+        """AIによる候補提案から始めるハイライト設定フロー"""
         channel = self.bot.get_channel(self.maketime_channel_id)
         if not channel: return
+
+        events = await self._get_todays_events()
         
+        # 予定がある場合はAIに提案させる
+        if events:
+            event_list_str = "\n".join([f"- {e.get('summary', '名称未設定')}" for e in events if 'date' not in e.get('start', {})]) # 終日予定は除く
+            
+            if event_list_str:
+                prompt = f"""
+                あなたは優秀なアシスタントです。以下の今日のカレンダーの予定リストから、最も重要だと思われる「ハイライト」の候補を3つまで提案してください。
+                提案は箇条書きのリスト形式で、提案のテキストのみを出力してください。前置きや結論は不要です。
+                
+                # 今日の予定
+                {event_list_str}
+                """
+                response = await self.gemini_model.generate_content_async(prompt)
+                ai_candidates = [line.strip().lstrip("-* ").strip() for line in response.text.split('\n') if line.strip()]
+
+                if ai_candidates:
+                    embed = discord.Embed(
+                        title=f"{HIGHLIGHT_EMOJI} 今日のハイライトを決めましょう",
+                        description="🤖 今日のご予定から、AIがハイライト候補を提案します。以下から選ぶか、自分で提案してください。",
+                        color=discord.Color.gold()
+                    )
+                    view = AIHighlightSelectionView(self, ai_candidates)
+                    await channel.send(embed=embed, view=view)
+                    return
+
+        # 予定がない、またはAIが候補を提案できなかった場合は通常フロー
         advice_text = (
             "おはようございます！今日という一日を最高のものにするため、**今日のハイライト**を決めましょう。\n\n"
             "ハイライトを選ぶための3つの基準を参考にしてください:\n"
@@ -249,9 +336,9 @@ class MakeTimeCog(commands.Cog):
         )
         await channel.send(embed=embed)
 
+
     @tasks.loop(time=TUNING_PROMPT_TIME)
     async def prompt_daily_tuning(self):
-        """1日の振り返りを促すメッセージをView付きで投稿する"""
         channel = self.bot.get_channel(self.maketime_channel_id)
         if not channel: return
         
@@ -264,7 +351,6 @@ class MakeTimeCog(commands.Cog):
         await channel.send(embed=embed, view=view)
 
     async def save_tuning_to_obsidian(self, reflection_text: str):
-        """ユーザーの振り返りをObsidianに保存する"""
         today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{today_str}.md"
         
@@ -340,10 +426,8 @@ class MakeTimeCog(commands.Cog):
 
 
     async def handle_highlight_candidates(self, message: discord.Message, original_msg):
-        """【修正】音声入力の場合、候補を箇条書きに整形する"""
         await original_msg.add_reaction("🤔")
         
-        # 1. テキストを箇条書きに整形する
         formatting_prompt = f"""
         以下のテキストは、今日やりたいことのリストです。内容を解釈し、箇条書きのリスト形式で出力してください。
         箇条書きのテキストのみを生成し、前置きや説明は一切含めないでください。
@@ -354,10 +438,8 @@ class MakeTimeCog(commands.Cog):
         formatting_response = await self.gemini_model.generate_content_async(formatting_prompt)
         formatted_candidates_text = formatting_response.text.strip()
 
-        # 2. 整形後のテキストを元に候補リストを作成
         candidates = [line.strip().lstrip("-* ").strip() for line in formatted_candidates_text.split('\n') if line.strip()]
         
-        # 3. 候補リストを使って分析プロンプトを実行
         analysis_prompt = f"""
         ユーザーは一日の最も重要なタスクである「ハイライト」を決めようとしています。
         以下の3つの基準に基づき、ユーザーが提示した各候補を分析し、選択の手助けをしてください。

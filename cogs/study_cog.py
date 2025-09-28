@@ -11,69 +11,61 @@ from dropbox.files import FileMetadata, DownloadError
 from dropbox.exceptions import ApiError
 import asyncio
 import re
+import textwrap
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 STUDY_CHANNEL_ID = int(os.getenv("STUDY_CHANNEL_ID", 0))
-STUDY_TIME = time(hour=0, minute=25, tzinfo=JST) 
-VAULT_STUDY_PATH = "/Study" # Obsidianの教材フォルダ
-QUESTIONS_PER_SESSION = 10 # 1回に出題する問題数
+PREPARE_QUIZ_TIME = time(hour=7, minute=0, tzinfo=JST) # 毎朝7時にその日の問題リストを作成
+VAULT_STUDY_PATH = "/Study"
+QUESTIONS_PER_DAY = 10
 
-class QuizView(discord.ui.View):
-    """クイズの選択肢ボタンを持つView"""
-    def __init__(self, cog_instance, questions):
+class SingleQuizView(discord.ui.View):
+    """1問ごとのクイズの選択肢ボタンを持つView"""
+    def __init__(self, cog_instance, question_data):
+        # 回答期限をなくすため、timeout=Noneに設定
         super().__init__(timeout=None)
         self.cog = cog_instance
-        self.questions = questions
-        self.current_question_index = 0
-        self.user_answers = []
-        self.message = None
-        # 最初の問題を作成
-        self.embed = self.create_question_embed()
+        self.question_data = question_data
+        self.is_answered = False
 
-    def create_question_embed(self):
-        question_data = self.questions[self.current_question_index]
-        self.clear_items() # 以前のボタンをクリア
-        
-        embed = discord.Embed(
-            title=f"第 {self.current_question_index + 1} 問 / {len(self.questions)} 問",
-            description=f"**{question_data['question']}**",
-            color=discord.Color.blue()
-        )
-        
-        options = question_data['options']
-        # 選択肢をアルファベット順（A, B, C, D）に並べ替える
-        sorted_options = sorted(options.items())
-
-        for key, value in sorted_options:
-            button = discord.ui.Button(label=f"{key}) {value}", style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
+        # A, B, C, D ボタンを作成
+        for key in sorted(question_data['options'].keys()):
+            button = discord.ui.Button(label=key, style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
             button.callback = self.button_callback
             self.add_item(button)
-        
-        return embed
-
+    
     async def button_callback(self, interaction: discord.Interaction):
+        if self.is_answered:
+            await interaction.response.send_message("この問題には既に回答済みです。", ephemeral=True, delete_after=10)
+            return
+            
         await interaction.response.defer()
         selected_option_key = interaction.data['custom_id'].split('_')[1]
-        
-        question_data = self.questions[self.current_question_index]
-        is_correct = (selected_option_key.upper() == question_data['answer'].upper())
-        
-        self.user_answers.append({
-            "question_id": question_data['id'],
-            "is_correct": is_correct,
-            "question_data": question_data # 解説表示のため
-        })
+        is_correct = (selected_option_key.upper() == self.question_data['answer'].upper())
 
-        # 次の問題へ
-        self.current_question_index += 1
-        if self.current_question_index < len(self.questions):
-            next_embed = self.create_question_embed()
-            await self.message.edit(embed=next_embed, view=self)
-        else:
-            # クイズ終了
-            await self.cog.end_quiz_session(interaction.user, self.user_answers, self.message)
-
+        # 回答を記録
+        await self.cog.process_answer(self.question_data['id'], is_correct)
+        
+        self.is_answered = True
+        
+        # 全てのボタンを無効化
+        for item in self.children:
+            item.disabled = True
+            if item.custom_id == interaction.data['custom_id']:
+                item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
+        
+        # 結果を表示
+        result_embed = interaction.message.embeds[0]
+        result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
+        result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解..."
+        
+        footer_text = f"正解: {self.question_data['answer']}\n"
+        footer_text += textwrap.fill(f"解説: {self.question_data['explanation']}", width=60)
+        result_embed.set_footer(text=footer_text)
+        
+        await interaction.edit_original_response(embed=result_embed, view=self)
+        self.stop()
 
 class StudyCog(commands.Cog):
     """Obsidianの教材データを元に学習クイズを生成するCog"""
@@ -81,6 +73,7 @@ class StudyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.is_ready = False
+        self.daily_question_pool = []
         self._load_env_vars()
         
         if not self._validate_env_vars():
@@ -90,7 +83,8 @@ class StudyCog(commands.Cog):
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
             self.is_ready = True
             if STUDY_CHANNEL_ID != 0:
-                self.daily_quiz.start()
+                self.prepare_daily_questions.start()
+                self.ask_next_question.start()
         except Exception as e:
             logging.error(f"StudyCogの初期化中にエラー: {e}", exc_info=True)
 
@@ -104,40 +98,44 @@ class StudyCog(commands.Cog):
         return all([self.dropbox_refresh_token, self.dropbox_vault_path])
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
-        """Q&A形式のMarkdownテキストを解析して、問題のリストを返す"""
+        """Markdownテーブル形式のテキストを解析して、問題のリストを返す"""
         questions = []
-        # ---で区切られた各問題ブロックを処理
-        for block in raw_content.strip().split('---'):
-            if not block.strip():
+        lines = raw_content.strip().split('\n')
+        
+        if len(lines) < 3:
+            return []
+
+        for line in lines[2:]:
+            if not line.strip().startswith('|'):
                 continue
             
             try:
-                question_data = {}
+                cells = [cell.strip() for cell in line.strip()[1:-1].split('|')]
+                if len(cells) != 5:
+                    continue
+
+                question_data = {
+                    'id': cells[0],
+                    'question': cells[1],
+                    'answer': cells[3].upper(),
+                    'explanation': cells[4]
+                }
+                
                 options = {}
-                
-                # 正規表現で行を解析
-                question_data['id'] = re.search(r'ID:\s*(.*)', block, re.IGNORECASE).group(1).strip()
-                question_data['question'] = re.search(r'Question:\s*(.*)', block, re.IGNORECASE).group(1).strip()
-                
-                options_block = re.search(r'Options:\s*\n(.*?)\nAnswer:', block, re.DOTALL | re.IGNORECASE).group(1)
-                for option_line in options_block.strip().split('\n'):
-                    match = re.match(r'-\s*([A-D])\)\s*(.*)', option_line.strip(), re.IGNORECASE)
+                options_raw = cells[2].split('<br>')
+                for option_line in options_raw:
+                    match = re.match(r'([A-D])\)\s*(.*)', option_line.strip(), re.IGNORECASE)
                     if match:
                         options[match.group(1).upper()] = match.group(2).strip()
                 question_data['options'] = options
                 
-                question_data['answer'] = re.search(r'Answer:\s*(.*)', block, re.IGNORECASE).group(1).strip().upper()
-                question_data['explanation'] = re.search(r'Explanation:\s*(.*)', block, re.DOTALL | re.IGNORECASE).group(1).strip()
-                
                 questions.append(question_data)
-            except AttributeError:
-                # パースに失敗したブロックはスキップ
-                logging.warning(f"問題ブロックの解析に失敗しました。スキップします:\n---\n{block[:100]}...\n---")
+            except Exception as e:
+                logging.warning(f"テーブル行の解析に失敗しました。スキップします: {e}\n行内容: {line}")
                 continue
         return questions
 
     async def get_all_questions_from_vault(self) -> list[dict]:
-        """/Study フォルダ内の全教材を解析して、全ての問題リストを返す"""
         all_questions = []
         try:
             folder_path = f"{self.dropbox_vault_path}{VAULT_STUDY_PATH}"
@@ -173,82 +171,75 @@ class StudyCog(commands.Cog):
         if correct_streak >= 4: return (today + timedelta(days=35)).isoformat()
         return (today + timedelta(days=1)).isoformat()
 
-    @tasks.loop(time=STUDY_TIME)
-    async def daily_quiz(self):
-        channel = self.bot.get_channel(STUDY_CHANNEL_ID)
-        if not channel: return
+    async def process_answer(self, q_id: str, is_correct: bool):
+        progress = await self.get_user_progress()
         
+        streak = (progress.get(q_id, {}).get("correct_streak", 0) + 1) if is_correct else 0
+            
+        progress[q_id] = {
+            "last_answered": datetime.now(JST).date().isoformat(),
+            "correct_streak": streak,
+            "next_review_date": self.get_next_review_date(streak)
+        }
+        await self.save_user_progress(progress)
+        logging.info(f"回答を記録しました: ID={q_id}, 正解={is_correct}, 連続正解={streak}")
+
+    @tasks.loop(time=PREPARE_QUIZ_TIME)
+    async def prepare_daily_questions(self):
+        logging.info("本日の問題プールの作成を開始します...")
         all_questions = await self.get_all_questions_from_vault()
         user_progress = await self.get_user_progress()
         
         if not all_questions:
-            await channel.send("教材が見つかりませんでした。Obsidianの`/Study`フォルダにQ&A形式の教材ファイルを追加してください。")
+            logging.warning("教材が見つからないため、問題プールを作成できません。")
+            self.daily_question_pool = []
             return
 
         today_str = datetime.now(JST).date().isoformat()
-        
-        # 1. 復習すべき問題を選ぶ
-        review_question_ids = {q_id for q_id, data in user_progress.items() if data.get("next_review_date") <= today_str}
-        
-        # 2. 未学習の問題を選ぶ
+        review_ids = {q_id for q_id, data in user_progress.items() if data.get("next_review_date") <= today_str}
         answered_ids = set(user_progress.keys())
-        new_question_ids = {q['id'] for q in all_questions if q['id'] not in answered_ids}
+        new_ids = {q['id'] for q in all_questions if q['id'] not in answered_ids}
         
-        # 3. 出題リストを作成 (復習優先)
-        questions_to_ask_ids = list(review_question_ids)
-        
-        # 4. 残りを新しい問題からランダムに選ぶ
-        remaining_slots = QUESTIONS_PER_SESSION - len(questions_to_ask_ids)
+        pool_ids = list(review_ids)
+        remaining_slots = QUESTIONS_PER_DAY - len(pool_ids)
         if remaining_slots > 0:
-            questions_to_ask_ids.extend(random.sample(sorted(list(new_question_ids)), min(remaining_slots, len(new_question_ids))))
+            pool_ids.extend(random.sample(sorted(list(new_ids)), min(remaining_slots, len(new_ids))))
         
-        if not questions_to_ask_ids:
-            await channel.send("今日出題する問題はありませんでした。お疲れ様でした！")
+        self.daily_question_pool = [q for q in all_questions if q['id'] in pool_ids]
+        random.shuffle(self.daily_question_pool)
+        logging.info(f"本日の問題プールを作成しました: {len(self.daily_question_pool)}問")
+
+    @tasks.loop(hours=1)
+    async def ask_next_question(self):
+        now = datetime.now(JST)
+        if not (9 <= now.hour <= 22): # 9時から22時の間のみ出題
+            return
+        
+        if not self.daily_question_pool:
             return
             
-        # 問題IDから問題データを取得
-        questions_to_ask_data = [q for q in all_questions if q['id'] in questions_to_ask_ids]
-        random.shuffle(questions_to_ask_data) # 出題順をシャッフル
+        channel = self.bot.get_channel(STUDY_CHANNEL_ID)
+        if not channel: return
 
-        try:
-            view = QuizView(self, questions_to_ask_data)
-            message = await channel.send("✍️ 今日の学習クイズです！", embed=view.embed, view=view)
-            view.message = message
-        except Exception as e:
-            await channel.send(f"クイズの表示中にエラーが発生しました: {e}")
-            logging.error(f"クイズ表示エラー: {e}", exc_info=True)
-
-    async def end_quiz_session(self, user: discord.User, answers: list, message: discord.Message):
-        progress = await self.get_user_progress()
-        correct_count = 0
+        question_data = self.daily_question_pool.pop(0)
         
-        result_lines = []
-        for i, ans in enumerate(answers):
-            q_data = ans["question_data"]
-            is_correct = ans["is_correct"]
-            
-            if is_correct:
-                correct_count += 1
-                streak = progress.get(q_data['id'], {}).get("correct_streak", 0) + 1
-                result_lines.append(f"✅ **第{i+1}問**: 正解！")
-            else:
-                streak = 0
-                result_lines.append(f"❌ **第{i+1}問**: 不正解... (正解: {q_data['answer']})")
-            
-            progress[q_data['id']] = {
-                "last_answered": datetime.now(JST).date().isoformat(),
-                "correct_streak": streak,
-                "next_review_date": self.get_next_review_date(streak)
-            }
-
-        await self.save_user_progress(progress)
+        options_text = "\n".join([f"**{key})** {value}" for key, value in sorted(question_data['options'].items())])
+        description = f"{question_data['question']}\n\n{options_text}"
         
         embed = discord.Embed(
-            title="クイズ終了！",
-            description=f"**結果: {correct_count} / {len(answers)} 正解**\n\n" + "\n".join(result_lines),
-            color=discord.Color.green() if correct_count > len(answers) / 2 else discord.Color.red()
+            title=f"✍️ 学習クイズ ({QUESTIONS_PER_DAY - len(self.daily_question_pool)}/{QUESTIONS_PER_DAY})",
+            description=description,
+            color=discord.Color.blue()
         )
-        await message.edit(content="お疲れ様でした！", embed=embed, view=None)
+        
+        view = SingleQuizView(self, question_data)
+        await channel.send(embed=embed, view=view)
+        logging.info(f"問題を出題しました: ID={question_data['id']}")
+
+    @prepare_daily_questions.before_loop
+    @ask_next_question.before_loop
+    async def before_tasks(self):
+        await self.bot.wait_until_ready()
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StudyCog(bot))
