@@ -25,35 +25,78 @@ JST = timezone(timedelta(hours=+9), 'JST')
 TODAY_SCHEDULE_TIME = time(hour=7, minute=0, tzinfo=JST)
 DAILY_REVIEW_TIME = time(hour=21, minute=30, tzinfo=JST)
 MEMO_TO_CALENDAR_EMOJI = '📅'
-CONFIRM_EMOJI = '👍'
-CANCEL_EMOJI = '👎'
 
-# Google Calendar APIのスコープ (読み書き可能な権限)
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-
-# --- 作業時間帯のデフォルト設定 ---
 WORK_START_HOUR = 8
 WORK_END_HOUR = 22
-MIN_TASK_DURATION_MINUTES = 10 # 最低確保するタスク時間
+MIN_TASK_DURATION_MINUTES = 10
+
+class TaskReviewView(discord.ui.View):
+    """1日の振り返りタスクを処理するためのView"""
+    def __init__(self, cog, task_summary: str, task_date: datetime.date):
+        super().__init__(timeout=86400) # 24時間有効
+        self.cog = cog
+        self.task_summary = task_summary
+        self.task_date = task_date
+        self.is_processed = False
+
+    async def handle_interaction(self, interaction: discord.Interaction, status: str, log_marker: str, feedback: str):
+        if self.is_processed:
+            await interaction.response.send_message("このタスクは既に対応済みです。", ephemeral=True, delete_after=10)
+            return
+        
+        await interaction.response.defer()
+        self.is_processed = True
+
+        # 未完了（繰越）の場合のみリストに追加
+        if status == "uncompleted":
+            self.cog.uncompleted_tasks[self.task_summary] = self.task_date
+
+        # Obsidianにログを記録
+        task_log_md = f"- [{log_marker}] {self.task_summary}\n"
+        await self.cog._update_obsidian_task_log(self.task_date, task_log_md)
+        
+        # 元のメッセージを削除
+        await interaction.message.delete()
+        
+        # フィードバックを送信
+        feedback_msg = await interaction.channel.send(f"{interaction.user.mention}さん、「{self.task_summary}」を**{feedback}**として記録しました。")
+        await asyncio.sleep(10)
+        await feedback_msg.delete()
+
+        self.stop()
+
+    @discord.ui.button(label="完了", style=discord.ButtonStyle.success, emoji="✅")
+    async def complete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "completed", "x", "完了")
+
+    @discord.ui.button(label="未完了 (繰越)", style=discord.ButtonStyle.danger, emoji="❌")
+    async def uncompleted(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "uncompleted", " ", "未完了（翌日に繰越）")
+
+    @discord.ui.button(label="破棄", style=discord.ButtonStyle.secondary, emoji="🗑️")
+    async def discard(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.handle_interaction(interaction, "discarded", "-", "破棄")
+
 
 class CalendarCog(commands.Cog):
     """
     Googleカレンダーと連携し、タスク管理を自動化するCog
     """
     def __init__(self, bot: commands.Bot):
+        # ... (変更なし)
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
         self.uncompleted_tasks = {} # { task_summary: original_date }
         self.pending_schedules = {}
         self.pending_date_prompts = {}
-        self.last_schedule_message_id = None # 最後に投稿した今日の予定メッセージID
+        self.last_schedule_message_id = None
 
         if not self._are_credentials_valid():
             logging.error("CalendarCog: 必須の環境変数が不足しています。このCogは無効化されます。")
             return
         try:
-            # --- サーバー用の認証ロジック ---
             self.creds = self._get_google_credentials()
             if not self.creds or not self.creds.valid:
                 if self.creds and self.creds.expired and self.creds.refresh_token:
@@ -63,12 +106,10 @@ class CalendarCog(commands.Cog):
                         logging.info("Google APIのアクセストークンをリフレッシュしました。")
                     except RefreshError as e:
                         logging.error(f"❌ Google APIトークンのリフレッシュに失敗: {e}")
-                        logging.error("-> token.jsonを再生成し、サーバーにアップロードする必要があります。")
-                        return # is_readyをFalseのまま終了
+                        return
                 else:
                     logging.error("❌ Google Calendarの有効な認証情報(token.json)が見つかりません。")
-                    return # is_readyをFalseのまま終了
-            # --- ここまで ---
+                    return
 
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
@@ -77,6 +118,8 @@ class CalendarCog(commands.Cog):
             logging.info("✅ CalendarCogが正常に初期化され、準備が完了しました。")
         except Exception as e:
             logging.error(f"❌ CalendarCogの初期化中に予期せぬエラーが発生しました: {e}", exc_info=True)
+
+
     def _load_environment_variables(self):
         self.calendar_channel_id = int(os.getenv("CALENDAR_CHANNEL_ID", 0))
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
@@ -130,149 +173,11 @@ class CalendarCog(commands.Cog):
         if self.is_ready:
             self.notify_today_events.cancel()
             self.send_daily_review.cancel()
-            
-    async def schedule_task_from_memo(self, task_content: str, target_date: Optional[datetime.date] = None):
-        """MemoCogから呼び出されるエントリーポイント"""
-        channel = self.bot.get_channel(self.calendar_channel_id)
-        if not channel:
-            logging.error("カレンダーチャンネルが見つかりません。")
-            return
-
-        task_analysis = await self._analyze_task_with_ai(task_content, target_date)
-        
-        if not task_analysis or not task_analysis.get("summary"):
-            await channel.send(f"⚠️「{task_content}」のタスク分析に失敗しました。処理を中断します。")
-            return
-
-        date_to_schedule = datetime.strptime(task_analysis["target_date"], '%Y-%m-%d').date()
-
-        if task_analysis.get("all_day"):
-            await self._create_google_calendar_event(task_analysis["summary"], date_to_schedule)
-            await channel.send(f"✅ **{date_to_schedule.strftime('%Y-%m-%d')}** の終日予定として「{task_analysis['summary']}」を登録しました。")
-        else:
-            free_slots = await self._find_free_slots(date_to_schedule)
-            await self._schedule_simple_task(None, task_analysis, free_slots, date_to_schedule)
-
-    async def _analyze_task_with_ai(self, task_content: str, specified_date: Optional[datetime.date] = None) -> dict | None:
-        today_str = datetime.now(JST).strftime('%Y-%m-%d')
-        prompt = f"""
-        あなたは優秀なプロジェクトマネージャーです。以下のタスクメモを分析し、カレンダー登録用の情報を抽出してください。
-
-        # 指示
-        1.  **日付の判断**:
-            - ユーザーが日付を指定している場合(`specified_date`)は、それを優先してください。
-            - 指定がない場合は、メモ内容から日付を読み取り `YYYY-MM-DD` 形式に変換してください。
-            - どちらにも日付情報がなければ、今日の日付 (`{today_str}`) を使用してください。
-        2.  **時間と所要時間の判断**:
-            - メモ内容から具体的な開始時刻や終了時刻が読み取れるか分析してください。（例：「14時からMTG」）
-            - 時間指定がなく、内容から作業時間が予測できる場合は、現実的な所要時間を分単位で予測してください。（例：「企画書を完成させる」→ 120分）
-            - 上記に当てはまらず、具体的な時間を必要としないタスク（例：「Aさんに電話」）や、終日かかるようなタスクの場合は、「終日予定」として判断してください。
-        3.  **要約**: カレンダーに登録するのにふさわしい、簡潔なタスク名（summary）を作成してください。
-        4.  **出力**: 以下のJSON形式で出力してください。JSON以外の説明や前置きは一切含めないでください。
-
-        # 出力フォーマット
-        {{
-          "target_date": "YYYY-MM-DD",
-          "summary": "（タスクの要約）",
-          "start_time": "HH:MM" or null,
-          "duration_minutes": （所要時間） or null,
-          "all_day": true or false
-        }}
-        ---
-        # タスクメモ
-        {task_content}
-        
-        # ユーザー指定の日付 (あれば)
-        {specified_date.isoformat() if specified_date else "なし"}
-        """
-        try:
-            response = await self.gemini_model.generate_content_async(prompt)
-            json_match = re.search(r'```json\n(\{.*?\})\n```', response.text, re.DOTALL)
-            json_text = json_match.group(1) if json_match else response.text
-            return json.loads(json_text)
-        except Exception as e:
-            logging.error(f"AIタスク分析のJSON解析に失敗: {e}\nAI Response: {getattr(locals(), 'response', 'N/A')}")
-            return None
-
-    async def _find_free_slots(self, target_date: datetime.date) -> list:
-        try:
-            service = build('calendar', 'v3', credentials=self.creds)
-            start_of_day = datetime.combine(target_date, time(0, 0), tzinfo=JST)
-            end_of_day = start_of_day + timedelta(days=1)
-
-            events_result = service.events().list(
-                calendarId='primary', timeMin=start_of_day.isoformat(),
-                timeMax=end_of_day.isoformat(), singleEvents=True, orderBy='startTime'
-            ).execute()
-            
-            busy_slots = []
-            for event in events_result.get('items', []):
-                start_str = event['start'].get('dateTime')
-                end_str = event['end'].get('dateTime')
-                if start_str and end_str:
-                    busy_slots.append((datetime.fromisoformat(start_str), datetime.fromisoformat(end_str)))
-            
-            work_start_time = start_of_day.replace(hour=WORK_START_HOUR)
-            work_end_time = start_of_day.replace(hour=WORK_END_HOUR)
-            
-            free_slots = []
-            current_time = work_start_time
-            while current_time < work_end_time:
-                is_in_busy_slot = False
-                for start, end in busy_slots:
-                    if start <= current_time < end:
-                        current_time = end
-                        is_in_busy_slot = True
-                        break
-                
-                if not is_in_busy_slot:
-                    slot_start = current_time
-                    slot_end = work_end_time
-                    for start, _ in busy_slots:
-                        if start > slot_start:
-                            slot_end = min(slot_end, start)
-                            break
-                    if slot_start < slot_end:
-                      free_slots.append((slot_start, slot_end))
-                    current_time = slot_end
-            return free_slots
-        except HttpError as e:
-            logging.error(f"Googleカレンダーからの予定取得中にエラー: {e}")
-            return []
     
-    async def _schedule_simple_task(self, message: Optional[discord.Message], analysis: dict, free_slots: list, target_date: datetime.date):
-        duration = analysis.get('duration_minutes') or 60
-        summary = analysis['summary']
-        start_time_str = analysis.get('start_time')
-
-        channel = self.bot.get_channel(self.calendar_channel_id)
-        if not channel: return
-        
-        start_time = None
-        if start_time_str:
-            try:
-                parsed_time = datetime.strptime(start_time_str, '%H:%M').time()
-                start_time = datetime.combine(target_date, parsed_time, tzinfo=JST)
-            except ValueError:
-                await channel.send(f"⚠️ AIが提案した開始時刻 `{start_time_str}` の形式が不正なため、空き時間を探します。")
-
-        if not start_time:
-            best_slot_start = next((start for start, end in free_slots if (end - start) >= timedelta(minutes=duration)), None)
-            if not best_slot_start:
-                await self._create_google_calendar_event(summary, target_date) # 終日予定としてフォールバック
-                await channel.send(f"💬 **{target_date.strftime('%Y-%m-%d')}** の作業時間内に最適な空き時間が見つからなかったため、終日予定として登録しました。")
-                return
-            start_time = best_slot_start
-
-        end_time = start_time + timedelta(minutes=duration)
-        await self._create_google_calendar_event(summary, target_date, start_time, duration)
-        await channel.send(f"✅ **{target_date.strftime('%m/%d')} {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** に「{summary}」を登録しました。")
-
     async def _create_google_calendar_event(self, summary: str, date: datetime.date, start_time: Optional[datetime] = None, duration_minutes: int = 60):
         try:
             service = build('calendar', 'v3', credentials=self.creds)
             if start_time:
-                # 時間指定イベント
                 end_time = start_time + timedelta(minutes=duration_minutes)
                 event = {
                     'summary': summary,
@@ -280,7 +185,6 @@ class CalendarCog(commands.Cog):
                     'end': {'dateTime': end_time.isoformat(), 'timeZone': 'Asia/Tokyo'},
                 }
             else:
-                # 終日イベント
                 end_date = date + timedelta(days=1)
                 event = {'summary': summary, 'start': {'date': date.isoformat()}, 'end': {'date': end_date.isoformat()}}
             
@@ -288,7 +192,7 @@ class CalendarCog(commands.Cog):
             logging.info(f"[CalendarCog] Googleカレンダーに予定を追加しました: '{summary}' on {date}")
         except HttpError as e:
             logging.error(f"Googleカレンダーへのイベント作成中にエラー: {e}")
-            raise # エラーを呼び出し元に伝える
+            raise
 
     @tasks.loop(time=TODAY_SCHEDULE_TIME)
     async def notify_today_events(self):
@@ -296,7 +200,6 @@ class CalendarCog(commands.Cog):
         channel = self.bot.get_channel(self.calendar_channel_id)
         if not channel: return
 
-        # 前回のメッセージを削除
         if self.last_schedule_message_id:
             try:
                 old_message = await channel.fetch_message(self.last_schedule_message_id)
@@ -320,7 +223,7 @@ class CalendarCog(commands.Cog):
             embed = self._create_today_embed(today, events, advice)
 
             new_message = await channel.send(embed=embed)
-            self.last_schedule_message_id = new_message.id # 新しいIDを保存
+            self.last_schedule_message_id = new_message.id
 
             for event in events: await self._add_to_daily_log(event)
         except Exception as e:
@@ -328,34 +231,49 @@ class CalendarCog(commands.Cog):
 
     @tasks.loop(time=DAILY_REVIEW_TIME)
     async def send_daily_review(self):
+        """1日の振り返りをボタン付きで投稿する"""
         if not self.is_ready: return
         try:
-            today_str = datetime.now(JST).strftime('%Y-%m-%d')
+            today = datetime.now(JST).date()
+            today_str = today.strftime('%Y-%m-%d')
             log_path = f"{self.dropbox_vault_path}/.bot/calendar_log/{today_str}.json"
+            
             try:
                 _, res = self.dbx.files_download(log_path)
                 daily_events = json.loads(res.content.decode('utf-8'))
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.get_path().is_not_found():
-                    await self._carry_over_uncompleted_tasks()
-                    return
-                raise
-            if not daily_events: 
-                await self._carry_over_uncompleted_tasks()
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.is_not_found():
+                    daily_events = []
+                else: raise
+            
+            # 未完了タスクの繰り越し処理を先に実行
+            await self._carry_over_uncompleted_tasks()
+
+            if not daily_events:
+                logging.info(f"{today_str}のレビュー対象タスクはありません。")
                 return
+
             channel = self.bot.get_channel(self.calendar_channel_id)
             if channel:
-                await channel.send(f"--- **🗓️ {today_str} のタスクレビュー** ---\nお疲れ様でした！今日のタスクの達成度をリアクションで教えてください。", delete_after=3600) # 1時間後に削除
+                header_msg = await channel.send(f"--- **🗓️ {today_str} のタスクレビュー** ---\nお疲れ様でした！今日のタスクの達成度をボタンで教えてください。")
+                
                 for event in daily_events:
-                    embed = discord.Embed(title=f"タスク: {event['summary']}", color=discord.Color.gold())
-                    embed.set_footer(text=f"Task for: {today_str}")
-                    message = await channel.send(embed=embed)
-                    await message.add_reaction("✅")
-                    await message.add_reaction("❌")
-                await channel.send("--------------------", delete_after=3600) # 1時間後に削除
-            await self._carry_over_uncompleted_tasks()
+                    embed = discord.Embed(
+                        title=f"タスク: {event['summary']}",
+                        color=discord.Color.gold()
+                    )
+                    view = TaskReviewView(self, event['summary'], today)
+                    await channel.send(embed=embed, view=view)
+                
+                footer_msg = await channel.send("--------------------")
+                # 1時間後にヘッダーとフッターを削除
+                await asyncio.sleep(3600)
+                await header_msg.delete()
+                await footer_msg.delete()
+
         except Exception as e:
             logging.error(f"[CalendarCog] 振り返り通知中にエラー: {e}", exc_info=True)
+
 
     async def _carry_over_uncompleted_tasks(self):
         if not self.uncompleted_tasks: return
@@ -399,20 +317,22 @@ class CalendarCog(commands.Cog):
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
         log_path = f"{self.dropbox_vault_path}/.bot/calendar_log/{today_str}.json"
         try:
-            _, res = self.dbx.files_download(log_path)
-            daily_events = json.loads(res.content.decode('utf-8'))
-        except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                daily_events = []
-            else:
-                logging.error(f"デイリーログの読み込みに失敗: {e}")
-                return
-        if not any(e['id'] == event['id'] for e in daily_events):
-            daily_events.append({'id': event['id'], 'summary': event.get('summary', '名称未設定')})
             try:
-                self.dbx.files_upload(json.dumps(daily_events, indent=2, ensure_ascii=False).encode('utf-8'), log_path, mode=WriteMode('overwrite'))
-            except Exception as e:
-                logging.error(f"デイリーログの保存に失敗: {e}")
+                _, res = self.dbx.files_download(log_path)
+                daily_events = json.loads(res.content.decode('utf-8'))
+            except ApiError as e:
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.is_not_found():
+                    daily_events = []
+                else:
+                    raise
+            if not any(e['id'] == event['id'] for e in daily_events):
+                daily_events.append({'id': event['id'], 'summary': event.get('summary', '名称未設定')})
+                try:
+                    self.dbx.files_upload(json.dumps(daily_events, indent=2, ensure_ascii=False).encode('utf-8'), log_path, mode=WriteMode('overwrite'))
+                except Exception as e:
+                    logging.error(f"デイリーログの保存に失敗: {e}")
+        except Exception as e:
+            logging.error(f"デイリーログの読み込みまたは処理中にエラー: {e}", exc_info=True)
             
     async def _update_obsidian_task_log(self, date: datetime.date, log_content: str):
         date_str = date.strftime('%Y-%m-%d')
@@ -434,5 +354,6 @@ class CalendarCog(commands.Cog):
                 logging.error(f"Obsidianタスクログの更新に失敗 (試行 {attempt + 1}/3): {e}")
                 if attempt < 2: await asyncio.sleep(5 * (attempt + 1))
                 else: logging.error("リトライの上限に達しました。アップロードを断念します。")
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(CalendarCog(bot))

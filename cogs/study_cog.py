@@ -83,8 +83,14 @@ class StudyCog(commands.Cog):
     async def on_ready(self):
         """Cogが準備完了したときにタスクを開始する"""
         if self.is_ready and STUDY_CHANNEL_ID != 0:
+            # Bot起動時に問題プールを作成すべきか判断する
+            now = datetime.now(JST)
+            if now.time() >= PREPARE_QUIZ_TIME and not self.daily_question_pool:
+                logging.info("起動時に問題プールを準備します...")
+                await self._prepare_question_pool_logic()
+
             if not self.prepare_daily_questions.is_running():
-                logging.info("学習クイズの準備タスクを開始します。")
+                logging.info("学習クイズの準備タスクをスケジュールします。")
                 self.prepare_daily_questions.start()
             if not self.ask_next_question.is_running():
                 logging.info("学習クイズの出題タスクを開始します。")
@@ -185,8 +191,8 @@ class StudyCog(commands.Cog):
         await self.save_user_progress(progress)
         logging.info(f"回答を記録しました: ID={q_id}, 正解={is_correct}, 連続正解={streak}")
 
-    @tasks.loop(time=PREPARE_QUIZ_TIME)
-    async def prepare_daily_questions(self):
+    async def _prepare_question_pool_logic(self):
+        """問題プールを作成するコアロジック"""
         logging.info("本日の問題プールの作成を開始します...")
         all_questions = await self.get_all_questions_from_vault()
         user_progress = await self.get_user_progress()
@@ -204,7 +210,6 @@ class StudyCog(commands.Cog):
         pool_ids = list(review_ids)
         remaining_slots = QUESTIONS_PER_DAY - len(pool_ids)
         if remaining_slots > 0:
-            # sortedで囲むことで、setの順序不定性をなくし、テストしやすくする
             new_ids_list = sorted(list(new_ids))
             pool_ids.extend(random.sample(new_ids_list, min(remaining_slots, len(new_ids_list))))
         
@@ -212,10 +217,13 @@ class StudyCog(commands.Cog):
         random.shuffle(self.daily_question_pool)
         logging.info(f"本日の問題プールを作成しました: {len(self.daily_question_pool)}問")
 
+    @tasks.loop(time=PREPARE_QUIZ_TIME)
+    async def prepare_daily_questions(self):
+        await self._prepare_question_pool_logic()
+
     @tasks.loop(hours=1)
     async def ask_next_question(self):
         now = datetime.now(JST)
-        # 9時から22時の間のみ出題
         if not (9 <= now.hour <= 22):
             return
         
