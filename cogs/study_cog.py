@@ -28,7 +28,7 @@ class SingleQuizView(discord.ui.View):
         self.question_data = question_data
         self.is_answered = False
 
-        for key in sorted(question_data['options'].keys()):
+        for key in sorted(question_data['Options'].keys()):
             button = discord.ui.Button(label=key, style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
             button.callback = self.button_callback
             self.add_item(button)
@@ -40,9 +40,9 @@ class SingleQuizView(discord.ui.View):
             
         await interaction.response.defer()
         selected_option_key = interaction.data['custom_id'].split('_')[1]
-        is_correct = (selected_option_key.upper() == self.question_data['answer'].upper())
+        is_correct = (selected_option_key.upper() == self.question_data['Answer'].upper())
 
-        await self.cog.process_answer(self.question_data['id'], is_correct)
+        await self.cog.process_answer(self.question_data['ID'], is_correct)
         self.is_answered = True
         
         for item in self.children:
@@ -54,8 +54,8 @@ class SingleQuizView(discord.ui.View):
         result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
         result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解..."
         
-        footer_text = f"正解: {self.question_data['answer']}\n"
-        footer_text += textwrap.fill(f"解説: {self.question_data['explanation']}", width=60)
+        footer_text = f"正解: {self.question_data['Answer']}\n"
+        footer_text += textwrap.fill(f"解説: {self.question_data['Explanation']}", width=60)
         result_embed.set_footer(text=footer_text)
         
         await interaction.edit_original_response(embed=result_embed, view=self)
@@ -83,7 +83,6 @@ class StudyCog(commands.Cog):
     async def on_ready(self):
         """Cogが準備完了したときにタスクを開始する"""
         if self.is_ready and STUDY_CHANNEL_ID != 0:
-            # Bot起動時に問題プールを作成すべきか判断する
             now = datetime.now(JST)
             if now.time() >= PREPARE_QUIZ_TIME and not self.daily_question_pool:
                 logging.info("起動時に問題プールを準備します...")
@@ -106,41 +105,22 @@ class StudyCog(commands.Cog):
         return all([self.dropbox_refresh_token, self.dropbox_vault_path])
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
-        questions = []
-        lines = raw_content.strip().split('\n')
-        
-        if len(lines) < 3:
+        """【修正】JSON形式のテキストを解析して、問題のリストを返す"""
+        try:
+            # マークダウンのコードブロックを除去
+            json_text = re.search(r'```json\n(.*?)\n```', raw_content, re.DOTALL)
+            if json_text:
+                content_to_parse = json_text.group(1)
+            else:
+                content_to_parse = raw_content
+
+            questions = json.loads(content_to_parse)
+            if isinstance(questions, list):
+                return questions
             return []
-
-        for line in lines[2:]:
-            if not line.strip().startswith('|'):
-                continue
-            
-            try:
-                cells = [cell.strip() for cell in line.strip()[1:-1].split('|')]
-                if len(cells) != 5:
-                    continue
-
-                question_data = {
-                    'id': cells[0],
-                    'question': cells[1],
-                    'answer': cells[3].upper(),
-                    'explanation': cells[4]
-                }
-                
-                options = {}
-                options_raw = cells[2].split('<br>')
-                for option_line in options_raw:
-                    match = re.match(r'([A-D])\)\s*(.*)', option_line.strip(), re.IGNORECASE)
-                    if match:
-                        options[match.group(1).upper()] = match.group(2).strip()
-                question_data['options'] = options
-                
-                questions.append(question_data)
-            except Exception as e:
-                logging.warning(f"テーブル行の解析に失敗しました。スキップします: {e}\n行内容: {line}")
-                continue
-        return questions
+        except (json.JSONDecodeError, AttributeError):
+            logging.warning(f"教材ファイルのJSON解析に失敗しました。")
+            return []
 
     async def get_all_questions_from_vault(self) -> list[dict]:
         all_questions = []
@@ -192,7 +172,6 @@ class StudyCog(commands.Cog):
         logging.info(f"回答を記録しました: ID={q_id}, 正解={is_correct}, 連続正解={streak}")
 
     async def _prepare_question_pool_logic(self):
-        """問題プールを作成するコアロジック"""
         logging.info("本日の問題プールの作成を開始します...")
         all_questions = await self.get_all_questions_from_vault()
         user_progress = await self.get_user_progress()
@@ -205,7 +184,7 @@ class StudyCog(commands.Cog):
         today_str = datetime.now(JST).date().isoformat()
         review_ids = {q_id for q_id, data in user_progress.items() if data.get("next_review_date") <= today_str}
         answered_ids = set(user_progress.keys())
-        new_ids = {q['id'] for q in all_questions if q['id'] not in answered_ids}
+        new_ids = {q['ID'] for q in all_questions if q['ID'] not in answered_ids}
         
         pool_ids = list(review_ids)
         remaining_slots = QUESTIONS_PER_DAY - len(pool_ids)
@@ -213,7 +192,7 @@ class StudyCog(commands.Cog):
             new_ids_list = sorted(list(new_ids))
             pool_ids.extend(random.sample(new_ids_list, min(remaining_slots, len(new_ids_list))))
         
-        self.daily_question_pool = [q for q in all_questions if q['id'] in pool_ids]
+        self.daily_question_pool = [q for q in all_questions if q['ID'] in pool_ids]
         random.shuffle(self.daily_question_pool)
         logging.info(f"本日の問題プールを作成しました: {len(self.daily_question_pool)}問")
 
@@ -235,8 +214,8 @@ class StudyCog(commands.Cog):
 
         question_data = self.daily_question_pool.pop(0)
         
-        options_text = "\n".join([f"**{key})** {value}" for key, value in sorted(question_data['options'].items())])
-        description = f"{question_data['question']}\n\n{options_text}"
+        options_text = "\n".join([f"**{key})** {value}" for key, value in sorted(question_data['Options'].items())])
+        description = f"{question_data['Question']}\n\n{options_text}"
         
         embed = discord.Embed(
             title=f"✍️ 学習クイズ ({QUESTIONS_PER_DAY - len(self.daily_question_pool)}/{QUESTIONS_PER_DAY})",
@@ -246,7 +225,7 @@ class StudyCog(commands.Cog):
         
         view = SingleQuizView(self, question_data)
         await channel.send(embed=embed, view=view)
-        logging.info(f"問題を出題しました: ID={question_data['id']}")
+        logging.info(f"問題を出題しました: ID={question_data['ID']}")
 
     @prepare_daily_questions.before_loop
     @ask_next_question.before_loop
