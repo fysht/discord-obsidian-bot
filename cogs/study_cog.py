@@ -23,13 +23,11 @@ QUESTIONS_PER_DAY = 10
 class SingleQuizView(discord.ui.View):
     """1問ごとのクイズの選択肢ボタンを持つView"""
     def __init__(self, cog_instance, question_data):
-        # 回答期限をなくすため、timeout=Noneに設定
         super().__init__(timeout=None)
         self.cog = cog_instance
         self.question_data = question_data
         self.is_answered = False
 
-        # A, B, C, D ボタンを作成
         for key in sorted(question_data['options'].keys()):
             button = discord.ui.Button(label=key, style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
             button.callback = self.button_callback
@@ -44,18 +42,14 @@ class SingleQuizView(discord.ui.View):
         selected_option_key = interaction.data['custom_id'].split('_')[1]
         is_correct = (selected_option_key.upper() == self.question_data['answer'].upper())
 
-        # 回答を記録
         await self.cog.process_answer(self.question_data['id'], is_correct)
-        
         self.is_answered = True
         
-        # 全てのボタンを無効化
         for item in self.children:
             item.disabled = True
             if item.custom_id == interaction.data['custom_id']:
                 item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
         
-        # 結果を表示
         result_embed = interaction.message.embeds[0]
         result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
         result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解..."
@@ -82,11 +76,19 @@ class StudyCog(commands.Cog):
         try:
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
             self.is_ready = True
-            if STUDY_CHANNEL_ID != 0:
-                self.prepare_daily_questions.start()
-                self.ask_next_question.start()
         except Exception as e:
             logging.error(f"StudyCogの初期化中にエラー: {e}", exc_info=True)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Cogが準備完了したときにタスクを開始する"""
+        if self.is_ready and STUDY_CHANNEL_ID != 0:
+            if not self.prepare_daily_questions.is_running():
+                logging.info("学習クイズの準備タスクを開始します。")
+                self.prepare_daily_questions.start()
+            if not self.ask_next_question.is_running():
+                logging.info("学習クイズの出題タスクを開始します。")
+                self.ask_next_question.start()
 
     def _load_env_vars(self):
         self.dropbox_refresh_token=os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -98,7 +100,6 @@ class StudyCog(commands.Cog):
         return all([self.dropbox_refresh_token, self.dropbox_vault_path])
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
-        """Markdownテーブル形式のテキストを解析して、問題のリストを返す"""
         questions = []
         lines = raw_content.strip().split('\n')
         
@@ -203,7 +204,9 @@ class StudyCog(commands.Cog):
         pool_ids = list(review_ids)
         remaining_slots = QUESTIONS_PER_DAY - len(pool_ids)
         if remaining_slots > 0:
-            pool_ids.extend(random.sample(sorted(list(new_ids)), min(remaining_slots, len(new_ids))))
+            # sortedで囲むことで、setの順序不定性をなくし、テストしやすくする
+            new_ids_list = sorted(list(new_ids))
+            pool_ids.extend(random.sample(new_ids_list, min(remaining_slots, len(new_ids_list))))
         
         self.daily_question_pool = [q for q in all_questions if q['id'] in pool_ids]
         random.shuffle(self.daily_question_pool)
@@ -212,7 +215,8 @@ class StudyCog(commands.Cog):
     @tasks.loop(hours=1)
     async def ask_next_question(self):
         now = datetime.now(JST)
-        if not (9 <= now.hour <= 22): # 9時から22時の間のみ出題
+        # 9時から22時の間のみ出題
+        if not (9 <= now.hour <= 22):
             return
         
         if not self.daily_question_pool:
