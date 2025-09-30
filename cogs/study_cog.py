@@ -101,37 +101,84 @@ class StudyCog(commands.Cog):
         return all([self.dropbox_refresh_token, self.dropbox_vault_path])
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
+        """
+        raw_content 内の JSON オブジェクトを連続して取り出してパースする。
+        - 1行に複数オブジェクトがある、改行がない、といったケースに対応。
+        - 不正な部分はスキップして警告ログを出す。
+        """
         questions = []
-        for line in raw_content.strip().split('\n'):
-            line = line.strip()
-            if not line.startswith('{') or not line.endswith('}'):
-                continue
-            
+        if not raw_content:
+            return questions
+
+        # 不正な空白文字を通常のスペースに変換
+        content = raw_content.replace('\xa0', ' ')
+        # 先頭に BOM 等があれば剥がす
+        content = content.lstrip("\ufeff")
+
+        decoder = json.JSONDecoder()
+        idx = 0
+        length = len(content)
+
+        while idx < length:
+            # 次の '{' を探す（JSON オブジェクトの開始）
+            m = re.search(r'\{', content[idx:])
+            if not m:
+                break
+            start = idx + m.start()
+
             try:
-                # 不正な空白文字（NBSPなど）を通常のスペースに置換
-                cleaned_line = line.replace('\xa0', ' ')
-                # JSONデコーダーを使って、行の先頭から始まる有効なJSONオブジェクトを一つだけ読み込む
-                decoder = json.JSONDecoder()
-                obj, _ = decoder.raw_decode(cleaned_line)
-                questions.append(obj)
-            except (json.JSONDecodeError, ValueError) as e:
-                logging.warning(f"JSON行の解析に失敗しました。スキップします: {e}\n行内容: {line[:150]}...")
-                continue
+                obj, end = decoder.raw_decode(content, start)
+                # obj が dict なら追加（安全対策）
+                if isinstance(obj, dict):
+                    questions.append(obj)
+                idx = end
+            except json.JSONDecodeError as e:
+                # 部分的に壊れている可能性があるので、開始位置を1文字ずらして継続
+                logging.warning(f"JSONデコード失敗: {e} -- start={start}. 1文字進めて再試行します。")
+                idx = start + 1
+            except Exception as e:
+                logging.warning(f"想定外の例外でJSONパース中断: {e}")
+                idx = start + 1
+
+        logging.info(f"_parse_study_materials: パースできた問題数 = {len(questions)}")
         return questions
 
     async def get_all_questions_from_vault(self) -> list[dict]:
+        """
+        Vault 内の .md ファイルをすべて読み、_parse_study_materials でパースして返す。
+        Dropbox のページング (has_more) に対応。
+        """
         all_questions = []
         try:
             folder_path = f"{self.dropbox_vault_path}{VAULT_STUDY_PATH}"
             res = self.dbx.files_list_folder(folder_path)
-            for entry in res.entries:
+            entries = list(res.entries)
+
+            # ページング対応: has_more が True のとき続けて取得
+            while getattr(res, "has_more", False):
+                res = self.dbx.files_list_folder_continue(res.cursor)
+                entries.extend(res.entries)
+
+            for entry in entries:
                 if isinstance(entry, FileMetadata) and entry.name.endswith('.md'):
-                    _, content_res = self.dbx.files_download(entry.path_display)
-                    raw_content = content_res.content.decode('utf-8')
-                    all_questions.extend(self._parse_study_materials(raw_content))
+                    try:
+                        _, content_res = self.dbx.files_download(entry.path_display)
+                        raw_content = content_res.content.decode('utf-8')
+                        qs = self._parse_study_materials(raw_content)
+                        all_questions.extend(qs)
+                    except ApiError as e:
+                        logging.error(f"ファイルダウンロード失敗: {entry.path_display} -> {e}")
+                    except Exception as e:
+                        logging.exception(f"ファイル読み取り中に例外: {entry.path_display} -> {e}")
+
+            logging.info(f"get_all_questions_from_vault: 合計読み込み問題数 = {len(all_questions)}")
             return all_questions
+
         except ApiError as e:
             logging.error(f"教材フォルダの読み込みに失敗: {e}")
+            return []
+        except Exception as e:
+            logging.exception(f"想定外の例外(get_all_questions_from_vault): {e}")
             return []
 
     async def get_user_progress(self) -> dict:
