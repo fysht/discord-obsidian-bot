@@ -15,7 +15,7 @@ import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
-from readability import Document # 本文抽出のために追加
+from readability import Document
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -158,10 +158,15 @@ class NewsCog(commands.Cog):
             soup = BeautifulSoup(article_html, 'html.parser')
             text_content = soup.get_text(separator='\n', strip=True)
 
-            # 抽出した本文が短すぎる場合は、要約に適さないと判断
-            if not text_content or len(text_content) < 100:
-                logging.warning(f"記事本文の抽出に失敗、または短すぎます ({article_url})")
-                return "記事の本文が短いため、要約できませんでした。"
+            # 抽出した本文が空の場合はエラーメッセージを返す
+            if not text_content:
+                logging.warning(f"記事本文の抽出に失敗しました ({article_url})")
+                return "記事の本文を抽出できませんでした。"
+            
+            # 抽出した本文が短すぎる場合は、要約せずにそのまま本文を返す
+            if len(text_content) < 100:
+                logging.info(f"記事本文が短いため、要約せずそのまま表示します ({article_url})")
+                return text_content
 
             prompt = (f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n出力は「です・ます調」で、要約本文のみとしてください。\n---\n{text_content[:8000]}")
             response = await self.gemini_model.generate_content_async(prompt)
