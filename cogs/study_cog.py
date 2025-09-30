@@ -108,10 +108,13 @@ class StudyCog(commands.Cog):
                 continue
             
             try:
-                # 不正な空白文字（NBSPなど）を通常のスペースに置換してから読み込む
+                # 不正な空白文字（NBSPなど）を通常のスペースに置換
                 cleaned_line = line.replace('\xa0', ' ')
-                questions.append(json.loads(cleaned_line))
-            except json.JSONDecodeError as e:
+                # JSONデコーダーを使って、行の先頭から始まる有効なJSONオブジェクトを一つだけ読み込む
+                decoder = json.JSONDecoder()
+                obj, _ = decoder.raw_decode(cleaned_line)
+                questions.append(obj)
+            except (json.JSONDecodeError, ValueError) as e:
                 logging.warning(f"JSON行の解析に失敗しました。スキップします: {e}\n行内容: {line[:150]}...")
                 continue
         return questions
@@ -171,7 +174,7 @@ class StudyCog(commands.Cog):
         user_progress = await self.get_user_progress()
         
         if not all_questions:
-            logging.warning("教材が見つからないため、問題プールを作成できません。")
+            logging.warning("教材から問題を1問も読み込めませんでした。ファイル形式を確認してください。")
             self.daily_question_pool = []
             return
 
