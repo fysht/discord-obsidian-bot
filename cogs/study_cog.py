@@ -28,6 +28,7 @@ class SingleQuizView(discord.ui.View):
         self.question_data = question_data
         self.is_answered = False
 
+        # A, B, C, D ボタンを作成
         for key in sorted(question_data['Options'].keys()):
             button = discord.ui.Button(label=key, style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
             button.callback = self.button_callback
@@ -42,14 +43,18 @@ class SingleQuizView(discord.ui.View):
         selected_option_key = interaction.data['custom_id'].split('_')[1]
         is_correct = (selected_option_key.upper() == self.question_data['Answer'].upper())
 
+        # 回答を記録
         await self.cog.process_answer(self.question_data['ID'], is_correct)
+        
         self.is_answered = True
         
+        # 全てのボタンを無効化
         for item in self.children:
             item.disabled = True
             if item.custom_id == interaction.data['custom_id']:
                 item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
         
+        # 結果を表示
         result_embed = interaction.message.embeds[0]
         result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
         result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解..."
@@ -105,22 +110,20 @@ class StudyCog(commands.Cog):
         return all([self.dropbox_refresh_token, self.dropbox_vault_path])
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
-        """【修正】JSON形式のテキストを解析して、問題のリストを返す"""
-        try:
-            # マークダウンのコードブロックを除去
-            json_text = re.search(r'```json\n(.*?)\n```', raw_content, re.DOTALL)
-            if json_text:
-                content_to_parse = json_text.group(1)
-            else:
-                content_to_parse = raw_content
-
-            questions = json.loads(content_to_parse)
-            if isinstance(questions, list):
-                return questions
-            return []
-        except (json.JSONDecodeError, AttributeError):
-            logging.warning(f"教材ファイルのJSON解析に失敗しました。")
-            return []
+        """【修正】一行ごとのJSON Lines形式を解析して、問題のリストを返す"""
+        questions = []
+        for line in raw_content.strip().split('\n'):
+            line = line.strip()
+            if not line.startswith('{') or not line.endswith('}'):
+                continue
+            
+            try:
+                # 行からJSONを読み込む
+                questions.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                logging.warning(f"JSON行の解析に失敗しました。スキップします: {e}\n行内容: {line[:150]}...")
+                continue
+        return questions
 
     async def get_all_questions_from_vault(self) -> list[dict]:
         all_questions = []
