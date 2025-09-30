@@ -16,19 +16,17 @@ import textwrap
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 STUDY_CHANNEL_ID = int(os.getenv("STUDY_CHANNEL_ID", 0))
-PREPARE_QUIZ_TIME = time(hour=7, minute=0, tzinfo=JST) # 毎朝7時にその日の問題リストを作成
+PREPARE_QUIZ_TIME = time(hour=7, minute=0, tzinfo=JST)
 VAULT_STUDY_PATH = "/Study"
 QUESTIONS_PER_DAY = 10
 
 class SingleQuizView(discord.ui.View):
-    """1問ごとのクイズの選択肢ボタンを持つView"""
     def __init__(self, cog_instance, question_data):
         super().__init__(timeout=None)
         self.cog = cog_instance
         self.question_data = question_data
         self.is_answered = False
 
-        # A, B, C, D ボタンを作成
         for key in sorted(question_data['Options'].keys()):
             button = discord.ui.Button(label=key, style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
             button.callback = self.button_callback
@@ -43,18 +41,14 @@ class SingleQuizView(discord.ui.View):
         selected_option_key = interaction.data['custom_id'].split('_')[1]
         is_correct = (selected_option_key.upper() == self.question_data['Answer'].upper())
 
-        # 回答を記録
         await self.cog.process_answer(self.question_data['ID'], is_correct)
-        
         self.is_answered = True
         
-        # 全てのボタンを無効化
         for item in self.children:
             item.disabled = True
             if item.custom_id == interaction.data['custom_id']:
                 item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
         
-        # 結果を表示
         result_embed = interaction.message.embeds[0]
         result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
         result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解..."
@@ -67,8 +61,6 @@ class SingleQuizView(discord.ui.View):
         self.stop()
 
 class StudyCog(commands.Cog):
-    """Obsidianの教材データを元に学習クイズを生成するCog"""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.is_ready = False
@@ -86,7 +78,6 @@ class StudyCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Cogが準備完了したときにタスクを開始する"""
         if self.is_ready and STUDY_CHANNEL_ID != 0:
             now = datetime.now(JST)
             if now.time() >= PREPARE_QUIZ_TIME and not self.daily_question_pool:
@@ -110,7 +101,6 @@ class StudyCog(commands.Cog):
         return all([self.dropbox_refresh_token, self.dropbox_vault_path])
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
-        """【修正】一行ごとのJSON Lines形式を解析して、問題のリストを返す"""
         questions = []
         for line in raw_content.strip().split('\n'):
             line = line.strip()
@@ -118,8 +108,9 @@ class StudyCog(commands.Cog):
                 continue
             
             try:
-                # 行からJSONを読み込む
-                questions.append(json.loads(line))
+                # 不正な空白文字（NBSPなど）を通常のスペースに置換してから読み込む
+                cleaned_line = line.replace('\xa0', ' ')
+                questions.append(json.loads(cleaned_line))
             except json.JSONDecodeError as e:
                 logging.warning(f"JSON行の解析に失敗しました。スキップします: {e}\n行内容: {line[:150]}...")
                 continue
