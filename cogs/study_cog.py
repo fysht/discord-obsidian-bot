@@ -234,6 +234,11 @@ class StudyCog(commands.Cog):
         all_questions = await self.get_all_questions_from_vault()
         user_progress = await self.get_user_progress()
         
+        # --- デバッグログ START ---
+        logging.info(f"DEBUG: 読み込んだ問題数 (all_questions): {len(all_questions)}")
+        logging.info(f"DEBUG: 読み込んだ進捗 (user_progress): {user_progress}")
+        # --- デバッグログ END ---
+
         if not all_questions:
             logging.warning("教材から問題を1問も読み込めませんでした。ファイル形式を確認してください。")
             self.daily_question_pool = []
@@ -242,15 +247,34 @@ class StudyCog(commands.Cog):
         today_str = datetime.now(JST).date().isoformat()
         review_ids = {q_id for q_id, data in user_progress.items() if data.get("next_review_date") <= today_str}
         answered_ids = set(user_progress.keys())
-        new_ids = {q['ID'] for q in all_questions if q['ID'] not in answered_ids}
+        # 安全対策：IDキーが存在する問題のみを対象とする
+        new_ids = {q['ID'] for q in all_questions if 'ID' in q and q['ID'] not in answered_ids}
+        
+        # --- デバッグログ START ---
+        logging.info(f"DEBUG: 本日レビュー対象の問題ID (review_ids): {review_ids}")
+        logging.info(f"DEBUG: 解答済みの問題ID (answered_ids): {answered_ids}")
+        logging.info(f"DEBUG: 未解答の新しい問題ID (new_ids): {new_ids}")
+        # --- デバッグログ END ---
         
         pool_ids = list(review_ids)
         remaining_slots = QUESTIONS_PER_DAY - len(pool_ids)
         if remaining_slots > 0:
             new_ids_list = sorted(list(new_ids))
-            pool_ids.extend(random.sample(new_ids_list, min(remaining_slots, len(new_ids_list))))
+            
+            # --- デバッグログ START ---
+            logging.info(f"DEBUG: 未解答の問題IDリスト (new_ids_list): {new_ids_list}")
+            # --- デバッグログ END ---
+
+            # リストが空でないことを確認してからサンプリングする
+            if new_ids_list:
+                sample_size = min(remaining_slots, len(new_ids_list))
+                pool_ids.extend(random.sample(new_ids_list, sample_size))
         
-        self.daily_question_pool = [q for q in all_questions if q['ID'] in pool_ids]
+        # --- デバッグログ START ---
+        logging.info(f"DEBUG: プールに追加するIDリスト (pool_ids): {pool_ids}")
+        # --- デバッグログ END ---
+
+        self.daily_question_pool = [q for q in all_questions if 'ID' in q and q['ID'] in pool_ids]
         random.shuffle(self.daily_question_pool)
         logging.info(f"本日の問題プールを作成しました: {len(self.daily_question_pool)}問")
 
