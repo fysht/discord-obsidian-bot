@@ -47,6 +47,8 @@ class ZeroSecondThinkingCog(commands.Cog):
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         self.history_path = f"{self.dropbox_vault_path}/.bot/zero_second_thinking_history.json"
+        
+        self.last_question_message_id = None
 
 
         # --- 初期チェックとAPIクライアント初期化 ---
@@ -102,6 +104,15 @@ class ZeroSecondThinkingCog(commands.Cog):
         """定時にお題を投稿するループ"""
         channel = self.bot.get_channel(self.channel_id)
         if not channel: return
+
+        if self.last_question_message_id:
+            try:
+                last_msg = await channel.fetch_message(self.last_question_message_id)
+                await last_msg.delete()
+            except discord.NotFound:
+                pass
+            finally:
+                self.last_question_message_id = None
         
         try:
             history = await self._get_thinking_history()
@@ -128,7 +139,8 @@ class ZeroSecondThinkingCog(commands.Cog):
             
             embed = discord.Embed(title="🤔 ゼロ秒思考の時間です", description=f"お題: **{question}**", color=discord.Color.teal())
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください（音声入力も可能です）。")
-            await channel.send(embed=embed)
+            sent_message = await channel.send(embed=embed)
+            self.last_question_message_id = sent_message.id
             
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] 定時お題生成エラー: {e}", exc_info=True)
@@ -150,7 +162,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             return
             
         embed_title = original_msg.embeds[0].title
-        if "ゼロ秒思考の時間です" not in embed_title:
+        if "ゼロ秒思考の時間です" not in embed_title and "さらに深掘りしましょう" not in embed_title:
             return
             
         # 埋め込みからお題を抽出
@@ -161,12 +173,12 @@ class ZeroSecondThinkingCog(commands.Cog):
 
         # 音声 or テキストで処理
         if message.attachments and any(att.content_type in SUPPORTED_AUDIO_TYPES for att in message.attachments):
-             await self._process_thinking_memo(message, last_question, message.attachments[0])
+             await self._process_thinking_memo(message, last_question, original_msg, attachment=message.attachments[0])
         elif message.content:
-             await self._process_thinking_memo(message, last_question)
+             await self._process_thinking_memo(message, last_question, original_msg)
 
-    async def _process_thinking_memo(self, message: discord.Message, last_question: str, attachment: discord.Attachment = None):
-        """思考メモを処理し、Obsidianに記録する"""
+    async def _process_thinking_memo(self, message: discord.Message, last_question: str, original_msg: discord.Message, attachment: discord.Attachment = None):
+        """思考メモを処理し、Obsidianに記録し、掘り下げ質問を生成する"""
         temp_audio_path = None
         try:
             await message.add_reaction("⏳")
@@ -237,6 +249,28 @@ class ZeroSecondThinkingCog(commands.Cog):
             await message.channel.send(f"**思考が記録されました**\n>>> {formatted_answer}")
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
+
+            # --- 掘り下げ質問の生成 ---
+            digging_prompt = f"""
+            ユーザーは「ゼロ秒思考」を行っています。以下の「元の質問」と「ユーザーの回答」を踏まえて、思考をさらに深めるための鋭い掘り下げ質問を1つだけ生成してください。
+            # 元の質問
+            {last_question}
+            # ユーザーの回答
+            {formatted_answer}
+            ---
+            掘り下げ質問:
+            """
+            response = await self.gemini_model.generate_content_async(digging_prompt)
+            new_question = response.text.strip().replace("*", "")
+
+            embed = discord.Embed(title="🤔 さらに深掘りしましょう", description=f"お題: **{new_question}**", color=discord.Color.blue())
+            embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください。")
+            
+            await original_msg.delete() # 元の質問を削除
+            self.last_question_message_id = None
+
+            sent_message = await message.channel.send(embed=embed)
+            self.last_question_message_id = sent_message.id
 
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] 処理中にエラー: {e}", exc_info=True)

@@ -27,7 +27,7 @@ CATEGORY_MAP = {
 
 class ManualAddToListModal(discord.ui.Modal, title="リストに手動で追加"):
     def __init__(self, memo_cog_instance, item_to_add: str):
-        super().__init__()
+        super().__init__(timeout=None)
         self.memo_cog = memo_cog_instance
         self.item_to_add = item_to_add
 
@@ -50,7 +50,7 @@ class ManualAddToListModal(discord.ui.Modal, title="リストに手動で追加"
 
 class AddToListView(discord.ui.View):
     def __init__(self, memo_cog_instance, message: discord.Message, category: str, item_to_add: str, context: str):
-        super().__init__(timeout=180)
+        super().__init__(timeout=None)
         self.memo_cog = memo_cog_instance
         self.message = message
         self.category = category
@@ -84,7 +84,7 @@ class AddToListView(discord.ui.View):
 
 class DateSelectionModal(discord.ui.Modal, title="日付を指定してください"):
     def __init__(self, memo_cog_instance, category: str, item: str, context: str):
-        super().__init__()
+        super().__init__(timeout=None)
         self.memo_cog = memo_cog_instance
         self.category = category
         self.item = item
@@ -127,7 +127,7 @@ class DateSelectionModal(discord.ui.Modal, title="日付を指定してくださ
 
 class AddToCalendarView(discord.ui.View):
     def __init__(self, memo_cog_instance, category: str, items: list, context: str):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.memo_cog = memo_cog_instance
         self.category = category
         self.context = context
@@ -147,7 +147,7 @@ class AddToCalendarView(discord.ui.View):
 
 class RemoveFromListView(discord.ui.View):
     def __init__(self, memo_cog_instance, category: str, items: list, context: str):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.memo_cog = memo_cog_instance
         self.category = category
         self.context = context
@@ -175,7 +175,7 @@ class RemoveFromListView(discord.ui.View):
 
 class HighlightSelectionView(discord.ui.View):
     def __init__(self, tasks: list, calendar_cog):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None)
         self.calendar_cog = calendar_cog
         for task in tasks:
             button = discord.ui.Button(label=task[:80], style=discord.ButtonStyle.secondary, custom_id=f"highlight_{task}")

@@ -10,12 +10,12 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import asyncio
-import aiohttp
 import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
 from readability import Document
+import cloudscraper
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -32,7 +32,7 @@ class NewsCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
-        self.session = aiohttp.ClientSession()
+        self.scraper = cloudscraper.create_scraper()
 
         if not self._are_credentials_valid():
             logging.error("NewsCog: 必須の環境変数が不足。Cogを無効化します。")
@@ -56,9 +56,6 @@ class NewsCog(commands.Cog):
 
         except Exception as e:
             logging.error(f"❌ NewsCogの初期化中にエラー: {e}", exc_info=True)
-
-    async def cog_unload(self):
-        await self.session.close()
 
     def _load_environment_variables(self):
         self.news_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
@@ -100,81 +97,69 @@ class NewsCog(commands.Cog):
             title=f"🗓️ {datetime.now(JST).strftime('%Y年%m月%d日')} のお知らせ",
             color=discord.Color.blue()
         )
-        try:
-            async with self.session.get(url) as response:
-                response.raise_for_status()
-                data = await response.json()
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url) as response:
+                    response.raise_for_status()
+                    data = await response.json()
 
-            area_weather_today = next((area for area in data[0]["timeSeries"][0]["areas"] if area["area"]["name"] == self.jma_area_name), None)
-            area_temp_today = next((area for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
+                area_weather_today = next((area for area in data[0]["timeSeries"][0]["areas"] if area["area"]["name"] == self.jma_area_name), None)
+                area_temp_today = next((area for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
 
-            if area_weather_today and area_temp_today:
-                weather_summary = area_weather_today["weathers"][0]
-                weather_emoji = self._get_emoji_for_weather(weather_summary)
-                max_temp = area_temp_today.get("temps", ["--"])[1]
-                min_temp = area_temp_today.get("temps", ["--"])[0]
-                embed.add_field(name=f"今日の天気 ({self.location_name})", value=f"{weather_emoji} {weather_summary}\n🌡️ 最高: {max_temp}℃ / 最低: {min_temp}℃", inline=False)
-            else:
-                embed.add_field(name=f"今日の天気 ({self.location_name})", value="⚠️ エリア情報を取得できませんでした。", inline=False)
+                if area_weather_today and area_temp_today:
+                    weather_summary = area_weather_today["weathers"][0]
+                    weather_emoji = self._get_emoji_for_weather(weather_summary)
+                    max_temp = area_temp_today.get("temps", ["--"])[1]
+                    min_temp = area_temp_today.get("temps", ["--"])[0]
+                    embed.add_field(name=f"今日の天気 ({self.location_name})", value=f"{weather_emoji} {weather_summary}\n🌡️ 最高: {max_temp}℃ / 最低: {min_temp}℃", inline=False)
+                else:
+                    embed.add_field(name=f"今日の天気 ({self.location_name})", value="⚠️ エリア情報を取得できませんでした。", inline=False)
 
-            time_defines_pop = data[0]["timeSeries"][1]["timeDefines"]
-            area_pops = next((area["pops"] for area in data[0]["timeSeries"][1]["areas"] if area["area"]["name"] == self.jma_area_name), None)
-            time_defines_temp = data[0]["timeSeries"][2]["timeDefines"]
-            area_temps = next((area["temps"] for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
+                time_defines_pop = data[0]["timeSeries"][1]["timeDefines"]
+                area_pops = next((area["pops"] for area in data[0]["timeSeries"][1]["areas"] if area["area"]["name"] == self.jma_area_name), None)
+                time_defines_temp = data[0]["timeSeries"][2]["timeDefines"]
+                area_temps = next((area["temps"] for area in data[0]["timeSeries"][2]["areas"] if area["area"]["name"] == self.location_name), None)
 
-            if area_pops and area_temps:
-                pop_text, temp_text = "", ""
-                for i, time_str in enumerate(time_defines_pop):
-                    dt = datetime.fromisoformat(time_str)
-                    if dt.date() == datetime.now(JST).date(): pop_text += f"**{dt.strftime('%H時')}**: {area_pops[i]}% "
-                for i, time_str in enumerate(time_defines_temp):
-                     dt = datetime.fromisoformat(time_str)
-                     if dt.date() == datetime.now(JST).date(): temp_text += f"**{dt.strftime('%H時')}**: {area_temps[i]}℃ "
-                if pop_text: embed.add_field(name="☂️ 降水確率", value=pop_text.strip(), inline=False)
-                if temp_text: embed.add_field(name="🕒 時間別気温", value=temp_text.strip(), inline=False)
-        except Exception as e:
-            logging.error(f"天気予報取得に失敗: {e}", exc_info=True)
-            embed.add_field(name="エラー", value="⚠️ 天気情報の取得に失敗しました。", inline=False)
+                if area_pops and area_temps:
+                    pop_text, temp_text = "", ""
+                    for i, time_str in enumerate(time_defines_pop):
+                        dt = datetime.fromisoformat(time_str)
+                        if dt.date() == datetime.now(JST).date(): pop_text += f"**{dt.strftime('%H時')}**: {area_pops[i]}% "
+                    for i, time_str in enumerate(time_defines_temp):
+                         dt = datetime.fromisoformat(time_str)
+                         if dt.date() == datetime.now(JST).date(): temp_text += f"**{dt.strftime('%H時')}**: {area_temps[i]}℃ "
+                    if pop_text: embed.add_field(name="☂️ 降水確率", value=pop_text.strip(), inline=False)
+                    if temp_text: embed.add_field(name="🕒 時間別気温", value=temp_text.strip(), inline=False)
+            except Exception as e:
+                logging.error(f"天気予報取得に失敗: {e}", exc_info=True)
+                embed.add_field(name="エラー", value="⚠️ 天気情報の取得に失敗しました。", inline=False)
         return embed
 
-    async def _summarize_article_content(self, article_url: str) -> str:
-        """readability-lxmlを使って記事本文を抽出し、要約する"""
+    def _summarize_article_content_sync(self, article_url: str) -> str:
+        """cloudscraperを使って記事本文を抽出し、要約する"""
         if not self.gemini_model: return "要約機能が無効です。"
         try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            async with self.session.get(article_url, timeout=15, headers=headers) as response:
-                if response.status != 200:
-                    logging.warning(f"記事の取得に失敗 ({article_url}): Status {response.status}")
-                    return f"記事の取得に失敗しました (ステータス: {response.status})。"
-                html_content = await response.text()
+            response = self.scraper.get(article_url, timeout=15)
+            response.raise_for_status()
+            html_content = response.text
 
-            # readability-lxmlで本文のHTMLを抽出
             doc = Document(html_content)
             article_html = doc.summary()
-            
-            # 抽出したHTMLからテキストのみを取り出す
             soup = BeautifulSoup(article_html, 'html.parser')
             text_content = soup.get_text(separator='\n', strip=True)
 
-            # 抽出した本文が空の場合はエラーメッセージを返す
             if not text_content:
                 logging.warning(f"記事本文の抽出に失敗しました ({article_url})")
                 return "記事の本文を抽出できませんでした。"
-            
-            # 抽出した本文が短すぎる場合は、要約せずにそのまま本文を返す
+
             if len(text_content) < 100:
                 logging.info(f"記事本文が短いため、要約せずそのまま表示します ({article_url})")
                 return text_content
 
             prompt = (f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n出力は「です・ます調」で、要約本文のみとしてください。\n---\n{text_content[:8000]}")
-            response = await self.gemini_model.generate_content_async(prompt)
-            return response.text.strip()
+            response_gemini = self.gemini_model.generate_content(prompt)
+            return response_gemini.text.strip()
             
-        except asyncio.TimeoutError:
-            logging.warning(f"記事の読み込みがタイムアウトしました ({article_url})")
-            return "記事の読み込みがタイムアウトしました。"
         except Exception as e:
             logging.error(f"記事の要約中にエラーが発生 ({article_url}): {e}", exc_info=True)
             return "要約中にエラーが発生しました。"
@@ -203,13 +188,14 @@ class NewsCog(commands.Cog):
                 query = f'"{name}" AND "{code}" when:1d'
                 encoded_query = quote_plus(query)
                 rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
-
-                async with self.session.get(rss_url) as response:
-                    if response.status != 200:
-                        logging.error(f"GoogleニュースRSSの取得に失敗 ({name}): Status {response.status}")
-                        continue
-                    feed_text = await response.text()
-                    feed = feedparser.parse(feed_text)
+                
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(rss_url) as response:
+                        if response.status != 200:
+                            logging.error(f"GoogleニュースRSSの取得に失敗 ({name}): Status {response.status}")
+                            continue
+                        feed_text = await response.text()
+                        feed = feedparser.parse(feed_text)
 
                 if not feed.entries:
                     logging.info(f"関連ニュースは見つかりませんでした ({name})")
@@ -221,7 +207,12 @@ class NewsCog(commands.Cog):
                         continue
 
                     logging.info(f"関連ニュースを発見: {entry.title} ({name})")
-                    summary = await self._summarize_article_content(entry.link)
+                    
+                    loop = asyncio.get_running_loop()
+                    summary = await loop.run_in_executor(
+                        None, self._summarize_article_content_sync, entry.link
+                    )
+
                     news_embed = discord.Embed(
                         title=f"📈関連ニュース: {entry.title}",
                         url=entry.link,

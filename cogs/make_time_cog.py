@@ -29,7 +29,7 @@ SUPPORTED_AUDIO_TYPES = ['audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 
 class AIHighlightSelectionView(discord.ui.View):
     """AIが提案したハイライト候補を選択または自分で提案するためのView"""
     def __init__(self, cog, candidates: list):
-        super().__init__(timeout=1800) # 30分でタイムアウト
+        super().__init__(timeout=None) # タイムアウトを無効化
         self.cog = cog
         
         for candidate in candidates:
@@ -70,7 +70,7 @@ class AIHighlightSelectionView(discord.ui.View):
 
 class TuningInputModal(discord.ui.Modal, title="1日の振り返り"):
     def __init__(self, cog, energy_level: str, concentration_level: str):
-        super().__init__()
+        super().__init__(timeout=None)
         self.cog = cog
         self.energy_level = energy_level
         self.concentration_level = concentration_level
@@ -112,7 +112,7 @@ class TuningInputModal(discord.ui.Modal, title="1日の振り返り"):
 
 class DailyTuningView(discord.ui.View):
     def __init__(self, cog):
-        super().__init__(timeout=86400) # 24時間有効
+        super().__init__(timeout=None) # タイムアウトを無効化
         self.cog = cog
         self.energy_level = None
         self.concentration_level = None
@@ -150,7 +150,7 @@ class DailyTuningView(discord.ui.View):
 
 class HighlightSelectionView(discord.ui.View):
     def __init__(self, candidates: list, bot: commands.Bot, creds):
-        super().__init__(timeout=300)
+        super().__init__(timeout=None) # タイムアウトを無効化
         self.bot = bot
         self.creds = creds
         self.cog = bot.get_cog("MakeTimeCog")
@@ -188,6 +188,8 @@ class MakeTimeCog(commands.Cog):
         self._load_environment_variables()
         self.session = aiohttp.ClientSession()
         self.user_states = {}
+        self.last_highlight_message_id = None
+        self.last_tuning_message_id = None
 
         if not self._are_credentials_valid():
             logging.error("MakeTimeCog: 必須の環境変数が不足。Cogを無効化します。")
@@ -293,6 +295,15 @@ class MakeTimeCog(commands.Cog):
         channel = self.bot.get_channel(self.maketime_channel_id)
         if not channel: return
 
+        if self.last_highlight_message_id:
+            try:
+                msg = await channel.fetch_message(self.last_highlight_message_id)
+                await msg.delete()
+            except discord.NotFound:
+                pass
+            finally:
+                self.last_highlight_message_id = None
+
         events = await self._get_todays_events()
         
         # 予定がある場合はAIに提案させる
@@ -317,7 +328,8 @@ class MakeTimeCog(commands.Cog):
                         color=discord.Color.gold()
                     )
                     view = AIHighlightSelectionView(self, ai_candidates)
-                    await channel.send(embed=embed, view=view)
+                    msg = await channel.send(embed=embed, view=view)
+                    self.last_highlight_message_id = msg.id
                     return
 
         # 予定がない、またはAIが候補を提案できなかった場合は通常フロー
@@ -334,13 +346,23 @@ class MakeTimeCog(commands.Cog):
             description=advice_text,
             color=discord.Color.gold()
         )
-        await channel.send(embed=embed)
+        msg = await channel.send(embed=embed)
+        self.last_highlight_message_id = msg.id
 
 
     @tasks.loop(time=TUNING_PROMPT_TIME)
     async def prompt_daily_tuning(self):
         channel = self.bot.get_channel(self.maketime_channel_id)
         if not channel: return
+
+        if self.last_tuning_message_id:
+            try:
+                msg = await channel.fetch_message(self.last_tuning_message_id)
+                await msg.delete()
+            except discord.NotFound:
+                pass
+            finally:
+                self.last_tuning_message_id = None
         
         embed = discord.Embed(
             title="📝 1日の振り返り (Make Time Note)",
@@ -348,7 +370,8 @@ class MakeTimeCog(commands.Cog):
             color=discord.Color.from_rgb(175, 175, 200)
         )
         view = DailyTuningView(self)
-        await channel.send(embed=embed, view=view)
+        msg = await channel.send(embed=embed, view=view)
+        self.last_tuning_message_id = msg.id
 
     async def save_tuning_to_obsidian(self, reflection_text: str):
         today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')

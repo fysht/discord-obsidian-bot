@@ -26,9 +26,6 @@ DAILY_REVIEW_TIME = time(hour=21, minute=30, tzinfo=JST)
 MEMO_TO_CALENDAR_EMOJI = '📅'
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-WORK_START_HOUR = 8
-WORK_END_HOUR = 22
-MIN_TASK_DURATION_MINUTES = 10
 
 class TaskReviewView(discord.ui.View):
     def __init__(self, cog, task_summary: str, task_date: datetime.date):
@@ -230,12 +227,9 @@ class CalendarCog(commands.Cog):
                 if start_str and end_str:
                     busy_slots.append((datetime.fromisoformat(start_str), datetime.fromisoformat(end_str)))
             
-            work_start_time = start_of_day.replace(hour=WORK_START_HOUR)
-            work_end_time = start_of_day.replace(hour=WORK_END_HOUR)
-            
             free_slots = []
-            current_time = work_start_time
-            while current_time < work_end_time:
+            current_time = start_of_day
+            while current_time < end_of_day:
                 is_in_busy_slot = False
                 for start, end in busy_slots:
                     if start <= current_time < end:
@@ -245,7 +239,7 @@ class CalendarCog(commands.Cog):
                 
                 if not is_in_busy_slot:
                     slot_start = current_time
-                    slot_end = work_end_time
+                    slot_end = end_of_day
                     for start, _ in busy_slots:
                         if start > slot_start:
                             slot_end = min(slot_end, start)
@@ -346,7 +340,7 @@ class CalendarCog(commands.Cog):
                 _, res = self.dbx.files_download(log_path)
                 daily_events = json.loads(res.content.decode('utf-8'))
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.is_not_found():
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     daily_events = []
                 else: raise
             
@@ -422,7 +416,7 @@ class CalendarCog(commands.Cog):
                 _, res = self.dbx.files_download(log_path)
                 daily_events = json.loads(res.content.decode('utf-8'))
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.is_not_found():
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     daily_events = []
                 else:
                     raise

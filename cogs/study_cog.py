@@ -225,18 +225,21 @@ class StudyCog(commands.Cog):
             self.daily_question_pool = []
             return
 
+        all_q_ids = {q['ID'] for q in all_questions if 'ID' in q}
         today_str = datetime.now(JST).date().isoformat()
-        review_ids = {q_id for q_id, data in user_progress.items() if data.get("next_review_date") <= today_str}
+
         answered_ids = set(user_progress.keys())
-        new_ids = {q['ID'] for q in all_questions if q['ID'] not in answered_ids}
+        review_ids = {q_id for q_id in answered_ids if user_progress[q_id].get("next_review_date") <= today_str}
+        new_ids = all_q_ids - answered_ids
         
         pool_ids = list(review_ids)
         remaining_slots = QUESTIONS_PER_DAY - len(pool_ids)
+        
         if remaining_slots > 0:
-            new_ids_list = sorted(list(new_ids))
+            new_ids_list = list(new_ids)
             pool_ids.extend(random.sample(new_ids_list, min(remaining_slots, len(new_ids_list))))
         
-        self.daily_question_pool = [q for q in all_questions if q['ID'] in pool_ids]
+        self.daily_question_pool = [q for q in all_questions if q.get('ID') in pool_ids]
         random.shuffle(self.daily_question_pool)
         logging.info(f"本日の問題プールを作成しました: {len(self.daily_question_pool)}問")
 
