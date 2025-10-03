@@ -116,9 +116,9 @@ class DateSelectionModal(discord.ui.Modal, title="日付を指定してくださ
                 await calendar_cog.schedule_task_from_memo(self.item, target_date)
                 success_remove = await self.memo_cog.remove_item_from_list_file(self.category, self.item, self.context)
                 if success_remove:
-                    await interaction.followup.send(f"✅ 「{self.item}」のカレンダー登録を試み、リストから削除しました。")
+                    await interaction.followup.send(f"✅ 「{self.item}」のカレンダー登録を試み、リストから削除しました。", ephemeral=True, delete_after=15)
                 else:
-                    await interaction.followup.send(f"✅ 「{self.item}」のカレンダー登録を試みましたが、リストからの削除に失敗しました。")
+                    await interaction.followup.send(f"✅ 「{self.item}」のカレンダー登録を試みましたが、リストからの削除に失敗しました。", ephemeral=True, delete_after=15)
             else:
                 await interaction.followup.send("❌ CalendarCogに`schedule_task_from_memo`メソッドが見つかりません。")
         except Exception as e:
@@ -228,6 +228,20 @@ class MemoCog(commands.Cog):
     def cog_unload(self):
         if self.post_task_list.is_running():
             self.post_task_list.cancel()
+
+    def _sort_tasks_with_deadline(self, tasks: list) -> list:
+        def get_deadline(task_text):
+            match = re.search(r'(\d{1,2})/(\d{1,2})$', task_text)
+            if match:
+                month, day = map(int, match.groups())
+                today = datetime.now(JST)
+                year = today.year
+                if today.month > month:
+                    year += 1
+                return datetime(year, month, day)
+            return datetime(9999, 12, 31)
+
+        return sorted(tasks, key=get_deadline)
 
     async def get_list_items(self, category: str, context: str) -> list[str]:
         list_info = CATEGORY_MAP.get(category)
@@ -358,6 +372,10 @@ class MemoCog(commands.Cog):
     async def show_list(self, interaction: discord.Interaction, context: app_commands.Choice[str], category: app_commands.Choice[str]):
         await interaction.response.defer(ephemeral=True)
         items = await self.get_list_items(category.value, context.value)
+
+        if category.value == "Task":
+            items = self._sort_tasks_with_deadline(items)
+
         embed = discord.Embed(title=f"📋 {context.name}の{CATEGORY_MAP[category.value]['prompt']}", color=discord.Color.blue())
         embed.description = "\n".join([f"- {item}" for item in items]) if items else "このリストにはまだ何もありません。"
         view = AddToCalendarView(self, category.value, items, context.value) if category.value == "Task" else None
@@ -410,6 +428,10 @@ class MemoCog(commands.Cog):
         work_tasks = await self.get_list_items("Task", "Work")
         personal_tasks = await self.get_list_items("Task", "Personal")
         
+        # 期限でソート
+        work_tasks = self._sort_tasks_with_deadline(work_tasks)
+        personal_tasks = self._sort_tasks_with_deadline(personal_tasks)
+
         embed = discord.Embed(title=f"📅 {datetime.now(JST).strftime('%Y-%m-%d')} のタスクリスト", color=discord.Color.orange())
         work_desc = "\n".join([f"- {item}" for item in work_tasks]) if work_tasks else "タスクはありません"
         personal_desc = "\n".join([f"- {item}" for item in personal_tasks]) if personal_tasks else "タスクはありません"

@@ -266,7 +266,6 @@ class ZeroSecondThinkingCog(commands.Cog):
             embed = discord.Embed(title="🤔 さらに深掘りしましょう", description=f"お題: **{new_question}**", color=discord.Color.blue())
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください。")
             
-            await original_msg.delete() # 元の質問を削除
             self.last_question_message_id = None
 
             sent_message = await message.channel.send(embed=embed)

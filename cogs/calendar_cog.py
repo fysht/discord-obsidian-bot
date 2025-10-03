@@ -26,6 +26,10 @@ DAILY_REVIEW_TIME = time(hour=21, minute=30, tzinfo=JST)
 MEMO_TO_CALENDAR_EMOJI = '📅'
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
+# タスク登録の時間帯を6:00 - 23:00に設定
+WORK_START_HOUR = 6
+WORK_END_HOUR = 23
+MIN_TASK_DURATION_MINUTES = 10
 
 class TaskReviewView(discord.ui.View):
     def __init__(self, cog, task_summary: str, task_date: datetime.date):
@@ -168,14 +172,14 @@ class CalendarCog(commands.Cog):
         task_analysis = await self._analyze_task_with_ai(task_content, target_date)
         
         if not task_analysis or not task_analysis.get("summary"):
-            await channel.send(f"⚠️「{task_content}」のタスク分析に失敗しました。処理を中断します。")
+            await channel.send(f"⚠️「{task_content}」のタスク分析に失敗しました。処理を中断します。", delete_after=15)
             return
 
         date_to_schedule = datetime.strptime(task_analysis["target_date"], '%Y-%m-%d').date()
 
         if task_analysis.get("all_day"):
             await self._create_google_calendar_event(task_analysis["summary"], date_to_schedule)
-            await channel.send(f"✅ **{date_to_schedule.strftime('%Y-%m-%d')}** の終日予定として「{task_analysis['summary']}」を登録しました。")
+            await channel.send(f"✅ **{date_to_schedule.strftime('%Y-%m-%d')}** の終日予定として「{task_analysis['summary']}」を登録しました。", delete_after=15)
         else:
             free_slots = await self._find_free_slots(date_to_schedule)
             await self._schedule_simple_task(None, task_analysis, free_slots, date_to_schedule)
@@ -227,9 +231,12 @@ class CalendarCog(commands.Cog):
                 if start_str and end_str:
                     busy_slots.append((datetime.fromisoformat(start_str), datetime.fromisoformat(end_str)))
             
+            work_start_time = start_of_day.replace(hour=WORK_START_HOUR)
+            work_end_time = start_of_day.replace(hour=WORK_END_HOUR)
+            
             free_slots = []
-            current_time = start_of_day
-            while current_time < end_of_day:
+            current_time = work_start_time
+            while current_time < work_end_time:
                 is_in_busy_slot = False
                 for start, end in busy_slots:
                     if start <= current_time < end:
@@ -239,7 +246,7 @@ class CalendarCog(commands.Cog):
                 
                 if not is_in_busy_slot:
                     slot_start = current_time
-                    slot_end = end_of_day
+                    slot_end = work_end_time
                     for start, _ in busy_slots:
                         if start > slot_start:
                             slot_end = min(slot_end, start)
@@ -265,19 +272,19 @@ class CalendarCog(commands.Cog):
                 parsed_time = datetime.strptime(start_time_str, '%H:%M').time()
                 start_time = datetime.combine(target_date, parsed_time, tzinfo=JST)
             except ValueError:
-                await channel.send(f"⚠️ AIが提案した開始時刻 `{start_time_str}` の形式が不正なため、空き時間を探します。")
+                await channel.send(f"⚠️ AIが提案した開始時刻 `{start_time_str}` の形式が不正なため、空き時間を探します。", delete_after=15)
 
         if not start_time:
             best_slot_start = next((start for start, end in free_slots if (end - start) >= timedelta(minutes=duration)), None)
             if not best_slot_start:
                 await self._create_google_calendar_event(summary, target_date)
-                await channel.send(f"💬 **{target_date.strftime('%Y-%m-%d')}** の作業時間内に最適な空き時間が見つからなかったため、終日予定として登録しました。")
+                await channel.send(f"💬 **{target_date.strftime('%Y-%m-%d')}** の作業時間内に最適な空き時間が見つからなかったため、終日予定として登録しました。", delete_after=15)
                 return
             start_time = best_slot_start
 
         end_time = start_time + timedelta(minutes=duration)
         await self._create_google_calendar_event(summary, target_date, start_time, duration)
-        await channel.send(f"✅ **{target_date.strftime('%m/%d')} {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** に「{summary}」を登録しました。")
+        await channel.send(f"✅ **{target_date.strftime('%m/%d')} {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}** に「{summary}」を登録しました。", delete_after=15)
 
     async def _create_google_calendar_event(self, summary: str, date: datetime.date, start_time: Optional[datetime] = None, duration_minutes: int = 60):
         try:

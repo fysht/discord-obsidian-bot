@@ -101,64 +101,34 @@ class StudyCog(commands.Cog):
         return all([self.dropbox_refresh_token, self.dropbox_vault_path])
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
-        """
-        raw_content 内の JSON オブジェクトを連続して取り出してパースする。
-        - 1行に複数オブジェクトがある、改行がない、といったケースに対応。
-        - 不正な部分はスキップして警告ログを出す。
-        """
         questions = []
         if not raw_content:
             return questions
-
-        # 不正な空白文字を通常のスペースに変換
-        content = raw_content.replace('\xa0', ' ')
-        # 先頭に BOM 等があれば剥がす
-        content = content.lstrip("\ufeff")
-
+        content = raw_content.replace('\xa0', ' ').lstrip("\ufeff")
         decoder = json.JSONDecoder()
         idx = 0
-        length = len(content)
-
-        while idx < length:
-            # 次の '{' を探す（JSON オブジェクトの開始）
+        while idx < len(content):
             m = re.search(r'\{', content[idx:])
-            if not m:
-                break
+            if not m: break
             start = idx + m.start()
-
             try:
                 obj, end = decoder.raw_decode(content, start)
-                # obj が dict なら追加（安全対策）
-                if isinstance(obj, dict):
+                if isinstance(obj, dict) and 'ID' in obj:
                     questions.append(obj)
                 idx = end
-            except json.JSONDecodeError as e:
-                # 部分的に壊れている可能性があるので、開始位置を1文字ずらして継続
-                logging.warning(f"JSONデコード失敗: {e} -- start={start}. 1文字進めて再試行します。")
+            except json.JSONDecodeError:
                 idx = start + 1
-            except Exception as e:
-                logging.warning(f"想定外の例外でJSONパース中断: {e}")
-                idx = start + 1
-
-        logging.info(f"_parse_study_materials: パースできた問題数 = {len(questions)}")
         return questions
 
     async def get_all_questions_from_vault(self) -> list[dict]:
-        """
-        Vault 内の .md ファイルをすべて読み、_parse_study_materials でパースして返す。
-        Dropbox のページング (has_more) に対応。
-        """
         all_questions = []
         try:
             folder_path = f"{self.dropbox_vault_path}{VAULT_STUDY_PATH}"
-            res = self.dbx.files_list_folder(folder_path)
+            res = self.dbx.files_list_folder(folder_path, recursive=True)
             entries = list(res.entries)
-
-            # ページング対応: has_more が True のとき続けて取得
             while getattr(res, "has_more", False):
                 res = self.dbx.files_list_folder_continue(res.cursor)
                 entries.extend(res.entries)
-
             for entry in entries:
                 if isinstance(entry, FileMetadata) and entry.name.endswith('.md'):
                     try:
@@ -166,19 +136,12 @@ class StudyCog(commands.Cog):
                         raw_content = content_res.content.decode('utf-8')
                         qs = self._parse_study_materials(raw_content)
                         all_questions.extend(qs)
-                    except ApiError as e:
-                        logging.error(f"ファイルダウンロード失敗: {entry.path_display} -> {e}")
                     except Exception as e:
-                        logging.exception(f"ファイル読み取り中に例外: {entry.path_display} -> {e}")
-
+                        logging.error(f"ファイル処理中にエラー: {entry.path_display} -> {e}")
             logging.info(f"get_all_questions_from_vault: 合計読み込み問題数 = {len(all_questions)}")
             return all_questions
-
-        except ApiError as e:
-            logging.error(f"教材フォルダの読み込みに失敗: {e}")
-            return []
         except Exception as e:
-            logging.exception(f"想定外の例外(get_all_questions_from_vault): {e}")
+            logging.error(f"教材フォルダの読み込みに失敗: {e}")
             return []
 
     async def get_user_progress(self) -> dict:
@@ -195,18 +158,13 @@ class StudyCog(commands.Cog):
 
     def get_next_review_date(self, correct_streak: int) -> str:
         today = datetime.now(JST).date()
-        if correct_streak <= 0: return (today + timedelta(days=1)).isoformat()
-        if correct_streak == 1: return (today + timedelta(days=1)).isoformat()
-        if correct_streak == 2: return (today + timedelta(days=7)).isoformat()
-        if correct_streak == 3: return (today + timedelta(days=16)).isoformat()
-        if correct_streak >= 4: return (today + timedelta(days=35)).isoformat()
-        return (today + timedelta(days=1)).isoformat()
+        intervals = [1, 1, 7, 16, 35]
+        days = intervals[min(correct_streak, len(intervals)-1)] if correct_streak > 0 else 1
+        return (today + timedelta(days=days)).isoformat()
 
     async def process_answer(self, q_id: str, is_correct: bool):
         progress = await self.get_user_progress()
-        
         streak = (progress.get(q_id, {}).get("correct_streak", 0) + 1) if is_correct else 0
-            
         progress[q_id] = {
             "last_answered": datetime.now(JST).date().isoformat(),
             "correct_streak": streak,
@@ -221,27 +179,37 @@ class StudyCog(commands.Cog):
         user_progress = await self.get_user_progress()
         
         if not all_questions:
-            logging.warning("教材から問題を1問も読み込めませんでした。ファイル形式を確認してください。")
+            logging.warning("教材から問題を1問も読み込めませんでした。")
             self.daily_question_pool = []
             return
 
-        all_q_ids = {q['ID'] for q in all_questions if 'ID' in q}
+        all_q_ids = {q['ID'] for q in all_questions}
         today_str = datetime.now(JST).date().isoformat()
-
         answered_ids = set(user_progress.keys())
-        review_ids = {q_id for q_id in answered_ids if user_progress[q_id].get("next_review_date") <= today_str}
+
+        review_ids = {qid for qid in answered_ids if user_progress[qid].get("next_review_date", "1970-01-01") <= today_str}
         new_ids = all_q_ids - answered_ids
         
+        # 優先度順にプール候補を追加
         pool_ids = list(review_ids)
-        remaining_slots = QUESTIONS_PER_DAY - len(pool_ids)
+        pool_ids.extend(list(new_ids))
         
-        if remaining_slots > 0:
-            new_ids_list = list(new_ids)
-            pool_ids.extend(random.sample(new_ids_list, min(remaining_slots, len(new_ids_list))))
+        # 補充枠
+        if len(pool_ids) < QUESTIONS_PER_DAY:
+            answered_but_not_due = sorted(
+                [qid for qid in answered_ids if qid not in review_ids],
+                key=lambda qid: user_progress[qid].get("last_answered", "2000-01-01")
+            )
+            pool_ids.extend(answered_but_not_due)
         
-        self.daily_question_pool = [q for q in all_questions if q.get('ID') in pool_ids]
+        # 重複を除き、上限数まで選択
+        final_pool_ids = list(dict.fromkeys(pool_ids))[:QUESTIONS_PER_DAY]
+        
+        id_to_question = {q['ID']: q for q in all_questions}
+        self.daily_question_pool = [id_to_question[qid] for qid in final_pool_ids if qid in id_to_question]
+        
         random.shuffle(self.daily_question_pool)
-        logging.info(f"本日の問題プールを作成しました: {len(self.daily_question_pool)}問")
+        logging.info(f"本日の問題プールを作成しました: {len(self.daily_question_pool)}問 (復習: {len(review_ids.intersection(final_pool_ids))}, 新規: {len(new_ids.intersection(final_pool_ids))})")
 
     @tasks.loop(time=PREPARE_QUIZ_TIME)
     async def prepare_daily_questions(self):
