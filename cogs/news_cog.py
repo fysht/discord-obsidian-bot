@@ -10,6 +10,7 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import asyncio
+import aiohttp
 import google.generativeai as genai
 import feedparser
 from bs4 import BeautifulSoup
@@ -19,7 +20,7 @@ import cloudscraper
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=7, minute=0, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=8, minute=0, tzinfo=JST)
 JMA_AREA_CODE = "330000"
 WEATHER_EMOJI_MAP = {
     "晴": "☀️", "曇": "☁️", "雨": "☔️", "雪": "❄️", "雷": "⚡️", "霧": "🌫️"
@@ -183,13 +184,13 @@ class NewsCog(commands.Cog):
         
         one_day_ago = datetime.now(timezone.utc) - timedelta(days=1)
 
-        for code, name in watchlist.items():
-            try:
-                query = f'"{name}" AND "{code}" when:1d'
-                encoded_query = quote_plus(query)
-                rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
-                
-                async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as session:
+            for code, name in watchlist.items():
+                try:
+                    query = f'"{name}" AND "{code}" when:1d'
+                    encoded_query = quote_plus(query)
+                    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
+                    
                     async with session.get(rss_url) as response:
                         if response.status != 200:
                             logging.error(f"GoogleニュースRSSの取得に失敗 ({name}): Status {response.status}")
@@ -197,36 +198,36 @@ class NewsCog(commands.Cog):
                         feed_text = await response.text()
                         feed = feedparser.parse(feed_text)
 
-                if not feed.entries:
-                    logging.info(f"関連ニュースは見つかりませんでした ({name})")
-                    continue
-
-                for entry in feed.entries:
-                    published_time = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
-                    if published_time < one_day_ago:
+                    if not feed.entries:
+                        logging.info(f"関連ニュースは見つかりませんでした ({name})")
                         continue
 
-                    logging.info(f"関連ニュースを発見: {entry.title} ({name})")
-                    
-                    loop = asyncio.get_running_loop()
-                    summary = await loop.run_in_executor(
-                        None, self._summarize_article_content_sync, entry.link
-                    )
+                    for entry in feed.entries:
+                        published_time = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %Z").replace(tzinfo=timezone.utc)
+                        if published_time < one_day_ago:
+                            continue
 
-                    news_embed = discord.Embed(
-                        title=f"📈関連ニュース: {entry.title}",
-                        url=entry.link,
-                        description=summary,
-                        color=discord.Color.green()
-                    ).set_footer(text=f"銘柄: {name} ({code}) | {entry.source.title}")
-                    await channel.send(embed=news_embed)
-                    await asyncio.sleep(3)
-            
-            except Exception as e:
-                logging.error(f"株式ニュースの処理中にエラーが発生 ({name}): {e}", exc_info=True)
-                await channel.send(f"⚠️ {name}のニュース取得中にエラーが発生しました。")
-            
-            await asyncio.sleep(5)
+                        logging.info(f"関連ニュースを発見: {entry.title} ({name})")
+                        
+                        loop = asyncio.get_running_loop()
+                        summary = await loop.run_in_executor(
+                            None, self._summarize_article_content_sync, entry.link
+                        )
+
+                        news_embed = discord.Embed(
+                            title=f"📈関連ニュース: {entry.title}",
+                            url=entry.link,
+                            description=summary,
+                            color=discord.Color.green()
+                        ).set_footer(text=f"銘柄: {name} ({code}) | {entry.source.title}")
+                        await channel.send(embed=news_embed)
+                        await asyncio.sleep(3)
+                
+                except Exception as e:
+                    logging.error(f"株式ニュースの処理中にエラーが発生 ({name}): {e}", exc_info=True)
+                    await channel.send(f"⚠️ {name}のニュース取得中にエラーが発生しました。")
+                
+                await asyncio.sleep(5)
 
     # --- 株式ウォッチリスト管理機能 ---
     async def _get_watchlist(self) -> dict:
