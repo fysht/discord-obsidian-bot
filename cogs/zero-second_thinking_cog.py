@@ -48,9 +48,6 @@ class ZeroSecondThinkingCog(commands.Cog):
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         self.history_path = f"{self.dropbox_vault_path}/.bot/zero_second_thinking_history.json"
         
-        self.last_question_message_id = None
-
-
         # --- 初期チェックとAPIクライアント初期化 ---
         if not all([self.channel_id, self.openai_api_key, self.gemini_api_key, self.dropbox_refresh_token]):
             logging.warning("ZeroSecondThinkingCog: 必要な環境変数が不足しています。")
@@ -104,15 +101,6 @@ class ZeroSecondThinkingCog(commands.Cog):
         """定時にお題を投稿するループ"""
         channel = self.bot.get_channel(self.channel_id)
         if not channel: return
-
-        if self.last_question_message_id:
-            try:
-                last_msg = await channel.fetch_message(self.last_question_message_id)
-                await last_msg.delete()
-            except discord.NotFound:
-                pass
-            finally:
-                self.last_question_message_id = None
         
         try:
             history = await self._get_thinking_history()
@@ -139,8 +127,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             
             embed = discord.Embed(title="🤔 ゼロ秒思考の時間です", description=f"お題: **{question}**", color=discord.Color.teal())
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください（音声入力も可能です）。")
-            sent_message = await channel.send(embed=embed)
-            self.last_question_message_id = sent_message.id
+            await channel.send(embed=embed, delete_after=7200.0) # 2時間後に自動削除
             
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] 定時お題生成エラー: {e}", exc_info=True)
@@ -181,6 +168,9 @@ class ZeroSecondThinkingCog(commands.Cog):
         """思考メモを処理し、Obsidianに記録し、掘り下げ質問を生成する"""
         temp_audio_path = None
         try:
+            # 回答された質問の自動削除をキャンセル
+            await original_msg.edit(delete_after=None)
+
             await message.add_reaction("⏳")
             formatted_answer = ""
             if attachment: # 音声入力の場合
@@ -266,10 +256,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             embed = discord.Embed(title="🤔 さらに深掘りしましょう", description=f"お題: **{new_question}**", color=discord.Color.blue())
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください。")
             
-            self.last_question_message_id = None
-
-            sent_message = await message.channel.send(embed=embed)
-            self.last_question_message_id = sent_message.id
+            await message.channel.send(embed=embed, delete_after=7200.0) # 2時間後に自動削除
 
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] 処理中にエラー: {e}", exc_info=True)
