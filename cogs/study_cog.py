@@ -8,18 +8,22 @@ import random
 from datetime import datetime, time, timedelta
 import zoneinfo
 import dropbox
-from dropbox.files import FileMetadata, DownloadError
+from dropbox.files import FileMetadata, DownloadError, WriteMode
 from dropbox.exceptions import ApiError
 import asyncio
 import re
 import textwrap
 
+#  utils.obsidian_utilsからupdate_sectionをインポート
+from utils.obsidian_utils import update_section
+
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 STUDY_CHANNEL_ID = int(os.getenv("STUDY_CHANNEL_ID", 0))
-PREPARE_QUIZ_TIME = time(hour=6, minute=0, tzinfo=JST)
+PREPARE_QUIZ_TIME = time(hour=7, minute=0, tzinfo=JST)
 VAULT_STUDY_PATH = "/Study"
-QUESTIONS_PER_DAY = 50
+QUESTIONS_PER_DAY = 30
+REVIEW_NOTE_PATH = "/Study/復習リスト.md" # 復習用ノートのパス
 
 class SingleQuizView(discord.ui.View):
     def __init__(self, cog_instance, question_data):
@@ -28,11 +32,34 @@ class SingleQuizView(discord.ui.View):
         self.question_data = question_data
         self.is_answered = False
 
+        # 回答ボタンを追加
         for key in sorted(question_data['Options'].keys()):
             button = discord.ui.Button(label=key, style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
             button.callback = self.button_callback
             self.add_item(button)
+        
+        # 復習ボタンを追加
+        review_button = discord.ui.Button(label="あとで復習", style=discord.ButtonStyle.secondary, emoji="🔖", custom_id="review_later")
+        review_button.callback = self.review_callback
+        self.add_item(review_button)
     
+    async def review_callback(self, interaction: discord.Interaction):
+        """復習ボタンが押されたときの処理"""
+        await interaction.response.defer()
+        await self.cog.save_for_review(self.question_data)
+        
+        # ボタンの見た目を変更してフィードバック
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "review_later":
+                item.disabled = True
+                item.label = "保存済み"
+                item.style = discord.ButtonStyle.success
+                break
+        await interaction.edit_original_response(view=self)
+        # 短い確認メッセージを送信
+        await interaction.followup.send("🔖 この問題を復習リストに保存しました。", ephemeral=True, delete_after=10)
+
+
     async def button_callback(self, interaction: discord.Interaction):
         if self.is_answered:
             await interaction.response.send_message("この問題には既に回答済みです。", ephemeral=True, delete_after=10)
@@ -42,17 +69,31 @@ class SingleQuizView(discord.ui.View):
         selected_option_key = interaction.data['custom_id'].split('_')[1]
         is_correct = (selected_option_key.upper() == self.question_data['Answer'].upper())
 
+        # 回答結果を記録
         await self.cog.process_answer(self.question_data['ID'], is_correct)
         self.is_answered = True
+
+        # 不正解の場合は自動で復習リストに保存
+        if not is_correct:
+            await self.cog.save_for_review(self.question_data)
+            # 復習ボタンの状態も更新
+            for item in self.children:
+                if isinstance(item, discord.ui.Button) and item.custom_id == "review_later":
+                    item.disabled = True
+                    item.label = "自動保存済み"
+                    item.style = discord.ButtonStyle.success
+                    break
         
+        # 全ての回答ボタンを無効化
         for item in self.children:
-            item.disabled = True
-            if item.custom_id == interaction.data['custom_id']:
-                item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
+             if isinstance(item, discord.ui.Button) and item.custom_id.startswith("answer_"):
+                item.disabled = True
+                if item.custom_id == interaction.data['custom_id']:
+                    item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
         
         result_embed = interaction.message.embeds[0]
         result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
-        result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解..."
+        result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解... (復習リストに自動保存しました)"
         
         footer_text = f"正解: {self.question_data['Answer']}\n"
         footer_text += textwrap.fill(f"解説: {self.question_data['Explanation']}", width=60)
@@ -138,6 +179,8 @@ class StudyCog(commands.Cog):
                 entries.extend(res.entries)
             for entry in entries:
                 if isinstance(entry, FileMetadata) and entry.name.endswith('.md'):
+                    if entry.path_display.endswith(REVIEW_NOTE_PATH):
+                        continue # 復習ノート自体は読み飛ばす
                     try:
                         _, content_res = self.dbx.files_download(entry.path_display)
                         raw_content = content_res.content.decode('utf-8')
@@ -168,7 +211,7 @@ class StudyCog(commands.Cog):
         path = f"{self.dropbox_vault_path}/.bot/study_progress.json"
         try:
             progress_data = json.dumps(progress, indent=2, ensure_ascii=False).encode('utf-8')
-            self.dbx.files_upload(progress_data, path, mode=dropbox.files.WriteMode('overwrite'))
+            self.dbx.files_upload(progress_data, path, mode=WriteMode('overwrite'))
             logging.info(f"✅ 学習進捗の保存に成功しました。パス: {path}")
         except Exception as e:
             logging.error(f"❌ 学習進捗の保存中にエラーが発生しました。パス: {path}", exc_info=True)
@@ -265,6 +308,51 @@ class StudyCog(commands.Cog):
             view = SingleQuizView(self, question_data)
             await interaction.channel.send(embed=embed, view=view)
             await asyncio.sleep(2)
+
+    async def save_for_review(self, question_data: dict):
+        """指定された問題をObsidianの復習ノートに追記する"""
+        full_path = f"{self.dropbox_vault_path}{REVIEW_NOTE_PATH}"
+        today_str = datetime.now(JST).strftime('%Y-%m-%d')
+        
+        # 保存するテキストの形式を定義
+        options_text = "\n".join([f"- {key}) {value}" for key, value in question_data['Options'].items()])
+        content_to_add = (
+            f"### Q: {question_data['Question']} (ID: {question_data['ID']})\n"
+            f"**選択肢:**\n{options_text}\n"
+            f"- **正解**: {question_data['Answer']}\n"
+            f"- **解説**: {question_data['Explanation']}\n"
+            f"---\n"
+        )
+        
+        section_header = f"## {today_str}"
+        
+        try:
+            # 既存のノート内容をダウンロード
+            try:
+                _, res = self.dbx.files_download(full_path)
+                current_content = res.content.decode('utf-8')
+            except ApiError as e:
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                    current_content = f"# 復習リスト\n" # ファイルがなければ新規作成
+                else:
+                    raise
+            
+            # 同じ問題が今日の日付セクションに既に存在しないかチェック
+            if f"ID: {question_data['ID']}" in current_content:
+                # 簡易的なチェックとして、IDが既に含まれていたら追記しない
+                 logging.info(f"問題 (ID: {question_data['ID']}) は既に復習リストに存在するため、追記をスキップします。")
+                 return
+
+            # update_section ユーティリティを使ってコンテンツを更新
+            new_content = update_section(current_content, content_to_add, section_header)
+            
+            # 更新した内容をアップロード
+            self.dbx.files_upload(new_content.encode('utf-8'), full_path, mode=WriteMode('overwrite'))
+            logging.info(f"復習リストに問題 (ID: {question_data['ID']}) を追加しました。")
+
+        except Exception as e:
+            logging.error(f"復習リストの保存中にエラーが発生: {e}", exc_info=True)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StudyCog(bot))
