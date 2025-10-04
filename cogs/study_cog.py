@@ -25,29 +25,71 @@ VAULT_STUDY_PATH = "/Study"
 QUESTIONS_PER_DAY = 30
 REVIEW_NOTE_PATH = "/Study/復習リスト.md" # 復習用ノートのパス
 
-class GradedQuizView(discord.ui.View):
-    """間隔反復と選択肢ごとの深掘りを両立するView"""
+class SaveOptionView(discord.ui.View):
+    """特定の選択肢の解説を保存するためのView"""
+    def __init__(self, cog_instance, question_data, option_key):
+        super().__init__(timeout=180) # 3分で無効化
+        self.cog = cog_instance
+        self.question_data = question_data
+        self.option_key = option_key
+
+    @discord.ui.button(label="この解説を保存", style=discord.ButtonStyle.secondary, emoji="🔖")
+    async def save_option(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self.cog.save_option_for_review(self.question_data, self.option_key)
+            button.disabled = True
+            button.label = "保存済み"
+            button.style = discord.ButtonStyle.success
+            await interaction.edit_original_response(view=self)
+            await interaction.followup.send(f"選択肢 {self.option_key} の解説を復習リストに保存しました。", ephemeral=True)
+        except Exception as e:
+            logging.error(f"復習リストへの保存中にエラー: {e}", exc_info=True)
+            await interaction.followup.send("❌ 復習リストへの保存中にエラーが発生しました。", ephemeral=True)
+        self.stop()
+
+class ExplanationView(discord.ui.View):
+    """回答後に各選択肢の解説を表示・保存するためのView"""
     def __init__(self, cog_instance, question_data):
         super().__init__(timeout=None)
         self.cog = cog_instance
         self.question_data = question_data
-        self.is_answered = False
 
-        # 初期状態：回答ボタンを配置
+        for key in sorted(question_data['Options'].keys()):
+            button = discord.ui.Button(label=f"📖 解説 {key}", style=discord.ButtonStyle.secondary, custom_id=f"explain_{key}")
+            button.callback = self.explanation_callback
+            self.add_item(button)
+    
+    async def explanation_callback(self, interaction: discord.Interaction):
+        key = interaction.data['custom_id'].split('_')[1]
+        option_data = self.question_data['Options'][key]
+        is_correct = (key.upper() == self.question_data['Answer'].upper())
+        result_text = "✅ 正解です" if is_correct else "❌ 不正解です"
+
+        embed = discord.Embed(
+            title=f"選択肢 {key} の解説",
+            description=f"**{result_text}**\n\n{option_data['Explanation']}",
+            color=discord.Color.green() if is_correct else discord.Color.red()
+        )
+        # 解説メッセージの中に「保存」ボタンを持つViewを追加
+        save_view = SaveOptionView(self.cog, self.question_data, key)
+        await interaction.response.send_message(embed=embed, view=save_view, ephemeral=True)
+
+
+class AnswerView(discord.ui.View):
+    """問題に回答するための初期View"""
+    def __init__(self, cog_instance, question_data):
+        super().__init__(timeout=None)
+        self.cog = cog_instance
+        self.question_data = question_data
+
         for key in sorted(question_data['Options'].keys()):
             button = discord.ui.Button(label=key, style=discord.ButtonStyle.secondary, custom_id=f"answer_{key}")
             button.callback = self.answer_callback
             self.add_item(button)
 
     async def answer_callback(self, interaction: discord.Interaction):
-        """回答ボタンが押されたときの処理（最初の1回のみ有効）"""
-        if self.is_answered:
-            await interaction.response.send_message("この問題には既に回答済みです。", ephemeral=True, delete_after=10)
-            return
-            
         await interaction.response.defer()
-        self.is_answered = True
-        
         try:
             selected_option_key = interaction.data['custom_id'].split('_')[1]
             is_correct = (selected_option_key.upper() == self.question_data['Answer'].upper())
@@ -55,62 +97,20 @@ class GradedQuizView(discord.ui.View):
             # 間隔反復のために回答結果を記録
             await self.cog.process_answer(self.question_data['ID'], is_correct)
 
-            # --- UIを探索フェーズに移行 ---
-            self.clear_items() # 回答ボタンを削除
-
-            # 各選択肢に対応する「解説」と「保存」ボタンを追加
-            for key in sorted(self.question_data['Options'].keys()):
-                self.add_item(discord.ui.Button(label=f"📖 解説 {key}", style=discord.ButtonStyle.secondary, custom_id=f"explain_{key}"))
-                self.add_item(discord.ui.Button(label=f"🔖 保存 {key}", style=discord.ButtonStyle.secondary, custom_id=f"review_{key}"))
-            
-            # コールバックを新しいボタンに再割り当て
-            for child in self.children:
-                if isinstance(child, discord.ui.Button):
-                    if child.custom_id.startswith("explain_"):
-                        child.callback = self.explanation_callback
-                    elif child.custom_id.startswith("review_"):
-                        child.callback = self.review_callback
-
-            # --- Embedを更新 ---
+            # Embedを更新
             result_embed = interaction.message.embeds[0]
             result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
             result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解..."
-            result_embed.set_footer(text=f"正解: {self.question_data['Answer']} | 各選択肢の解説や保存ができます。")
+            result_embed.set_footer(text=f"正解: {self.question_data['Answer']} | 下のボタンから各選択肢の解説を確認できます。")
 
-            await interaction.edit_original_response(embed=result_embed, view=self)
-
+            # Viewを解説モードに切り替え
+            explanation_view = ExplanationView(self.cog, self.question_data)
+            await interaction.edit_original_response(embed=result_embed, view=explanation_view)
+        
         except Exception as e:
             logging.error(f"回答処理中にエラー: {e}", exc_info=True)
             if not interaction.is_done():
                 await interaction.followup.send("❌ 回答の処理中にエラーが発生しました。", ephemeral=True)
-
-    async def explanation_callback(self, interaction: discord.Interaction):
-        """解説ボタンの処理"""
-        key = interaction.data['custom_id'].split('_')[1]
-        explanation = self.question_data['Options'][key].get("Explanation", "解説がありません。")
-        await interaction.response.send_message(f"**選択肢 {key} の解説:**\n{explanation}", ephemeral=True)
-
-    async def review_callback(self, interaction: discord.Interaction):
-        """復習保存ボタンの処理"""
-        await interaction.response.defer(ephemeral=True)
-        key = interaction.data['custom_id'].split('_')[1]
-        try:
-            await self.cog.save_option_for_review(self.question_data, key)
-            
-            # ボタンを無効化してフィードバック
-            for item in self.children:
-                if isinstance(item, discord.ui.Button) and item.custom_id == interaction.data['custom_id']:
-                    item.disabled = True
-                    item.label = f"保存済み {key}"
-                    item.style = discord.ButtonStyle.success
-                    break
-            await interaction.edit_original_response(view=self)
-            
-            await interaction.followup.send(f"🔖 選択肢 {key} とその解説を復習リストに保存しました。", ephemeral=True)
-        except Exception as e:
-            logging.error(f"選択肢の復習保存中にエラー: {e}", exc_info=True)
-            await interaction.followup.send("❌ 復習リストへの保存中にエラーが発生しました。", ephemeral=True)
-
 
 class StudyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -154,26 +154,20 @@ class StudyCog(commands.Cog):
 
     def _parse_study_materials(self, raw_content: str) -> list[dict]:
         questions = []
-        if not raw_content:
-            return questions
+        if not raw_content: return questions
         content = raw_content.replace('\xa0', ' ').lstrip("\ufeff")
         decoder = json.JSONDecoder()
         idx = 0
         while idx < len(content):
             m = re.search(r'\{', content[idx:])
-            if not m:
-                break
+            if not m: break
             start = idx + m.start()
             try:
                 obj, end = decoder.raw_decode(content, start)
-                if isinstance(obj, dict):
-                    questions.append(obj)
+                if isinstance(obj, dict): questions.append(obj)
                 idx = end
-            except json.JSONDecodeError as e:
-                logging.warning(f"JSONデコード失敗: {e} -- start={start}. 1文字進めて再試行します。")
-                idx = start + 1
             except Exception as e:
-                logging.warning(f"想定外の例外でJSONパース中断: {e}")
+                logging.warning(f"JSONパース中にスキップ: {e}")
                 idx = start + 1
         return questions
 
@@ -188,24 +182,17 @@ class StudyCog(commands.Cog):
                 entries.extend(res.entries)
             for entry in entries:
                 if isinstance(entry, FileMetadata) and entry.name.endswith('.md'):
-                    if entry.path_display.endswith(REVIEW_NOTE_PATH):
-                        continue
+                    if entry.path_display.endswith(REVIEW_NOTE_PATH): continue
                     try:
                         _, content_res = self.dbx.files_download(entry.path_display)
                         raw_content = content_res.content.decode('utf-8')
-                        qs = self._parse_study_materials(raw_content)
-                        all_questions.extend(qs)
-                    except ApiError as e:
-                        logging.error(f"ファイルダウンロード失敗: {entry.path_display} -> {e}")
+                        all_questions.extend(self._parse_study_materials(raw_content))
                     except Exception as e:
-                        logging.exception(f"ファイル読み取り中に例外: {entry.path_display} -> {e}")
-            logging.info(f"get_all_questions_from_vault: 合計読み込み問題数 = {len(all_questions)}")
+                        logging.error(f"ファイル処理中にエラー: {entry.path_display}", exc_info=True)
+            logging.info(f"合計読み込み問題数 = {len(all_questions)}")
             return all_questions
-        except ApiError as e:
-            logging.error(f"教材フォルダの読み込みに失敗: {e}")
-            return []
         except Exception as e:
-            logging.exception(f"想定外の例外(get_all_questions_from_vault): {e}")
+            logging.error(f"教材フォルダの読み込みに失敗", exc_info=True)
             return []
 
     async def get_user_progress(self) -> dict:
@@ -221,9 +208,8 @@ class StudyCog(commands.Cog):
         try:
             progress_data = json.dumps(progress, indent=2, ensure_ascii=False).encode('utf-8')
             self.dbx.files_upload(progress_data, path, mode=WriteMode('overwrite'))
-            logging.info(f"✅ 学習進捗の保存に成功しました。パス: {path}")
-        except Exception as e:
-            logging.error(f"❌ 学習進捗の保存中にエラーが発生しました。パス: {path}", exc_info=True)
+        except Exception:
+            logging.error(f"学習進捗の保存に失敗: {path}", exc_info=True)
 
     def get_next_review_date(self, correct_streak: int) -> str:
         today = datetime.now(JST).date()
@@ -239,14 +225,11 @@ class StudyCog(commands.Cog):
             "next_review_date": self.get_next_review_date(streak)
         }
         await self.save_user_progress(progress)
-        logging.info(f"回答を記録しました: ID={q_id}, 正解={is_correct}, 連続正解={streak}")
 
     async def _prepare_question_pool_logic(self):
-        logging.info("本日の問題プールの作成を開始します...")
         all_questions = await self.get_all_questions_from_vault()
         user_progress = await self.get_user_progress()
         if not all_questions:
-            logging.warning("教材から問題を1問も読み込めませんでした。")
             self.daily_question_pool = []
             return
         today_str = datetime.now(JST).date().isoformat()
@@ -283,9 +266,8 @@ class StudyCog(commands.Cog):
             description=description,
             color=discord.Color.blue()
         )
-        view = GradedQuizView(self, question_data)
+        view = AnswerView(self, question_data)
         await channel.send(embed=embed, view=view)
-        logging.info(f"問題を出題しました: ID={question_data['ID']}")
 
     @prepare_daily_questions.before_loop
     @ask_next_question.before_loop
@@ -301,39 +283,30 @@ class StudyCog(commands.Cog):
         answered_ids = set(user_progress.keys())
         unanswered_questions = [q for q in all_questions if q.get('ID') not in answered_ids]
         if not unanswered_questions:
-            await interaction.followup.send("未解答の問題がありませんでした。新しい教材を追加してください。", ephemeral=True)
+            await interaction.followup.send("未解答の問題がありませんでした。", ephemeral=True)
             return
         num_to_ask = min(count, len(unanswered_questions))
         questions_to_ask = random.sample(unanswered_questions, num_to_ask)
-        await interaction.followup.send(f"クイズを{num_to_ask}問出題します。チャンネルを確認してください。", ephemeral=True)
+        await interaction.followup.send(f"クイズを{num_to_ask}問出題します。", ephemeral=True)
         for i, question_data in enumerate(questions_to_ask):
             options_text = "\n".join([f"**{key})** {value['Text']}" for key, value in sorted(question_data['Options'].items())])
             description = f"{question_data['Question']}\n\n{options_text}"
-            embed = discord.Embed(
-                title=f"✍️ 実力テスト ({i + 1}/{num_to_ask})",
-                description=description,
-                color=discord.Color.blue()
-            )
-            view = GradedQuizView(self, question_data)
+            embed = discord.Embed(title=f"✍️ 実力テスト ({i + 1}/{num_to_ask})", description=description, color=discord.Color.blue())
+            view = AnswerView(self, question_data)
             await interaction.channel.send(embed=embed, view=view)
             await asyncio.sleep(2)
 
     async def save_option_for_review(self, question_data: dict, option_key: str):
-        """指定された選択肢とその解説をObsidianの復習ノートに追記する"""
         full_path = f"{self.dropbox_vault_path}{REVIEW_NOTE_PATH}"
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
-        
         option_data = question_data['Options'][option_key]
-        
         content_to_add = (
             f"### Q: {question_data['Question']} (ID: {question_data['ID']})\n"
             f"- **選択肢 {option_key}**: {option_data['Text']}\n"
             f"- **解説**: {option_data['Explanation']}\n"
             f"---\n"
         )
-        
         section_header = f"## {today_str}"
-        
         try:
             _, res = self.dbx.files_download(full_path)
             current_content = res.content.decode('utf-8')
@@ -342,12 +315,9 @@ class StudyCog(commands.Cog):
                 current_content = f"# 復習リスト\n"
             else:
                 raise
-        
         new_content = update_section(current_content, content_to_add, section_header)
-        
         self.dbx.files_upload(new_content.encode('utf-8'), full_path, mode=WriteMode('overwrite'))
         logging.info(f"復習リストに問題ID {question_data['ID']} の選択肢 {option_key} を追加しました。")
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StudyCog(bot))
