@@ -45,19 +45,25 @@ class SingleQuizView(discord.ui.View):
     
     async def review_callback(self, interaction: discord.Interaction):
         """復習ボタンが押されたときの処理"""
-        await interaction.response.defer()
-        await self.cog.save_for_review(self.question_data)
-        
-        # ボタンの見た目を変更してフィードバック
-        for item in self.children:
-            if isinstance(item, discord.ui.Button) and item.custom_id == "review_later":
-                item.disabled = True
-                item.label = "保存済み"
-                item.style = discord.ButtonStyle.success
-                break
-        await interaction.edit_original_response(view=self)
-        # 短い確認メッセージを送信
-        await interaction.followup.send("🔖 この問題を復習リストに保存しました。", ephemeral=True, delete_after=10)
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self.cog.save_for_review(self.question_data)
+            
+            # 元のメッセージのボタンの見た目を変更してフィードバック
+            for item in self.children:
+                if isinstance(item, discord.ui.Button) and item.custom_id == "review_later":
+                    item.disabled = True
+                    item.label = "保存済み"
+                    item.style = discord.ButtonStyle.success
+                    break
+            await interaction.edit_original_response(view=self)
+            
+            # 短い確認メッセージを送信
+            await interaction.followup.send("🔖 この問題を復習リストに保存しました。", ephemeral=True)
+
+        except Exception as e:
+            logging.error(f"「あとで復習」ボタンの処理中にエラー: {e}", exc_info=True)
+            await interaction.followup.send("❌ 復習リストへの保存中にエラーが発生しました。詳細はBotのログを確認してください。", ephemeral=True)
 
 
     async def button_callback(self, interaction: discord.Interaction):
@@ -66,41 +72,53 @@ class SingleQuizView(discord.ui.View):
             return
             
         await interaction.response.defer()
-        selected_option_key = interaction.data['custom_id'].split('_')[1]
-        is_correct = (selected_option_key.upper() == self.question_data['Answer'].upper())
+        try:
+            selected_option_key = interaction.data['custom_id'].split('_')[1]
+            is_correct = (selected_option_key.upper() == self.question_data['Answer'].upper())
 
-        # 回答結果を記録
-        await self.cog.process_answer(self.question_data['ID'], is_correct)
-        self.is_answered = True
+            # 回答結果を記録
+            await self.cog.process_answer(self.question_data['ID'], is_correct)
+            self.is_answered = True
 
-        # 不正解の場合は自動で復習リストに保存
-        if not is_correct:
-            await self.cog.save_for_review(self.question_data)
-            # 復習ボタンの状態も更新
+            result_title = ""
+            # 不正解の場合は自動で復習リストに保存
+            if not is_correct:
+                await self.cog.save_for_review(self.question_data)
+                result_title = "❌ 不正解... (復習リストに自動保存しました)"
+                # 復習ボタンの状態も更新
+                for item in self.children:
+                    if isinstance(item, discord.ui.Button) and item.custom_id == "review_later":
+                        item.disabled = True
+                        item.label = "自動保存済み"
+                        item.style = discord.ButtonStyle.success
+                        break
+            else:
+                result_title = "✅ 正解！"
+
+            # 全ての回答ボタンを無効化
             for item in self.children:
-                if isinstance(item, discord.ui.Button) and item.custom_id == "review_later":
+                if isinstance(item, discord.ui.Button) and item.custom_id.startswith("answer_"):
                     item.disabled = True
-                    item.label = "自動保存済み"
-                    item.style = discord.ButtonStyle.success
-                    break
-        
-        # 全ての回答ボタンを無効化
-        for item in self.children:
-             if isinstance(item, discord.ui.Button) and item.custom_id.startswith("answer_"):
-                item.disabled = True
-                if item.custom_id == interaction.data['custom_id']:
-                    item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
-        
-        result_embed = interaction.message.embeds[0]
-        result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
-        result_embed.title = "✅ 正解！" if is_correct else "❌ 不正解... (復習リストに自動保存しました)"
-        
-        footer_text = f"正解: {self.question_data['Answer']}\n"
-        footer_text += textwrap.fill(f"解説: {self.question_data['Explanation']}", width=60)
-        result_embed.set_footer(text=footer_text)
-        
-        await interaction.edit_original_response(embed=result_embed, view=self)
-        self.stop()
+                    if item.custom_id == interaction.data['custom_id']:
+                        item.style = discord.ButtonStyle.success if is_correct else discord.ButtonStyle.danger
+            
+            result_embed = interaction.message.embeds[0]
+            result_embed.color = discord.Color.green() if is_correct else discord.Color.red()
+            result_embed.title = result_title
+            
+            footer_text = f"正解: {self.question_data['Answer']}\n"
+            footer_text += textwrap.fill(f"解説: {self.question_data['Explanation']}", width=60)
+            result_embed.set_footer(text=footer_text)
+            
+            await interaction.edit_original_response(embed=result_embed, view=self)
+            
+        except Exception as e:
+            logging.error(f"回答ボタンの処理中にエラー: {e}", exc_info=True)
+            try:
+                if not interaction.is_done():
+                    await interaction.followup.send("❌ 回答の処理中にエラーが発生しました。詳細はBotのログを確認してください。", ephemeral=True)
+            except discord.errors.InteractionResponded:
+                pass
 
 class StudyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -326,32 +344,29 @@ class StudyCog(commands.Cog):
         
         section_header = f"## {today_str}"
         
+        # 既存のノート内容をダウンロード
         try:
-            # 既存のノート内容をダウンロード
-            try:
-                _, res = self.dbx.files_download(full_path)
-                current_content = res.content.decode('utf-8')
-            except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    current_content = f"# 復習リスト\n" # ファイルがなければ新規作成
-                else:
-                    raise
-            
-            # 同じ問題が今日の日付セクションに既に存在しないかチェック
-            if f"ID: {question_data['ID']}" in current_content:
-                # 簡易的なチェックとして、IDが既に含まれていたら追記しない
-                 logging.info(f"問題 (ID: {question_data['ID']}) は既に復習リストに存在するため、追記をスキップします。")
-                 return
+            _, res = self.dbx.files_download(full_path)
+            current_content = res.content.decode('utf-8')
+        except ApiError as e:
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                current_content = f"# 復習リスト\n" # ファイルがなければ新規作成
+            else:
+                raise
+        
+        # 同じ問題が今日の日付セクションに既に存在しないかチェック
+        today_section_pattern = re.compile(rf"(^## {re.escape(today_str)}.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+        match = today_section_pattern.search(current_content)
+        if match and f"ID: {question_data['ID']}" in match.group(1):
+            logging.info(f"問題 (ID: {question_data['ID']}) は既に本日の復習リストに存在するため、追記をスキップします。")
+            return
 
-            # update_section ユーティリティを使ってコンテンツを更新
-            new_content = update_section(current_content, content_to_add, section_header)
-            
-            # 更新した内容をアップロード
-            self.dbx.files_upload(new_content.encode('utf-8'), full_path, mode=WriteMode('overwrite'))
-            logging.info(f"復習リストに問題 (ID: {question_data['ID']}) を追加しました。")
-
-        except Exception as e:
-            logging.error(f"復習リストの保存中にエラーが発生: {e}", exc_info=True)
+        # update_section ユーティリティを使ってコンテンツを更新
+        new_content = update_section(current_content, content_to_add, section_header)
+        
+        # 更新した内容をアップロード
+        self.dbx.files_upload(new_content.encode('utf-8'), full_path, mode=WriteMode('overwrite'))
+        logging.info(f"復習リストに問題 (ID: {question_data['ID']}) を追加しました。")
 
 
 async def setup(bot: commands.Bot):
