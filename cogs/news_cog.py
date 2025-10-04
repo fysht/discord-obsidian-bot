@@ -17,10 +17,13 @@ from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
 from readability import Document
 import cloudscraper
+import re
+import textwrap
+import requests
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-NEWS_BRIEFING_TIME = time(hour=8, minute=0, tzinfo=JST)
+NEWS_BRIEFING_TIME = time(hour=6, minute=00, tzinfo=JST)
 JMA_AREA_CODE = "330000"
 WEATHER_EMOJI_MAP = {
     "晴": "☀️", "曇": "☁️", "雨": "☔️", "雪": "❄️", "雷": "⚡️", "霧": "🌫️"
@@ -136,11 +139,27 @@ class NewsCog(commands.Cog):
                 embed.add_field(name="エラー", value="⚠️ 天気情報の取得に失敗しました。", inline=False)
         return embed
 
+    def _resolve_actual_url(self, google_news_url: str) -> str:
+        """GoogleニュースのリダイレクトURLから実際の記事URLを取り出す"""
+        match = re.search(r"url=([^&]+)", google_news_url)
+        if match:
+            return requests.utils.unquote(match.group(1))
+        return google_news_url
+
     def _summarize_article_content_sync(self, article_url: str) -> str:
         """cloudscraperを使って記事本文を抽出し、要約する"""
         if not self.gemini_model: return "要約機能が無効です。"
+        
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        
         try:
-            response = self.scraper.get(article_url, timeout=15)
+            actual_url = self._resolve_actual_url(article_url)
+
+            try:
+                response = self.scraper.get(actual_url, headers=headers, timeout=15)
+            except Exception:
+                response = requests.get(actual_url, headers=headers, timeout=15)
+
             response.raise_for_status()
             html_content = response.text
 
@@ -149,15 +168,21 @@ class NewsCog(commands.Cog):
             soup = BeautifulSoup(article_html, 'html.parser')
             text_content = soup.get_text(separator='\n', strip=True)
 
+            if not text_content or len(text_content) < 100:
+                paragraphs = [p.get_text() for p in BeautifulSoup(html_content, 'html.parser').find_all('p')]
+                text_content = "\n".join(paragraphs)
+
             if not text_content:
-                logging.warning(f"記事本文の抽出に失敗しました ({article_url})")
+                logging.warning(f"記事本文の抽出に失敗しました ({actual_url})")
                 return "記事の本文を抽出できませんでした。"
 
             if len(text_content) < 100:
-                logging.info(f"記事本文が短いため、要約せずそのまま表示します ({article_url})")
+                logging.info(f"記事本文が短いため、要約せずそのまま表示します ({actual_url})")
                 return text_content
 
-            prompt = (f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n出力は「です・ます調」で、要約本文のみとしてください。\n---\n{text_content[:8000]}")
+            shortened_text = textwrap.shorten(text_content, 8000, placeholder="...")
+
+            prompt = (f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n出力は「です・ます調」で、要約本文のみとしてください。\n---\n{shortened_text}")
             response_gemini = self.gemini_model.generate_content(prompt)
             return response_gemini.text.strip()
             
@@ -211,12 +236,12 @@ class NewsCog(commands.Cog):
                         
                         loop = asyncio.get_running_loop()
                         summary = await loop.run_in_executor(
-                            None, self._summarize_article_content_sync, entry.link
+                            None, self._summarize_article_content_sync, entry.links[0].href
                         )
 
                         news_embed = discord.Embed(
                             title=f"📈関連ニュース: {entry.title}",
-                            url=entry.link,
+                            url=entry.links[0].href,
                             description=summary,
                             color=discord.Color.green()
                         ).set_footer(text=f"銘柄: {name} ({code}) | {entry.source.title}")

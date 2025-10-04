@@ -50,36 +50,53 @@ class ManualAddToListModal(discord.ui.Modal, title="リストに手動で追加"
 
 class AddToListView(discord.ui.View):
     def __init__(self, memo_cog_instance, message: discord.Message, category: str, item_to_add: str, context: str):
-        super().__init__(timeout=None)
+        super().__init__(timeout=60.0) # タイムアウトを60秒に設定
         self.memo_cog = memo_cog_instance
-        self.message = message
+        self.message = message # これはユーザーの元のメッセージ
         self.category = category
         self.item_to_add = item_to_add
         self.context = context
+        self.reply_message = None # ボットの返信メッセージを保持する変数
 
     @discord.ui.button(label="はい", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         success = await self.memo_cog.add_item_to_list_file(self.category, self.item_to_add, self.context)
-        original_message = await interaction.channel.fetch_message(interaction.message.id)
 
         if success:
-            await original_message.edit(
+            await self.reply_message.edit(
                 content=f"✅ **{self.context}** の **{CATEGORY_MAP[self.category]['prompt']}** に「{self.item_to_add}」を追加しました。",
                 view=None
             )
         else:
-            await original_message.edit(content="❌リストへの追加中にエラーが発生しました。", view=None)
+            await self.reply_message.edit(content="❌リストへの追加中にエラーが発生しました。", view=None)
         
         await asyncio.sleep(10)
-        await original_message.delete()
+        await self.reply_message.delete()
         self.stop()
 
     @discord.ui.button(label="いいえ (手動選択)", style=discord.ButtonStyle.secondary)
     async def cancel_and_select(self, interaction: discord.Interaction, button: discord.ui.Button):
-        original_message = await interaction.channel.fetch_message(interaction.message.id)
-        await original_message.edit(content="手動で追加先を選択してください...", view=None)
+        await self.reply_message.edit(content="手動で追加先を選択してください...", view=None)
         await interaction.response.send_modal(ManualAddToListModal(self.memo_cog, self.item_to_add))
+        self.stop()
+
+    @discord.ui.button(label="メモのみ", style=discord.ButtonStyle.danger, row=1)
+    async def memo_only(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await self.reply_message.edit(content="📝 メモのみ記録しました。", view=None)
+        await asyncio.sleep(10)
+        await self.reply_message.delete()
+        self.stop()
+
+    async def on_timeout(self):
+        if self.reply_message:
+            try:
+                await self.reply_message.edit(content="タイムアウトしたため、メモのみ記録しました。", view=None)
+                await asyncio.sleep(10)
+                await self.reply_message.delete()
+            except discord.NotFound:
+                pass
         self.stop()
 
 class DateSelectionModal(discord.ui.Modal, title="日付を指定してください"):
@@ -92,7 +109,7 @@ class DateSelectionModal(discord.ui.Modal, title="日付を指定してくださ
 
     target_date = discord.ui.TextInput(
         label="日付 (YYYY-MM-DD形式)",
-        placeholder="例: 2024-12-25 (空欄の場合は今日の日付)",
+        placeholder="例: 2025-10-01 (空欄の場合は今日の日付)",
         required=False,
     )
 
@@ -356,7 +373,8 @@ class MemoCog(commands.Cog):
             if context in ["Work", "Personal"] and category in CATEGORY_MAP and item:
                 prompt_text = CATEGORY_MAP[category]['prompt']
                 view = AddToListView(self, message, category, item, context)
-                await message.reply(f"このメモを **{context}** の **{prompt_text}** に追加しますか？\n`{item}`", view=view)
+                reply_message = await message.reply(f"このメモを **{context}** の **{prompt_text}** に追加しますか？\n`{item}`", view=view)
+                view.reply_message = reply_message
         except (json.JSONDecodeError, KeyError, AttributeError) as e:
             logging.warning(f"メモの分類結果の解析に失敗: {e}\nAI Response: {response.text}")
         except Exception as e:
