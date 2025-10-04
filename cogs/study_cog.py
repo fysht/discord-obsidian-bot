@@ -281,13 +281,25 @@ class StudyCog(commands.Cog):
         all_questions = await self.get_all_questions_from_vault()
         user_progress = await self.get_user_progress()
         answered_ids = set(user_progress.keys())
-        unanswered_questions = [q for q in all_questions if q.get('ID') not in answered_ids]
-        if not unanswered_questions:
-            await interaction.followup.send("未解答の問題がありませんでした。", ephemeral=True)
+        
+        valid_unanswered_questions = []
+        for q in all_questions:
+            if q.get('ID') not in answered_ids:
+                options_value = q.get('Options')
+                if isinstance(options_value, dict) and options_value:
+                    first_option = next(iter(options_value.values()))
+                    if isinstance(first_option, dict) and 'Text' in first_option:
+                        valid_unanswered_questions.append(q)
+
+        if not valid_unanswered_questions:
+            await interaction.followup.send("出題可能な形式の未解答問題がありませんでした。教材データを確認してください。", ephemeral=True)
             return
-        num_to_ask = min(count, len(unanswered_questions))
-        questions_to_ask = random.sample(unanswered_questions, num_to_ask)
+        
+        num_to_ask = min(count, len(valid_unanswered_questions))
+        questions_to_ask = random.sample(valid_unanswered_questions, num_to_ask)
+        
         await interaction.followup.send(f"クイズを{num_to_ask}問出題します。", ephemeral=True)
+
         for i, question_data in enumerate(questions_to_ask):
             options_text = "\n".join([f"**{key})** {value['Text']}" for key, value in sorted(question_data['Options'].items())])
             description = f"{question_data['Question']}\n\n{options_text}"
@@ -318,6 +330,7 @@ class StudyCog(commands.Cog):
         new_content = update_section(current_content, content_to_add, section_header)
         self.dbx.files_upload(new_content.encode('utf-8'), full_path, mode=WriteMode('overwrite'))
         logging.info(f"復習リストに問題ID {question_data['ID']} の選択肢 {option_key} を追加しました。")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(StudyCog(bot))
