@@ -16,6 +16,9 @@ from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import re
 
+# --- 共通関数をインポート ---
+from utils.obsidian_utils import update_section
+
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 MORNING_SAKUBUN_TIME = time(hour=8, minute=0, tzinfo=JST)
@@ -82,8 +85,7 @@ class EnglishLearningCog(commands.Cog):
             path = f"{self.dropbox_vault_path}{SAKUBUN_NOTE_PATH}"
             _, res = self.dbx.files_download(path)
             content = res.content.decode('utf-8')
-            # Markdownのリスト形式 `- ` で始まる行を抽出
-            questions = re.findall(r'^- (.+)', content, re.MULTILINE)
+            questions = re.findall(r'^- (.+)', content, re.MULTLINE)
             if questions:
                 self.sakubun_questions = [q.strip() for q in questions]
                 logging.info(f"Obsidianから{len(self.sakubun_questions)}問の瞬間英作文の問題を読み込みました。")
@@ -116,7 +118,7 @@ class EnglishLearningCog(commands.Cog):
             )
             q_embed.set_footer(text="このメッセージに返信する形で、英訳を投稿してください（音声入力も可能です）。")
             await channel.send(embed=q_embed)
-            await asyncio.sleep(20) # 次の問題までの間隔
+            await asyncio.sleep(20)
             
     @tasks.loop(time=MORNING_SAKUBUN_TIME)
     async def morning_sakubun_task(self):
@@ -140,21 +142,115 @@ class EnglishLearningCog(commands.Cog):
         if interaction.user.id in self.chat_sessions:
             await interaction.response.send_message("既にチャットセッションを開始しています。", ephemeral=True)
             return
+            
+        await interaction.response.defer()
+
+        # AIに最初の質問を生成させる
+        prompt = "あなたはフレンドリーな英会話の相手です。自己紹介と、相手の調子を尋ねるような簡単な質問から会話を始めてください。"
+        response = await self.gemini_model.generate_content_async(prompt)
+        initial_question = response.text
 
         self.chat_sessions[interaction.user.id] = {
             "channel_id": interaction.channel_id,
-            "history": []
+            "history": [{"role": "model", "parts": [initial_question]}]
         }
-        await interaction.response.send_message(f"Hi {interaction.user.mention}! Let's start chatting in English. `/end_chat` と入力すると終了します。", ephemeral=True)
+        
+        await interaction.followup.send(f"**AI:** {initial_question}")
 
-    @app_commands.command(name="end_chat", description="AIとの英会話チャットを終了します。")
+    @app_commands.command(name="end_chat", description="AIとの英会話チャットを終了し、レビューを生成します。")
     async def end_chat(self, interaction: discord.Interaction):
-        if interaction.user.id not in self.chat_sessions:
+        session = self.chat_sessions.pop(interaction.user.id, None)
+        if not session:
             await interaction.response.send_message("チャットセッションを開始していません。", ephemeral=True)
             return
 
-        del self.chat_sessions[interaction.user.id]
-        await interaction.response.send_message("チャットセッションを終了しました。お疲れ様でした！", ephemeral=True)
+        await interaction.response.defer()
+
+        if len(session["history"]) <= 1:
+            await interaction.followup.send("会話の履歴が短すぎるため、レビューを生成できませんでした。")
+            return
+
+        # 会話ログからレビューを生成
+        review_text = await self._generate_chat_review(session["history"])
+
+        # Discordに投稿
+        review_embed = discord.Embed(
+            title="💬 英会話セッションレビュー",
+            description=review_text,
+            color=discord.Color.gold(),
+            timestamp=datetime.now(JST)
+        )
+        review_embed.set_footer(text=f"{interaction.user.display_name}さんのセッション")
+        await interaction.channel.send(embed=review_embed)
+
+        # Obsidianに保存
+        await self._save_chat_log_to_obsidian(interaction.user.display_name, session["history"], review_text)
+
+        await interaction.followup.send("チャットセッションを終了し、レビューを生成・保存しました。")
+
+    async def _generate_chat_review(self, history: list) -> str:
+        """会話履歴から重要フレーズなどを抽出・解説する"""
+        conversation_log = "\n".join([f"**{'You' if turn['role'] == 'user' else 'AI'}:** {turn['parts'][0]}" for turn in history])
+        
+        prompt = f"""
+        あなたはプロの英語教師です。以下の英会話ログを分析し、学習者が学ぶべき重要なポイントをまとめたレビューを作成してください。
+
+        # 指示
+        1.  **会話の要約**: まず、どのようなトピックについて話したか、1〜2文で簡潔にまとめてください。
+        2.  **重要フレーズ**: 会話の中から、学習者が覚えるべき便利なフレーズや単語を3〜5個選び出し、意味と使い方を例文付きで解説してください。
+        3.  **改善点**: 学習者の発言の中で、より自然な表現にできる箇所があれば、1〜2点指摘し、改善案を提示してください。
+        4.  全体をMarkdown形式で、ポジティブなトーンで記述してください。
+
+        # 会話ログ
+        {conversation_log}
+        """
+        response = await self.gemini_model.generate_content_async(prompt)
+        return response.text
+
+    async def _save_chat_log_to_obsidian(self, user_name: str, history: list, review: str):
+        """会話ログとレビューをObsidianに保存する"""
+        now = datetime.now(JST)
+        date_str = now.strftime('%Y-%m-%d')
+        timestamp = now.strftime('%Y%m%d%H%M%S')
+        
+        title = f"英会話ログ {user_name} {date_str}"
+        filename = f"{timestamp}-{title}.md"
+        
+        conversation_log = "\n".join([f"- **{'You' if turn['role'] == 'user' else 'AI'}:** {turn['parts'][0]}" for turn in history])
+
+        # ノート本体の作成
+        note_content = (
+            f"# {title}\n\n"
+            f"- **Date:** {date_str}\n"
+            f"- **Participant:** {user_name}\n\n"
+            f"[[{date_str}]]\n\n"
+            f"---\n\n"
+            f"## 💬 Session Review\n{review}\n\n"
+            f"---\n\n"
+            f"## 📜 Full Transcript\n{conversation_log}\n"
+        )
+
+        # Dropboxにアップロード
+        note_path = f"{self.dropbox_vault_path}/English Learning/Chat Logs/{filename}"
+        self.dbx.files_upload(note_content.encode('utf-8'), note_path, mode=WriteMode('add'))
+        logging.info(f"Obsidianに英会話ログを保存しました: {note_path}")
+
+        # デイリーノートにリンクを追加
+        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+        link_to_add = f"- [[English Learning/Chat Logs/{filename[:-3]}|{title}]]"
+        section_header = "## English Learning"
+        
+        try:
+            _, res = self.dbx.files_download(daily_note_path)
+            current_content = res.content.decode('utf-8')
+        except ApiError as e:
+            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                current_content = ""
+            else: raise
+        
+        new_content = update_section(current_content, link_to_add, section_header)
+        self.dbx.files_upload(new_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
+
 
     # --- メッセージ処理 ---
     @commands.Cog.listener()
@@ -187,7 +283,6 @@ class EnglishLearningCog(commands.Cog):
             if not user_input or user_input.startswith('/'):
                 return
             
-            # --- 処理の分岐 ---
             if message.reference and message.reference.message_id:
                 original_msg = await message.channel.fetch_message(message.reference.message_id)
                 if original_msg.author.id == self.bot.user.id and original_msg.embeds and "第" in original_msg.embeds[0].title:
@@ -231,14 +326,13 @@ class EnglishLearningCog(commands.Cog):
         await message.reply(embed=feedback_embed)
         await message.remove_reaction("🤔", self.bot.user)
 
-
     async def handle_chat_message(self, message: discord.Message, user_message: str):
         """AI壁打ちチャットの応答を生成する"""
         session = self.chat_sessions[message.author.id]
         
         session["history"].append({"role": "user", "parts": [user_message]})
-        if len(session["history"]) > 10:
-            session["history"] = session["history"][-10:]
+        if len(session["history"]) > 20: # 履歴を少し長めに保持
+            session["history"] = session["history"][-20:]
 
         chat = self.gemini_model.start_chat(history=session["history"])
         
