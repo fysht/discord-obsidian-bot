@@ -85,7 +85,7 @@ class EnglishLearningCog(commands.Cog):
             path = f"{self.dropbox_vault_path}{SAKUBUN_NOTE_PATH}"
             _, res = self.dbx.files_download(path)
             content = res.content.decode('utf-8')
-            questions = re.findall(r'^- (.+)', content, re.MULTLINE)
+            questions = re.findall(r'^- (.+)', content, re.MULTILINE)
             if questions:
                 self.sakubun_questions = [q.strip() for q in questions]
                 logging.info(f"Obsidianから{len(self.sakubun_questions)}問の瞬間英作文の問題を読み込みました。")

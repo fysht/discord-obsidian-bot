@@ -443,12 +443,12 @@ class MemoCog(commands.Cog):
             finally:
                 self.last_task_list_message_ids.clear()
         
-        work_tasks = await self.get_list_items("Task", "Work")
-        personal_tasks = await self.get_list_items("Task", "Personal")
+        work_tasks_raw = await self.get_list_items("Task", "Work")
+        personal_tasks_raw = await self.get_list_items("Task", "Personal")
         
-        # 期限でソート
-        work_tasks = self._sort_tasks_with_deadline(work_tasks)
-        personal_tasks = self._sort_tasks_with_deadline(personal_tasks)
+        # 重複を削除してから期限でソート
+        work_tasks = sorted(list(set(work_tasks_raw)), key=self._get_deadline_key)
+        personal_tasks = sorted(list(set(personal_tasks_raw)), key=self._get_deadline_key)
 
         embed = discord.Embed(title=f"📅 {datetime.now(JST).strftime('%Y-%m-%d')} のタスクリスト", color=discord.Color.orange())
         work_desc = "\n".join([f"- {item}" for item in work_tasks]) if work_tasks else "タスクはありません"

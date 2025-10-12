@@ -2,7 +2,7 @@ import os
 import discord
 from discord.ext import commands, tasks
 import logging
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import zoneinfo
 import google.generativeai as genai
 from googleapiclient.discovery import build
@@ -132,16 +132,16 @@ class JournalView(discord.ui.View):
 
         part1_modal = JournalModal(self.cog)
         await interaction.response.send_modal(part1_modal)
-        await part1_modal.wait()
         
-        if part1_modal.is_sent():
+        timed_out = await part1_modal.wait()
+
+        if not timed_out:
             part1_data = {
                 'location_main': part1_modal.location_main, 'location_other': part1_modal.location_other,
                 'meal_breakfast': part1_modal.meal_breakfast, 'meal_lunch': part1_modal.meal_lunch, 'meal_dinner': part1_modal.meal_dinner,
                 'condition': self.condition
             }
             part2_modal = JournalModalP2(self.cog, part1_data)
-            # 1枚目のモーダルはinteractionに紐づいているので、2枚目はfollowupで送る
             await interaction.followup.send_modal(part2_modal)
 
 
@@ -187,7 +187,14 @@ class JournalCog(commands.Cog):
         if os.getenv("RENDER"):
              token_path = f"/etc/secrets/{os.path.basename(token_path)}"
         if os.path.exists(token_path):
-            return Credentials.from_authorized_user_file(token_path, ['https://www.googleapis.com/auth/calendar'])
+            try:
+                creds = Credentials.from_authorized_user_file(token_path, ['https://www.googleapis.com/auth/calendar'])
+                if creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                return creds
+            except Exception as e:
+                logging.error(f"❌ Google APIトークンのリフレッシュに失敗: {e}")
+                return None
         logging.warning(f"Google Calendarの認証情報ファイルが見つかりません: {token_path}")
         return None
 
@@ -294,16 +301,18 @@ class JournalCog(commands.Cog):
             try:
                 response = await self.gemini_model.generate_content_async(prompt)
                 ai_question = response.text.strip()
-                await interaction.followup.send(f"✅ 振り返りを承りました。ありがとうございます。\n\n追加で一つだけ質問させてください。\n\n**🤔 {ai_question}**\n\nこのメッセージに返信する形で、考えをお聞かせください。", ephemeral=True)
+                
+                # `interaction.followup.send` は `WebhookMessage` を返す
+                followup_message = await interaction.followup.send(f"✅ 振り返りを承りました。ありがとうございます。\n\n追加で一つだけ質問させてください。\n\n**🤔 {ai_question}**\n\nこのメッセージに返信する形で、考えをお聞かせください。", ephemeral=True, wait=True)
                 
                 def check(m):
-                    return m.author == interaction.user and m.channel == interaction.channel and m.reference and m.reference.message_id == (await interaction.original_response()).id
+                    return m.author == interaction.user and m.channel == interaction.channel and m.reference and m.reference.message_id == followup_message.id
 
                 try:
-                    follow_up_message = await self.bot.wait_for('message', timeout=600.0, check=check)
+                    follow_up_message_response = await self.bot.wait_for('message', timeout=600.0, check=check)
                     final_data["ai_question"] = ai_question
-                    final_data["ai_answer"] = follow_up_message.content
-                    await follow_up_message.add_reaction("✅")
+                    final_data["ai_answer"] = follow_up_message_response.content
+                    await follow_up_message_response.add_reaction("✅")
                 except asyncio.TimeoutError:
                     await interaction.followup.send("タイムアウトしました。最初の入力内容のみで保存します。", ephemeral=True)
             except Exception as e:
@@ -311,6 +320,7 @@ class JournalCog(commands.Cog):
         
         await self.save_journal_to_obsidian(final_data)
         await interaction.followup.send("✅ すべての振り返りをObsidianに記録しました！お疲れ様でした。", ephemeral=True)
+
 
     async def save_journal_to_obsidian(self, data: dict):
         date_str = datetime.now(JST).strftime('%Y-%m-%d')
@@ -347,7 +357,11 @@ class JournalCog(commands.Cog):
         if not self.is_ready or message.author.bot or message.channel.id != self.channel_id: return
         if not message.reference or not message.reference.message_id: return
 
-        original_msg = await message.channel.fetch_message(message.reference.message_id)
+        try:
+            original_msg = await message.channel.fetch_message(message.reference.message_id)
+        except discord.NotFound:
+            return
+
         if original_msg.author.id != self.bot.user.id or not original_msg.embeds: return
         
         embed_title = original_msg.embeds[0].title
@@ -367,9 +381,6 @@ class JournalCog(commands.Cog):
                     await message.add_reaction("✅")
                 except Exception as e:
                     logging.error(f"音声認識エラー: {e}", exc_info=True)
-                    await message.remove_reaction("⏳", self.bot.user)
-                    await message.add_reaction("❌")
-                    return
                 finally:
                     if os.path.exists(temp_audio_path): os.remove(temp_audio_path)
             
