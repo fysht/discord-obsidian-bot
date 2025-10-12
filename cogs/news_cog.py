@@ -141,9 +141,16 @@ class NewsCog(commands.Cog):
 
     def _resolve_actual_url(self, google_news_url: str) -> str:
         """GoogleニュースのリダイレクトURLから実際の記事URLを取り出す"""
-        match = re.search(r"url=([^&]+)", google_news_url)
-        if match:
-            return requests.utils.unquote(match.group(1))
+        try:
+            # HEADリクエストでリダイレクト先を追跡
+            response = requests.head(google_news_url, allow_redirects=True, timeout=10)
+            return response.url
+        except requests.RequestException as e:
+            logging.warning(f"リダイレクト先の解決に失敗しました: {e}")
+            # マッチングによるフォールバック
+            match = re.search(r"url=([^&]+)", google_news_url)
+            if match:
+                return requests.utils.unquote(match.group(1))
         return google_news_url
 
     def _summarize_article_content_sync(self, article_url: str) -> str:
@@ -154,7 +161,7 @@ class NewsCog(commands.Cog):
         
         try:
             actual_url = self._resolve_actual_url(article_url)
-
+            logging.info(f"記事の要約を開始します: {actual_url}")
             try:
                 response = self.scraper.get(actual_url, headers=headers, timeout=15)
             except Exception:

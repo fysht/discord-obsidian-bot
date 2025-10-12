@@ -59,6 +59,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
             self.is_ready = True
+            self.last_question_answered = True # 起動時はリセット状態とみなす
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -104,7 +105,14 @@ class ZeroSecondThinkingCog(commands.Cog):
         
         try:
             history = await self._get_thinking_history()
-            history_context = "\n".join([f"- {item['question']}: {item['answer'][:100]}..." for item in history])
+            history_context = ""
+            # 前回の深掘り質問に回答があった場合のみ履歴を参考にする
+            if self.last_question_answered and history:
+                history_context = "\n".join([f"- {item['question']}: {item['answer'][:100]}..." for item in history])
+            else:
+                # 回答がなければ履歴をクリアして新しいお題を生成
+                await self._save_thinking_history([])
+
 
             prompt = f"""
             あなたは思考を深めるための問いを投げかけるコーチです。
@@ -128,6 +136,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             embed = discord.Embed(title="🤔 ゼロ秒思考の時間です", description=f"お題: **{question}**", color=discord.Color.teal())
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください（音声入力も可能です）。")
             await channel.send(embed=embed, delete_after=7200.0) # 2時間後に自動削除
+            self.last_question_answered = False # 新しい質問をしたら未回答状態に
             
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] 定時お題生成エラー: {e}", exc_info=True)
@@ -151,6 +160,8 @@ class ZeroSecondThinkingCog(commands.Cog):
         embed_title = original_msg.embeds[0].title
         if "ゼロ秒思考の時間です" not in embed_title and "さらに深掘りしましょう" not in embed_title:
             return
+
+        self.last_question_answered = True # 返信があったので回答済み状態に
             
         # 埋め込みからお題を抽出
         last_question_match = re.search(r'お題: \*\*(.+?)\*\*', original_msg.embeds[0].description)
@@ -257,6 +268,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください。")
             
             await message.channel.send(embed=embed, delete_after=7200.0) # 2時間後に自動削除
+            self.last_question_answered = False # 新しい質問をしたら未回答状態に
 
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] 処理中にエラー: {e}", exc_info=True)

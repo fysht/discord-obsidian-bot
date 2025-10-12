@@ -308,6 +308,22 @@ class StudyCog(commands.Cog):
             await interaction.channel.send(embed=embed, view=view)
             await asyncio.sleep(2)
 
+    @app_commands.command(name="stop_quiz", description="定時の問題出題を停止します。")
+    async def stop_quiz(self, interaction: discord.Interaction):
+        if self.ask_next_question.is_running():
+            self.ask_next_question.cancel()
+            await interaction.response.send_message("✅ 定時の問題出題を停止しました。", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ 問題出題は既に停止しています。", ephemeral=True)
+
+    @app_commands.command(name="start_quiz", description="停止した定時の問題出題を再開します。")
+    async def start_quiz(self, interaction: discord.Interaction):
+        if not self.ask_next_question.is_running():
+            self.ask_next_question.start()
+            await interaction.response.send_message("✅ 定時の問題出題を再開しました。", ephemeral=True)
+        else:
+            await interaction.response.send_message("⚠️ 問題出題は既に実行中です。", ephemeral=True)
+
     async def save_option_for_review(self, question_data: dict, option_key: str):
         full_path = f"{self.dropbox_vault_path}{REVIEW_NOTE_PATH}"
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
