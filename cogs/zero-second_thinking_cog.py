@@ -12,7 +12,7 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import re
-import json
+import asyncio
 
 from utils.obsidian_utils import update_section
 
@@ -28,6 +28,22 @@ THINKING_TIMES = [
     time(hour=18, minute=0, tzinfo=JST),
     time(hour=21, minute=0, tzinfo=JST),
 ]
+
+# --- 新しいUIコンポーネント ---
+class EndThinkingView(discord.ui.View):
+    """深掘り質問を終了するためのView"""
+    def __init__(self):
+        super().__init__(timeout=7200) # タイムアウトは元のメッセージと同じ2時間に設定
+
+    @discord.ui.button(label="ここで思考を終了", style=discord.ButtonStyle.danger, emoji="⏹️")
+    async def end_thinking(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await interaction.message.delete()
+        self.stop()
+
+    async def on_timeout(self):
+        # タイムアウトした場合もViewを無効化
+        self.stop()
 
 class ZeroSecondThinkingCog(commands.Cog):
     """
@@ -181,6 +197,8 @@ class ZeroSecondThinkingCog(commands.Cog):
         try:
             # 回答された質問の自動削除をキャンセル
             await original_msg.edit(delete_after=None)
+            # 回答されたので元の質問メッセージは不要、削除する
+            await original_msg.delete()
 
             await message.add_reaction("⏳")
             formatted_answer = ""
@@ -246,8 +264,9 @@ class ZeroSecondThinkingCog(commands.Cog):
             new_daily_content = update_section(daily_note_content, link_to_add, section_header)
             
             self.dbx.files_upload(new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
-
-            await message.channel.send(f"**思考が記録されました**\n>>> {formatted_answer}")
+            
+            # --- 確認メッセージを送信し、一定時間後に削除 ---
+            await message.channel.send(f"**思考が記録されました**\n>>> {formatted_answer}", delete_after=60.0)
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
 
@@ -265,9 +284,11 @@ class ZeroSecondThinkingCog(commands.Cog):
             new_question = response.text.strip().replace("*", "")
 
             embed = discord.Embed(title="🤔 さらに深掘りしましょう", description=f"お題: **{new_question}**", color=discord.Color.blue())
-            embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください。")
+            embed.set_footer(text="このメッセージに返信して思考を続けるか、「ここで思考を終了」ボタンを押してください。")
             
-            await message.channel.send(embed=embed, delete_after=7200.0) # 2時間後に自動削除
+            # --- 終了ボタン付きで質問を投稿 ---
+            view = EndThinkingView()
+            await message.channel.send(embed=embed, view=view)
             self.last_question_answered = False # 新しい質問をしたら未回答状態に
 
         except Exception as e:

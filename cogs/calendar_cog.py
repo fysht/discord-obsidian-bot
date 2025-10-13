@@ -5,6 +5,7 @@ import asyncio
 from datetime import datetime, time, timedelta, timezone
 import re
 from typing import Optional
+import jpholiday
 
 import discord
 from discord.ext import commands, tasks
@@ -21,15 +22,101 @@ from dropbox.files import WriteMode, DownloadError
 from utils.obsidian_utils import update_section
 
 JST = timezone(timedelta(hours=+9), 'JST')
+# --- 時間定義の更新 ---
+DAILY_PLANNING_TIME = time(hour=6, minute=0, tzinfo=JST) # 朝の計画タスク
 TODAY_SCHEDULE_TIME = time(hour=7, minute=0, tzinfo=JST)
 DAILY_REVIEW_TIME = time(hour=21, minute=30, tzinfo=JST)
 MEMO_TO_CALENDAR_EMOJI = '📅'
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
-# タスク登録の時間帯を6:00 - 23:00に設定
 WORK_START_HOUR = 6
 WORK_END_HOUR = 23
 MIN_TASK_DURATION_MINUTES = 10
+HIGHLIGHT_COLOR_ID = '4' # Google Calendar APIの色ID (Flamingo)
+
+# --- 新しいUIコンポーネント ---
+
+class ScheduleEditModal(discord.ui.Modal, title="スケジュールを手動で修正"):
+    def __init__(self, cog, tasks: list):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.tasks = tasks
+        for i, task in enumerate(tasks[:5]): # UIのコンポーネント上限は5つのため
+            self.add_item(discord.ui.TextInput(
+                label=f"タスク {i+1}: {task['summary']}",
+                default=task['start_time'],
+                custom_id=f"task_{i}"
+            ))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        updated_tasks = []
+        for i, task in enumerate(self.tasks[:5]):
+            new_time = self.children[i].value
+            # 時間形式のバリデーション (簡易)
+            if re.match(r'^\d{2}:\d{2}$', new_time):
+                updated_tasks.append({"summary": task['summary'], "start_time": new_time})
+            else:
+                await interaction.followup.send(f"⚠️ タスク「{task['summary']}」の時刻形式が不正です (`HH:MM`)。このタスクは除外されました。", ephemeral=True)
+        
+        if updated_tasks:
+            await self.cog.confirm_and_register_schedule(interaction, updated_tasks)
+
+class ScheduleConfirmationView(discord.ui.View):
+    def __init__(self, cog, tasks: list):
+        super().__init__(timeout=1800) # 30分でタイムアウト
+        self.cog = cog
+        self.tasks = tasks
+
+    @discord.ui.button(label="この内容でカレンダーに登録", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.confirm_and_register_schedule(interaction, self.tasks)
+        self.stop()
+
+    @discord.ui.button(label="時間を手動で修正", style=discord.ButtonStyle.secondary)
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ScheduleEditModal(self.cog, self.tasks))
+        self.stop()
+
+    @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content="スケジュールの登録をキャンセルしました。", view=None, embed=None)
+        self.stop()
+
+class HighlightChoiceView(discord.ui.View):
+    def __init__(self, cog, scheduled_tasks: list):
+        super().__init__(timeout=1800)
+        self.cog = cog
+        
+        options = [discord.SelectOption(label=task[:100], value=task) for task in scheduled_tasks[:24]]
+        options.append(discord.SelectOption(label="✨ 別のハイライトを自分で設定する", value="custom_highlight"))
+        
+        select = discord.ui.Select(placeholder="今日一日のハイライトを選択してください...", options=options, custom_id="highlight_select")
+        select.callback = self.select_callback
+        self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        selected = interaction.data["values"][0]
+        if selected == "custom_highlight":
+            await interaction.response.send_modal(HighlightCustomModal(self.cog))
+        else:
+            await interaction.response.defer()
+            await self.cog.create_highlight_event(interaction, selected)
+        
+        await interaction.message.edit(content=f"ハイライトが設定されました: **{selected}**", view=None)
+        self.stop()
+
+class HighlightCustomModal(discord.ui.Modal, title="ハイライトを自由入力"):
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+    
+    custom_highlight = discord.ui.TextInput(label="今日のハイライト", placeholder="今日最も集中したいこと、達成したいことは何ですか？")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await self.cog.create_highlight_event(interaction, self.custom_highlight.value)
+
 
 class TaskReviewView(discord.ui.View):
     def __init__(self, cog, task_summary: str, task_date: datetime.date):
@@ -82,6 +169,7 @@ class CalendarCog(commands.Cog):
         self.pending_schedules = {}
         self.pending_date_prompts = {}
         self.last_schedule_message_id = None
+        self.daily_planning_message_id = None # 朝の計画用メッセージID
 
         if not self._are_credentials_valid():
             logging.error("CalendarCog: 必須の環境変数が不足しています。このCogは無効化されます。")
@@ -155,14 +243,222 @@ class CalendarCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
+            if not self.daily_planning_task.is_running(): self.daily_planning_task.start()
             if not self.notify_today_events.is_running(): self.notify_today_events.start()
             if not self.send_daily_review.is_running(): self.send_daily_review.start()
+            if not self.check_weekend_gaps.is_running(): self.check_weekend_gaps.start()
+    
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if not self.is_ready or message.author.bot or message.channel.id != self.calendar_channel_id:
+            return
+        
+        # 朝の計画タスクへの返信かチェック
+        if message.reference and message.reference.message_id == self.daily_planning_message_id:
+            self.daily_planning_message_id = None # 一度処理したらIDをクリア
+            await message.add_reaction("🤔")
+            await self.handle_daily_plan_submission(message)
+
 
     def cog_unload(self):
         if self.is_ready:
+            self.daily_planning_task.cancel()
             self.notify_today_events.cancel()
             self.send_daily_review.cancel()
+            self.check_weekend_gaps.cancel()
+
+    # --- 新機能: 朝の計画立案 ---
+    @tasks.loop(time=DAILY_PLANNING_TIME)
+    async def daily_planning_task(self):
+        channel = self.bot.get_channel(self.calendar_channel_id)
+        if not channel: return
+        
+        embed = discord.Embed(
+            title="🌞 おはようございます！一日の計画を立てましょう",
+            description="今日やるべきこと、やりたいことをリストアップして、このメッセージに返信してください。\nAIがスケジュール案を作成します。",
+            color=discord.Color.gold()
+        )
+        msg = await channel.send(embed=embed)
+        self.daily_planning_message_id = msg.id
+
+    async def handle_daily_plan_submission(self, message: discord.Message):
+        """ユーザーから提出された計画を処理する"""
+        user_tasks_text = message.content
+        today = datetime.now(JST).date()
+        
+        try:
+            free_slots = await self._find_free_slots(today)
             
+            # AIにスケジュール案を作成させる
+            scheduled_tasks = await self._generate_ai_schedule(user_tasks_text, free_slots, today)
+
+            if not scheduled_tasks:
+                await message.reply("タスクをうまく解析できませんでした。もう一度試してみてください。")
+                await message.remove_reaction("🤔", self.bot.user)
+                return
+
+            # 確認UIを提示
+            embed = discord.Embed(
+                title="🗓️ スケジュール案",
+                description="AIが作成した本日のスケジュール案です。内容を確認してください。",
+                color=discord.Color.purple()
+            )
+            for task in scheduled_tasks:
+                embed.add_field(name=task['summary'], value=f"開始時刻: {task['start_time']}", inline=False)
+
+            view = ScheduleConfirmationView(self, scheduled_tasks)
+            await message.reply(embed=embed, view=view)
+            await message.remove_reaction("🤔", self.bot.user)
+
+        except Exception as e:
+            logging.error(f"計画の処理中にエラー: {e}", exc_info=True)
+            await message.reply(f"エラーが発生しました: {e}")
+            await message.remove_reaction("🤔", self.bot.user)
+
+
+    async def _generate_ai_schedule(self, tasks_text: str, free_slots: list, target_date: datetime.date) -> list:
+        """AIを使ってタスクリストからスケジュールを生成する"""
+        prompt = f"""
+        あなたは優秀なアシスタントです。以下の「ユーザーのタスクリスト」と「空き時間」を元に、最適な一日のスケジュールを作成してください。
+
+        # 指示
+        1. ユーザーのタスクリストを個別のタスクに分解してください。
+        2. 各タスクの所要時間（分単位）を常識的な範囲で予測してください。
+        3. 既存の予定（空き時間以外の時間）を考慮し、各タスクを空き時間に割り当ててください。タスクは午前中や理性が働く早い時間帯に重いものを配置するのが望ましいです。
+        4. 出力は以下のJSON形式のリストのみとし、説明や前置きは一切含めないでください。
+
+        # 空き時間 (ISO 8601形式)
+        {json.dumps([{"start": s.isoformat(), "end": e.isoformat()} for s, e in free_slots])}
+
+        # ユーザーのタスクリスト
+        {tasks_text}
+
+        # 出力形式
+        [
+          {{"summary": "タスク1の名称", "start_time": "HH:MM"}},
+          {{"summary": "タスク2の名称", "start_time": "HH:MM"}}
+        ]
+        """
+        try:
+            response = await self.gemini_model.generate_content_async(prompt)
+            json_match = re.search(r'```json\n(\{.*?\})\n```', response.text, re.DOTALL)
+            json_text = json_match.group(1) if json_match else response.text
+            tasks = json.loads(json_text)
+            # 時間順にソート
+            return sorted(tasks, key=lambda x: x.get('start_time', '99:99'))
+        except (json.JSONDecodeError, KeyError) as e:
+            logging.error(f"AIスケジュール生成のJSON解析に失敗: {e}\nAI Response: {response.text}")
+            return []
+
+    async def confirm_and_register_schedule(self, interaction: discord.Interaction, tasks: list):
+        """確認されたスケジュールをGoogleカレンダーに登録する"""
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+            
+        today = datetime.now(JST).date()
+        registered_tasks = []
+        
+        for task in tasks:
+            try:
+                start_time_dt = datetime.strptime(task['start_time'], '%H:%M').time()
+                start_datetime = datetime.combine(today, start_time_dt, tzinfo=JST)
+                
+                await self._create_google_calendar_event(
+                    summary=task['summary'],
+                    date=today,
+                    start_time=start_datetime,
+                    duration_minutes=15 # 所要時間は15分に固定
+                )
+                registered_tasks.append(task['summary'])
+                await asyncio.sleep(0.5) # APIレート制限対策
+            except Exception as e:
+                logging.error(f"カレンダー登録エラー ({task['summary']}): {e}")
+                await interaction.followup.send(f"⚠️「{task['summary']}」の登録中にエラーが発生しました。", ephemeral=True)
+        
+        await interaction.message.edit(content="✅ スケジュールをカレンダーに登録しました。", view=None, embed=None)
+
+        # ハイライト選択のフローを開始
+        if registered_tasks:
+            view = HighlightChoiceView(self, registered_tasks)
+            await interaction.followup.send("次に、今日一日のハイライトを選択してください。", view=view, ephemeral=False)
+
+    async def create_highlight_event(self, interaction: discord.Interaction, highlight_text: str):
+        """ハイライトを終日予定としてカレンダーに登録する"""
+        today = datetime.now(JST).date()
+        summary = f"✨ ハイライト: {highlight_text}"
+        
+        try:
+            await self._create_google_calendar_event(
+                summary=summary,
+                date=today,
+                color_id=HIGHLIGHT_COLOR_ID
+            )
+            await self._update_obsidian_highlight(today, highlight_text)
+            await interaction.followup.send(f"✅ 今日のハイライト「**{highlight_text}**」を設定しました！", ephemeral=True)
+        except Exception as e:
+            logging.error(f"ハイライト登録エラー: {e}")
+            await interaction.followup.send(f"❌ ハイライトの登録中にエラーが発生しました: {e}", ephemeral=True)
+
+    async def _update_obsidian_highlight(self, date: datetime.date, highlight_text: str):
+        date_str = date.strftime('%Y-%m-%d')
+        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+        content_to_add = f"- {highlight_text}"
+        
+        try:
+            try:
+                _, res = self.dbx.files_download(daily_note_path)
+                current_content = res.content.decode('utf-8')
+            except ApiError as e:
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                    current_content = f"# {date_str}\n"
+                else: raise
+
+            new_content = update_section(current_content, content_to_add, "## Highlight")
+            self.dbx.files_upload(new_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
+            logging.info(f"Obsidianにハイライトを記録しました: {daily_note_path}")
+        except Exception as e:
+            logging.error(f"Obsidianへのハイライト記録中にエラー: {e}")
+
+
+    # --- 新機能: 休日の空き時間チェック ---
+    @tasks.loop(hours=2)
+    async def check_weekend_gaps(self):
+        now = datetime.now(JST)
+        # 実行時間を8時から22時の間に限定
+        if not (8 <= now.hour <= 22):
+            return
+
+        is_holiday = now.weekday() >= 5 or jpholiday.is_holiday(now.date())
+        if not is_holiday:
+            return
+
+        channel = self.bot.get_channel(self.calendar_channel_id)
+        if not channel: return
+            
+        logging.info("休日の空き時間チェックを実行します...")
+        free_slots = await self._find_free_slots(now.date())
+        
+        for start, end in free_slots:
+            if (end - start).total_seconds() >= 7200: # 2時間以上の空き
+                # これから始まる空き時間のみを通知
+                if start > now:
+                    embed = discord.Embed(
+                        title="🕒 空き時間のお知らせ",
+                        description=f"**{start.strftime('%H:%M')}** から **{end.strftime('%H:%M')}** まで、2時間以上の空き時間があります。\n何か新しいことに挑戦したり、休憩する良い機会かもしれませんね。",
+                        color=discord.Color.orange()
+                    )
+                    await channel.send(embed=embed)
+                    logging.info(f"2時間以上の空き時間を検知・通知しました: {start} - {end}")
+                    return # 最初の空き時間を見つけたら通知して終了
+    
+    @check_weekend_gaps.before_loop
+    async def before_check_gaps(self):
+        await self.bot.wait_until_ready()
+        # ループが2時間ごとなので、起動時にちょうど実行されるように調整
+        now = datetime.now(JST)
+        await asyncio.sleep((120 - (now.minute % 120)) * 60 - now.second)
+
+
     async def schedule_task_from_memo(self, task_content: str, target_date: Optional[datetime.date] = None):
         channel = self.bot.get_channel(self.calendar_channel_id)
         if not channel:
@@ -230,31 +526,33 @@ class CalendarCog(commands.Cog):
                 end_str = event['end'].get('dateTime')
                 if start_str and end_str:
                     busy_slots.append((datetime.fromisoformat(start_str), datetime.fromisoformat(end_str)))
+                elif event['start'].get('date'): # 終日予定
+                    event_date = datetime.fromisoformat(event['start']['date']).date()
+                    busy_slots.append((
+                        datetime.combine(event_date, time.min, tzinfo=JST),
+                        datetime.combine(event_date, time.max, tzinfo=JST)
+                    ))
+
             
             work_start_time = start_of_day.replace(hour=WORK_START_HOUR)
             work_end_time = start_of_day.replace(hour=WORK_END_HOUR)
             
             free_slots = []
             current_time = work_start_time
-            while current_time < work_end_time:
-                is_in_busy_slot = False
-                for start, end in busy_slots:
-                    if start <= current_time < end:
-                        current_time = end
-                        is_in_busy_slot = True
-                        break
-                
-                if not is_in_busy_slot:
-                    slot_start = current_time
-                    slot_end = work_end_time
-                    for start, _ in busy_slots:
-                        if start > slot_start:
-                            slot_end = min(slot_end, start)
-                            break
-                    if slot_start < slot_end:
-                      free_slots.append((slot_start, slot_end))
-                    current_time = slot_end
+            
+            # 忙しい時間帯をソート
+            busy_slots.sort()
+
+            for busy_start, busy_end in busy_slots:
+                if current_time < busy_start:
+                    free_slots.append((current_time, busy_start))
+                current_time = max(current_time, busy_end)
+
+            if current_time < work_end_time:
+                free_slots.append((current_time, work_end_time))
+
             return free_slots
+
         except HttpError as e:
             logging.error(f"Googleカレンダーからの予定取得中にエラー: {e}")
             return []

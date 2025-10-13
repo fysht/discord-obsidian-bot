@@ -8,11 +8,13 @@ import google.generativeai as genai
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 import aiohttp
 import openai
 from pathlib import Path
 import dropbox
 from dropbox.files import WriteMode, DownloadError
+from dropbox.exceptions import ApiError
 import re
 import asyncio
 
