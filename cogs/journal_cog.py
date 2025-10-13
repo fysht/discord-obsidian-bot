@@ -24,7 +24,7 @@ from utils.obsidian_utils import update_section
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 HIGHLIGHT_PROMPT_TIME = time(hour=7, minute=30, tzinfo=JST)
-JOURNAL_PROMPT_TIME = time(hour=21, minute=30, tzinfo=JST)
+JOURNAL_PROMPT_TIME = time(hour=21, minute=45, tzinfo=JST)
 HIGHLIGHT_EMOJI = "✨"
 SUPPORTED_AUDIO_TYPES = ['audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm']
 
@@ -80,14 +80,29 @@ class HighlightSelectionView(discord.ui.View):
 
 # --- 夜のジャーナル用 Modal/View ---
 class JournalModal(discord.ui.Modal, title="今日一日の振り返り (1/2)"):
-    def __init__(self, cog_instance):
+    def __init__(self, cog_instance, condition: str):
         super().__init__(timeout=None)
         self.cog = cog_instance
+        self.condition = condition
+
     location_main = discord.ui.TextInput(label="1. 主な訪問先", placeholder="今日、最も長く滞在した、あるいは重要だった場所", required=False, style=discord.TextStyle.short)
     location_other = discord.ui.TextInput(label="2. その他の訪問先", placeholder="その他に記録しておきたい場所", required=False, style=discord.TextStyle.short)
     meal_breakfast = discord.ui.TextInput(label="3. 朝食", placeholder="朝に何を食べましたか？", required=False, style=discord.TextStyle.short)
     meal_lunch = discord.ui.TextInput(label="4. 昼食", placeholder="昼に何を食べましたか？", required=False, style=discord.TextStyle.short)
     meal_dinner = discord.ui.TextInput(label="5. 夕食", placeholder="夜に何を食べましたか？", required=False, style=discord.TextStyle.short, row=4)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        part1_data = {
+            'location_main': self.location_main, 
+            'location_other': self.location_other,
+            'meal_breakfast': self.meal_breakfast, 
+            'meal_lunch': self.meal_lunch, 
+            'meal_dinner': self.meal_dinner,
+            'condition': self.condition
+        }
+        part2_modal = JournalModalP2(self.cog, part1_data)
+        await interaction.response.send_modal(part2_modal)
+
 
 class JournalModalP2(discord.ui.Modal, title="今日一日の振り返り (2/2)"):
     def __init__(self, cog_instance, part1_data: dict):
@@ -132,19 +147,8 @@ class JournalView(discord.ui.View):
             await interaction.response.send_message("今日のコンディションを選択してください。", ephemeral=True, delete_after=10)
             return
 
-        part1_modal = JournalModal(self.cog)
+        part1_modal = JournalModal(self.cog, self.condition)
         await interaction.response.send_modal(part1_modal)
-        
-        timed_out = await part1_modal.wait()
-
-        if not timed_out:
-            part1_data = {
-                'location_main': part1_modal.location_main, 'location_other': part1_modal.location_other,
-                'meal_breakfast': part1_modal.meal_breakfast, 'meal_lunch': part1_modal.meal_lunch, 'meal_dinner': part1_modal.meal_dinner,
-                'condition': self.condition
-            }
-            part2_modal = JournalModalP2(self.cog, part1_data)
-            await interaction.followup.send_modal(part2_modal)
 
 
 # --- Cog本体 ---
