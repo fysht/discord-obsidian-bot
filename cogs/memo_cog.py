@@ -13,7 +13,7 @@ import re
 import asyncio
 
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
-TASK_LIST_CHANNEL_ID = int(os.getenv("TASK_LIST_CHANNEL_ID", "0"))
+LIST_CHANNEL_ID = int(os.getenv("LIST_CHANNEL_ID", "0"))
 JST = timezone(timedelta(hours=+9), 'JST')
 
 LISTS_PATH = "/Lists"
@@ -201,7 +201,7 @@ class MemoCog(commands.Cog):
         else:
             self.gemini_model = None
 
-        if TASK_LIST_CHANNEL_ID != 0:
+        if LIST_CHANNEL_ID != 0:
             self.post_all_lists.start()
 
     def cog_unload(self):
@@ -326,7 +326,7 @@ class MemoCog(commands.Cog):
     async def refresh_all_lists_post(self, channel=None):
         """全てのリストを投稿または更新する"""
         if not channel:
-            channel = self.bot.get_channel(TASK_LIST_CHANNEL_ID)
+            channel = self.bot.get_channel(LIST_CHANNEL_ID)
         if not channel: 
             logging.warning("リスト投稿用のチャンネルが見つかりません。")
             return
