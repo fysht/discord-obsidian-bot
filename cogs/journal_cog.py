@@ -24,7 +24,7 @@ from utils.obsidian_utils import update_section
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 HIGHLIGHT_PROMPT_TIME = time(hour=7, minute=30, tzinfo=JST)
-JOURNAL_PROMPT_TIME = time(hour=21, minute=45, tzinfo=JST)
+JOURNAL_PROMPT_TIME = time(hour=21, minute=30, tzinfo=JST)
 HIGHLIGHT_EMOJI = "✨"
 SUPPORTED_AUDIO_TYPES = ['audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm']
 
@@ -92,14 +92,16 @@ class JournalModal(discord.ui.Modal, title="今日一日の振り返り (1/2)"):
     meal_dinner = discord.ui.TextInput(label="5. 夕食", placeholder="夜に何を食べましたか？", required=False, style=discord.TextStyle.short, row=4)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # 1ページ目のデータを辞書としてまとめる
         part1_data = {
-            'location_main': self.location_main, 
-            'location_other': self.location_other,
-            'meal_breakfast': self.meal_breakfast, 
-            'meal_lunch': self.meal_lunch, 
-            'meal_dinner': self.meal_dinner,
+            'location_main': self.location_main.value, 
+            'location_other': self.location_other.value,
+            'meal_breakfast': self.meal_breakfast.value, 
+            'meal_lunch': self.meal_lunch.value, 
+            'meal_dinner': self.meal_dinner.value,
             'condition': self.condition
         }
+        # 2ページ目のモーダルを呼び出す
         part2_modal = JournalModalP2(self.cog, part1_data)
         await interaction.response.send_modal(part2_modal)
 
@@ -109,6 +111,7 @@ class JournalModalP2(discord.ui.Modal, title="今日一日の振り返り (2/2)"
         super().__init__(timeout=None)
         self.cog = cog_instance
         self.part1_data = part1_data
+
     highlight = discord.ui.TextInput(label="6. 今日のハイライト", placeholder="最も良かった出来事や、充実感を得られた瞬間", required=False, style=discord.TextStyle.short)
     grateful = discord.ui.TextInput(label="7. 感謝したこと", placeholder="今日感謝したいと感じた出来事", required=False, style=discord.TextStyle.short)
     thoughts = discord.ui.TextInput(label="8. 頭に浮かんだこと", placeholder="考えたこと、気づき、学び、疑問などを自由に記述してください。", required=False, style=discord.TextStyle.paragraph)
@@ -116,9 +119,10 @@ class JournalModalP2(discord.ui.Modal, title="今日一日の振り返り (2/2)"
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        # 1ページ目と2ページ目のデータを統合
         all_data = {
-            "main_location": self.part1_data['location_main'].value, "other_location": self.part1_data['location_other'].value,
-            "breakfast": self.part1_data['meal_breakfast'].value, "lunch": self.part1_data['meal_lunch'].value, "dinner": self.part1_data['meal_dinner'].value,
+            "main_location": self.part1_data['location_main'], "other_location": self.part1_data['other_location'],
+            "breakfast": self.part1_data['meal_breakfast'], "lunch": self.part1_data['meal_lunch'], "dinner": self.part1_data['meal_dinner'],
             "condition": self.part1_data['condition'], "highlight": self.highlight.value, "grateful_for": self.grateful.value,
             "thoughts": self.thoughts.value, "action_for_tomorrow": self.action_for_tomorrow.value
         }
@@ -138,7 +142,7 @@ class JournalView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.data.get("custom_id") == "condition_select":
             self.condition = interaction.data["values"][0]
-            await interaction.response.defer()
+            # ここでのdeferは不要な場合があるため削除
         return True
 
     @discord.ui.button(label="振り返りを入力する", style=discord.ButtonStyle.primary, row=1)
@@ -147,6 +151,7 @@ class JournalView(discord.ui.View):
             await interaction.response.send_message("今日のコンディションを選択してください。", ephemeral=True, delete_after=10)
             return
 
+        # 最初のモーダルにコンディション情報を渡す
         part1_modal = JournalModal(self.cog, self.condition)
         await interaction.response.send_modal(part1_modal)
 
@@ -308,7 +313,6 @@ class JournalCog(commands.Cog):
                 response = await self.gemini_model.generate_content_async(prompt)
                 ai_question = response.text.strip()
                 
-                # `interaction.followup.send` は `WebhookMessage` を返す
                 followup_message = await interaction.followup.send(f"✅ 振り返りを承りました。ありがとうございます。\n\n追加で一つだけ質問させてください。\n\n**🤔 {ai_question}**\n\nこのメッセージに返信する形で、考えをお聞かせください。", ephemeral=True, wait=True)
                 
                 def check(m):

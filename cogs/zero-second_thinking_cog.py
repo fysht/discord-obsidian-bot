@@ -12,8 +12,9 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import re
-import asyncio
+import json
 
+# --- 共通関数をインポート ---
 from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
@@ -248,7 +249,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             logging.info(f"[Zero-Second Thinking] 新規ノートを作成: {note_path}")
 
             # --- デイリーノートへのリンク追記 ---
-            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
+            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
             daily_note_content = ""
             try:
                 _, res = self.dbx.files_download(daily_note_path)
@@ -284,7 +285,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             new_question = response.text.strip().replace("*", "")
 
             embed = discord.Embed(title="🤔 さらに深掘りしましょう", description=f"お題: **{new_question}**", color=discord.Color.blue())
-            embed.set_footer(text="このメッセージに返信して思考を続けるか、「ここで思考を終了」ボタンを押してください。")
+            embed.set_footer(text="このメッセージに返信する形で、思考を続けるか、「ここで思考を終了」ボタンを押してください。")
             
             # --- 終了ボタン付きで質問を投稿 ---
             view = EndThinkingView()
