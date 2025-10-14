@@ -14,7 +14,6 @@ from dropbox.exceptions import ApiError
 import re
 import json
 
-# --- 共通関数をインポート ---
 from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
@@ -29,22 +28,6 @@ THINKING_TIMES = [
     time(hour=18, minute=0, tzinfo=JST),
     time(hour=21, minute=0, tzinfo=JST),
 ]
-
-# --- 新しいUIコンポーネント ---
-class EndThinkingView(discord.ui.View):
-    """深掘り質問を終了するためのView"""
-    def __init__(self):
-        super().__init__(timeout=7200) # タイムアウトは元のメッセージと同じ2時間に設定
-
-    @discord.ui.button(label="ここで思考を終了", style=discord.ButtonStyle.danger, emoji="⏹️")
-    async def end_thinking(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        await interaction.message.delete()
-        self.stop()
-
-    async def on_timeout(self):
-        # タイムアウトした場合もViewを無効化
-        self.stop()
 
 class ZeroSecondThinkingCog(commands.Cog):
     """
@@ -169,7 +152,10 @@ class ZeroSecondThinkingCog(commands.Cog):
             return
 
         channel = self.bot.get_channel(self.channel_id)
-        original_msg = await channel.fetch_message(message.reference.message_id)
+        try:
+            original_msg = await channel.fetch_message(message.reference.message_id)
+        except discord.NotFound:
+            return
 
         if original_msg.author.id != self.bot.user.id or not original_msg.embeds:
             return
@@ -177,7 +163,7 @@ class ZeroSecondThinkingCog(commands.Cog):
         embed_title = original_msg.embeds[0].title
         if "ゼロ秒思考の時間です" not in embed_title and "さらに深掘りしましょう" not in embed_title:
             return
-
+        
         self.last_question_answered = True # 返信があったので回答済み状態に
             
         # 埋め込みからお題を抽出
@@ -198,8 +184,6 @@ class ZeroSecondThinkingCog(commands.Cog):
         try:
             # 回答された質問の自動削除をキャンセル
             await original_msg.edit(delete_after=None)
-            # 回答されたので元の質問メッセージは不要、削除する
-            await original_msg.delete()
 
             await message.add_reaction("⏳")
             formatted_answer = ""
@@ -249,7 +233,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             logging.info(f"[Zero-Second Thinking] 新規ノートを作成: {note_path}")
 
             # --- デイリーノートへのリンク追記 ---
-            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
             daily_note_content = ""
             try:
                 _, res = self.dbx.files_download(daily_note_path)
@@ -265,9 +249,8 @@ class ZeroSecondThinkingCog(commands.Cog):
             new_daily_content = update_section(daily_note_content, link_to_add, section_header)
             
             self.dbx.files_upload(new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
-            
-            # --- 確認メッセージを送信し、一定時間後に削除 ---
-            await message.channel.send(f"**思考が記録されました**\n>>> {formatted_answer}", delete_after=60.0)
+
+            await message.channel.send(f"**思考が記録されました**\n>>> {formatted_answer}")
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
 
@@ -285,11 +268,9 @@ class ZeroSecondThinkingCog(commands.Cog):
             new_question = response.text.strip().replace("*", "")
 
             embed = discord.Embed(title="🤔 さらに深掘りしましょう", description=f"お題: **{new_question}**", color=discord.Color.blue())
-            embed.set_footer(text="このメッセージに返信する形で、思考を続けるか、「ここで思考を終了」ボタンを押してください。")
+            embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください。")
             
-            # --- 終了ボタン付きで質問を投稿 ---
-            view = EndThinkingView()
-            await message.channel.send(embed=embed, view=view)
+            await message.channel.send(embed=embed, delete_after=7200.0)
             self.last_question_answered = False # 新しい質問をしたら未回答状態に
 
         except Exception as e:
