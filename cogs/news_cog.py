@@ -11,14 +11,9 @@ from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import asyncio
 import aiohttp
-import google.generativeai as genai
 import feedparser
-from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
-from readability import Document
-import cloudscraper
 import re
-import textwrap
 import requests
 
 # --- 定数定義 ---
@@ -36,7 +31,6 @@ class NewsCog(commands.Cog):
         self.bot = bot
         self.is_ready = False
         self._load_environment_variables()
-        self.scraper = cloudscraper.create_scraper()
 
         if not self._are_credentials_valid():
             logging.error("NewsCog: 必須の環境変数が不足。Cogを無効化します。")
@@ -48,12 +42,6 @@ class NewsCog(commands.Cog):
                 app_key=self.dropbox_app_key,
                 app_secret=self.dropbox_app_secret
             )
-
-            if self.gemini_api_key:
-                genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
-            else:
-                self.gemini_model = None
 
             self.is_ready = True
             logging.info("✅ NewsCogが正常に初期化されました。")
@@ -69,7 +57,7 @@ class NewsCog(commands.Cog):
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY") # Keep for validation check maybe? Or remove if truly unused. Let's keep for now.
         self.watchlist_path = f"{self.dropbox_vault_path}/.bot/stock_watchlist.json"
 
     def _are_credentials_valid(self) -> bool:
@@ -78,7 +66,6 @@ class NewsCog(commands.Cog):
             self.dropbox_app_key,
             self.dropbox_app_secret,
             self.dropbox_refresh_token,
-            self.gemini_api_key
         ])
 
     @commands.Cog.listener()
@@ -153,50 +140,6 @@ class NewsCog(commands.Cog):
                 return requests.utils.unquote(match.group(1))
         return google_news_url
 
-    def _summarize_article_content_sync(self, article_url: str) -> str:
-        """cloudscraperを使って記事本文を抽出し、要約する"""
-        if not self.gemini_model: return "要約機能が無効です。"
-        
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        
-        try:
-            actual_url = self._resolve_actual_url(article_url)
-            logging.info(f"記事の要約を開始します: {actual_url}")
-            try:
-                response = self.scraper.get(actual_url, headers=headers, timeout=15)
-            except Exception:
-                response = requests.get(actual_url, headers=headers, timeout=15)
-
-            response.raise_for_status()
-            html_content = response.text
-
-            doc = Document(html_content)
-            article_html = doc.summary()
-            soup = BeautifulSoup(article_html, 'html.parser')
-            text_content = soup.get_text(separator='\n', strip=True)
-
-            if not text_content or len(text_content) < 100:
-                paragraphs = [p.get_text() for p in BeautifulSoup(html_content, 'html.parser').find_all('p')]
-                text_content = "\n".join(paragraphs)
-
-            if not text_content:
-                logging.warning(f"記事本文の抽出に失敗しました ({actual_url})")
-                return "記事の本文を抽出できませんでした。"
-
-            if len(text_content) < 100:
-                logging.info(f"記事本文が短いため、要約せずそのまま表示します ({actual_url})")
-                return text_content
-
-            shortened_text = textwrap.shorten(text_content, 8000, placeholder="...")
-
-            prompt = (f"以下のニュース記事の本文を分析し、最も重要な要点を1〜2文で簡潔に要約してください。\n出力は「です・ます調」で、要約本文のみとしてください。\n---\n{shortened_text}")
-            response_gemini = self.gemini_model.generate_content(prompt)
-            return response_gemini.text.strip()
-            
-        except Exception as e:
-            logging.error(f"記事の要約中にエラーが発生 ({article_url}): {e}", exc_info=True)
-            return "要約中にエラーが発生しました。"
-
     @tasks.loop(time=NEWS_BRIEFING_TIME)
     async def daily_news_briefing(self):
         channel = self.bot.get_channel(self.news_channel_id)
@@ -213,7 +156,7 @@ class NewsCog(commands.Cog):
             return
 
         logging.info(f"ウォッチリストのGoogleニュースRSSを巡回します: {list(watchlist.values())}")
-        
+
         one_day_ago = datetime.now(timezone.utc) - timedelta(days=1)
 
         async with aiohttp.ClientSession() as session:
@@ -222,7 +165,7 @@ class NewsCog(commands.Cog):
                     query = f'"{name}" AND "{code}" when:1d'
                     encoded_query = quote_plus(query)
                     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
-                    
+
                     async with session.get(rss_url) as response:
                         if response.status != 200:
                             logging.error(f"GoogleニュースRSSの取得に失敗 ({name}): Status {response.status}")
@@ -240,26 +183,27 @@ class NewsCog(commands.Cog):
                             continue
 
                         logging.info(f"関連ニュースを発見: {entry.title} ({name})")
-                        
-                        loop = asyncio.get_running_loop()
-                        summary = await loop.run_in_executor(
-                            None, self._summarize_article_content_sync, entry.links[0].href
-                        )
+
+                        # --- Create Embed without description (summary) ---
+                        try:
+                            # Attempt to resolve the actual URL
+                            actual_url = await asyncio.to_thread(self._resolve_actual_url, entry.links[0].href)
+                        except Exception:
+                             actual_url = entry.links[0].href # Fallback to original if resolution fails
 
                         news_embed = discord.Embed(
                             title=f"📈関連ニュース: {entry.title}",
-                            url=entry.links[0].href,
-                            description=summary,
+                            url=actual_url, # Use resolved or original URL
                             color=discord.Color.green()
                         ).set_footer(text=f"銘柄: {name} ({code}) | {entry.source.title}")
                         await channel.send(embed=news_embed)
-                        await asyncio.sleep(3)
-                
+                        await asyncio.sleep(3) # Keep sleep to avoid rate limits
+
                 except Exception as e:
                     logging.error(f"株式ニュースの処理中にエラーが発生 ({name}): {e}", exc_info=True)
                     await channel.send(f"⚠️ {name}のニュース取得中にエラーが発生しました。")
-                
-                await asyncio.sleep(5)
+
+                await asyncio.sleep(5) # Keep sleep between stocks
 
     # --- 株式ウォッチリスト管理機能 ---
     async def _get_watchlist(self) -> dict:
