@@ -731,8 +731,11 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             await self._save_sakubun_log_to_obsidian(japanese_question, user_answer, feedback_text) # ログ保存
 
         except Exception as e_fb: logging.error(f"瞬間英作文フィードバック/保存エラー: {e_fb}", exc_info=True); await message.reply("フィードバック処理中にエラーが発生しました。")
-        finally: try: await message.remove_reaction("🤔", self.bot.user) except discord.HTTPException: pass
-
+        finally:
+            try:
+                await message.remove_reaction("🤔", self.bot.user)
+            except discord.HTTPException:
+                pass
 
 # --- setup Function ---
 async def setup(bot):
