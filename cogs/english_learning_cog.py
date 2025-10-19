@@ -14,6 +14,7 @@ import io
 import re
 from datetime import time, datetime
 import zoneinfo
+import aiohttp
 
 # --- Google Docs Handler Import ---
 try:
