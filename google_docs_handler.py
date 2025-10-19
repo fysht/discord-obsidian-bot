@@ -84,11 +84,16 @@ def _append_text_to_doc_sync(text_to_append: str, source_type: str = "Memo", url
         document = service.documents().get(documentId=TARGET_DOCUMENT_ID, fields='body(content(endIndex))').execute()
         # ドキュメントが空の場合も考慮
         content = document.get('body', {}).get('content', [])
-        end_index = 1 # デフォルトは先頭
+        # 最後のセグメントの endIndex を取得し、その直前に挿入する
+        # ドキュメントが空(contentが空リスト)の場合や endIndex が取得できない場合は 1 を使う
+        end_index = 1 # デフォルトは先頭 (空ドキュメント用)
         if content:
              # 最後の要素（通常は段落）の endIndex を使う
-             # endIndexは次の挿入ポイントを示すので、-1 は不要
-             end_index = content[-1].get('endIndex', 1)
+             # endIndexは次の挿入ポイントを示すが、確実にセグメント内に挿入するために -1 する
+             last_segment_end_index = content[-1].get('endIndex')
+             if last_segment_end_index:
+                  # endIndexが1より大きい場合のみ-1する（ドキュメント先頭への挿入を考慮）
+                  end_index = max(1, last_segment_end_index -1)
 
         # --- NotebookLM向けのフォーマット作成 ---
         now_jst = datetime.now(JST)
@@ -113,10 +118,8 @@ def _append_text_to_doc_sync(text_to_append: str, source_type: str = "Memo", url
         requests = [
             {
                 'insertText': {
-                    # ドキュメント末尾を示す endIndex を使う
-                    # 空ドキュメントの場合は 1 から挿入される
                     'location': {
-                        'index': end_index,
+                        'index': end_index, # ★修正したend_indexを使用
                     },
                     'text': formatted_text # フォーマット済みテキストを使用
                 }
