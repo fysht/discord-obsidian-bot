@@ -27,7 +27,10 @@ except ImportError:
     def update_section(current_content: str, link_to_add: str, section_header: str) -> str:
         # Dummy function
         if section_header in current_content:
-            lines = current_content.split('\n'); try: header_index = lines.index(section_header); insert_index = header_index + 1
+            lines = current_content.split('\n')
+            try:
+                header_index = lines.index(section_header)
+                insert_index = header_index + 1
             while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '): insert_index += 1
             lines.insert(insert_index, link_to_add); return "\n".join(lines)
             except ValueError: return f"{current_content}\n\n{section_header}\n{link_to_add}\n"
