@@ -16,7 +16,6 @@ from dropbox.exceptions import ApiError
 import re
 import json
 import io
-import tempfile
 import openai
 
 # --- Common function import ---
@@ -24,102 +23,61 @@ try:
     from utils.obsidian_utils import update_section
 except ImportError:
     logging.warning("utils/obsidian_utils.pyが見つかりません。ダミー関数を使用します。")
-    # --- ダミー関数の修正 ---
     def update_section(current_content: str, link_to_add: str, section_header: str) -> str:
         if section_header in current_content:
             lines = current_content.split('\n')
-            try: # この try に対して except が必要
+            try:
                  header_index = -1
                  for i, line in enumerate(lines):
-                      # 完全一致でヘッダーを探す
-                      if line.strip() == section_header:
-                           header_index = i
-                           break
-                 if header_index == -1: raise ValueError # 見つからなければValueError
+                      if line.strip() == section_header: header_index = i; break
+                 if header_index == -1: raise ValueError
                  insert_index = header_index + 1
-                 # 次の##ヘッダーまで進む
-                 while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
-                      insert_index += 1
-                 # 挿入前に空行を追加 (既に空行でなければ)
-                 if insert_index > 0 and lines[insert_index-1].strip():
-                     lines.insert(insert_index, "")
-                 # 挿入位置の後ろにも空行を追加 (次に要素が続く場合で、かつ空行でなければ)
-                 if insert_index < len(lines) and lines[insert_index].strip() and not lines[insert_index].strip().startswith('## '):
-                      lines.insert(insert_index, "")
-
-                 lines.insert(insert_index, link_to_add)
-                 return "\n".join(lines)
-            except ValueError: # <-- ValueError をキャッチする except を追加
-                 # ヘッダーが見つからなかった場合、ノートの末尾に追加
-                 # 末尾が空行でない場合は空行を2つ追加
+                 while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '): insert_index += 1
+                 if insert_index > 0 and lines[insert_index-1].strip(): lines.insert(insert_index, "")
+                 if insert_index < len(lines) and lines[insert_index].strip() and not lines[insert_index].strip().startswith('## '): lines.insert(insert_index, "")
+                 lines.insert(insert_index, link_to_add); return "\n".join(lines)
+            except ValueError:
                  content_strip = current_content.strip()
-                 if content_strip and not content_strip.endswith("\n\n"):
-                      if not content_strip.endswith("\n"):
-                           content_strip += "\n\n"
-                      else:
-                           content_strip += "\n"
-
+                 if content_strip and not content_strip.endswith("\n\n"): content_strip += "\n" if content_strip.endswith("\n") else "\n\n"
                  return f"{content_strip}{section_header}\n{link_to_add}\n"
-        else: # セクション自体がない場合も末尾に追加
+        else:
              content_strip = current_content.strip()
-             if content_strip and not content_strip.endswith("\n\n"):
-                  if not content_strip.endswith("\n"):
-                       content_strip += "\n\n"
-                  else:
-                       content_strip += "\n"
+             if content_strip and not content_strip.endswith("\n\n"): content_strip += "\n" if content_strip.endswith("\n") else "\n\n"
              return f"{content_strip}{section_header}\n{link_to_add}\n"
-    # --- ダミー関数の修正ここまで ---
-
 
 # --- Constants ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 MORNING_SAKUBUN_TIME = time(hour=8, minute=0, tzinfo=JST)
 EVENING_SAKUBUN_TIME = time(hour=21, minute=0, tzinfo=JST)
 SAKUBUN_NOTE_PATH = "/Study/瞬間英作文リスト.md"
-ENGLISH_LOG_PATH = "/English Learning/Chat Logs" # 英会話ログ保存先
-SAKUBUN_LOG_PATH = "/Study/Sakubun Log" # 瞬間英作文ログ保存先
-DAILY_NOTE_ENGLISH_LOG_HEADER = "## English Learning Logs" # デイリーノートの見出し名 (英会話)
-DAILY_NOTE_SAKUBUN_LOG_HEADER = "## Sakubun Logs" # デイリーノートの見出し名 (瞬間英作文)
-
+ENGLISH_LOG_PATH = "/English Learning/Chat Logs"
+SAKUBUN_LOG_PATH = "/Study/Sakubun Log"
+DAILY_NOTE_ENGLISH_LOG_HEADER = "## English Learning Logs"
+DAILY_NOTE_SAKUBUN_LOG_HEADER = "## Sakubun Logs"
 
 # --- Helper Function ---
 def extract_phrases_from_markdown_list(text: str, heading: str) -> list[str]:
-    """特定のMarkdown見出しの下にある箇条書き項目を抽出する"""
     phrases = []
     try:
-        pattern = rf"^\#+\s*{re.escape(heading)}.*?\n((?:^\s*[-*+]\s+.*?\n?)+)"
-        match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
-        if match:
-            list_section = match.group(1)
-            raw_phrases = re.findall(r"^\s*[-*+]\s+(.+)", list_section, re.MULTILINE)
-            phrases = [re.sub(r'[*_`~]', '', p.strip()) for p in raw_phrases if p.strip()]
-            logging.info(f"見出し '{heading}' の下からフレーズを抽出しました: {len(phrases)}件")
-        else:
-            logging.warning(f"指定された見出し '{heading}' またはその下の箇条書きが見つかりませんでした。")
-    except Exception as e:
-        logging.error(f"見出し '{heading}' の下のフレーズ抽出中にエラー: {e}", exc_info=True)
+        pattern = rf"^\#+\s*{re.escape(heading)}.*?\n((?:^\s*[-*+]\s+.*?\n?)+)"; match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
+        if match: list_section = match.group(1); raw_phrases = re.findall(r"^\s*[-*+]\s+(.+)", list_section, re.MULTILINE); phrases = [re.sub(r'[*_`~]', '', p.strip()) for p in raw_phrases if p.strip()]; logging.info(f"'{heading}' からフレーズ抽出: {len(phrases)}件")
+        else: logging.warning(f"見出し '{heading}' 発見できず")
+    except Exception as e: logging.error(f"'{heading}' フレーズ抽出エラー: {e}", exc_info=True)
     return phrases
 
 # --- UI Component: TTSView ---
 class TTSView(discord.ui.View):
     MAX_BUTTONS = 5
     def __init__(self, phrases_or_text: list[str] | str, openai_client):
-        super().__init__(timeout=3600)
-        self.openai_client = openai_client
-        self.phrases = []
+        super().__init__(timeout=3600); self.openai_client = openai_client; self.phrases = []
         if isinstance(phrases_or_text, str):
             clean_text = re.sub(r'<@!?\d+>', '', phrases_or_text); clean_text = re.sub(r'[*_`~#]', '', clean_text); full_text = clean_text.strip()[:2000]
-            if full_text:
-                self.phrases.append(full_text); label = (full_text[:25] + '...') if len(full_text) > 28 else full_text
-                button = discord.ui.Button(label=f"🔊 {label}", style=discord.ButtonStyle.secondary, custom_id="tts_phrase_0"); button.callback = self.tts_button_callback; self.add_item(button)
+            if full_text: self.phrases.append(full_text); label = (full_text[:25] + '...') if len(full_text) > 28 else full_text; button = discord.ui.Button(label=f"🔊 {label}", style=discord.ButtonStyle.secondary, custom_id="tts_phrase_0"); button.callback = self.tts_button_callback; self.add_item(button)
         elif isinstance(phrases_or_text, list):
             added_count = 0
             for index, phrase in enumerate(phrases_or_text):
-                if added_count >= self.MAX_BUTTONS: break
-                clean_phrase = re.sub(r'[*_`~#]', '', phrase.strip())[:2000]
-                if not clean_phrase: continue
-                self.phrases.append(clean_phrase); label = (clean_phrase[:25] + '...') if len(clean_phrase) > 28 else clean_phrase
-                button = discord.ui.Button(label=f"🔊 {label}", style=discord.ButtonStyle.secondary, custom_id=f"tts_phrase_{added_count}", row = added_count // 5)
+                if added_count >= self.MAX_BUTTONS: break; clean_phrase = re.sub(r'[*_`~#]', '', phrase.strip())[:2000]
+                if not clean_phrase: continue; self.phrases.append(clean_phrase); label = (clean_phrase[:25] + '...') if len(clean_phrase) > 28 else clean_phrase; button = discord.ui.Button(label=f"🔊 {label}", style=discord.ButtonStyle.secondary, custom_id=f"tts_phrase_{added_count}", row = added_count // 5)
                 button.callback = self.tts_button_callback; self.add_item(button); added_count += 1
     async def tts_button_callback(self, interaction: discord.Interaction):
         custom_id = interaction.data.get("custom_id"); logging.info(f"TTS button clicked: {custom_id} by {interaction.user}")
@@ -129,7 +87,7 @@ class TTSView(discord.ui.View):
             if not (0 <= phrase_index < len(self.phrases)): await interaction.response.send_message("無効なフレーズインデックス", ephemeral=True, delete_after=10); return
             phrase_to_speak = self.phrases[phrase_index]
             if not phrase_to_speak: await interaction.response.send_message("空フレーズ読み上げ不可", ephemeral=True, delete_after=10); return
-            if not self.openai_client: await interaction.response.send_message("TTS機能未設定(OpenAI APIキー)", ephemeral=True, delete_after=10); return
+            if not self.openai_client: await interaction.response.send_message("TTS機能未設定", ephemeral=True, delete_after=10); return
             await interaction.response.defer(ephemeral=True, thinking=True)
             response = await self.openai_client.audio.speech.create(model="tts-1", voice="alloy", input=phrase_to_speak, response_format="mp3")
             audio_bytes = response.content; audio_buffer = io.BytesIO(audio_bytes); audio_file = discord.File(fp=audio_buffer, filename=f"phrase_{phrase_index}.mp3")
@@ -159,15 +117,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
     def _validate_env_vars(self) -> bool:
         if not self.openai_api_key: logging.warning("EnglishLearningCog: OpenAI APIキー未設定. TTS不可.")
         required = [self.channel_id != 0, self.gemini_api_key, self.dropbox_refresh_token, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_vault_path]
-        if not all(required):
-             missing = [];
-             if self.channel_id == 0: missing.append("ENGLISH_LEARNING_CHANNEL_ID")
-             if not self.gemini_api_key: missing.append("GEMINI_API_KEY")
-             if not self.dropbox_refresh_token: missing.append("DROPBOX_REFRESH_TOKEN")
-             if not self.dropbox_app_key: missing.append("DROPBOX_APP_KEY")
-             if not self.dropbox_app_secret: missing.append("DROPBOX_APP_SECRET")
-             if not self.dropbox_vault_path: missing.append("DROPBOX_VAULT_PATH")
-             logging.error(f"EnglishLearningCog: 不足環境変数: {', '.join(missing)}"); return False
+        if not all(required): missing = [name for name, present in zip(["CHANNEL_ID", "GEMINI_API", "DBX_TOKEN", "DBX_KEY", "DBX_SECRET", "DBX_PATH"], required) if not present]; logging.error(f"EnglishLearningCog: 不足環境変数: {', '.join(missing)}"); return False # 短縮
         return True
     def _get_session_path(self, user_id: int) -> str: bot_dir = f"{self.dropbox_vault_path}/.bot"; return os.path.join(bot_dir, f"english_session_{user_id}.json").replace("\\", "/")
     @commands.Cog.listener()
@@ -192,14 +142,25 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found(): logging.warning(f"瞬間英作文ファイルが見つかりません: {path}")
             else: logging.error(f"Dropbox APIエラー(瞬間英作文読込): {e}"); self.sakubun_questions = []
         except Exception as e: logging.error(f"Obsidian問題読込エラー: {e}", exc_info=True); self.sakubun_questions = []
+
+    # --- morning_sakubun_task ---
     @tasks.loop(time=MORNING_SAKUBUN_TIME)
-    async def morning_sakubun_task(self): channel = self.bot.get_channel(self.channel_id);
-                                         if channel: await self._run_sakubun_session(channel, 1, "朝")
-                                         else: logging.error(f"Morning Sakubun: Channel {self.channel_id} not found.")
+    async def morning_sakubun_task(self):
+        channel = self.bot.get_channel(self.channel_id)
+        if channel:
+            await self._run_sakubun_session(channel, 1, "朝")
+        else:
+            logging.error(f"Morning Sakubun: Channel {self.channel_id} not found.")
+
+    # ---  evening_sakubun_task ---
     @tasks.loop(time=EVENING_SAKUBUN_TIME)
-    async def evening_sakubun_task(self): channel = self.bot.get_channel(self.channel_id);
-                                         if channel: await self._run_sakubun_session(channel, 2, "夜")
-                                         else: logging.error(f"Evening Sakubun: Channel {self.channel_id} not found.")
+    async def evening_sakubun_task(self):
+        channel = self.bot.get_channel(self.channel_id)
+        if channel:
+            await self._run_sakubun_session(channel, 2, "夜")
+        else:
+            logging.error(f"Evening Sakubun: Channel {self.channel_id} not found.")
+
     async def _run_sakubun_session(self, channel: discord.TextChannel, num_questions: int, session_name: str):
         if not self.is_ready: return
         if not self.sakubun_questions: await channel.send("⚠️ 瞬間英作文問題リスト空"); return
@@ -222,8 +183,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         except Exception as e_model: logging.error(f"Geminiモデル初期化失敗: {e_model}"); await interaction.followup.send("⚠️ AIモデル初期化失敗", ephemeral=True); return
         history_data = await self._load_session_from_dropbox(interaction.user.id); history_for_chat = []
         if history_data:
-             for item in history_data:
-                  parts_list = item.get('parts', []); role = item.get('role')
+             for item in history_data: parts_list = item.get('parts', []); role = item.get('role');
                   if role and isinstance(parts_list, list) and parts_list: history_for_chat.append({'role': role, 'parts': [str(p) for p in parts_list]})
                   elif role and isinstance(parts_list, str): history_for_chat.append({'role': role, 'parts': [parts_list]})
         try: chat = model.start_chat(history=history_for_chat); self.chat_sessions[interaction.user.id] = chat; logging.info(f"Started English session for {interaction.user.id}")
@@ -249,20 +209,18 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         except Exception as e: logging.error(f"セッション読込エラー ({session_path}): {e}", exc_info=True); return None
     async def _save_session_to_dropbox(self, user_id: int, history: list):
         if not self.dbx: return; session_path = self._get_session_path(user_id)
-        try:
-            serializable_history = []
-            for turn in history: role = getattr(turn, 'role', None); parts = getattr(turn, 'parts', [])
-                 if role and parts: part_texts = [getattr(p, 'text', str(p)) for p in parts]; serializable_history.append({"role": role, "parts": part_texts})
-            content = json.dumps(serializable_history, ensure_ascii=False, indent=2).encode('utf-8')
-            await asyncio.to_thread(self.dbx.files_upload, content, session_path, mode=WriteMode('overwrite'))
-            logging.info(f"Saved session to: {session_path}")
+        try: serializable_history = [];
+             for turn in history: role = getattr(turn, 'role', None); parts = getattr(turn, 'parts', [])
+                  if role and parts: part_texts = [getattr(p, 'text', str(p)) for p in parts]; serializable_history.append({"role": role, "parts": part_texts})
+             content = json.dumps(serializable_history, ensure_ascii=False, indent=2).encode('utf-8'); await asyncio.to_thread(self.dbx.files_upload, content, session_path, mode=WriteMode('overwrite'))
+             logging.info(f"Saved session to: {session_path}")
         except Exception as e: logging.error(f"セッション保存失敗 ({session_path}): {e}", exc_info=True)
     async def _generate_chat_review(self, history: list) -> str:
         if not self.gemini_model: return "レビュー生成機能無効"; conversation_log_parts = []
         for turn in history: role = getattr(turn, 'role', None); parts = getattr(turn, 'parts', [])
-             if role in ['user', 'model'] and parts: text = getattr(parts[0], 'text', None)
+             if role in ['user', 'model'] and parts: text = getattr(parts[0], 'text', None);
                   if text: prefix = 'You' if role == 'user' else 'AI'; conversation_log_parts.append(f"**{prefix}:** {text}")
-        conversation_log = "\n".join(conversation_log_parts)
+        conversation_log = "\n".join(conversation_log_parts);
         if not conversation_log: return "レビュー作成に十分な対話なし"; prompt = f"""あなたはプロ英語教師。ログ分析しレビュー作成。
 # 指示
 1. **会話要約**: 1〜2文。
@@ -278,24 +236,21 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         except Exception as e: logging.error(f"レビュー生成エラー: {e}", exc_info=True); return f"レビュー生成エラー: {type(e).__name__}"
     async def _save_chat_log_to_obsidian(self, user: discord.User, history: list, review: str):
         if not self.dbx: return; now = datetime.now(JST); date_str = now.strftime('%Y-%m-%d'); timestamp = now.strftime('%Y%m%d%H%M%S')
-        safe_user_name = re.sub(r'[\\/*?:"<>|]', '_', user.display_name)[:50]; title = f"英会話ログ {safe_user_name} {date_str}"; filename = f"{timestamp}-英会話ログ {safe_user_name}.md"
-        conversation_log_parts = []
+        safe_user_name = re.sub(r'[\\/*?:"<>|]', '_', user.display_name)[:50]; title = f"英会話ログ {safe_user_name} {date_str}"; filename = f"{timestamp}-英会話ログ {safe_user_name}.md"; conversation_log_parts = []
         for turn in history: role = getattr(turn, 'role', None); parts = getattr(turn, 'parts', [])
-             if role in ['user', 'model'] and parts: text = getattr(parts[0], 'text', None)
+             if role in ['user', 'model'] and parts: text = getattr(parts[0], 'text', None);
                   if text: prefix = 'You' if role == 'user' else 'AI'; conversation_log_parts.append(f"- **{prefix}:** {text}")
-        conversation_log = "\n".join(conversation_log_parts)
-        note_content = f"# {title}\n\n- Date: [[{date_str}]]\n- Participant: {user.display_name} ({user.id})\n\n---\n\n## 💬 Session Review\n{review}\n\n---\n\n## 📜 Full Transcript\n{conversation_log}\n"
+        conversation_log = "\n".join(conversation_log_parts); note_content = f"# {title}\n\n- Date: [[{date_str}]]\n- Participant: {user.display_name} ({user.id})\n\n---\n\n## 💬 Session Review\n{review}\n\n---\n\n## 📜 Full Transcript\n{conversation_log}\n"
         note_path = f"{self.dropbox_vault_path}{ENGLISH_LOG_PATH}/{filename}".replace("\\", "/")
-        try:
-            await asyncio.to_thread(self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add')); logging.info(f"英会話ログ保存成功(Obsidian): {note_path}")
-            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md".replace("\\", "/"); daily_note_content = f"# {date_str}\n\n"
-            try: _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path); daily_note_content = res.content.decode('utf-8')
-            except ApiError as e:
+        try: await asyncio.to_thread(self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add')); logging.info(f"英会話ログ保存成功(Obsidian): {note_path}")
+             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md".replace("\\", "/"); daily_note_content = f"# {date_str}\n\n"
+             try: _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path); daily_note_content = res.content.decode('utf-8')
+             except ApiError as e:
                 if not (isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found()): logging.error(f"デイリーノートDLエラー({daily_note_path}): {e}")
-            note_filename_for_link = filename[:-3]; link_path_part = ENGLISH_LOG_PATH.strip('/'); link_to_add = f"- [[{link_path_part}/{note_filename_for_link}]]"
-            new_daily_content = update_section(daily_note_content, link_to_add, DAILY_NOTE_ENGLISH_LOG_HEADER)
-            await asyncio.to_thread(self.dbx.files_upload, new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
-            logging.info(f"デイリーノート({daily_note_path})に英会話ログリンク追記成功")
+             note_filename_for_link = filename[:-3]; link_path_part = ENGLISH_LOG_PATH.strip('/'); link_to_add = f"- [[{link_path_part}/{note_filename_for_link}]]"
+             new_daily_content = update_section(daily_note_content, link_to_add, DAILY_NOTE_ENGLISH_LOG_HEADER)
+             await asyncio.to_thread(self.dbx.files_upload, new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
+             logging.info(f"デイリーノート({daily_note_path})に英会話ログリンク追記成功")
         except ApiError as e: logging.error(f"英会話ログ保存/DN更新 Dropboxエラー: {e}", exc_info=True)
         except Exception as e: logging.error(f"英会話ログ保存/DN更新 予期せぬエラー: {e}", exc_info=True)
     async def _save_sakubun_log_to_obsidian(self, japanese_question: str, user_answer: str, feedback_text: str):
@@ -307,17 +262,16 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         note_content = f"# {date_str} 瞬間英作文: {japanese_question}\n\n- Date: [[{date_str}]]\n---\n\n## 問題\n{japanese_question}\n\n## あなたの回答\n{user_answer}\n\n## AIによるフィードバック\n{feedback_text}\n"
         if model_answers: note_content += f"\n---\n\n## モデルアンサー\n{model_answers}\n"
         note_path = f"{self.dropbox_vault_path}{SAKUBUN_LOG_PATH}/{filename}".replace("\\", "/")
-        try:
-            await asyncio.to_thread(self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add')); logging.info(f"瞬間英作文ログ保存成功(Obsidian): {note_path}")
-            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md".replace("\\", "/"); daily_note_content = f"# {date_str}\n\n"
-            try: _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path); daily_note_content = res.content.decode('utf-8')
-            except ApiError as e:
+        try: await asyncio.to_thread(self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add')); logging.info(f"瞬間英作文ログ保存成功(Obsidian): {note_path}")
+             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md".replace("\\", "/"); daily_note_content = f"# {date_str}\n\n"
+             try: _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path); daily_note_content = res.content.decode('utf-8')
+             except ApiError as e:
                 if not (isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found()): logging.error(f"デイリーノートDLエラー({daily_note_path}): {e}")
-            note_filename_for_link = filename[:-3]; link_path_part = SAKUBUN_LOG_PATH.strip('/')
-            link_text = japanese_question[:30] + "..." if len(japanese_question) > 33 else japanese_question; link_to_add = f"- [[{link_path_part}/{note_filename_for_link}|{link_text}]]"
-            new_daily_content = update_section(daily_note_content, link_to_add, DAILY_NOTE_SAKUBUN_LOG_HEADER)
-            await asyncio.to_thread(self.dbx.files_upload, new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
-            logging.info(f"デイリーノート({daily_note_path})に瞬間英作文ログリンク追記成功")
+             note_filename_for_link = filename[:-3]; link_path_part = SAKUBUN_LOG_PATH.strip('/')
+             link_text = japanese_question[:30] + "..." if len(japanese_question) > 33 else japanese_question; link_to_add = f"- [[{link_path_part}/{note_filename_for_link}|{link_text}]]"
+             new_daily_content = update_section(daily_note_content, link_to_add, DAILY_NOTE_SAKUBUN_LOG_HEADER)
+             await asyncio.to_thread(self.dbx.files_upload, new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
+             logging.info(f"デイリーノート({daily_note_path})に瞬間英作文ログリンク追記成功")
         except ApiError as e: logging.error(f"瞬間英作文ログ保存/DN更新 Dropboxエラー: {e}", exc_info=True)
         except Exception as e: logging.error(f"瞬間英作文ログ保存/DN更新 予期せぬエラー: {e}", exc_info=True)
     @commands.Cog.listener()
@@ -325,15 +279,14 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         if not self.is_ready or message.author.bot or message.channel.id != self.channel_id: return
         if message.content.strip().lower() == "/end":
             session = self.chat_sessions.pop(message.author.id, None)
-            if session:
-                await message.channel.send(f"{message.author.mention} セッション終了. レビュー作成中..."); async with message.channel.typing():
+            if session: await message.channel.send(f"{message.author.mention} セッション終了..."); async with message.channel.typing():
                     history = getattr(session, 'history', []); review_text = await self._generate_chat_review(history)
                     important_phrases = extract_phrases_from_markdown_list(review_text, "重要フレーズ")
                     review_embed = discord.Embed(title="💬 Session Review", description=review_text, color=discord.Color.gold(), timestamp=datetime.now(JST)).set_footer(text=f"{message.author.display_name}'s session")
                     tts_view = TTSView(important_phrases, self.openai_client) if important_phrases and self.openai_client else None
                     await message.channel.send(embed=review_embed, view=tts_view)
                     await self._save_session_to_dropbox(message.author.id, history); await self._save_chat_log_to_obsidian(message.author, history, review_text)
-            else: await message.reply("アクティブなセッションなし", delete_after=10); return
+            else: await message.reply("アクティブセッションなし", delete_after=10); return
         if message.reference and message.reference.message_id:
             try: original_msg = await message.channel.fetch_message(message.reference.message_id)
                  if (original_msg.author.id == self.bot.user.id and original_msg.embeds and original_msg.embeds[0].title and "第" in original_msg.embeds[0].title):
@@ -367,7 +320,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
              if model_answers and self.openai_client: tts_view = TTSView(model_answers, self.openai_client)
              await message.reply(embed=feedback_embed, view=tts_view, mention_author=False)
              await self._save_sakubun_log_to_obsidian(japanese_question, user_answer, feedback_text)
-        except asyncio.TimeoutError: logging.error("瞬間英作文FB生成タイムアウト"); await message.reply("フィードバック生成タイムアウト", mention_author=False)
+        except asyncio.TimeoutError: logging.error("瞬間英作文FB生成タイムアウト"); await message.reply("FB生成タイムアウト", mention_author=False)
         except Exception as e_fb: logging.error(f"瞬間英作文FB/保存エラー: {e_fb}", exc_info=True); await message.reply(f"FB処理エラー: {type(e_fb).__name__}", mention_author=False)
         finally: try: await message.remove_reaction("🤔", self.bot.user)
                  except discord.HTTPException: pass
