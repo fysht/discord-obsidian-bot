@@ -70,19 +70,24 @@ class AddToListView(discord.ui.View):
     @discord.ui.button(label="はい", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(); success = await self.memo_cog.add_item_to_list_file(self.category, self.item_to_add, self.context)
-        if self.reply_message: try:
-                if success: await self.reply_message.edit(content=f"✅ 追加成功", view=None)
-                else: await self.reply_message.edit(content="❌追加エラー", view=None)
-                await asyncio.sleep(10); await self.reply_message.delete()
-            except discord.HTTPException as e: logging.error(f"Failed edit/delete reply: {e}")
+        if self.reply_message:
+            try:
+                if success:
+                     await self.reply_message.edit(content=f"✅ **{self.context}** の **{CATEGORY_MAP[self.category]['prompt']}** に「{self.item_to_add}」を追加しました。", view=None)
+                else:
+                     await self.reply_message.edit(content="❌リストへの追加中にエラーが発生しました。", view=None)
+                await asyncio.sleep(10)
+                await self.reply_message.delete()
+            except discord.HTTPException as e:
+                 logging.error(f"Failed edit/delete reply: {e}")
         self.stop()
     @discord.ui.button(label="いいえ (手動選択)", style=discord.ButtonStyle.secondary)
     async def cancel_and_select(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.reply_message:
-             try:
-                 await self.reply_message.edit(content="手動で追加先を選択してください...", view=None)
-             except discord.HTTPException as e:
-                  logging.warning(f"Failed edit reply: {e}")
+            try:
+                await self.reply_message.edit(content="手動で追加先を選択してください...", view=None)
+            except discord.HTTPException as e:
+                 logging.warning(f"Failed edit reply: {e}")
         await interaction.response.send_modal(ManualAddToListModal(self.memo_cog, self.item_to_add)); self.stop()
     @discord.ui.button(label="メモのみ", style=discord.ButtonStyle.danger, row=1)
     async def memo_only(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -316,7 +321,7 @@ class MemoCog(commands.Cog):
         if category.value == "Task": items = self._sort_tasks_with_deadline(items)
         embed = discord.Embed(title=f"📋 {context.name}の{CATEGORY_MAP[category.value]['prompt']}", color=discord.Color.blue())
         if items: desc = "\n".join([f"- {item}" for item in items]); embed.description = desc[:4000] + "..." if len(desc) > 4096 else desc
-        else: embed.description = "このリストにはまだ何もありません。"; await interaction.followup.send(embed=embed, ephemeral=True)
+        else: embed.description = "このリストにはまだ何もありません。"; await interaction.followup.send(embed=embed, ephemeral=True) # ここで return せず followup を呼ぶ
 
     # --- 定期実行タスク ---
     @tasks.loop(hours=24)
@@ -343,7 +348,8 @@ class MemoCog(commands.Cog):
                             if field_value: embed.add_field(name=f"--- {context_name} (続き) ---", value=field_value.strip(), inline=False)
                             field_value = current_category_text[:1020] + "..." if len(current_category_text) > 1024 else current_category_text
                           else: field_value += current_category_text
-                if field_value or not field_has_content: embed.add_field(name=f"--- {context_name} ---", value=field_value.strip() if field_value else "項目なし", inline=False) # 空でもフィールド追加
+                # 空のコンテキストでもフィールドを追加
+                embed.add_field(name=f"--- {context_name} ---", value=field_value.strip() if field_value else "項目なし", inline=False)
         if not has_items and all_items_structured: embed.description = "すべてのリストは現在空です。"
         view = ListManagementView(self)
         try: last_message = None;
@@ -369,6 +375,8 @@ class MemoCog(commands.Cog):
         await self.bot.wait_until_ready(); logging.info("MemoCog: Waiting for post_all_lists loop.")
         now = datetime.now(JST); target_time = time(hour=8, minute=0, tzinfo=JST); target_dt = datetime.combine(now.date(), target_time)
         if target_dt < now: target_dt += timedelta(days=1); wait_seconds = (target_dt - now).total_seconds()
+        # wait_seconds が計算されていない場合のガードを追加
+        else: wait_seconds = (target_dt - now).total_seconds()
         logging.info(f"MemoCog: Waiting {wait_seconds:.2f} seconds for first run of post_all_lists at {target_dt}.")
         await asyncio.sleep(wait_seconds)
 

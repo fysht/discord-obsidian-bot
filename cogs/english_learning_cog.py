@@ -117,7 +117,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
     def _validate_env_vars(self) -> bool:
         if not self.openai_api_key: logging.warning("EnglishLearningCog: OpenAI APIキー未設定. TTS不可.")
         required = [self.channel_id != 0, self.gemini_api_key, self.dropbox_refresh_token, self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_vault_path]
-        if not all(required): missing = [name for name, present in zip(["CHANNEL_ID", "GEMINI_API", "DBX_TOKEN", "DBX_KEY", "DBX_SECRET", "DBX_PATH"], required) if not present]; logging.error(f"EnglishLearningCog: 不足環境変数: {', '.join(missing)}"); return False # 短縮
+        if not all(required): missing = [name for name, present in zip(["CHANNEL_ID", "GEMINI_API", "DBX_TOKEN", "DBX_KEY", "DBX_SECRET", "DBX_PATH"], required) if not present]; logging.error(f"EnglishLearningCog: 不足環境変数: {', '.join(missing)}"); return False
         return True
     def _get_session_path(self, user_id: int) -> str: bot_dir = f"{self.dropbox_vault_path}/.bot"; return os.path.join(bot_dir, f"english_session_{user_id}.json").replace("\\", "/")
     @commands.Cog.listener()
@@ -143,7 +143,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             else: logging.error(f"Dropbox APIエラー(瞬間英作文読込): {e}"); self.sakubun_questions = []
         except Exception as e: logging.error(f"Obsidian問題読込エラー: {e}", exc_info=True); self.sakubun_questions = []
 
-    # --- morning_sakubun_task ---
     @tasks.loop(time=MORNING_SAKUBUN_TIME)
     async def morning_sakubun_task(self):
         channel = self.bot.get_channel(self.channel_id)
@@ -152,7 +151,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         else:
             logging.error(f"Morning Sakubun: Channel {self.channel_id} not found.")
 
-    # ---  evening_sakubun_task ---
     @tasks.loop(time=EVENING_SAKUBUN_TIME)
     async def evening_sakubun_task(self):
         channel = self.bot.get_channel(self.channel_id)
@@ -181,11 +179,19 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         system_instruction = "あなたはフレンドリーな英会話の相手です。ユーザーのメッセージに共感したり、質問を返したりして、会話を弾ませてください。もしユーザーの英語に文法的な誤りや不自然な点があれば、会話の流れを止めないように優しく指摘し、正しい表現を提案してください。例：「`I go to the park yesterday.` → `Oh, you went to the park yesterday! What did you do there?`」のように、自然な訂正を会話に含めてください。あなたの返答は、常に自然な英語で行ってください。"
         try: model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=system_instruction)
         except Exception as e_model: logging.error(f"Geminiモデル初期化失敗: {e_model}"); await interaction.followup.send("⚠️ AIモデル初期化失敗", ephemeral=True); return
-        history_data = await self._load_session_from_dropbox(interaction.user.id); history_for_chat = []
+
+        # --- セッション履歴のロード ---
+        history_data = await self._load_session_from_dropbox(interaction.user.id)
+        history_for_chat = []
         if history_data:
-             for item in history_data: parts_list = item.get('parts', []); role = item.get('role');
-                  if role and isinstance(parts_list, list) and parts_list: history_for_chat.append({'role': role, 'parts': [str(p) for p in parts_list]})
-                  elif role and isinstance(parts_list, str): history_for_chat.append({'role': role, 'parts': [parts_list]})
+             for item in history_data:
+                 parts_list = item.get('parts', [])
+                 role = item.get('role')
+                 if role and isinstance(parts_list, list) and parts_list:
+                      history_for_chat.append({'role': role, 'parts': [str(p) for p in parts_list]})
+                 elif role and isinstance(parts_list, str):
+                      history_for_chat.append({'role': role, 'parts': [parts_list]})
+
         try: chat = model.start_chat(history=history_for_chat); self.chat_sessions[interaction.user.id] = chat; logging.info(f"Started English session for {interaction.user.id}")
         except Exception as e_start_chat: logging.error(f"チャットセッション開始失敗: {e_start_chat}", exc_info=True); await interaction.followup.send("⚠️ チャットセッション開始失敗", ephemeral=True); return
         async with interaction.channel.typing():
@@ -276,7 +282,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         except Exception as e: logging.error(f"瞬間英作文ログ保存/DN更新 予期せぬエラー: {e}", exc_info=True)
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if not self.is_ready or message.author.bot or message.channel.id != self.channel_id: return
+        if not self.is_ready or message.author.bot or message.channel_id != self.channel_id: return
         if message.content.strip().lower() == "/end":
             session = self.chat_sessions.pop(message.author.id, None)
             if session: await message.channel.send(f"{message.author.mention} セッション終了..."); async with message.channel.typing():
