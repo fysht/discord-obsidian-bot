@@ -750,8 +750,16 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 
     # --- handle_sakubun_answer ---
     async def handle_sakubun_answer(self, message: discord.Message, user_answer: str, original_msg: discord.Message):
-        if not self.is_ready: await message.reply("機能準備中です。"); return
-        if not user_answer: await message.add_reaction("❓"); await asyncio.sleep(5); try: await message.remove_reaction("❓", self.bot.user) except discord.HTTPException: pass; return
+        if not self.is_ready:
+            await message.reply("機能準備中です。")
+            return
+        if not user_answer:
+            await message.add_reaction("❓")
+            await asyncio.sleep(5)
+            await message.remove_reaction("❓", self.bot.user)
+        except discord.HTTPException:
+            logging.warning(f"リアクション❓の削除に失敗 (Message ID: {message.id})")
+        return
 
         await message.add_reaction("🤔")
         japanese_question = original_msg.embeds[0].description.strip().replace("*","")
