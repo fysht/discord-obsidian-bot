@@ -6,9 +6,10 @@ import logging
 import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta # timedelta をインポート
 import json
 import re
+import aiohttp # YouTubeタイトル取得用にインポート
 from obsidian_handler import add_memo_async
 from utils.obsidian_utils import update_section
 from web_parser import parse_url_with_readability # web_parserをインポート
@@ -18,7 +19,9 @@ try:
     import zoneinfo
     JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 except ImportError:
+    # Python 3.8以前またはzoneinfo未インストールの場合のフォールバック
     JST = timezone(timedelta(hours=+9), "JST")
+
 
 # Use channel ID from env var
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", 0))
@@ -28,11 +31,12 @@ TITLE_LINK_EMOJI = '🇹' # T for Title
 CLIP_SUMMARY_EMOJI = '📄' # Page for Clip/Summary
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
+PROCESS_START_EMOJI = '⏳' # 処理中を示す絵文字を追加
 YOUTUBE_REACTION_EMOJI = '▶️' # YouTube URL用に一時的につけるリアクション
 
-# URL Regex (borrowed from webclip_cog, consider putting in a central utils file)
+# URL Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
-# YouTube Regex (borrowed from youtube_cog)
+# YouTube Regex
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
 
 # Daily Note Section Header
@@ -116,8 +120,13 @@ class MemoCog(commands.Cog):
                 # Add a temporary confirmation reaction to the original message
                 await message.add_reaction("📝")
                 # Optionally, delete the reaction after some time
-                await asyncio.sleep(15)
-                await message.remove_reaction("📝", self.bot.user)
+                # Use create_task to avoid blocking on_message
+                async def remove_temp_reaction(msg, emoji):
+                    await asyncio.sleep(15)
+                    try:
+                        await msg.remove_reaction(emoji, self.bot.user)
+                    except discord.HTTPException: pass
+                asyncio.create_task(remove_temp_reaction(message, "📝"))
 
             except Exception as e:
                 logging.error(f"Failed to save text memo using add_memo_async: {e}", exc_info=True)
@@ -154,11 +163,26 @@ class MemoCog(commands.Cog):
             logging.error(f"Failed to fetch message {payload.message_id} for reaction processing.")
             return
 
-        # Remove bot reactions first
+        # --- Check if already processing ---
+        # Look for the hourglass emoji added by the bot
+        is_processing = False
+        for reaction in message.reactions:
+            if reaction.emoji == PROCESS_START_EMOJI and reaction.me:
+                is_processing = True
+                break
+        if is_processing:
+            logging.warning(f"Message {message.id} is already being processed. Ignoring reaction {emoji}.")
+            return
+        # --- End check ---
+
+
+        # Remove bot choice reactions first
         try:
-            await message.clear_reactions() # Clear all reactions for simplicity
+            # Use await message.clear_reactions() if preferred, but removing specific ones is safer
+            await message.remove_reaction(TITLE_LINK_EMOJI, self.bot.user)
+            await message.remove_reaction(CLIP_SUMMARY_EMOJI, self.bot.user)
         except discord.HTTPException:
-            logging.warning(f"Failed to remove reactions from message {message.id}")
+            logging.warning(f"Failed to remove initial reactions from message {message.id}")
 
         # Process based on the reaction
         try:
@@ -168,10 +192,14 @@ class MemoCog(commands.Cog):
 
             elif emoji == CLIP_SUMMARY_EMOJI:
                 logging.info(f"Processing '{CLIP_SUMMARY_EMOJI}' reaction for message {message.id} (URL: {url})")
-                await self.trigger_clip_or_summary(message, url) # 名前はそのまま流用
+                await self.trigger_clip_or_summary(message, url)
 
         except Exception as e:
              logging.error(f"Error processing reaction {emoji} for message {message.id}: {e}", exc_info=True)
+             try:
+                 # Ensure hourglass is removed on error before adding error emoji
+                 await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+             except discord.HTTPException: pass
              try:
                  await message.add_reaction(PROCESS_ERROR_EMOJI)
              except discord.HTTPException: pass
@@ -184,7 +212,7 @@ class MemoCog(commands.Cog):
             await message.add_reaction(PROCESS_ERROR_EMOJI)
             return
 
-        await message.add_reaction("⏳")
+        await message.add_reaction(PROCESS_START_EMOJI) # Use defined constant
         title = "Untitled"
         is_youtube = False
 
@@ -194,29 +222,35 @@ class MemoCog(commands.Cog):
             if youtube_match:
                 is_youtube = True
                 video_id = youtube_match.group(1)
-                # YouTubeCogはローカル実行のため、ここでは直接タイトルを取得
                 try:
-                    # youtube_cog.py の get_video_info 相当の処理をここで行う (aiohttpを使用)
+                    # Fetch title using aiohttp
                     async with aiohttp.ClientSession() as session:
                          oembed_url = f"https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v={video_id}&format=json"
-                         async with session.get(oembed_url) as response:
+                         async with session.get(oembed_url, timeout=10) as response: # Add timeout
                              if response.status == 200:
                                  data = await response.json()
                                  title = data.get("title", f"YouTube_{video_id}")
                              else:
                                  logging.warning(f"oEmbed failed for {video_id}: Status {response.status}")
                                  title = f"YouTube_{video_id}"
+                except asyncio.TimeoutError:
+                    logging.error("Timeout fetching YouTube title via oEmbed.")
+                    title = f"YouTube_{video_id}"
                 except Exception as e_yt_title:
                      logging.error(f"Error fetching YouTube title via oEmbed: {e_yt_title}")
                      title = f"YouTube_{video_id}"
             else:
                 # General Web URL - Use web_parser
-                fetched_title, _ = await asyncio.to_thread(parse_url_with_readability, url)
+                # Run potentially blocking parse_url_with_readability in an executor
+                loop = asyncio.get_running_loop()
+                fetched_title, _ = await loop.run_in_executor(
+                    None, parse_url_with_readability, url
+                )
                 if fetched_title and fetched_title != "No Title Found":
                     title = fetched_title
                 else:
-                    # Fallback if readability fails
-                    title = url.split('/')[-1] or url # Use last part of URL or full URL
+                    # Fallback if readability fails or returns "No Title Found"
+                    title = url # Use full URL as fallback title for web links
 
             # Format the link for Obsidian Daily Note
             now = datetime.now(JST)
@@ -230,8 +264,9 @@ class MemoCog(commands.Cog):
             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
             current_content = ""
 
-            # Download or create Daily Note content
+            # Download or create Daily Note content (using to_thread)
             try:
+                # Use asyncio.to_thread for potentially blocking Dropbox calls
                 _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 current_content = res.content.decode('utf-8')
             except ApiError as e:
@@ -244,7 +279,7 @@ class MemoCog(commands.Cog):
             # Update the ## Memo section
             new_content = update_section(current_content, link_text, MEMO_SECTION_HEADER)
 
-            # Upload the updated note
+            # Upload the updated note (using to_thread)
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 new_content.encode('utf-8'),
@@ -252,13 +287,15 @@ class MemoCog(commands.Cog):
                 mode=WriteMode('overwrite')
             )
             logging.info(f"Link saved to Obsidian Daily Note ({MEMO_SECTION_HEADER}): {daily_note_path}")
-            await message.remove_reaction("⏳", self.bot.user)
+            await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
 
         except Exception as e:
             logging.error(f"Failed to save title/link for {url}: {e}", exc_info=True)
             try:
-                await message.remove_reaction("⏳", self.bot.user)
+                await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+            except discord.HTTPException: pass
+            try:
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
 
@@ -271,44 +308,58 @@ class MemoCog(commands.Cog):
             # YouTubeの場合は、ローカルワーカーが処理することを伝えるリアクションを付ける
             logging.info(f"YouTube URL detected for {message.id}. Adding reaction '{YOUTUBE_REACTION_EMOJI}' for local worker.")
             try:
-                # ユーザーがどの処理を選んだか分かりやすくするため一時的にリアクションを付ける
-                await message.add_reaction(YOUTUBE_REACTION_EMOJI)
-                # ここでは local_worker.py が `on_raw_reaction_add` を見て処理することを期待する
-                # 必要であれば、local_worker.py 側で処理完了後にこのリアクションを消す
+                await message.add_reaction(PROCESS_START_EMOJI) # Show processing starts here
+                await message.add_reaction(YOUTUBE_REACTION_EMOJI) # Add trigger for local worker
+                # Remove hourglass immediately, local worker will add its own status emojis
+                await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+                # Local worker is expected to handle YOUTUBE_REACTION_EMOJI
             except discord.HTTPException as e:
-                logging.error(f"Failed to add YouTube reaction to message {message.id}: {e}")
-                await message.add_reaction(PROCESS_ERROR_EMOJI) # リアクション付与失敗時
+                logging.error(f"Failed to add YouTube reactions to message {message.id}: {e}")
+                try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user) # Clean up hourglass on error
+                except discord.HTTPException: pass
+                await message.add_reaction(PROCESS_ERROR_EMOJI) # Indicate failure
 
         else:
             # Webページの場合は、このCog内でクリップ処理を実行
             if self.dbx:
                 logging.info(f"Calling internal _perform_web_clip for {url}")
-                await self._perform_web_clip(url=url, message=message) # 内部メソッドを呼び出す
+                await self._perform_web_clip(url=url, message=message) # Call internal method
             else:
                 logging.error("Cannot perform web clip: Dropbox client is not initialized.")
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
 
-    # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
-    # Integrate _perform_clip logic from webclip_cog.py here
+    # Integrated _perform_web_clip logic from previous webclip_cog.py
     async def _perform_web_clip(self, url: str, message: discord.Message):
-        """Webクリップのコアロジック (旧 webclip_cog._perform_clip)"""
-        if not self.dbx: # Check again, although likely checked before calling
+        """Webクリップのコアロジック (旧 webclip_cog._perform_clip を async 化)"""
+        if not self.dbx:
             logging.error("Cannot perform web clip: Dropbox client is not initialized.")
             await message.add_reaction(PROCESS_ERROR_EMOJI)
             return
 
-        try:
-            await message.add_reaction("⏳")
+        # Check if already processed (maybe redundant if checked in on_raw_reaction_add)
+        if any(r.emoji in (PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI) and r.me for r in message.reactions):
+            logging.warning(f"Web clip for {url} already processed or failed. Skipping.")
+            return
 
+        await message.add_reaction(PROCESS_START_EMOJI) # Use defined constant
+        original_title = "Untitled" # Initialize title
+        content_md = '(Content could not be extracted)' # Initialize content
+
+        try:
             loop = asyncio.get_running_loop()
-            title, content_md = await loop.run_in_executor(
+            # Run blocking parsing in executor
+            title_result, content_md_result = await loop.run_in_executor(
                 None, parse_url_with_readability, url
             )
 
             # Use original title if available, otherwise fallback
-            original_title = title if title and title != "No Title Found" else url.split('/')[-1] or "Untitled"
+            original_title = title_result if title_result and title_result != "No Title Found" else url # Use URL as fallback
 
-            safe_title = re.sub(r'[\\/*?:"<>|]', "_", original_title) # Replace invalid chars with underscore
+            # Use parsed content if available
+            content_md = content_md_result or content_md # Keep default if result is None
+
+            # Sanitize title for filename
+            safe_title = re.sub(r'[\\/*?:"<>|]', "_", original_title) # Replace invalid chars
             if not safe_title:
                 safe_title = "Untitled"
             safe_title = safe_title[:100] # Limit filename length
@@ -320,20 +371,18 @@ class MemoCog(commands.Cog):
             webclip_file_name = f"{timestamp}-{safe_title}.md"
             webclip_file_name_for_link = webclip_file_name.replace('.md', '')
 
-            # Use original title for H1, ensure content_md is not None
+            # Create note content
             webclip_note_content = (
                 f"# {original_title}\n\n"
                 f"- **Source:** <{url}>\n"
-                f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n" # Added clipped time
+                f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
                 f"---\n\n"
                 f"[[{daily_note_date}]]\n\n"
-                f"{content_md or '(Content could not be extracted)'}" # Handle potential None content
+                f"{content_md}"
             )
 
-            # Use initialized dbx client directly (no 'with' needed if initialized in __init__)
+            # Upload WebClip file to Dropbox (using to_thread)
             webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
-
-            # Run Dropbox upload in executor thread
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 webclip_note_content.encode('utf-8'),
@@ -342,27 +391,28 @@ class MemoCog(commands.Cog):
             )
             logging.info(f"クリップ成功: {webclip_file_path}")
 
+            # Update Daily Note
             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
             daily_note_content = ""
             try:
-                # Run Dropbox download in executor thread
+                # Download daily note (using to_thread)
                 _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 daily_note_content = res.content.decode('utf-8')
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     logging.info(f"デイリーノート {daily_note_path} は存在しないため、新規作成します。")
-                    daily_note_content = f"# {daily_note_date}\n" # Create new content
+                    daily_note_content = f"# {daily_note_date}\n"
                 else:
-                    raise # Re-raise other API errors
+                    raise
 
-            # Use original_title in the link as well
+            # Create link using original title
             link_to_add = f"- [[WebClips/{webclip_file_name_for_link}|{original_title}]]"
 
             new_daily_content = update_section(
                 daily_note_content, link_to_add, WEBCLIPS_SECTION_HEADER
             )
 
-            # Run Dropbox upload in executor thread
+            # Upload updated daily note (using to_thread)
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 new_daily_content.encode('utf-8'),
@@ -371,24 +421,24 @@ class MemoCog(commands.Cog):
             )
             logging.info(f"デイリーノートを更新しました: {daily_note_path}")
 
+            # Add success reaction
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
 
         except Exception as e:
-            logging.error(f"Webクリップ処理中にエラー: {e}", exc_info=True)
+            logging.error(f"Webクリップ処理中にエラー ({url}): {e}", exc_info=True)
             try:
+                # Add error reaction
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass # Ignore if reaction fails
         finally:
             # Ensure the hourglass is removed even if errors occur
             try:
-                await message.remove_reaction("⏳", self.bot.user)
+                await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
             except discord.HTTPException: pass
-    # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
 
 async def setup(bot: commands.Bot):
     """Cogセットアップ"""
-    # Check if MEMO_CHANNEL_ID is set, otherwise don't load
     if MEMO_CHANNEL_ID == 0:
         logging.error("MemoCog: MEMO_CHANNEL_ID is not set or is 0. Cog will not be loaded.")
         return
