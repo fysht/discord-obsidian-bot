@@ -31,7 +31,7 @@ TITLE_LINK_EMOJI = '🇹' # T for Title
 CLIP_SUMMARY_EMOJI = '📄' # Page for Clip/Summary
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
-PROCESS_START_EMOJI = '⏳' # 処理中を示す絵文字を追加
+PROCESS_START_EMOJI = '⏳' # 処理中を示す絵文字
 YOUTUBE_REACTION_EMOJI = '▶️' # YouTube URL用に一時的につけるリアクション
 
 # URL Regex
@@ -164,7 +164,6 @@ class MemoCog(commands.Cog):
             return
 
         # --- Check if already processing ---
-        # Look for the hourglass emoji added by the bot
         is_processing = False
         for reaction in message.reactions:
             if reaction.emoji == PROCESS_START_EMOJI and reaction.me:
@@ -302,7 +301,8 @@ class MemoCog(commands.Cog):
 
     async def trigger_clip_or_summary(self, message: discord.Message, url: str):
         """URLの種類に応じてWebクリップ処理を実行するか、YouTubeの場合はローカル処理を促す"""
-        is_youtube = YOUTUBE_URL_REGEX.search(url)
+        youtube_match = YOUTUBE_URL_REGEX.search(url)
+        is_youtube = bool(youtube_match)
 
         if is_youtube:
             # YouTubeの場合は、ローカルワーカーが処理することを伝えるリアクションを付ける
@@ -328,7 +328,7 @@ class MemoCog(commands.Cog):
                 logging.error("Cannot perform web clip: Dropbox client is not initialized.")
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
 
-    # Integrated _perform_web_clip logic from previous webclip_cog.py
+    # Use logic based on the user-provided webclip_cog.py's _perform_clip
     async def _perform_web_clip(self, url: str, message: discord.Message):
         """Webクリップのコアロジック (旧 webclip_cog._perform_clip を async 化)"""
         if not self.dbx:
@@ -336,14 +336,14 @@ class MemoCog(commands.Cog):
             await message.add_reaction(PROCESS_ERROR_EMOJI)
             return
 
-        # Check if already processed (maybe redundant if checked in on_raw_reaction_add)
+        # Check if already processed
         if any(r.emoji in (PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI) and r.me for r in message.reactions):
             logging.warning(f"Web clip for {url} already processed or failed. Skipping.")
             return
 
-        await message.add_reaction(PROCESS_START_EMOJI) # Use defined constant
-        original_title = "Untitled" # Initialize title
-        content_md = '(Content could not be extracted)' # Initialize content
+        await message.add_reaction(PROCESS_START_EMOJI)
+        title = "Untitled"
+        content_md = '(Content could not be extracted)'
 
         try:
             loop = asyncio.get_running_loop()
@@ -353,16 +353,17 @@ class MemoCog(commands.Cog):
             )
 
             # Use original title if available, otherwise fallback
-            original_title = title_result if title_result and title_result != "No Title Found" else url # Use URL as fallback
+            title = title_result if title_result and title_result != "No Title Found" else url
 
             # Use parsed content if available
-            content_md = content_md_result or content_md # Keep default if result is None
+            content_md = content_md_result or content_md
 
-            # Sanitize title for filename
-            safe_title = re.sub(r'[\\/*?:"<>|]', "_", original_title) # Replace invalid chars
+            # Sanitize title for filename (using original code's method: remove invalid chars)
+            safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
             if not safe_title:
                 safe_title = "Untitled"
-            safe_title = safe_title[:100] # Limit filename length
+            # Limit filename length (optional, add if needed)
+            # safe_title = safe_title[:100]
 
             now = datetime.now(JST)
             timestamp = now.strftime('%Y%m%d%H%M%S')
@@ -371,11 +372,10 @@ class MemoCog(commands.Cog):
             webclip_file_name = f"{timestamp}-{safe_title}.md"
             webclip_file_name_for_link = webclip_file_name.replace('.md', '')
 
-            # Create note content
+            # Create note content (using original code's format)
             webclip_note_content = (
-                f"# {original_title}\n\n"
-                f"- **Source:** <{url}>\n"
-                f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"# {title}\n\n"
+                f"- **Source:** <{url}>\n\n" # Removed Clipped time from original snippet
                 f"---\n\n"
                 f"[[{daily_note_date}]]\n\n"
                 f"{content_md}"
@@ -401,12 +401,13 @@ class MemoCog(commands.Cog):
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     logging.info(f"デイリーノート {daily_note_path} は存在しないため、新規作成します。")
+                    # Create basic content if note doesn't exist
                     daily_note_content = f"# {daily_note_date}\n"
                 else:
-                    raise
+                    raise # Re-raise other API errors
 
-            # Create link using original title
-            link_to_add = f"- [[WebClips/{webclip_file_name_for_link}|{original_title}]]"
+            # Create link using the format from original webclip_cog.py
+            link_to_add = f"- [[WebClips/{webclip_file_name_for_link}]]"
 
             new_daily_content = update_section(
                 daily_note_content, link_to_add, WEBCLIPS_SECTION_HEADER
