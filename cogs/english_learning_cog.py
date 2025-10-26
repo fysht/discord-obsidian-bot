@@ -814,12 +814,13 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             try:
                 original_msg = await message.channel.fetch_message(message.reference.message_id)
                 # Check if it's a reply to the bot's Sakubun question embed
+                # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
                 if (original_msg.author.id == self.bot.user.id and
                         original_msg.embeds and
-                        # --- More specific check for Sakubun question ---
-                        "問" in original_msg.embeds[0].title and # e.g., "第 1 問 / 2 問"
-                        "瞬間英作文" in original_msg.embeds[0].title): # Check title contains "瞬間英作文"
-                    # --- End specific check ---
+                        "問" in original_msg.embeds[0].title and # タイトルに「問」があるか
+                        original_msg.embeds[0].footer and # フッターが存在するか確認
+                        original_msg.embeds[0].footer.text == "このメッセージに返信する形で英訳を投稿してください。"): # フッターの内容が一致するか
+                # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
                     await self.handle_sakubun_answer(message, message.content.strip(), original_msg)
                     return # Don't process as regular chat message if it's a Sakubun answer
             except discord.NotFound:

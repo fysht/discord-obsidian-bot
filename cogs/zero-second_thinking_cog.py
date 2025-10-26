@@ -38,7 +38,7 @@ JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SUPPORTED_AUDIO_TYPES = [
     'audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm'
 ]
-SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'] # HEIC対応を追加する場合はここに'image/heic', 'image/heif'を追加
 THINKING_TIMES = [
     time(hour=9, minute=0, tzinfo=JST),
     time(hour=12, minute=0, tzinfo=JST),
@@ -46,6 +46,20 @@ THINKING_TIMES = [
     time(hour=18, minute=0, tzinfo=JST),
     time(hour=21, minute=0, tzinfo=JST),
 ]
+
+# --- HEIC support (Optional: If pillow-heif is installed) ---
+try:
+    # from PIL import Image # Already imported above
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    # HEICのMIMEタイプをサポートリストに追加
+    SUPPORTED_IMAGE_TYPES.append('image/heic')
+    SUPPORTED_IMAGE_TYPES.append('image/heif')
+    logging.info("HEIC/HEIF image support enabled.")
+except ImportError:
+    logging.warning("pillow_heif not installed. HEIC/HEIF support is disabled.")
+# --- End HEIC support ---
+
 
 class ZeroSecondThinkingCog(commands.Cog):
     """
@@ -81,7 +95,7 @@ class ZeroSecondThinkingCog(commands.Cog):
             self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") # メインのテキスト生成モデル
-            self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro") # 画像認識用モデル
+            self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro") # 画像認識用モデル (handwritten_memo_cogに合わせる)
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
             self.is_ready = True
             self.last_question_answered = True # 起動時はリセット状態とみなす
@@ -271,7 +285,7 @@ class ZeroSecondThinkingCog(commands.Cog):
         temp_audio_path = None
         formatted_answer = "回答の処理に失敗しました。"
         try:
-            await original_msg.edit(delete_after=None)
+            await original_msg.edit(delete_after=None) # Keep original question visible longer
             await message.add_reaction("⏳")
 
             # --- 入力タイプに応じた処理 ---
@@ -294,7 +308,9 @@ class ZeroSecondThinkingCog(commands.Cog):
                 response = await self.gemini_model.generate_content_async(formatting_prompt)
                 formatted_answer = response.text.strip() if response and hasattr(response, 'text') else transcribed_text
 
+            # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
             elif input_type == "image" and attachment:
+                # handwritten_memo_cogと同様の方法で画像データを取得・処理
                 async with self.session.get(attachment.url) as resp:
                     if resp.status != 200:
                         raise Exception(f"画像ファイルのダウンロードに失敗: Status {resp.status}")
@@ -306,8 +322,10 @@ class ZeroSecondThinkingCog(commands.Cog):
                     "この画像は手書きのメモです。内容を読み取り、構造化された箇条書きのMarkdown形式でテキスト化してください。返答には前置きや説明は含めず、箇条書きのテキスト本体のみを生成してください。",
                     img,
                 ]
+                # handwritten_memo_cog と同じモデルを使用
                 response = await self.gemini_vision_model.generate_content_async(vision_prompt)
                 formatted_answer = response.text.strip() if response and hasattr(response, 'text') else "手書きメモの読み取りに失敗しました。"
+            # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
             else: # テキスト入力の場合 (デフォルト)
                 formatted_answer = message.content.strip()
@@ -404,7 +422,7 @@ class ZeroSecondThinkingCog(commands.Cog):
 
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] 処理中にエラー: {e}", exc_info=True)
-            self.last_question_answered = True
+            self.last_question_answered = True # エラー時は一旦リセット
             self.latest_question_message_id = None
             try:
                 await message.remove_reaction("⏳", self.bot.user)
@@ -459,7 +477,7 @@ async def setup(bot: commands.Bot):
         logging.error("ZeroSecondThinkingCog: 必要な環境変数が不足しているため、Cogをロードしません。")
         return
     try:
-         from PIL import Image
+         from PIL import Image # Pillow の存在確認
     except ImportError:
          logging.error("ZeroSecondThinkingCog: Pillowライブラリが見つかりません。手書きメモ機能を使用するには `pip install Pillow` を実行してください。Cogをロードしません。")
          return
