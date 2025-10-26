@@ -1,5 +1,3 @@
-# cogs/memo_cog.py (修正版全文)
-
 import os
 import discord
 from discord.ext import commands
@@ -312,40 +310,69 @@ class MemoCog(commands.Cog):
             except discord.HTTPException: pass
 
 
+    # >>>>>>>>>>>>>>>>>> MODIFICATION START (Added logging and refined reaction logic) <<<<<<<<<<<<<<<<<<
     async def trigger_clip_or_summary(self, message: discord.Message, url: str):
         """URLの種類に応じてWebクリップ処理を実行するか、YouTubeの場合はローカル処理を促す"""
-        # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
-        # Add logging to see the URL being checked
-        logging.info(f"Checking URL type for clip/summary: {url}")
-        youtube_match = YOUTUBE_URL_REGEX.search(url)
-        is_youtube = bool(youtube_match)
-        logging.info(f"Is YouTube URL? {is_youtube}") # Log the result of the check
-        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
+        logging.info(f"Trigger function called for URL: {url}") # Log function call
+        is_youtube = False # Initialize
+        youtube_match = None # Initialize
+        try:
+            logging.info(f"Attempting regex search on URL: {url}")
+            youtube_match = YOUTUBE_URL_REGEX.search(url)
+
+            if youtube_match:
+                logging.info(f"Regex matched! Video ID found: {youtube_match.group(1)}") # Log match success and ID
+                is_youtube = True
+            else:
+                logging.warning(f"Regex did NOT match for URL: {url}") # Log match failure
+            logging.info(f"Is YouTube URL determination complete. Result: {is_youtube}") # Log determination result
+
+        except Exception as e_regex:
+            logging.error(f"Error during regex search for URL '{url}': {e_regex}", exc_info=True)
+            # Treat regex error as non-YouTube, but add error reaction
+            is_youtube = False
+            try:
+                 await message.add_reaction(PROCESS_ERROR_EMOJI) # Indicate regex error
+            except discord.HTTPException: pass
+            return # Stop processing
 
         if is_youtube:
-            # YouTubeの場合は、ローカルワーカーが処理することを伝えるリアクションを付ける
-            logging.info(f"YouTube URL detected for {message.id}. Adding reaction '{YOUTUBE_REACTION_EMOJI}' for local worker.")
+            # YouTube: Add trigger reaction for local worker
+            logging.info(f"YouTube URL confirmed for {message.id}. Adding reaction '{YOUTUBE_REACTION_EMOJI}' for local worker.")
             try:
-                await message.add_reaction(PROCESS_START_EMOJI) # Show processing starts here
-                await message.add_reaction(YOUTUBE_REACTION_EMOJI) # Add trigger for local worker
-                # Remove hourglass immediately, local worker will add its own status emojis
+                # Add reactions sequentially and log each step
+                logging.info(f"Adding reaction '{PROCESS_START_EMOJI}'...")
+                await message.add_reaction(PROCESS_START_EMOJI)
+                logging.info(f"Adding reaction '{YOUTUBE_REACTION_EMOJI}'...")
+                await message.add_reaction(YOUTUBE_REACTION_EMOJI)
+                logging.info(f"Removing reaction '{PROCESS_START_EMOJI}'...")
                 await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
-                # Local worker is expected to handle YOUTUBE_REACTION_EMOJI
-                logging.info(f"Added '{YOUTUBE_REACTION_EMOJI}' reaction for local worker.") # Add log
+                logging.info(f"Added '{YOUTUBE_REACTION_EMOJI}' reaction successfully.")
             except discord.HTTPException as e:
-                logging.error(f"Failed to add YouTube reactions to message {message.id}: {e}")
-                try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user) # Clean up hourglass on error
+                logging.error(f"Failed to add/remove YouTube reactions to message {message.id}: {e}")
+                # Clean up potentially added hourglass on error
+                try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 except discord.HTTPException: pass
-                await message.add_reaction(PROCESS_ERROR_EMOJI) # Indicate failure
+                # Add error emoji if reaction management failed
+                try: await message.add_reaction(PROCESS_ERROR_EMOJI)
+                except discord.HTTPException: pass
+            except Exception as e_reaction: # Catch other potential errors during reaction handling
+                 logging.error(f"Unexpected error during YouTube reaction handling for message {message.id}: {e_reaction}", exc_info=True)
+                 try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+                 except discord.HTTPException: pass
+                 try: await message.add_reaction(PROCESS_ERROR_EMOJI)
+                 except discord.HTTPException: pass
 
         else:
-            # Webページの場合は、このCog内でクリップ処理を実行
+            # Web page: Perform web clip within this Cog
             if self.dbx:
-                logging.info(f"Calling internal _perform_web_clip for {url}")
+                logging.info(f"Not a YouTube video URL. Calling internal _perform_web_clip for {url}")
                 await self._perform_web_clip(url=url, message=message) # Call internal method
             else:
                 logging.error("Cannot perform web clip: Dropbox client is not initialized.")
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
+    # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
+
 
     # Use logic based on the user-provided webclip_cog.py's _perform_clip
     async def _perform_web_clip(self, url: str, message: discord.Message):
