@@ -26,18 +26,19 @@ except ImportError:
 # Use channel ID from env var
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", 0))
 
-# Reaction Emojis
-TITLE_LINK_EMOJI = '🇹' # T for Title
-CLIP_EMOJI = '📄' # Page for Clip (Web Page)
-SUMMARY_EMOJI = '🎬' # Clapper board for Summary (YouTube)
+# Reaction Emojis (Triggered by User)
+TITLE_LINK_EMOJI = '🇹'
+CLIP_EMOJI = '📄'
+SUMMARY_EMOJI = '🎬'
+# Bot Status Emojis
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
-PROCESS_START_EMOJI = '⏳' # 処理中を示す絵文字
-YOUTUBE_WORKER_TRIGGER_EMOJI = '▶️' # YouTubeローカルワーカー起動用
+PROCESS_START_EMOJI = '⏳'
+YOUTUBE_WORKER_TRIGGER_EMOJI = '▶️' # Added by bot for local worker
 
 # URL Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
-# YouTube Regex (ビデオIDを抽出できる形式のみ)
+# YouTube Regex (ビデオIDを抽出できる形式のみ - Title fetching でのみ使用)
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
 
 # Daily Note Section Header
@@ -46,12 +47,10 @@ WEBCLIPS_SECTION_HEADER = "## WebClips" # Webクリップ保存用
 
 # Cog Class
 class MemoCog(commands.Cog):
-    """Discordの#memoチャンネルを監視し、テキストメモまたはURL処理を行うCog"""
+    """Discordの#memoチャンネルを監視し、テキストメモ保存、またはユーザーリアクションに応じてURL処理を行うCog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # Store message IDs and their URLs
-        self.pending_url_messages = {} # {message_id: url}
         self.dbx = None # Initialize dbx client
         self._initialize_dropbox()
 
@@ -66,9 +65,9 @@ class MemoCog(commands.Cog):
                     oauth2_refresh_token=dbx_refresh,
                     app_key=dbx_key,
                     app_secret=dbx_secret,
-                    timeout=60 # 必要に応じてタイムアウトを調整
+                    timeout=60
                 )
-                self.dbx.users_get_current_account() # Test connection
+                self.dbx.users_get_current_account()
                 logging.info("MemoCog: Dropbox client initialized successfully.")
             except Exception as e:
                 logging.error(f"MemoCog: Failed to initialize Dropbox client: {e}")
@@ -76,13 +75,12 @@ class MemoCog(commands.Cog):
         else:
             logging.warning("MemoCog: Dropbox credentials missing. Saving title/link/clips to Obsidian will fail.")
             self.dbx = None
-        # Store vault path regardless of client initialization
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
 
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """#memo チャンネルに投稿されたメッセージを処理"""
+        """#memo チャンネルに投稿されたメッセージを処理 (URLの場合は何もしない、テキストのみ保存)"""
         if message.author.bot or message.channel.id != MEMO_CHANNEL_ID:
             return
 
@@ -93,20 +91,13 @@ class MemoCog(commands.Cog):
         # Check for URL
         url_match = URL_REGEX.search(content)
         if url_match:
-            # Found a URL, add all three reactions
-            url = url_match.group(0)
-            logging.info(f"URL detected in message {message.id}: {url}")
-            # Store only the URL, type check will happen on reaction
-            self.pending_url_messages[message.id] = url
-            try:
-                # Add all three reactions for user choice
-                await message.add_reaction(TITLE_LINK_EMOJI)
-                await message.add_reaction(CLIP_EMOJI)
-                await message.add_reaction(SUMMARY_EMOJI)
-            except discord.Forbidden:
-                logging.error(f"Missing permissions to add reactions in channel {message.channel.name}")
-            except discord.HTTPException as e:
-                logging.error(f"Failed to add reactions to message {message.id}: {e}")
+            # Found a URL. Bot does nothing, waits for user reaction.
+            logging.info(f"URL detected in message {message.id}. Waiting for user reaction (🇹, 📄, or 🎬).")
+            # Optionally add a neutral reaction like '👀' to indicate the bot saw the URL
+            # try:
+            #     await message.add_reaction("👀")
+            # except discord.HTTPException:
+            #     pass
         else:
             # Not a URL, treat as a regular memo
             logging.info(f"Text memo detected in message {message.id}. Saving via obsidian_handler.")
@@ -122,8 +113,7 @@ class MemoCog(commands.Cog):
                 await message.add_reaction("📝")
                 async def remove_temp_reaction(msg, emoji):
                     await asyncio.sleep(15)
-                    try:
-                        await msg.remove_reaction(emoji, self.bot.user)
+                    try: await msg.remove_reaction(emoji, self.bot.user)
                     except discord.HTTPException: pass
                 asyncio.create_task(remove_temp_reaction(message, "📝"))
 
@@ -134,21 +124,14 @@ class MemoCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """URLメッセージへのリアクションを処理"""
+        """ユーザーが付けたリアクションに応じてURLメッセージを処理"""
+        # Ignore bot reactions and reactions in other channels
         if payload.user_id == self.bot.user.id or payload.channel_id != MEMO_CHANNEL_ID:
-            return
-        if payload.message_id not in self.pending_url_messages:
             return
 
         emoji = str(payload.emoji)
-        # Check if the emoji is one of the three main triggers
+        # Check if the emoji is one of the triggers added by the USER
         if emoji not in [TITLE_LINK_EMOJI, CLIP_EMOJI, SUMMARY_EMOJI]:
-            return
-
-        # Get the URL and remove from pending list
-        url = self.pending_url_messages.pop(payload.message_id, None)
-        if not url:
-            logging.warning(f"Reaction {emoji} on message {payload.message_id} but URL info not found.")
             return
 
         channel = self.bot.get_channel(payload.channel_id)
@@ -159,59 +142,69 @@ class MemoCog(commands.Cog):
             logging.error(f"Failed to fetch message {payload.message_id} for reaction processing.")
             return
 
-        # Check if already processing
-        if any(r.emoji == PROCESS_START_EMOJI and r.me for r in message.reactions):
-            logging.warning(f"Message {message.id} is already being processed. Ignoring reaction {emoji}.")
+        # --- Check if the message content actually contains a URL ---
+        content = message.content.strip()
+        url_match = URL_REGEX.search(content)
+        if not url_match:
+            logging.warning(f"User reaction {emoji} added to message {message.id} which does not contain a URL.")
+            # Optionally remove the user reaction
+            try:
+                user = await self.bot.fetch_user(payload.user_id)
+                if user: await message.remove_reaction(payload.emoji, user)
+            except discord.HTTPException: pass
             return
+        url = url_match.group(0)
+        # --- End URL check ---
 
-        # Remove bot choice reactions
+        # --- Check if already processing by bot ---
+        if any(r.emoji == PROCESS_START_EMOJI and r.me for r in message.reactions):
+            logging.warning(f"Message {message.id} is already being processed. Ignoring user reaction {emoji}.")
+            # Optionally remove the user reaction
+            try:
+                user = await self.bot.fetch_user(payload.user_id)
+                if user: await message.remove_reaction(payload.emoji, user)
+            except discord.HTTPException: pass
+            return
+        # --- End check ---
+
+        # Remove the user's trigger reaction
         try:
-            # Clear all reactions added by the bot initially
-            await message.clear_reactions()
+            user = await self.bot.fetch_user(payload.user_id)
+            if user:
+                await message.remove_reaction(payload.emoji, user)
+                logging.info(f"Removed user reaction {emoji} from message {message.id}")
         except discord.HTTPException:
-            logging.warning(f"Failed to remove initial reactions from message {message.id}")
+            logging.warning(f"Failed to remove user reaction {emoji} from message {message.id}")
 
-        # --- Determine URL type HERE ---
-        youtube_match = YOUTUBE_URL_REGEX.search(url)
-        is_youtube_video = bool(youtube_match)
-        logging.info(f"URL type determined for {url}: Is YouTube Video = {is_youtube_video}")
-
-        # --- Process based on reaction and URL type ---
+        # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
+        # --- Process based ONLY on the user's reaction ---
+        logging.info(f"Processing user reaction {emoji} for URL: {url}")
         try:
             if emoji == TITLE_LINK_EMOJI:
-                logging.info(f"Processing '{TITLE_LINK_EMOJI}' reaction for message {message.id} (URL: {url})")
-                await self.save_title_and_link(message, url, is_youtube_video) # Pass type for efficiency
+                logging.info(f"Action: Save Title and Link")
+                # Need to determine type inside save_title_and_link for title fetching
+                await self.save_title_and_link(message, url) # Removed is_youtube flag
 
             elif emoji == CLIP_EMOJI:
-                logging.info(f"Processing '{CLIP_EMOJI}' reaction for message {message.id} (URL: {url})")
-                if is_youtube_video:
-                    logging.warning(f"User requested Web Clip for a YouTube URL ({url}). Sending info message.")
-                    await channel.send(f"{payload.member.mention} YouTube動画のクリップはできません。要約を作成する場合は `🎬` リアクションを使用してください。", delete_after=15)
-                    # Optionally re-add choice reactions if needed, or just stop
-                else:
-                    # Proceed with web clip
-                    await self._perform_web_clip(message, url)
+                logging.info(f"Action: Perform Web Clip (regardless of URL type)")
+                # Directly call web clip function
+                await self._perform_web_clip(message, url)
 
             elif emoji == SUMMARY_EMOJI:
-                logging.info(f"Processing '{SUMMARY_EMOJI}' reaction for message {message.id} (URL: {url})")
-                if is_youtube_video:
-                    # Signal local worker
-                    logging.info(f"Signaling local worker for YouTube summary: {url}")
-                    await self.signal_youtube_worker(message)
-                else:
-                    logging.warning(f"User requested YouTube Summary for a non-YouTube URL ({url}). Sending info message.")
-                    await channel.send(f"{payload.member.mention} Webページの要約はできません。ページ全体をクリップする場合は `📄` リアクションを使用してください。", delete_after=15)
-                    # Optionally re-add choice reactions if needed, or just stop
+                logging.info(f"Action: Signal YouTube Worker (regardless of URL type)")
+                # Directly signal the worker; worker should handle invalid URLs
+                await self.signal_youtube_worker(message)
 
         except Exception as e:
-             logging.error(f"[Reaction Processing Error] Error processing reaction {emoji} for message {message.id}: {e}", exc_info=True)
+             logging.error(f"[Reaction Processing Error] Error processing user reaction {emoji} for message {message.id}: {e}", exc_info=True)
              try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
              except discord.HTTPException: pass
              try: await message.add_reaction(PROCESS_ERROR_EMOJI)
              except discord.HTTPException: pass
+        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
 
-    async def save_title_and_link(self, message: discord.Message, url: str, is_youtube: bool):
+    async def save_title_and_link(self, message: discord.Message, url: str): # Removed is_youtube parameter
         """URLのタイトルを取得し、デイリーノートのMemoセクションにリンクとして保存する"""
         if not self.dbx:
             logging.error("Cannot save title/link: Dropbox client is not initialized.")
@@ -222,8 +215,12 @@ class MemoCog(commands.Cog):
         title = "Untitled"
 
         try:
+            # --- Determine URL type HERE for title fetching ---
+            youtube_match = YOUTUBE_URL_REGEX.search(url)
+            is_youtube = bool(youtube_match)
+            # --- End determination ---
+
             if is_youtube:
-                youtube_match = YOUTUBE_URL_REGEX.search(url)
                 video_id = youtube_match.group(1) if youtube_match else None
                 if video_id:
                     logging.info(f"Fetching title for YouTube video ID: {video_id}")
@@ -305,7 +302,6 @@ class MemoCog(commands.Cog):
             except discord.HTTPException: pass
 
 
-    # Renamed from trigger_clip_or_summary
     async def signal_youtube_worker(self, message: discord.Message):
         """Adds the trigger emoji for the local YouTube worker."""
         logging.info(f"Signaling local worker for YouTube summary: Message {message.id}")
@@ -328,7 +324,7 @@ class MemoCog(commands.Cog):
              except discord.HTTPException: pass
 
 
-    async def _perform_web_clip(self, message: discord.Message, url: str): # Moved message parameter first
+    async def _perform_web_clip(self, message: discord.Message, url: str):
         """Webクリップのコアロジック (旧 webclip_cog._perform_clip を async 化)"""
         if not self.dbx:
             logging.error("Cannot perform web clip: Dropbox client is not initialized.")
@@ -414,8 +410,7 @@ class MemoCog(commands.Cog):
 
             if not upload_successful:
                 logging.error(f"Failed to upload web clip file after 3 attempts due to conflicts or errors: {url}")
-                # Don't add error reaction here, let the main except block handle it
-                raise Exception("Failed to upload web clip file after retries.") # Raise exception to trigger main error handling
+                raise Exception("Failed to upload web clip file after retries.")
 
 
             # Update Daily Note (Only if upload was successful)
