@@ -1,3 +1,5 @@
+# cogs/memo_cog.py (修正版全文)
+
 import os
 import discord
 from discord.ext import commands
@@ -194,7 +196,7 @@ class MemoCog(commands.Cog):
                 await self.trigger_clip_or_summary(message, url)
 
         except Exception as e:
-             logging.error(f"Error processing reaction {emoji} for message {message.id}: {e}", exc_info=True)
+             logging.error(f"[Reaction Processing Error] Error processing reaction {emoji} for message {message.id}: {e}", exc_info=True) # Added prefix
              try:
                  # Ensure hourglass is removed on error before adding error emoji
                  await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
@@ -221,6 +223,7 @@ class MemoCog(commands.Cog):
             if youtube_match:
                 is_youtube = True
                 video_id = youtube_match.group(1)
+                logging.info(f"Fetching title for YouTube video ID: {video_id}") # Add log
                 try:
                     # Fetch title using aiohttp
                     async with aiohttp.ClientSession() as session:
@@ -229,6 +232,7 @@ class MemoCog(commands.Cog):
                              if response.status == 200:
                                  data = await response.json()
                                  title = data.get("title", f"YouTube_{video_id}")
+                                 logging.info(f"YouTube title fetched: {title}") # Add log
                              else:
                                  logging.warning(f"oEmbed failed for {video_id}: Status {response.status}")
                                  title = f"YouTube_{video_id}"
@@ -236,10 +240,11 @@ class MemoCog(commands.Cog):
                     logging.error("Timeout fetching YouTube title via oEmbed.")
                     title = f"YouTube_{video_id}"
                 except Exception as e_yt_title:
-                     logging.error(f"Error fetching YouTube title via oEmbed: {e_yt_title}")
+                     logging.error(f"Error fetching YouTube title via oEmbed: {e_yt_title}", exc_info=True) # Log traceback
                      title = f"YouTube_{video_id}"
             else:
                 # General Web URL - Use web_parser
+                logging.info(f"Fetching title for web URL: {url}") # Add log
                 # Run potentially blocking parse_url_with_readability in an executor
                 loop = asyncio.get_running_loop()
                 fetched_title, _ = await loop.run_in_executor(
@@ -247,8 +252,10 @@ class MemoCog(commands.Cog):
                 )
                 if fetched_title and fetched_title != "No Title Found":
                     title = fetched_title
+                    logging.info(f"Web title fetched: {title}") # Add log
                 else:
                     # Fallback if readability fails or returns "No Title Found"
+                    logging.warning(f"Failed to fetch title using readability for {url}. Using URL as title.") # Add log
                     title = url # Use full URL as fallback title for web links
 
             # Format the link for Obsidian Daily Note
@@ -258,6 +265,7 @@ class MemoCog(commands.Cog):
 
             # Format similar to regular memo, but with link
             link_text = f"- {time_str} [{title}]({url})"
+            logging.debug(f"Formatted link text: {link_text}") # Add log
 
             # Get Daily Note path
             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
@@ -265,20 +273,25 @@ class MemoCog(commands.Cog):
 
             # Download or create Daily Note content (using to_thread)
             try:
+                logging.info(f"Downloading daily note: {daily_note_path}") # Add log
                 # Use asyncio.to_thread for potentially blocking Dropbox calls
                 _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 current_content = res.content.decode('utf-8')
+                logging.info(f"Daily note downloaded successfully.") # Add log
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     current_content = f"# {date_str}\n" # Create new
                     logging.info(f"Creating new daily note: {daily_note_path}")
                 else:
+                    logging.error(f"Dropbox download error: {e}", exc_info=True) # Log traceback
                     raise # Re-raise other API errors
 
             # Update the ## Memo section
+            logging.info(f"Updating section '{MEMO_SECTION_HEADER}' in daily note.") # Add log
             new_content = update_section(current_content, link_text, MEMO_SECTION_HEADER)
 
             # Upload the updated note (using to_thread)
+            logging.info(f"Uploading updated daily note: {daily_note_path}") # Add log
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 new_content.encode('utf-8'),
@@ -290,7 +303,7 @@ class MemoCog(commands.Cog):
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
 
         except Exception as e:
-            logging.error(f"Failed to save title/link for {url}: {e}", exc_info=True)
+            logging.error(f"[Save Title/Link Error] Failed to save title/link for {url}: {e}", exc_info=True) # Log traceback and add prefix
             try:
                 await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
             except discord.HTTPException: pass
@@ -301,8 +314,13 @@ class MemoCog(commands.Cog):
 
     async def trigger_clip_or_summary(self, message: discord.Message, url: str):
         """URLの種類に応じてWebクリップ処理を実行するか、YouTubeの場合はローカル処理を促す"""
+        # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
+        # Add logging to see the URL being checked
+        logging.info(f"Checking URL type for clip/summary: {url}")
         youtube_match = YOUTUBE_URL_REGEX.search(url)
         is_youtube = bool(youtube_match)
+        logging.info(f"Is YouTube URL? {is_youtube}") # Log the result of the check
+        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
         if is_youtube:
             # YouTubeの場合は、ローカルワーカーが処理することを伝えるリアクションを付ける
@@ -313,6 +331,7 @@ class MemoCog(commands.Cog):
                 # Remove hourglass immediately, local worker will add its own status emojis
                 await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 # Local worker is expected to handle YOUTUBE_REACTION_EMOJI
+                logging.info(f"Added '{YOUTUBE_REACTION_EMOJI}' reaction for local worker.") # Add log
             except discord.HTTPException as e:
                 logging.error(f"Failed to add YouTube reactions to message {message.id}: {e}")
                 try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user) # Clean up hourglass on error
@@ -346,11 +365,13 @@ class MemoCog(commands.Cog):
         content_md = '(Content could not be extracted)'
 
         try:
+            logging.info(f"Starting web clip process for {url}") # Add log
             loop = asyncio.get_running_loop()
             # Run blocking parsing in executor
             title_result, content_md_result = await loop.run_in_executor(
                 None, parse_url_with_readability, url
             )
+            logging.info(f"Readability finished for {url}. Title: '{title_result}', Content length: {len(content_md_result) if content_md_result else 0}") # Add log
 
             # Use original title if available, otherwise fallback
             title = title_result if title_result and title_result != "No Title Found" else url
@@ -363,7 +384,8 @@ class MemoCog(commands.Cog):
             if not safe_title:
                 safe_title = "Untitled"
             # Limit filename length (optional, add if needed)
-            # safe_title = safe_title[:100]
+            safe_title = safe_title[:100] # Limit to 100 chars
+            logging.debug(f"Sanitized title for filename: {safe_title}") # Add log
 
             now = datetime.now(JST)
             timestamp = now.strftime('%Y%m%d%H%M%S')
@@ -383,6 +405,7 @@ class MemoCog(commands.Cog):
 
             # Upload WebClip file to Dropbox (using to_thread)
             webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
+            logging.info(f"Uploading web clip file to Dropbox: {webclip_file_path}") # Add log
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 webclip_note_content.encode('utf-8'),
@@ -396,24 +419,29 @@ class MemoCog(commands.Cog):
             daily_note_content = ""
             try:
                 # Download daily note (using to_thread)
+                logging.info(f"Downloading daily note for update: {daily_note_path}") # Add log
                 _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 daily_note_content = res.content.decode('utf-8')
+                logging.info(f"Daily note downloaded successfully.") # Add log
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     logging.info(f"デイリーノート {daily_note_path} は存在しないため、新規作成します。")
                     # Create basic content if note doesn't exist
                     daily_note_content = f"# {daily_note_date}\n"
                 else:
+                    logging.error(f"Dropbox download error: {e}", exc_info=True) # Log traceback
                     raise # Re-raise other API errors
 
             # Create link using the format from original webclip_cog.py
-            link_to_add = f"- [[WebClips/{webclip_file_name_for_link}]]"
+            link_to_add = f"- [[WebClips/{webclip_file_name_for_link}|{title}]]" # Use title in link display
+            logging.info(f"Adding link to daily note: {link_to_add}") # Add log
 
             new_daily_content = update_section(
                 daily_note_content, link_to_add, WEBCLIPS_SECTION_HEADER
             )
 
             # Upload updated daily note (using to_thread)
+            logging.info(f"Uploading updated daily note: {daily_note_path}") # Add log
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 new_daily_content.encode('utf-8'),
@@ -424,9 +452,10 @@ class MemoCog(commands.Cog):
 
             # Add success reaction
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
+            logging.info(f"Web clip process completed successfully for {url}") # Add log
 
         except Exception as e:
-            logging.error(f"Webクリップ処理中にエラー ({url}): {e}", exc_info=True)
+            logging.error(f"[Web Clip Error] Webクリップ処理中にエラー ({url}): {e}", exc_info=True) # Log traceback and add prefix
             try:
                 # Add error reaction
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
