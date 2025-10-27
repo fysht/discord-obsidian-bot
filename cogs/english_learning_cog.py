@@ -376,22 +376,42 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         session_path = self._get_session_path(user_id)
         session = await self._load_session_from_dropbox(user_id)
 
-        system_instruction = "あなたはフレンドリーな英会話の相手です。ユーザーのメッセージに共感したり、質問を返したりして、会話を弾ませてください。もしユーザーの英語に文法的な誤りや不自然な点があれば、会話の流れを止めないように優しく指摘し、正しい表現を提案してください。例：「`I go to the park yesterday.` → `Oh, you went to the park yesterday! What did you do there?`」のように、自然な訂正を会話に含めてください。あなたの返答は、常に自然な英語で行ってください。"
+        # >>>>>>>>>>>>>>>>>> MODIFICATION START (System Instruction Update) <<<<<<<<<<<<<<<<<<
+        # Define system instruction for the AI model - make it lighter and shorter
+        system_instruction = """
+        あなたはフレンドリーな英会話パートナーです。気軽なチャット相手として、ユーザーと短いメッセージで会話のキャッチボールをしてください。
+
+        # あなたの役割
+        1.  **短い応答:** 1〜2文程度の短い返答や質問を心がけてください。長文の解説は不要です。
+        2.  **会話の継続:** ユーザーの発言に共感したり、簡単な質問を返したりして、会話が続くようにしてください。例: "Oh really?", "That sounds interesting!", "What happened next?", "How was it?"
+        3.  **自然な訂正:** もしユーザーの英語に明らかな誤りや不自然な点があれば、会話の流れの中でさりげなく修正してください。例: User: "I go park yesterday." -> AI: "Oh, you went to the park yesterday! Cool. Did you have fun?"
+        4.  **常に英語:** あなたの返答は常に自然な英語で行ってください。
+        """
         model_with_instruction = genai.GenerativeModel("gemini-2.5-pro", system_instruction=system_instruction)
+        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
         chat_session = None
         response_text = ""
 
         try:
+            # Resume session if history exists
             if session is not None:
                 logging.info(f"セッション再開: {session_path}")
                 chat_session = model_with_instruction.start_chat(history=session)
-                response = await asyncio.wait_for(chat_session.send_message_async("Welcome back! Let's continue our English conversation. How have you been?"), timeout=60)
-                response_text = response.text if response and hasattr(response, "text") else "Hi again! Let's chat."
+                # Send a light resume message
+                # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
+                resume_prompt = "Hey there! Let's pick up where we left off. What's up?"
+                # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
+                response = await asyncio.wait_for(chat_session.send_message_async(resume_prompt), timeout=60)
+                response_text = response.text if response and hasattr(response, "text") else "Hi again! What's new?"
+            # Start new session if no history
             else:
                 logging.info(f"新規セッション開始: {session_path}")
                 chat_session = model_with_instruction.start_chat(history=[])
-                initial_prompt = "Hi! I'm your AI English partner. Let's chat! How's it going?"
+                # Send a light initial greeting
+                # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
+                initial_prompt = "Hey! Ready to chat in English? How's your day going?"
+                # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
                 response = await asyncio.wait_for(chat_session.send_message_async(initial_prompt), timeout=60)
                 response_text = response.text if response and hasattr(response, "text") else "Hi! Let's chat."
 
@@ -478,7 +498,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         conversation_log = "\n".join(log_parts)
         if not conversation_log: return "今回のセッションでは、レビューを作成するのに十分な対話がありませんでした。"
 
-        # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
         prompt = f"""あなたはプロの英語教師です。以下の生徒との英会話ログを分析し、学習内容をまとめたレビューを作成してください。
 # 指示
 1.  **会話の簡単な要約**: どのようなトピックについて話したか、1〜2文で簡潔にまとめてください。
@@ -488,7 +507,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 # 会話ログ
 {conversation_log}
 """
-        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
         try:
             response = await self.gemini_model.generate_content_async(prompt)
             if response and hasattr(response, 'text') and response.text:
@@ -617,9 +635,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 
         review_text = "レビューの生成に失敗しました。"
         history_to_save = []
-        # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
         important_sentences = [] # Renamed variable
-        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
         if hasattr(chat_session, 'history'):
             history_to_save = chat_session.history
@@ -628,11 +644,8 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 review_text = await self._generate_chat_review(history_to_save)
                 logging.info(f"Review generated for user {user_id}.")
 
-                # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
-                # Extract example sentences for TTS using the helper function
-                # Use the heading specified in the prompt: "重要例文"
+                # Extract example sentences for TTS
                 important_sentences = extract_phrases_from_markdown_list(review_text, "重要例文")
-                # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
                 if google_docs_enabled:
                     try:
@@ -662,11 +675,8 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             timestamp=datetime.now(JST)
         ).set_footer(text=f"{interaction.user.display_name}'s session")
 
-        # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
-        # Create TTS View only if sentences exist and OpenAI client is available
         # Pass important_sentences to TTSView
         view = TTSView(important_sentences, self.openai_client) if important_sentences and self.openai_client else None
-        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
         try:
             if view:
@@ -778,7 +788,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         await message.add_reaction("🤔")
         japanese_question = original_msg.embeds[0].description.strip().replace("*","")
 
-        # Use the existing prompt for Sakubun feedback, as it already asks for important phrases
         prompt = f"""あなたはプロの英語教師です。以下の日本語の原文に対する学習者の英訳を添削し、フィードバックを提供してください。
 # 指示
 1.  **評価**: 学習者の英訳が良い点、改善できる点を具体的に評価してください。
@@ -801,7 +810,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 
             feedback_embed = discord.Embed(title=f"添削結果: 「{japanese_question}」", description=feedback_text[:4000], color=discord.Color.green())
 
-            # Extract phrases for TTS (Sakubun feedback keeps phrases, not sentences for now)
             important_phrases = extract_phrases_from_markdown_list(feedback_text, "重要フレーズ")
 
             if important_phrases and self.openai_client:
