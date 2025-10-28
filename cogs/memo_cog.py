@@ -9,78 +9,61 @@ from dropbox.exceptions import ApiError
 from datetime import datetime, timezone, timedelta
 import json
 import re
-import aiohttp # YouTubeタイトル取得用にインポート
-from obsidian_handler import add_memo_async
-from utils.obsidian_utils import update_section
-from web_parser import parse_url_with_readability # web_parserをインポート
+import aiohttp # URLチェック用に保持
 
-# --- Constants ---
+# --- 共通処理インポート ---
+from obsidian_handler import add_memo_async
+# utils.obsidian_utils はこのファイルでは直接使わないため削除 (必要なら戻す)
+# web_parser はこのファイルでは直接使わないため削除
+
+# --- 定数定義 ---
 try:
     import zoneinfo
     JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 except ImportError:
-    # Python 3.8以前またはzoneinfo未インストールの場合のフォールバック
     JST = timezone(timedelta(hours=+9), "JST")
 
-
-# Use channel ID from env var
+# --- チャンネルID ---
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", 0))
+WEB_CLIP_FORWARD_CHANNEL_ID = int(os.getenv("WEB_CLIP_FORWARD_CHANNEL_ID", 0))
+YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID", 0))
 
-# Reaction Emojis (Triggered by User)
-TITLE_LINK_EMOJI = '🇹'
-CLIP_EMOJI = '📄'
-SUMMARY_EMOJI = '🎬'
-# Bot Status Emojis
-PROCESS_COMPLETE_EMOJI = '✅'
+# --- リアクション絵文字 ---
+# ユーザーが付けるリアクション (転送トリガー)
+WEB_CLIP_USER_REACTION = '📄'
+YOUTUBE_SUMMARY_USER_REACTION = '🎬'
+# Botが転送先で付けるリアクション (処理開始トリガー)
+BOT_PROCESS_TRIGGER_REACTION = '📥'
+# 処理ステータス用
+PROCESS_FORWARDING_EMOJI = '➡️'
+PROCESS_COMPLETE_EMOJI = '✅' # テキストメモ保存完了用
 PROCESS_ERROR_EMOJI = '❌'
-PROCESS_START_EMOJI = '⏳'
-YOUTUBE_WORKER_TRIGGER_EMOJI = '▶️' # Added by bot for local worker
 
 # URL Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
-# YouTube Regex (ビデオIDを抽出できる形式のみ - Title fetching でのみ使用)
-YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
-
-# Daily Note Section Header
-MEMO_SECTION_HEADER = "## Memo"
-WEBCLIPS_SECTION_HEADER = "## WebClips" # Webクリップ保存用
 
 # Cog Class
 class MemoCog(commands.Cog):
-    """Discordの#memoチャンネルを監視し、テキストメモ保存、またはユーザーリアクションに応じてURL処理を行うCog"""
+    """
+    Discordの#memoチャンネルを監視し、テキストメモ保存、
+    またはユーザーリアクションに応じてURLを指定チャンネルに転送するCog
+    """
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.dbx = None # Initialize dbx client
-        self._initialize_dropbox()
+        # Dropboxクライアントはテキストメモ保存時には不要なため削除 (必要なら戻す)
+        # self.dbx = None
+        # self._initialize_dropbox()
+        logging.info("MemoCog: Initialized.") # 初期化ログ
 
-    def _initialize_dropbox(self):
-        """Initialize Dropbox client from environment variables."""
-        dbx_refresh = os.getenv("DROPBOX_REFRESH_TOKEN")
-        dbx_key = os.getenv("DROPBOX_APP_KEY")
-        dbx_secret = os.getenv("DROPBOX_APP_SECRET")
-        if all([dbx_refresh, dbx_key, dbx_secret]):
-            try:
-                self.dbx = dropbox.Dropbox(
-                    oauth2_refresh_token=dbx_refresh,
-                    app_key=dbx_key,
-                    app_secret=dbx_secret,
-                    timeout=60
-                )
-                self.dbx.users_get_current_account()
-                logging.info("MemoCog: Dropbox client initialized successfully.")
-            except Exception as e:
-                logging.error(f"MemoCog: Failed to initialize Dropbox client: {e}")
-                self.dbx = None
-        else:
-            logging.warning("MemoCog: Dropbox credentials missing. Saving title/link/clips to Obsidian will fail.")
-            self.dbx = None
-        self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-
+    # Dropbox初期化は不要なためコメントアウト (必要なら戻す)
+    # def _initialize_dropbox(self):
+    #     """Initialize Dropbox client from environment variables."""
+    #     # ... (以前のコード) ...
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """#memo チャンネルに投稿されたメッセージを処理 (URLの場合は何もしない、テキストのみ保存)"""
+        """#memo チャンネルに投稿されたメッセージを処理 (テキストのみ保存、URLは無視)"""
         if message.author.bot or message.channel.id != MEMO_CHANNEL_ID:
             return
 
@@ -88,380 +71,170 @@ class MemoCog(commands.Cog):
         if not content:
             return
 
-        # Check for URL
+        # URLが含まれているかチェック
         url_match = URL_REGEX.search(content)
         if url_match:
-            # Found a URL. Bot does nothing, waits for user reaction.
-            logging.info(f"URL detected in message {message.id}. Waiting for user reaction (🇹, 📄, or 🎬).")
-            # Optionally add a neutral reaction like '👀' to indicate the bot saw the URL
-            # try:
-            #     await message.add_reaction("👀")
-            # except discord.HTTPException:
-            #     pass
+            # URLが含まれる場合は何もしない (リアクション待ち)
+            logging.info(f"URL detected in message {message.id} in #memo. Waiting for user reaction ({WEB_CLIP_USER_REACTION} or {YOUTUBE_SUMMARY_USER_REACTION}).")
         else:
-            # Not a URL, treat as a regular memo
+            # URLが含まれない場合はテキストメモとして保存
             logging.info(f"Text memo detected in message {message.id}. Saving via obsidian_handler.")
             try:
+                # obsidian_handler を使って非同期で保存
+                # add_memo_async に渡す引数を調整 (category, context を追加)
                 await add_memo_async(
                     content=content,
                     author=str(message.author),
-                    created_at=message.created_at.isoformat(),
+                    created_at=message.created_at.isoformat(), # UTCのISOフォーマット
                     message_id=message.id,
-                    context="General",
-                    category="Memo"
+                    context="Discord Memo Channel", # コンテキスト情報を追加
+                    category="Memo" # カテゴリ情報を追加
                 )
-                await message.add_reaction("📝")
-                async def remove_temp_reaction(msg, emoji):
-                    await asyncio.sleep(15)
-                    try: await msg.remove_reaction(emoji, self.bot.user)
-                    except discord.HTTPException: pass
-                asyncio.create_task(remove_temp_reaction(message, "📝"))
-
+                await message.add_reaction(PROCESS_COMPLETE_EMOJI) # 保存成功のリアクション
+                # 一定時間後にリアクションを消す (任意)
+                # asyncio.create_task(self.remove_reaction_after_delay(message, PROCESS_COMPLETE_EMOJI))
             except Exception as e:
-                logging.error(f"Failed to save text memo using add_memo_async: {e}", exc_info=True)
+                logging.error(f"Failed to save text memo (ID: {message.id}) using add_memo_async: {e}", exc_info=True)
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
 
+    # リアクション削除用のヘルパー関数 (任意)
+    # async def remove_reaction_after_delay(self, message: discord.Message, emoji: str, delay: int = 15):
+    #     await asyncio.sleep(delay)
+    #     try:
+    #         await message.remove_reaction(emoji, self.bot.user)
+    #     except discord.HTTPException:
+    #         pass
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """ユーザーが付けたリアクションに応じてURLメッセージを処理"""
-        # Ignore bot reactions and reactions in other channels
+        """ユーザーが付けたリアクションに応じてURLメッセージを転送"""
+        # Bot自身のリアクション、対象外チャンネルは無視
         if payload.user_id == self.bot.user.id or payload.channel_id != MEMO_CHANNEL_ID:
             return
 
         emoji = str(payload.emoji)
-        # Check if the emoji is one of the triggers added by the USER
-        if emoji not in [TITLE_LINK_EMOJI, CLIP_EMOJI, SUMMARY_EMOJI]:
+        target_channel_id = 0
+        forward_type = ""
+
+        # ユーザーが付けたリアクションに応じて転送先を決定
+        if emoji == WEB_CLIP_USER_REACTION:
+            target_channel_id = WEB_CLIP_FORWARD_CHANNEL_ID
+            forward_type = "WebClip"
+        elif emoji == YOUTUBE_SUMMARY_USER_REACTION:
+            target_channel_id = YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID
+            forward_type = "YouTube Summary"
+        else:
+            # 対象のリアクションでなければ何もしない
             return
 
+        if target_channel_id == 0:
+            logging.warning(f"{forward_type} の転送先チャンネルID (env: {forward_type.upper().replace(' ', '_')}_FORWARD_CHANNEL_ID) が設定されていません。")
+            # ユーザーに通知するかどうか (任意)
+            # channel = self.bot.get_channel(payload.channel_id)
+            # if channel: await channel.send(f"エラー: {forward_type} の転送先が設定されていません。", delete_after=10)
+            return
+
+        # 元のメッセージを取得
         channel = self.bot.get_channel(payload.channel_id)
         if not channel: return
         try:
             message = await channel.fetch_message(payload.message_id)
         except (discord.NotFound, discord.Forbidden):
-            logging.error(f"Failed to fetch message {payload.message_id} for reaction processing.")
+            logging.error(f"元のメッセージ {payload.message_id} の取得に失敗しました。")
             return
 
-        # --- Check if the message content actually contains a URL ---
+        # メッセージ内容がURLか確認
         content = message.content.strip()
         url_match = URL_REGEX.search(content)
         if not url_match:
-            logging.warning(f"User reaction {emoji} added to message {message.id} which does not contain a URL.")
-            # Optionally remove the user reaction
+            logging.warning(f"リアクション {emoji} がURLを含まないメッセージ {message.id} に追加されました。処理をスキップします。")
+            # ユーザーリアクションを削除 (任意)
             try:
                 user = await self.bot.fetch_user(payload.user_id)
                 if user: await message.remove_reaction(payload.emoji, user)
             except discord.HTTPException: pass
             return
-        url = url_match.group(0)
-        # --- End URL check ---
+        # URL全体を転送内容とする
+        url_to_forward = content
 
-        # --- Check if already processing by bot ---
-        if any(r.emoji == PROCESS_START_EMOJI and r.me for r in message.reactions):
-            logging.warning(f"Message {message.id} is already being processed. Ignoring user reaction {emoji}.")
-            # Optionally remove the user reaction
+        # 既に転送処理中か確認
+        if any(r.emoji == PROCESS_FORWARDING_EMOJI and r.me for r in message.reactions):
+            logging.warning(f"メッセージ {message.id} は既に転送処理中です。リアクション {emoji} を無視します。")
+            # ユーザーリアクションを削除 (任意)
             try:
                 user = await self.bot.fetch_user(payload.user_id)
                 if user: await message.remove_reaction(payload.emoji, user)
             except discord.HTTPException: pass
             return
-        # --- End check ---
 
-        # Remove the user's trigger reaction
+        # ユーザーリアクションを削除
         try:
             user = await self.bot.fetch_user(payload.user_id)
             if user:
                 await message.remove_reaction(payload.emoji, user)
-                logging.info(f"Removed user reaction {emoji} from message {message.id}")
+                logging.info(f"ユーザーリアクション {emoji} をメッセージ {message.id} から削除しました。")
         except discord.HTTPException:
-            logging.warning(f"Failed to remove user reaction {emoji} from message {message.id}")
+            logging.warning(f"ユーザーリアクション {emoji} の削除に失敗: {message.id}")
 
-        # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
-        # --- Process based ONLY on the user's reaction ---
-        logging.info(f"Processing user reaction {emoji} for URL: {url}")
+        # 転送中リアクションを追加
         try:
-            if emoji == TITLE_LINK_EMOJI:
-                logging.info(f"Action: Save Title and Link")
-                # Need to determine type inside save_title_and_link for title fetching
-                await self.save_title_and_link(message, url) # Removed is_youtube flag
+            await message.add_reaction(PROCESS_FORWARDING_EMOJI)
+        except discord.HTTPException: pass
 
-            elif emoji == CLIP_EMOJI:
-                logging.info(f"Action: Perform Web Clip (regardless of URL type)")
-                # Directly call web clip function
-                await self._perform_web_clip(message, url)
-
-            elif emoji == SUMMARY_EMOJI:
-                logging.info(f"Action: Signal YouTube Worker (regardless of URL type)")
-                # Directly signal the worker; worker should handle invalid URLs
-                await self.signal_youtube_worker(message)
-
-        except Exception as e:
-             logging.error(f"[Reaction Processing Error] Error processing user reaction {emoji} for message {message.id}: {e}", exc_info=True)
-             try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
-             except discord.HTTPException: pass
-             try: await message.add_reaction(PROCESS_ERROR_EMOJI)
-             except discord.HTTPException: pass
-        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
-
-
-    async def save_title_and_link(self, message: discord.Message, url: str): # Removed is_youtube parameter
-        """URLのタイトルを取得し、デイリーノートのMemoセクションにリンクとして保存する"""
-        if not self.dbx:
-            logging.error("Cannot save title/link: Dropbox client is not initialized.")
-            await message.add_reaction(PROCESS_ERROR_EMOJI)
-            return
-
-        await message.add_reaction(PROCESS_START_EMOJI)
-        title = "Untitled"
-
-        try:
-            # --- Determine URL type HERE for title fetching ---
-            youtube_match = YOUTUBE_URL_REGEX.search(url)
-            is_youtube = bool(youtube_match)
-            # --- End determination ---
-
-            if is_youtube:
-                video_id = youtube_match.group(1) if youtube_match else None
-                if video_id:
-                    logging.info(f"Fetching title for YouTube video ID: {video_id}")
-                    try:
-                        async with aiohttp.ClientSession() as session:
-                             oembed_url = f"https://www.youtube.com/oembed?url=http://www.youtube.com/watch?v={video_id}&format=json"
-                             async with session.get(oembed_url, timeout=10) as response:
-                                 if response.status == 200:
-                                     data = await response.json()
-                                     title = data.get("title", f"YouTube_{video_id}")
-                                     logging.info(f"YouTube title fetched: {title}")
-                                 else:
-                                     logging.warning(f"oEmbed failed for {video_id}: Status {response.status}")
-                                     title = f"YouTube_{video_id}"
-                    except asyncio.TimeoutError:
-                        logging.error("Timeout fetching YouTube title via oEmbed.")
-                        title = f"YouTube_{video_id}"
-                    except Exception as e_yt_title:
-                         logging.error(f"Error fetching YouTube title via oEmbed: {e_yt_title}", exc_info=True)
-                         title = f"YouTube_{video_id}"
-                else:
-                    logging.warning(f"Could not extract video ID from YouTube URL: {url}")
-                    title = "YouTube Video (Unknown ID)"
-            else:
-                logging.info(f"Fetching title for web URL: {url}")
-                loop = asyncio.get_running_loop()
-                fetched_title, _ = await loop.run_in_executor(
-                    None, parse_url_with_readability, url
-                )
-                if fetched_title and fetched_title != "No Title Found":
-                    title = fetched_title
-                    logging.info(f"Web title fetched: {title}")
-                else:
-                    logging.warning(f"Failed to fetch title using readability for {url}. Using URL as title.")
-                    title = url
-
-            now = datetime.now(JST)
-            date_str = now.strftime('%Y-%m-%d')
-            time_str = now.strftime('%H:%M')
-
-            link_text = f"- {time_str} [{title}]({url})"
-            logging.debug(f"Formatted link text: {link_text}")
-
-            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-            current_content = ""
-
-            try:
-                logging.info(f"Downloading daily note: {daily_note_path}")
-                _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
-                current_content = res.content.decode('utf-8')
-                logging.info(f"Daily note downloaded successfully.")
-            except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    current_content = f"# {date_str}\n"
-                    logging.info(f"Creating new daily note: {daily_note_path}")
-                else:
-                    logging.error(f"Dropbox download error: {e}", exc_info=True)
-                    raise
-
-            logging.info(f"Updating section '{MEMO_SECTION_HEADER}' in daily note.")
-            new_content = update_section(current_content, link_text, MEMO_SECTION_HEADER)
-
-            logging.info(f"Uploading updated daily note: {daily_note_path}")
-            await asyncio.to_thread(
-                self.dbx.files_upload,
-                new_content.encode('utf-8'),
-                daily_note_path,
-                mode=WriteMode('overwrite')
-            )
-            logging.info(f"Link saved to Obsidian Daily Note ({MEMO_SECTION_HEADER}): {daily_note_path}")
-            await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
-            await message.add_reaction(PROCESS_COMPLETE_EMOJI)
-
-        except Exception as e:
-            logging.error(f"[Save Title/Link Error] Failed to save title/link for {url}: {e}", exc_info=True)
-            try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+        # 転送先チャンネルを取得
+        forward_channel = self.bot.get_channel(target_channel_id)
+        if not forward_channel:
+            logging.error(f"転送先チャンネル ID:{target_channel_id} が見つかりません。")
+            try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
             except discord.HTTPException: pass
             try: await message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
+            return
 
-
-    async def signal_youtube_worker(self, message: discord.Message):
-        """Adds the trigger emoji for the local YouTube worker."""
-        logging.info(f"Signaling local worker for YouTube summary: Message {message.id}")
         try:
-            await message.add_reaction(PROCESS_START_EMOJI)
-            await message.add_reaction(YOUTUBE_WORKER_TRIGGER_EMOJI)
-            await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
-            logging.info(f"Added '{YOUTUBE_WORKER_TRIGGER_EMOJI}' reaction successfully.")
+            # --- メッセージ内容を転送先チャンネルに投稿 ---
+            # embedなどを使わず、URLテキストのみを送信
+            forwarded_message = await forward_channel.send(url_to_forward)
+            logging.info(f"{forward_type} 用にメッセージ {message.id} をチャンネル '{forward_channel.name}' に転送しました (New ID: {forwarded_message.id})。")
+
+            # --- 新しく投稿したメッセージに処理開始トリガーリアクションを追加 ---
+            await forwarded_message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
+            logging.info(f"転送先メッセージ {forwarded_message.id} にトリガーリアクション {BOT_PROCESS_TRIGGER_REACTION} を追加しました。")
+
+            # 元のメッセージの転送中リアクションを削除
+            try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
+            except discord.HTTPException: pass
+            # 元のメッセージに転送完了を示すリアクションを追加 (任意)
+            # await message.add_reaction('👍') # 例えばサムズアップ
+
+        except discord.Forbidden:
+            logging.error(f"チャンネル '{forward_channel.name}' (ID:{target_channel_id}) への投稿権限がありません。")
+            try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
+            except discord.HTTPException: pass
+            try: await message.add_reaction(PROCESS_ERROR_EMOJI)
+            except discord.HTTPException: pass
         except discord.HTTPException as e:
-            logging.error(f"Failed to add/remove YouTube worker trigger reactions to message {message.id}: {e}")
-            try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+            logging.error(f"メッセージの転送またはリアクション追加中にHTTPエラーが発生: {e}")
+            try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
             except discord.HTTPException: pass
             try: await message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
-        except Exception as e_reaction:
-             logging.error(f"Unexpected error during YouTube worker signaling for message {message.id}: {e_reaction}", exc_info=True)
-             try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
-             except discord.HTTPException: pass
-             try: await message.add_reaction(PROCESS_ERROR_EMOJI)
-             except discord.HTTPException: pass
-
-
-    async def _perform_web_clip(self, message: discord.Message, url: str):
-        """Webクリップのコアロジック (旧 webclip_cog._perform_clip を async 化)"""
-        if not self.dbx:
-            logging.error("Cannot perform web clip: Dropbox client is not initialized.")
-            await message.add_reaction(PROCESS_ERROR_EMOJI)
-            return
-
-        if any(r.emoji in (PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI) and r.me for r in message.reactions):
-            logging.warning(f"Web clip for {url} already processed or failed. Skipping.")
-            return
-
-        await message.add_reaction(PROCESS_START_EMOJI)
-        title = "Untitled"
-        content_md = '(Content could not be extracted)'
-        webclip_file_name = ""
-        webclip_file_path = ""
-        safe_title = ""
-
-
-        try:
-            logging.info(f"Starting web clip process for {url}")
-            loop = asyncio.get_running_loop()
-            title_result, content_md_result = await loop.run_in_executor(
-                None, parse_url_with_readability, url
-            )
-            logging.info(f"Readability finished for {url}. Title: '{title_result}', Content length: {len(content_md_result) if content_md_result else 0}")
-
-            title = title_result if title_result and title_result != "No Title Found" else url
-            content_md = content_md_result or content_md
-
-            safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
-            if not safe_title:
-                safe_title = "Untitled"
-            safe_title = safe_title[:100]
-            logging.debug(f"Sanitized title for filename: {safe_title}")
-
-            now = datetime.now(JST)
-            timestamp = now.strftime('%Y%m%d%H%M%S')
-            daily_note_date = now.strftime('%Y-%m-%d')
-
-            webclip_file_name = f"{timestamp}-{safe_title}.md"
-            webclip_file_name_for_link = webclip_file_name.replace('.md', '')
-
-            webclip_note_content = (
-                f"# {title}\n\n"
-                f"- **Source:** <{url}>\n\n"
-                f"---\n\n"
-                f"[[{daily_note_date}]]\n\n"
-                f"{content_md}"
-            )
-
-            webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
-
-            # Upload WebClip file to Dropbox (with retry for conflicts)
-            upload_successful = False
-            for attempt in range(3):
-                try:
-                    logging.info(f"Uploading web clip file to Dropbox (Attempt {attempt+1}): {webclip_file_path}")
-                    await asyncio.to_thread(
-                        self.dbx.files_upload,
-                        webclip_note_content.encode('utf-8'),
-                        webclip_file_path,
-                        mode=WriteMode('add') # Use 'add' to detect conflicts
-                    )
-                    logging.info(f"クリップ成功: {webclip_file_path}")
-                    upload_successful = True
-                    break # Exit loop on success
-                except ApiError as e:
-                    if isinstance(e.error, dropbox.files.UploadError) and \
-                       e.error.is_path() and \
-                       e.error.get_path().is_conflict():
-                        logging.warning(f"ファイル名競合: {webclip_file_name} → リトライ中 ({attempt+1}/3)")
-                        await asyncio.sleep(0.5)
-                        timestamp = datetime.now(JST).strftime('%Y%m%d%H%M%S%f')[:-3]
-                        webclip_file_name = f"{timestamp}-{safe_title}.md"
-                        webclip_file_name_for_link = webclip_file_name.replace('.md', '')
-                        webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
-                    else:
-                        logging.error(f"Unhandled Dropbox API error during upload: {e}", exc_info=True)
-                        raise e
-                except Exception as upload_e:
-                    logging.error(f"Unexpected error during Dropbox upload (Attempt {attempt+1}): {upload_e}", exc_info=True)
-                    raise upload_e
-
-            if not upload_successful:
-                logging.error(f"Failed to upload web clip file after 3 attempts due to conflicts or errors: {url}")
-                raise Exception("Failed to upload web clip file after retries.")
-
-
-            # Update Daily Note (Only if upload was successful)
-            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
-            daily_note_content = ""
-            try:
-                logging.info(f"Downloading daily note for update: {daily_note_path}")
-                _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
-                daily_note_content = res.content.decode('utf-8')
-                logging.info(f"Daily note downloaded successfully.")
-            except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    logging.info(f"デイリーノート {daily_note_path} は存在しないため、新規作成します。")
-                    daily_note_content = f"# {daily_note_date}\n"
-                else:
-                    logging.error(f"Dropbox download error: {e}", exc_info=True)
-                    raise
-
-            link_to_add = f"- [[WebClips/{webclip_file_name_for_link}|{title}]]"
-            logging.info(f"Adding link to daily note: {link_to_add}")
-
-            new_daily_content = update_section(
-                daily_note_content, link_to_add, WEBCLIPS_SECTION_HEADER
-            )
-
-            logging.info(f"Uploading updated daily note: {daily_note_path}")
-            await asyncio.to_thread(
-                self.dbx.files_upload,
-                new_daily_content.encode('utf-8'),
-                daily_note_path,
-                mode=WriteMode('overwrite')
-            )
-            logging.info(f"デイリーノートを更新しました: {daily_note_path}")
-
-            await message.add_reaction(PROCESS_COMPLETE_EMOJI)
-            logging.info(f"Web clip process completed successfully for {url}")
-
         except Exception as e:
-            logging.error(f"[Web Clip Error] Webクリップ処理中に予期せぬエラー ({url}): {e}", exc_info=True)
-            try:
-                await message.add_reaction(PROCESS_ERROR_EMOJI)
+            logging.error(f"予期せぬ転送エラーが発生しました: {e}", exc_info=True)
+            try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
             except discord.HTTPException: pass
-        finally:
-            try:
-                await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+            try: await message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
-
 
 async def setup(bot: commands.Bot):
     """Cogセットアップ"""
     if MEMO_CHANNEL_ID == 0:
-        logging.error("MemoCog: MEMO_CHANNEL_ID is not set or is 0. Cog will not be loaded.")
+        logging.error("MemoCog: MEMO_CHANNEL_ID が設定されていません。Cogをロードしません。")
         return
+    # 転送先IDのチェックも追加 (任意)
+    if WEB_CLIP_FORWARD_CHANNEL_ID == 0:
+        logging.warning("MemoCog: WEB_CLIP_FORWARD_CHANNEL_ID が設定されていません。ウェブクリップ転送は無効になります。")
+    if YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID == 0:
+        logging.warning("MemoCog: YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID が設定されていません。YouTubeサマリー転送は無効になります。")
+
     await bot.add_cog(MemoCog(bot))
