@@ -25,8 +25,8 @@ except ImportError:
 
 # --- チャンネルID ---
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", 0))
-WEB_CLIP_FORWARD_CHANNEL_ID = int(os.getenv("WEB_CLIP_FORWARD_CHANNEL_ID", 0))
-YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID", 0))
+WEB_CLIP_CHANNEL_ID = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
+YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
 
 # --- リアクション絵文字 ---
 # ユーザーが付けるリアクション (転送トリガー)
@@ -118,10 +118,10 @@ class MemoCog(commands.Cog):
 
         # ユーザーが付けたリアクションに応じて転送先を決定
         if emoji == WEB_CLIP_USER_REACTION:
-            target_channel_id = WEB_CLIP_FORWARD_CHANNEL_ID
+            target_channel_id = WEB_CLIP_CHANNEL_ID
             forward_type = "WebClip"
         elif emoji == YOUTUBE_SUMMARY_USER_REACTION:
-            target_channel_id = YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID
+            target_channel_id = YOUTUBE_SUMMARY_CHANNEL_ID
             forward_type = "YouTube Summary"
         else:
             # 対象のリアクションでなければ何もしない
