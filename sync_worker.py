@@ -1,3 +1,4 @@
+# sync_worker.py (修正版)
 import os
 import sys
 import json
@@ -32,30 +33,23 @@ except ImportError:
                 try:
                     header_index = -1
                     for i, line in enumerate(lines):
-                        # 見出しレベルに関わらずヘッダーテキストで検索（より堅牢に）
                         if line.strip().lstrip('#').strip().lower() == section_header.lstrip('#').strip().lower():
                             header_index = i
                             break
                     if header_index == -1: raise ValueError("Header not found")
                     insert_index = header_index + 1
-                    # 次の見出し (##) またはファイルの終わりまでを探索
                     while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
                         insert_index += 1
-                    # 挿入位置の直前に空行がなければ追加
                     if insert_index > header_index + 1 and lines[insert_index - 1].strip() != "":
                         lines.insert(insert_index, "")
-                        insert_index += 1 # 挿入後にインデックス調整
-                    # テキストを追加
+                        insert_index += 1
                     lines.insert(insert_index, text_to_add)
                     return "\n".join(lines)
                 except ValueError:
-                     # ヘッダーが見つからなかった場合や挿入位置の特定に失敗した場合、末尾に追加
                      logging.warning(f"セクション '{section_header}' が見つからないか、挿入位置の特定に失敗したため、末尾に追加します。")
                      return f"{current_content.strip()}\n\n{section_header}\n{text_to_add}\n"
             else:
-                 # ヘッダーが存在しない場合は末尾に追加 (簡易処理、SECTION_ORDERを使うのが理想)
                  logging.info(f"セクション '{section_header}' が存在しないため、末尾に追加します。")
-                 # link_to_add 変数が未定義の可能性があるので修正
                  return f"{current_content.strip()}\n\n{section_header}\n{text_to_add}\n"
 
 
@@ -63,17 +57,11 @@ except ImportError:
 load_dotenv()
 
 # --- ロギング設定 ---
-# 標準エラー出力 (stderr) にログを出力するように変更
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s][%(levelname)s][sync_worker] %(message)s",
-    stream=sys.stderr # 出力先を stderr に変更
+    stream=sys.stderr
 )
-# stdout/stderr のエンコーディング設定 (Render 環境によっては不要な場合あり)
-# try:
-#     sys.stdout.reconfigure(encoding='utf-8')
-#     sys.stderr.reconfigure(encoding='utf-8')
-# except AttributeError: pass
 
 # --- 基本設定 ---
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
@@ -89,7 +77,7 @@ try:
 except Exception as e:
     logging.error(f"zoneinfo の初期化に失敗: {e}。UTCを使用します。")
     from datetime import timezone as tz
-    JST = tz.utc # フォールバックとして UTC を使用
+    JST = tz.utc
 
 def process_pending_memos():
     """保留メモをDropbox上のDailyNoteに追加する"""
@@ -121,7 +109,8 @@ def process_pending_memos():
             except (json.JSONDecodeError, ValueError) as e:
                 logging.error(f"保留メモファイルのJSON解析に失敗: {e}", exc_info=True)
                 try:
-                    with open(PENDING_MEMOS_FILE, "w") as f: json.dump([], f) # Clear corrupted file
+                    # 壊れたファイルをクリア
+                    with open(PENDING_MEMOS_FILE, "w") as f: json.dump([], f)
                 except Exception as write_e: logging.error(f"壊れたJSONファイルのクリアに失敗: {write_e}")
                 return False
             except Exception as e:
@@ -148,14 +137,13 @@ def process_pending_memos():
                     app_secret=DROPBOX_APP_SECRET,
                     timeout=60
                 )
-                dbx.users_get_current_account() # Test connection
+                dbx.users_get_current_account() # 接続テスト
                 logging.info("[DROPBOX] Dropboxへの接続に成功しました。")
 
                 # --- メモの処理 ---
                 try:
-                    # IDがNoneの場合や数値変換できない場合を考慮
                     sorted_memos = sorted(
-                        [m for m in memos if m.get('id') is not None], # Filter out memos without id
+                        [m for m in memos if m.get('id') is not None],
                         key=lambda m: int(m['id'])
                     )
                     memos_without_id = [m for m in memos if m.get('id') is None]
@@ -163,14 +151,15 @@ def process_pending_memos():
                          logging.warning(f"{len(memos_without_id)}件のメモにIDがありません。これらは処理されません。")
                 except (ValueError, TypeError) as e:
                     logging.error(f"メモのソート中にエラー（IDが数値でない可能性）: {e}", exc_info=True)
-                    sorted_memos = [m for m in memos if m.get('id') is not None] # Fallback: just filter Nones
+                    sorted_memos = [m for m in memos if m.get('id') is not None]
 
                 memos_by_date = {}
                 processed_ids_in_batch = set()
-                failed_ids_in_batch = set()
+                failed_ids_in_batch = set()  # Dropbox操作で実際に失敗したID
+                skipped_ids_in_batch = set() # 内容が空/無効でスキップされたID
 
                 for memo in sorted_memos:
-                    memo_id = memo.get('id') # Already checked for None, but safer
+                    memo_id = memo.get('id')
                     try:
                         ts_str = memo.get('created_at')
                         if not ts_str: raise ValueError("created_at がありません")
@@ -178,19 +167,21 @@ def process_pending_memos():
                         timestamp_jst = timestamp_utc.astimezone(JST)
                         date_str = timestamp_jst.strftime('%Y-%m-%d')
                         memos_by_date.setdefault(date_str, []).append(memo)
-                        processed_ids_in_batch.add(memo_id)
+                        # ここではまだ processed_ids_in_batch に追加しない
                     except (KeyError, ValueError, TypeError) as e:
                         logging.error(f"メモの日付/ID処理中にエラー (ID: {memo_id}): {e}", exc_info=True)
-                        if memo_id: failed_ids_in_batch.add(memo_id)
+                        if memo_id: failed_ids_in_batch.add(memo_id) # 日付処理エラーも失敗扱い
                         continue
 
-                all_success_this_batch = True
                 latest_processed_id_this_batch = None
 
                 logging.info(f"{len(memos_by_date)} 日分のデイリーノートを更新します。")
                 for date_str, memos_in_date in memos_by_date.items():
                     file_path = f"{DROPBOX_VAULT_PATH}/DailyNotes/{date_str}.md"
                     current_content = ""
+                    date_process_success = True # この日付の処理が成功したかどうかのフラグ
+                    ids_attempted_for_this_date = set() # この日付で処理を試みたID
+
                     logging.info(f"[DROPBOX] デイリーノート処理開始: {file_path}")
 
                     # 1. Download daily note
@@ -205,42 +196,57 @@ def process_pending_memos():
                             logging.info(f"[DROPBOX] 新規作成します: {file_path}")
                         else:
                             logging.error(f"[DROPBOX] ダウンロード失敗: {file_path}, Error: {e}", exc_info=True)
-                            all_success_this_batch = False
-                            for memo in memos_in_date:
+                            date_process_success = False # ダウンロード失敗
+                            for memo in memos_in_date: # この日付のメモは全て失敗扱い
                                 if memo.get('id'): failed_ids_in_batch.add(memo.get('id'))
-                            continue
+                            continue # 次の日付へ
                     except Exception as e:
                         logging.error(f"[DROPBOX] ダウンロード中に予期せぬエラー: {file_path}, Error: {e}", exc_info=True)
-                        all_success_this_batch = False
+                        date_process_success = False # ダウンロード失敗
                         for memo in memos_in_date:
                             if memo.get('id'): failed_ids_in_batch.add(memo.get('id'))
                         continue
 
                     # 2. Prepare content to add
                     content_to_add = []
-                    ids_for_this_date = set()
+                    ids_valid_for_this_date = set() # この日付で実際に追記されるID
+
                     for memo in memos_in_date:
                         memo_id = memo.get('id')
-                        if memo_id not in failed_ids_in_batch:
-                            try:
-                                timestamp_utc = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00'))
-                                time_str = timestamp_utc.astimezone(JST).strftime('%H:%M')
-                                content_lines = memo.get('content', '').strip().split('\n')
-                                if content_lines and content_lines != ['']: # Ensure not just empty lines
-                                    # Format with indentation
-                                    formatted_memo = f"- {time_str}\n\t- " + "\n\t- ".join(content_lines)
-                                    content_to_add.append(formatted_memo)
-                                    ids_for_this_date.add(memo_id)
-                                else:
-                                    logging.warning(f"内容が空または無効なメモをスキップ (ID: {memo_id})")
-                                    failed_ids_in_batch.add(memo_id) # Treat as failed
-                            except (KeyError, ValueError, TypeError) as e:
-                                logging.error(f"メモのフォーマット中にエラー (ID: {memo_id}): {e}", exc_info=True)
-                                failed_ids_in_batch.add(memo_id)
+                        ids_attempted_for_this_date.add(memo_id) # 処理を試みたIDとして追加
+
+                        # 既に他のステップで失敗としてマークされている場合はスキップ
+                        if memo_id in failed_ids_in_batch:
+                            continue
+
+                        try:
+                            # --- 内容の空チェックをここで行う ---
+                            memo_content = memo.get('content', '').strip()
+                            if not memo_content:
+                                logging.warning(f"内容が空または無効なメモをスキップ (ID: {memo_id})")
+                                skipped_ids_in_batch.add(memo_id) # スキップIDに追加
+                                continue # 次のメモへ
+                            # --- ここまで ---
+
+                            timestamp_utc = datetime.fromisoformat(memo['created_at'].replace('Z', '+00:00'))
+                            time_str = timestamp_utc.astimezone(JST).strftime('%H:%M')
+                            content_lines = memo_content.split('\n') # strip()済みの内容を使用
+
+                            formatted_memo = f"- {time_str}\n\t- " + "\n\t- ".join(content_lines)
+                            content_to_add.append(formatted_memo)
+                            ids_valid_for_this_date.add(memo_id) # 追記されるIDとして追加
+
+                        except (KeyError, ValueError, TypeError) as e:
+                            logging.error(f"メモのフォーマット中にエラー (ID: {memo_id}): {e}", exc_info=True)
+                            failed_ids_in_batch.add(memo_id) # フォーマットエラーは失敗扱い
+                            date_process_success = False # この日付の処理は一部失敗
 
                     if not content_to_add:
-                        logging.warning(f"{date_str} に追記する有効なメモがありませんでした。")
-                        continue
+                        logging.warning(f"{date_str} に追記する有効なメモがありませんでした（スキップされたメモのみ）。")
+                        # スキップのみの場合は date_process_success は True のまま
+                        # processed_ids_in_batch にスキップされたIDを追加
+                        processed_ids_in_batch.update(skipped_ids_in_batch.intersection(ids_attempted_for_this_date))
+                        continue # 次の日付へ
 
                     # 3. Use update_section
                     try:
@@ -248,19 +254,26 @@ def process_pending_memos():
                         new_content = update_section(current_content, memos_as_text, "## Memo")
                     except Exception as e:
                          logging.error(f"update_section 処理中にエラー ({file_path}): {e}", exc_info=True)
-                         all_success_this_batch = False
-                         for memo_id in ids_for_this_date: failed_ids_in_batch.add(memo_id)
+                         date_process_success = False # update_section 失敗
+                         for memo_id in ids_valid_for_this_date: failed_ids_in_batch.add(memo_id)
                          continue
 
                     # 4. Upload daily note
                     try:
-                        logging.info(f"[DROPBOX] アップロード試行: {file_path} ({len(ids_for_this_date)}件)") # Log count of successful items for this date
+                        logging.info(f"[DROPBOX] アップロード試行: {file_path} ({len(ids_valid_for_this_date)}件)")
                         dbx.files_upload(new_content.encode('utf-8'), file_path, mode=WriteMode('overwrite'))
                         logging.info(f"[DROPBOX] アップロード成功: {file_path}")
-                        if ids_for_this_date:
-                             # Convert IDs to int before finding max, handle potential errors
+
+                        # 成功したIDを processed_ids_in_batch に追加
+                        processed_ids_in_batch.update(ids_valid_for_this_date)
+                        # スキップされたIDも処理済みとして追加
+                        processed_ids_in_batch.update(skipped_ids_in_batch.intersection(ids_attempted_for_this_date))
+
+
+                        # 最終処理IDを更新
+                        if ids_valid_for_this_date:
                              try:
-                                 valid_ids_int = [int(id_val) for id_val in ids_for_this_date if id_val is not None]
+                                 valid_ids_int = [int(id_val) for id_val in ids_valid_for_this_date if id_val is not None]
                                  if valid_ids_int:
                                      last_id_this_date = max(valid_ids_int)
                                      if latest_processed_id_this_batch is None or last_id_this_date > latest_processed_id_this_batch:
@@ -270,16 +283,17 @@ def process_pending_memos():
 
                     except ApiError as e:
                         logging.error(f"[DROPBOX] アップロード失敗: {file_path}, Error: {e}", exc_info=True)
-                        all_success_this_batch = False
-                        for memo_id in ids_for_this_date: failed_ids_in_batch.add(memo_id)
+                        date_process_success = False # アップロード失敗
+                        for memo_id in ids_valid_for_this_date: failed_ids_in_batch.add(memo_id)
                     except Exception as e:
                         logging.error(f"[DROPBOX] アップロード中に予期せぬエラー: {file_path}, Error: {e}", exc_info=True)
-                        all_success_this_batch = False
-                        for memo_id in ids_for_this_date: failed_ids_in_batch.add(memo_id)
+                        date_process_success = False # アップロード失敗
+                        for memo_id in ids_valid_for_this_date: failed_ids_in_batch.add(memo_id)
 
                 # --- Batch processing result and cleanup ---
-                if all_success_this_batch and not failed_ids_in_batch: # Ensure no failures marked
-                    logging.info("今回のバッチ処理はすべて成功しました。")
+                # failed_ids_in_batch が空かどうかで全体の成否を判断
+                if not failed_ids_in_batch:
+                    logging.info("今回のバッチ処理でDropbox操作の失敗はありませんでした。")
                     if latest_processed_id_this_batch is not None:
                         try:
                             logging.info(f"[DROPBOX] 最終処理IDを保存: {latest_processed_id_this_batch}")
@@ -287,27 +301,28 @@ def process_pending_memos():
                             logging.info(f"[PROCESS] 最終処理IDをDropboxに保存成功: {latest_processed_id_this_batch}")
                         except Exception as e:
                             logging.error(f"[DROPBOX] 最終処理IDの保存に失敗: {e}", exc_info=True)
-                    # Clear pending memos file ONLY IF all processed successfully
-                    logging.info("処理が成功したため、保留メモファイルをクリアします。")
+                            # 最終処理IDの保存失敗はワーカー全体のエラーとはしない
+
+                    # Clear pending memos file ONLY IF no actual failures occurred
+                    logging.info("処理が成功（またはスキップのみ）したため、保留メモファイルをクリアします。")
                     with open(PENDING_MEMOS_FILE, "w") as f:
                         json.dump([], f)
-                    return True
+                    return True # 成功
                 else:
-                    logging.error(f"今回のバッチ処理で一部エラーが発生しました。失敗ID: {failed_ids_in_batch}")
-                    # Keep only failed or unprocessed memos (those without ID were already logged and excluded)
+                    # Dropbox操作で何らかの失敗があった場合
+                    logging.error(f"今回のバッチ処理でエラーが発生しました。失敗ID: {failed_ids_in_batch}")
+                    # Keep only failed memos
                     remaining_memos = [
                         memo for memo in memos
-                        if memo.get('id') is None or # Keep memos without ID (should not happen if filtered earlier)
-                           memo.get('id') in failed_ids_in_batch or
-                           memo.get('id') not in processed_ids_in_batch
+                        if memo.get('id') in failed_ids_in_batch
                     ]
-                    logging.info(f"{len(remaining_memos)} 件の未処理/失敗メモを残します。")
+                    logging.info(f"{len(remaining_memos)} 件の失敗メモを残します。")
                     try:
                         with open(PENDING_MEMOS_FILE, "w", encoding="utf-8") as f:
                             json.dump(remaining_memos, f, ensure_ascii=False, indent=2)
                     except Exception as e:
                         logging.error(f"失敗したメモのファイル更新中にエラー: {e}", exc_info=True)
-                    return False # Return False as some failed
+                    return False # 失敗
 
             except AuthError as e:
                 logging.error(f"[DROPBOX] Dropbox認証エラー: {e}", exc_info=True)
@@ -318,7 +333,6 @@ def process_pending_memos():
             except Exception as e:
                 logging.error(f"[PROCESS] Dropbox処理中に予期せぬエラー: {e}", exc_info=True)
                 return False
-            # No finally needed with 'with dropbox.Dropbox(...):'
 
     except TimeoutError:
         logging.error(f"ロックファイルの取得にタイムアウトしました: {lock_path}")
@@ -340,10 +354,10 @@ def main():
 
     if success:
         logging.info("--- 同期ワーカー正常完了 ---")
-        sys.exit(0)
+        sys.exit(0) # 成功時は 0 で終了
     else:
-        logging.error("--- 同期ワーカーでエラーが発生または一部失敗しました ---")
-        sys.exit(1)
+        logging.error("--- 同期ワーカーでエラーが発生しました ---")
+        sys.exit(1) # 失敗時は 1 で終了
 
 if __name__ == "__main__":
     main()

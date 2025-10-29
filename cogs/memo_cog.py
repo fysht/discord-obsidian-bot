@@ -231,10 +231,5 @@ async def setup(bot: commands.Bot):
     if MEMO_CHANNEL_ID == 0:
         logging.error("MemoCog: MEMO_CHANNEL_ID が設定されていません。Cogをロードしません。")
         return
-    # 転送先IDのチェックも追加 (任意)
-    if WEB_CLIP_FORWARD_CHANNEL_ID == 0:
-        logging.warning("MemoCog: WEB_CLIP_FORWARD_CHANNEL_ID が設定されていません。ウェブクリップ転送は無効になります。")
-    if YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID == 0:
-        logging.warning("MemoCog: YOUTUBE_SUMMARY_FORWARD_CHANNEL_ID が設定されていません。YouTubeサマリー転送は無効になります。")
 
     await bot.add_cog(MemoCog(bot))
