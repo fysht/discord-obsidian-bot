@@ -51,13 +51,10 @@ class MyBot(commands.Bot):
             if filename == "__pycache__":
                 continue
             
-            # --- ★ 修正: local_worker.py で実行するCogをスキップ ---
-            # (youtube_cog.py がローカル実行専用)
-            # --- ★ 修正: reception_cog.py もスキップ対象に追加 ---
+            # (youtube_cog.py と reception_cog.py は local_worker.py が担当)
             if filename == 'youtube_cog.py' or filename == 'reception_cog.py':
                 logging.info(f" -> cogs/{filename} はローカルワーカーが担当、または自動転送ロジックと重複するためスキップします。")
                 continue
-            # --- 修正ここまで ---
 
             if filename.endswith('.py') and not filename.startswith('__'):
                 cog_name = f'cogs.{filename[:-3]}'
