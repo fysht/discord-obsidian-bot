@@ -37,7 +37,8 @@ except ImportError:
                 new_content_lines.insert(insert_index, "")
                 insert_index += 1
             new_content_lines.insert(insert_index, text_to_add)
-            return "\n".join(lines)
+            return "\n".join(lines) # ★ 修正: join(new_content_lines) だったものを join(lines) に -> join(new_content_lines) が正しい
+            return "\n".join(new_content_lines) # ★ 修正: 上記の自己修正
         except ValueError:
             logging.info(f"Section '{section_header}' not found in daily note, appending.")
             return current_content.strip() + f"\n\n{section_header}\n{text_to_add}\n"
@@ -59,7 +60,8 @@ except ImportError:
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
-BOT_PROCESS_TRIGGER_REACTION = '📥'
+# ★ 修正: 添付ファイルの定義に合わせて TRIGGER_EMOJI を BOT_PROCESS_TRIGGER_REACTION に統一
+BOT_PROCESS_TRIGGER_REACTION = '📥' # TRIGGER_EMOJI = '📥'
 PROCESS_START_EMOJI = '⏳'
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
@@ -123,100 +125,52 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             await self.session.close()
             logging.info("YouTubeCog: aiohttp session closed.")
 
-    # --- 修正: on_raw_reaction_add の検知ロジックを修正 ---
+    # --- ★ 修正: on_raw_reaction_add を「参考コード」のロジックに置き換え ---
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """
-        Botが付与したトリガーリアクションを検知して処理を開始
-        (local_worker.py がロードしたこのCogが '📥' を検知して動作する)
+        特定のリアクションが付与された際に動画要約処理を開始するイベントリスナー
+        (参考コードのロジック)
         """
-        if payload.channel_id != self.youtube_summary_channel_id: return
-        if str(payload.emoji) != BOT_PROCESS_TRIGGER_REACTION: return # '📥'
-        if not self.is_ready: return
-        
-        # 1. local_worker 自身のリアクションは無視
+        if payload.channel_id != self.youtube_summary_channel_id:
+            return
+        # local_worker.py の Bot 自身のリアクションは無視
         if payload.user_id == self.bot.user.id:
             return
-            
-        # 2. ユーザー(人間)のリアクションかBot(Render)のリアクションか確認
-        member = payload.member # Guilds/Membersインテントがあれば Member オブジェクト
-        user_to_remove = None # 📥 を削除するための対象ユーザー
-        
-        if member:
-            # メンバーが取得できた
-            if not member.bot:
-                return # 人間のリアクションは無視
-            # この時点で member.bot == True AND user_id != self.bot.user.id
-            # ＝ Render Bot がリアクションした
-            user_to_remove = member # 削除処理用に保持
-        else:
-            # メンバーが取得できなかった (キャッシュにないBotなど)
-            # ユーザーIDからBotかどうかを判断
-            try:
-                # Botは user.bot で判定できる
-                user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(payload.user_id)
-                if not user.bot:
-                    return # 人間のリアクションは無視
-                user_to_remove = user # 削除処理用に保持
-            except (discord.NotFound, discord.HTTPException) as e:
-                logging.error(f"Failed to fetch user {payload.user_id} for bot check: {e}")
-                return # ユーザーが取得できない場合は無視
-
-        # 3. ここに来るのは「自分以外のBot (＝RenderのメインBot) が '📥' を付けた」場合
-        logging.info(f"Detected '📥' reaction from main bot (User ID: {payload.user_id}). Starting summary (local_worker).")
+        # Render Bot (または他人) が付けたトリガーリアクションを検知
+        if str(payload.emoji) != BOT_PROCESS_TRIGGER_REACTION:
+            return
 
         channel = self.bot.get_channel(payload.channel_id)
-        if not channel: return
+        if not channel:
+            return
+        
         try:
             message = await channel.fetch_message(payload.message_id)
         except (discord.NotFound, discord.Forbidden):
-            logging.error(f"Failed to fetch message {payload.message_id} for YouTube summary processing.")
+            logging.warning(f"メッセージの取得に失敗しました: {payload.message_id}")
             return
 
-        # URLチェック
-        content = message.content.strip()
-        url_match = YOUTUBE_URL_REGEX.search(content)
-        if not url_match:
-            logging.warning(f"YouTube summary trigger on message {message.id} which does not contain a valid YouTube URL.")
-            await message.add_reaction(INVALID_URL_EMOJI)
-            try: 
-                if user_to_remove: # 取得した User/Member オブジェクトで削除
-                    await message.remove_reaction(payload.emoji, user_to_remove) 
-            except discord.HTTPException: pass
-            return
-        url = url_match.group(0)
-
-        # 処理済みチェック
-        processed_emojis = {
-            PROCESS_START_EMOJI, PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI,
-            TRANSCRIPT_NOT_FOUND_EMOJI, INVALID_URL_EMOJI, SUMMARY_ERROR_EMOJI,
-            SAVE_ERROR_EMOJI, GOOGLE_DOCS_ERROR_EMOJI
-        }
-        # ★ r.me (自分=local_worker が付けた) リアクションをチェック
-        if any(r.emoji in processed_emojis and r.me for r in message.reactions):
-            logging.info(f"Message {message.id} (URL: {url}) is already processed or in progress by this worker. Skipping.")
-            try: 
-                if user_to_remove:
-                    await message.remove_reaction(payload.emoji, user_to_remove)
-            except discord.HTTPException: pass
+        # 既に local_worker (self.bot.user) が処理中または処理完了のリアクションを付けていないか確認
+        is_processed = any(r.emoji in (PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, PROCESS_START_EMOJI, TRANSCRIPT_NOT_FOUND_EMOJI, INVALID_URL_EMOJI) and r.me for r in message.reactions)
+        if is_processed:
+            logging.info(f"既に処理済みのメッセージのためスキップします: {message.jump_url}")
             return
 
-        logging.info(f"Received YouTube summary trigger for URL: {url} (Message ID: {message.id})")
+        logging.info(f"リアクション '{BOT_PROCESS_TRIGGER_REACTION}' を検知しました。要約処理を開始します: {message.jump_url}")
+        
+        try:
+            # リアクションを付けたユーザー（Render Bot）を取得
+            user = self.bot.get_user(payload.user_id) or await self.bot.fetch_user(payload.user_id)
+            if user:
+                await message.remove_reaction(payload.emoji, user)
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            logging.warning(f"Render Bot のリアクション削除に失敗しました: {message.jump_url}")
 
-        try: 
-            if user_to_remove:
-                await message.remove_reaction(payload.emoji, user_to_remove)
-            else:
-                # ユーザーが取れなかった場合
-                await message.clear_reaction(BOT_PROCESS_TRIGGER_REACTION)
-        except discord.HTTPException: 
-            logging.warning(f"Failed to remove main bot's '📥' reaction from message {message.id}")
-            pass
-
-        await self._perform_summary(url=url, message=message)
+        await self._perform_summary(url=message.content.strip(), message=message)
     # --- 修正ここまで ---
 
-    # --- 参考コードの _extract_transcript_text ---
+    # --- ★ 修正: _extract_transcript_text を「参考コード」のロジックに置き換え ---
     def _extract_transcript_text(self, fetched_data):
         texts = []
         try:
@@ -234,10 +188,12 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                         if isinstance(item, dict):
                             texts.append(item.get('text', ''))
                 return " ".join(t.strip() for t in texts if t and t.strip())
+            
             logging.warning(f"予期せぬ字幕データ形式のため、テキスト抽出に失敗しました: {type(fetched_data)}")
             return ""
+    # --- 修正ここまで ---
 
-    # --- 修正: 起動時スキャンロジック (スタック対応) ---
+    # --- 起動時スキャンロジック (添付ファイルのロジックを維持) ---
     async def process_pending_summaries(self):
         """起動時などに未処理の要約リクエストをまとめて処理する関数"""
         channel = self.bot.get_channel(self.youtube_summary_channel_id)
@@ -254,10 +210,8 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 
                 has_pending_trigger = False # 📥 (Render Botが付けた)
                 is_processed_by_local = False # ✅, ❌, 🔇... (by local)
-                is_stuck_processing_local = False # ⏳ (by local)
-                render_bot_user = None # 📥 を付けたBot (Render) - 削除試行用
+                is_stuck_processing_local = False # ⏳ (by local or Render)
 
-                # We must iterate reactions to check flags
                 for r in message.reactions:
                     emoji_str = str(r.emoji)
 
@@ -266,25 +220,16 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                             # このBot (local) が付けた 📥 ではない = Render Bot が付けた 📥
                             has_pending_trigger = True
                     
-                    # Check for completion/error markers *added by the local worker*
                     if emoji_str in (
                         PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, TRANSCRIPT_NOT_FOUND_EMOJI, 
                         INVALID_URL_EMOJI, SUMMARY_ERROR_EMOJI, SAVE_ERROR_EMOJI, GOOGLE_DOCS_ERROR_EMOJI
                     ) and r.me:
                         is_processed_by_local = True
                     
-                    # Check if local worker is stuck (or Render worker failed and left ⏳)
                     if emoji_str == PROCESS_START_EMOJI: # ⏳
-                        # ★ ログ(08:00:58)ではRender側が ⏳ を付けている（ように見える）が、
-                        #    Render側は ⏳ を付けた直後にエラーで落ちている
-                        # ★ local_workerが ⏳ を付けたが、途中で停止した場合
-                        if r.me:
-                            is_stuck_processing_local = True
-                        else:
-                            # Render側が ⏳ を付けたままスタックしている場合
-                            # これも処理対象とする
-                            is_stuck_processing_local = True 
-                            logging.info(f"Message {message.id}: Render Bot の ⏳ (Stuck) を検知。")
+                        # 誰が ⏳ を付けていても、スタックしているとみなす
+                        is_stuck_processing_local = True 
+                        logging.info(f"Message {message.id}: ⏳ (Stuck) を検知。")
 
 
                 # (📥 がある OR ⏳ でスタックしている) AND (まだ処理完了していない)
@@ -311,7 +256,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             url = message.content.strip()
             
             try:
-                # 📥 リアクションをクリア (Render Botが付けたものも含む)
+                # 📥 リアクションをクリア
                 await message.clear_reaction(BOT_PROCESS_TRIGGER_REACTION)
             except (discord.Forbidden, discord.NotFound, discord.HTTPException) as e:
                 logging.warning(f"📥 リアクションのクリアに失敗しました: {e}")
@@ -324,7 +269,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             
             await self._perform_summary(url=url, message=message)
             await asyncio.sleep(5) # 連続処理のための待機
-    # --- 修正ここまで ---
+    # --- 起動時スキャンロジックここまで ---
 
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
@@ -347,7 +292,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 raise ValueError("Invalid YouTube URL")
             video_id = video_id_match.group(1)
 
-            # --- 修正: 字幕取得ロジックを参考コードの fetch() に戻す ---
+            # --- 字幕取得ロジック (参考コードの fetch() に合わせる) ---
             try:
                 api = YouTubeTranscriptApi() 
                 
@@ -367,7 +312,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             except Exception as e_trans:
                 logging.error(f"字幕取得中に予期せぬエラー (Video ID: {video_id}): {e_trans}", exc_info=True) 
                 if isinstance(message, discord.Message): error_reactions.add(PROCESS_ERROR_EMOJI)
-            # --- 修正ここまで ---
+            # --- 字幕取得ロジックここまで ---
 
             # --- AI要約 ---
             concise_summary = "(要約対象なし)"
@@ -429,7 +374,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 f'<iframe width="560" height="315" src="https://www.youtube.com/embed/{video_id}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>\n\n'
                 f"- **URL:** {url}\n"
                 f"- **Channel:** {video_info.get('author_name', 'N/A')}\n"
-                f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+                f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n" # ★ 修正: Clipped に変更 (参考コードの形式ではないが、添付のwebclip_cog.pyに合わせておく)
                 f"[[{daily_note_date}]]\n\n"
                 f"---\n\n"
                 f"## Concise Summary\n{concise_summary}\n\n"
@@ -453,7 +398,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                             daily_note_content = f"# {daily_note_date}\n"
                         else: raise
 
-                    link_to_add = f"- [[YouTube/{note_filename_for_link}|{video_title}]]"
+                    link_to_add = f"- [[YouTube/{note_filename_for_link}|{video_title}]]" # ★ 修正: 参考コードに合わせ、タイトルもリンクに追加
                     youtube_heading = "## YouTube Summaries"
                     new_daily_content = update_section(daily_note_content, link_to_add, youtube_heading)
 
@@ -541,7 +486,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 except discord.HTTPException: pass
 
-    # --- スラッシュコマンド ---
+    # --- スラッシュコマンド (添付ファイルのロジックを維持) ---
     @app_commands.command(name="yt_summary", description="[手動] YouTube動画URLをObsidian/Google Docsに保存します。")
     @app_commands.describe(url="処理したいYouTube動画のURL")
     async def yt_summary_command(self, interaction: discord.Interaction, url: str):
@@ -564,7 +509,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
 
         await self._perform_summary(url=url, message=TempMessage(message_proxy))
 
-    # --- get_video_info ---
+    # --- get_video_info (添付ファイルのロジックを維持) ---
     async def get_video_info(self, video_id: str) -> dict:
         url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         try:

@@ -52,19 +52,15 @@ class MyBot(commands.Bot):
             
             # --- ★ 修正: local_worker.py で実行するCogをスキップ ---
             # (youtube_cog.py がローカル実行専用)
-            if filename == 'youtube_cog.py':
-                logging.info(f" -> cogs/youtube_cog.py はローカルワーカーが担当するためスキップします。")
+            # --- ★ 修正: reception_cog.py もスキップ対象に追加 ---
+            if filename == 'youtube_cog.py' or filename == 'reception_cog.py':
+                logging.info(f" -> cogs/{filename} はローカルワーカーが担当、または自動転送ロジックと重複するためスキップします。")
                 continue
             # --- 修正ここまで ---
 
             if filename.endswith('.py') and not filename.startswith('__'):
                 cog_name = f'cogs.{filename[:-3]}'
                 
-                # (reception_cog.py ももしローカル専用なら上記と同様にスキップしてください)
-                # if filename == 'reception_cog.py':
-                #     logging.info(f" -> {cog_name} は手動リアクションのためスキップします。")
-                #     continue
-
                 try:
                     await self.load_extension(cog_name)
                     logging.info(f" -> {cog_name} を読み込みました。")
@@ -168,14 +164,20 @@ class MyBot(commands.Bot):
                 latest_processed_id = None
                 for message in history: 
                     if not message.author.bot:
-                        await add_memo_async(
-                            content=message.content,
-                            author=f"{message.author} ({message.author.id})",
-                            created_at=message.created_at.isoformat(),
-                            message_id=message.id
-                        )
+                        # ★ 修正: add_memo_async に必要な引数を渡す (添付ファイル memo_cog.py に合わせる)
+                        # (ただし、この関数はテキストメモのみを対象とするべき)
+                        if not URL_REGEX.search(message.content.strip()): # URLが含まれないもののみ
+                            await add_memo_async(
+                                content=message.content,
+                                author=f"{message.author} ({message.author.id})",
+                                created_at=message.created_at.isoformat(),
+                                message_id=message.id,
+                                context="Discord Memo Channel (Offline Sync)", # コンテキスト情報を追加
+                                category="Memo" # カテゴリ情報を追加
+                            )
                         latest_processed_id = message.id
                 logging.info("未取得メモの保存が完了しました。")
+                # ★ 修正ここまで
 
                 if latest_processed_id and dbx:
                     try:
@@ -211,6 +213,9 @@ async def main():
          logging.critical("Discordトークンが無効です。ボットを起動できません。")
     except Exception as e:
          logging.critical(f"ボットの起動中に致命的なエラーが発生しました: {e}", exc_info=True)
+
+# ★ 修正: process_offline_memos で URL_REGEX を使うため、ここで定義
+URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
 
 if __name__ == "__main__":
     try:
