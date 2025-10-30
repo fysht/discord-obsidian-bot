@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import re
 try:
     from obsidian_handler import add_memo_async
 except ImportError:
