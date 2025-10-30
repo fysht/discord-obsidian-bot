@@ -4,18 +4,13 @@ from discord.ext import commands
 import logging
 import asyncio
 from dotenv import load_dotenv
-# import re # 修正: このファイルでは不要
 
 # --- 1. 設定読み込み ---
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s')
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-# --- 修正: このファイルではチャンネルIDの直接参照は不要 ---
-# (cogs/youtube_cog.py が自身で環境変数を読み込むため)
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0)) 
-# --- 修正ここまで ---
-
 
 # --- 2. Botの定義 ---
 class LocalWorkerBot(commands.Bot):
@@ -25,7 +20,7 @@ class LocalWorkerBot(commands.Bot):
         intents.reactions = True
         intents.guilds = True
         super().__init__(command_prefix="!local!", intents=intents)
-        self.youtube_cog = None
+        self.youtube_cog = None # youtube_cog のインスタンスを保持
 
     async def setup_hook(self):
         # 必要なCogだけをロード
@@ -47,34 +42,32 @@ class LocalWorkerBot(commands.Bot):
              logging.error("YouTubeCogがロードされていないため、処理を開始できません。")
              return
 
-        # --- 修正: 参考コードに基づき、起動時の未処理スキャンを有効化 ---
+        # --- 修正: 起動時の未処理スキャンを有効化 ---
         logging.info("起動時に未処理のリアクションをスキャンします...")
         try:
             # 起動時に一度だけ、既存のリアクションをまとめて処理する
-            await self.youtube_cog.process_pending_summaries()
+            # (youtube_cog.py に process_pending_summaries が実装されている前提)
+            if hasattr(self.youtube_cog, 'process_pending_summaries'):
+                await self.youtube_cog.process_pending_summaries()
+            else:
+                logging.error("YouTubeCogに process_pending_summaries メソッドが見つかりません。")
         except Exception as e:
             logging.error(f"起動時のYouTube要約一括処理中にエラー: {e}", exc_info=True)
         # --- 修正ここまで ---
 
         logging.info(f"リアクション監視モードに移行します。（チャンネル {YOUTUBE_SUMMARY_CHANNEL_ID} の 📥 を待ち受けます）")
 
-
-    # --- 修正: 矛盾するリスナーを削除 ---
-    # (cogs/youtube_cog.py内の on_raw_reaction_add がロードされて動作するため、
-    #  このファイルにリスナーを定義する必要はありません)
-    # --- 修正ここまで ---
-
+    # --- 修正: 添付コードにあった競合するリスナーを削除 ---
+    # (cogs/youtube_cog.py が on_raw_reaction_add を持つため)
 
 # --- 3. 起動処理 ---
 async def main():
     if not TOKEN:
         logging.critical("DISCORD_BOT_TOKENが設定されていません。ローカルワーカーを起動できません。")
         return
-    # --- 修正: YOUTUBE_SUMMARY_CHANNEL_ID のチェックを追加 ---
     if YOUTUBE_SUMMARY_CHANNEL_ID == 0:
         logging.critical("YOUTUBE_SUMMARY_CHANNEL_IDが設定されていません。ローカルワーカーを起動できません。")
         return
-    # --- 修正ここまで ---
 
     bot = LocalWorkerBot()
     try:
