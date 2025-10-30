@@ -165,8 +165,8 @@ class MyBot(commands.Bot):
                 latest_processed_id = None
                 for message in history: 
                     if not message.author.bot:
-                        # ★ 修正: add_memo_async に必要な引数を渡す (添付ファイル memo_cog.py に合わせる)
-                        # (ただし、この関数はテキストメモのみを対象とするべき)
+                        # (add_memo_async に必要な引数を渡す)
+                        # (この関数はテキストメモのみを対象とするべき)
                         if not URL_REGEX.search(message.content.strip()): # URLが含まれないもののみ
                             await add_memo_async(
                                 content=message.content,
@@ -178,7 +178,6 @@ class MyBot(commands.Bot):
                             )
                         latest_processed_id = message.id
                 logging.info("未取得メモの保存が完了しました。")
-                # ★ 修正ここまで
 
                 if latest_processed_id and dbx:
                     try:
