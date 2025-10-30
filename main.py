@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-# obsidian_handler をインポート
 try:
     from obsidian_handler import add_memo_async
 except ImportError:
@@ -51,23 +50,21 @@ class MyBot(commands.Bot):
             if filename == "__pycache__":
                 continue
             
-            # --- 修正: local_worker.py で実行するCogをスキップ ---
+            # --- ★ 修正: local_worker.py で実行するCogをスキップ ---
             # (youtube_cog.py がローカル実行専用)
             if filename == 'youtube_cog.py':
                 logging.info(f" -> cogs/youtube_cog.py はローカルワーカーが担当するためスキップします。")
                 continue
             # --- 修正ここまで ---
-            
-            # reception_cog.py は添付ファイルに含まれていたため、
-            # もし不要であれば同様にスキップしてください。
-            # (このログでは reception_cog.py が見当たりませんが、
-            #  もし存在し、ローカルワーカーの役割ならスキップ対象です)
-            # if filename == 'reception_cog.py':
-            #     logging.info(f" -> {cog_name} は手動リアクションのためスキップします。")
-            #     continue
 
             if filename.endswith('.py') and not filename.startswith('__'):
                 cog_name = f'cogs.{filename[:-3]}'
+                
+                # (reception_cog.py ももしローカル専用なら上記と同様にスキップしてください)
+                # if filename == 'reception_cog.py':
+                #     logging.info(f" -> {cog_name} は手動リアクションのためスキップします。")
+                #     continue
+
                 try:
                     await self.load_extension(cog_name)
                     logging.info(f" -> {cog_name} を読み込みました。")
@@ -88,6 +85,7 @@ class MyBot(commands.Bot):
                      logging.error(f" -> {cog_name} の読み込み中に予期せぬエラーが発生しました: {e}", exc_info=True)
                      failed_loads.append(f"{cog_name} (Unexpected Error)")
 
+
         logging.info(f"Cog読み込み完了: {successful_loads}個成功")
         if failed_loads:
              logging.error(f"Cog読み込み失敗: {len(failed_loads)}個 - {', '.join(failed_loads)}")
@@ -106,8 +104,8 @@ class MyBot(commands.Bot):
         else:
              logging.warning("MemoCog not loaded, cannot register persistent views.")
 
+
     async def on_ready(self):
-        """Botの準備が完了したときの処理"""
         logging.info(f"{self.user} としてログインしました (ID: {self.user.id})")
         logging.info(f"discord.py version: {discord.__version__}")
 
@@ -122,7 +120,6 @@ class MyBot(commands.Bot):
         logging.info("--- Bot is ready and listening for events ---")
 
     async def process_offline_memos(self):
-        """オフライン中の未取得メモがないか確認し、処理する"""
         logging.info("オフライン中の未取得メモがないか確認します...")
         after_message_id = None
         dbx = None 
@@ -161,7 +158,6 @@ class MyBot(commands.Bot):
             history = []
             limit = 1000
             logging.info(f"Fetching message history from channel {channel.name} after ID: {after_message_id}")
-
             after_obj = discord.Object(id=after_message_id) if after_message_id else None
 
             async for message in channel.history(limit=limit, after=after_obj, oldest_first=True):

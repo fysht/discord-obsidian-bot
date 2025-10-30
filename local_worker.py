@@ -7,7 +7,10 @@ from dotenv import load_dotenv
 
 # --- 1. 設定読み込み ---
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] [%(name)s] %(message)s')
+# --- 修正: ログフォーマットに 'name' (Cog名) を追加 ---
+log_format = '%(asctime)s [%(levelname)s] [%(name)s] %(message)s'
+logging.basicConfig(level=logging.INFO, format=log_format)
+# --- 修正ここまで ---
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0)) 
@@ -17,10 +20,10 @@ class LocalWorkerBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
-        intents.reactions = True
+        intents.reactions = True  # ★ Intents.reactions が必須
         intents.guilds = True
         super().__init__(command_prefix="!local!", intents=intents)
-        self.youtube_cog = None # youtube_cog のインスタンスを保持
+        self.youtube_cog = None
 
     async def setup_hook(self):
         # 必要なCogだけをロード
@@ -45,8 +48,6 @@ class LocalWorkerBot(commands.Bot):
         # --- 修正: 起動時の未処理スキャンを有効化 ---
         logging.info("起動時に未処理のリアクションをスキャンします...")
         try:
-            # 起動時に一度だけ、既存のリアクションをまとめて処理する
-            # (youtube_cog.py に process_pending_summaries が実装されている前提)
             if hasattr(self.youtube_cog, 'process_pending_summaries'):
                 await self.youtube_cog.process_pending_summaries()
             else:
@@ -57,8 +58,7 @@ class LocalWorkerBot(commands.Bot):
 
         logging.info(f"リアクション監視モードに移行します。（チャンネル {YOUTUBE_SUMMARY_CHANNEL_ID} の 📥 を待ち受けます）")
 
-    # --- 修正: 添付コードにあった競合するリスナーを削除 ---
-    # (cogs/youtube_cog.py が on_raw_reaction_add を持つため)
+    # (local_worker.py 本体には on_raw_reaction_add は不要。cogs/youtube_cog.py が検知する)
 
 # --- 3. 起動処理 ---
 async def main():
