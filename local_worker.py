@@ -1,3 +1,4 @@
+# local_worker.py (修正版)
 import os
 import discord
 from discord.ext import commands
@@ -21,7 +22,8 @@ class LocalWorkerBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.reactions = True  # ★ Intents.reactions が必須
-        intents.guilds = True
+        intents.guilds = True     # ★ チャンネル取得やメンバー情報のために Guilds も推奨
+        intents.members = True    # ★ payload.member を取得するために Members も推奨
         super().__init__(command_prefix="!local!", intents=intents)
         self.youtube_cog = None
 
@@ -45,7 +47,7 @@ class LocalWorkerBot(commands.Bot):
              logging.error("YouTubeCogがロードされていないため、処理を開始できません。")
              return
 
-        # --- 修正: 起動時の未処理スキャンを有効化 ---
+        # --- 起動時の未処理スキャンを有効化 ---
         logging.info("起動時に未処理のリアクションをスキャンします...")
         try:
             if hasattr(self.youtube_cog, 'process_pending_summaries'):
