@@ -1,6 +1,6 @@
 import os
 import discord
-from discord import app_commands # スラッシュコマンドを使用する場合
+from discord import app_commands
 from discord.ext import commands
 import logging
 import re
@@ -13,7 +13,7 @@ import zoneinfo
 
 # readabilityベースのパーサーをインポート
 from web_parser import parse_url_with_readability
-# --- Google Docs Handler Import (エラーハンドリング付き) ---
+# --- ★ 修正: Google Docs Handler Import を追加 ---
 try:
     from google_docs_handler import append_text_to_doc_async
     google_docs_enabled = True
@@ -25,7 +25,40 @@ except ImportError:
     async def append_text_to_doc_async(*args, **kwargs):
         logging.warning("Google Docs handler is not available.")
         pass # 何もしない
-# --- ここまで ---
+# --- ★ 修正ここまで ---
+
+# --- ★ 修正: utils.obsidian_utils のインポートを追加 ---
+try:
+    from utils.obsidian_utils import update_section
+    logging.info("WebClipCog: utils/obsidian_utils.py を読み込みました。")
+except ImportError:
+    logging.warning("WebClipCog: utils/obsidian_utils.py が見つかりません。簡易的な追記ロジックを使用します。")
+    # 簡易ダミー関数 (フォールバック)
+    def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
+        lines = current_content.split('\n')
+        new_content_lines = list(lines)
+        try:
+            heading_index = -1
+            for i, line in enumerate(new_content_lines):
+                 # 見出しレベルを問わず、テキスト部分が一致するか確認
+                if line.strip().lstrip('#').strip().lower() == section_header.lstrip('#').strip().lower():
+                    heading_index = i
+                    break
+            if heading_index == -1: raise ValueError("Header not found")
+            
+            insert_index = heading_index + 1
+            while insert_index < len(new_content_lines) and not new_content_lines[insert_index].strip().startswith('## '):
+                insert_index += 1
+            if insert_index > heading_index + 1 and new_content_lines[insert_index - 1].strip() != "":
+                new_content_lines.insert(insert_index, "")
+                insert_index += 1
+            new_content_lines.insert(insert_index, text_to_add)
+            return "\n".join(new_content_lines) 
+        except ValueError:
+            logging.info(f"Section '{section_header}' not found in daily note, appending.")
+            return current_content.strip() + f"\n\n{section_header}\n{text_to_add}\n"
+# --- ★ 修正ここまで ---
+
 
 # --- 定数定義 ---
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
@@ -84,14 +117,16 @@ class WebClipCog(commands.Cog):
             logging.error(f"WebClipCog: Failed to initialize Dropbox client: {e}", exc_info=True)
             # is_ready は False のまま
 
+    # ★ 修正: on_raw_reaction_add を追加 (Botの 📥 を検知)
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """Botが付与したトリガーリアクションを検知して処理を開始"""
+        """Botが付与したトリガーリアクション(📥)を検知して処理を開始"""
         # 必要なチェック
         if payload.channel_id != self.web_clip_channel_id: return
-        if payload.user_id != self.bot.user.id: return
+        # ★ 修正: Bot自身 (local worker) のリアクションを検知
+        if payload.user_id != self.bot.user.id: return 
         if str(payload.emoji) != BOT_PROCESS_TRIGGER_REACTION: return
-        if not self.is_ready: # Cogが初期化されているか
+        if not self.is_ready: 
             logging.error("WebClipCog: Cog is not ready. Cannot process clip.")
             return
 
@@ -130,10 +165,11 @@ class WebClipCog(commands.Cog):
 
         # ウェブクリップ処理を実行
         await self._perform_clip(url=url, message=message)
+    # ★ 修正ここまで
 
 
     async def _perform_clip(self, url: str, message: discord.Message):
-        """Webクリップのコアロジック (Google Docs保存追加)"""
+        """Webクリップのコアロジック (Google Docs保存・utils連携 修正)"""
         if not self.is_ready: # 再度チェック
             logging.error("Cannot perform web clip: WebClipCog is not ready.")
             await message.add_reaction(PROCESS_ERROR_EMOJI)
@@ -158,6 +194,7 @@ class WebClipCog(commands.Cog):
             )
             logging.info(f"Readability finished for {url}. Title: '{title_result}', Content length: {len(content_md_result) if content_md_result else 0}")
 
+            # ★ 修正: title が None や "No Title Found" の場合、URLをタイトルにする
             title = title_result if title_result and title_result != "No Title Found" else url
             content_md = content_md_result or content_md # Noneならデフォルトのまま
 
@@ -174,7 +211,7 @@ class WebClipCog(commands.Cog):
                 webclip_file_name = f"{timestamp}-{safe_title}.md"
                 webclip_file_name_for_link = webclip_file_name.replace('.md', '')
 
-                # 保存するMarkdownの内容
+                # 保存するMarkdownの内容 (★ 修正: Clipped 日時フォーマット)
                 webclip_note_content = (
                     f"# {title}\n\n"
                     f"- **Source:** <{url}>\n"
@@ -207,31 +244,13 @@ class WebClipCog(commands.Cog):
                         logging.info(f"Daily note {daily_note_path} not found. Creating new.")
                     else: raise
 
+                # ★ 修正: リンクの表示名を title にする
                 link_to_add = f"- [[WebClips/{webclip_file_name_for_link}|{title}]]"
-                webclips_heading = "## WebClips" # utils.obsidian_utils がない場合の簡易追記ロジック
-
-                # --- 簡易的な追記ロジック (update_section がない場合) ---
-                lines = daily_note_content.split('\n')
-                new_daily_content = ""
-                try:
-                    heading_index = -1
-                    for i, line in enumerate(lines):
-                        if line.strip() == webclips_heading:
-                            heading_index = i
-                            break
-                    if heading_index == -1: raise ValueError
-
-                    insert_index = heading_index + 1
-                    while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
-                        insert_index += 1
-                    if insert_index > heading_index + 1 and lines[insert_index - 1].strip() != "":
-                        lines.insert(insert_index, "")
-                        insert_index += 1
-                    lines.insert(insert_index, link_to_add)
-                    new_daily_content = "\n".join(lines)
-                except ValueError:
-                    new_daily_content = daily_note_content.strip() + f"\n\n{webclips_heading}\n{link_to_add}\n"
-                # --- 簡易的な追記ロジックここまで ---
+                webclips_heading = "## WebClips"
+                
+                # ★ 修正: 共通関数 update_section を使用
+                new_daily_content = update_section(daily_note_content, link_to_add, webclips_heading)
+                # ★ 修正ここまで
 
                 await asyncio.to_thread(
                     self.dbx.files_upload,
@@ -249,13 +268,9 @@ class WebClipCog(commands.Cog):
                 logging.error(f"Unexpected error saving to Obsidian: {e_obs_other}", exc_info=True)
                 error_reactions.add(PROCESS_ERROR_EMOJI)
 
-            # --- Google Docsへの保存 ---
+            # --- ★ 修正: Google Docsへの保存 ---
             if google_docs_enabled:
-                # Obsidian保存成功時のみ実行するか、常に試行するかは選択可能
-                # ここでは常に試行する
                 try:
-                    # Google Docsに送信する内容 (Markdownではなくプレーンテキストが良い場合もある)
-                    # ここではMarkdown本文をそのまま送る
                     gdoc_text_to_append = content_md
                     await append_text_to_doc_async(
                         text_to_append=gdoc_text_to_append,
@@ -269,6 +284,7 @@ class WebClipCog(commands.Cog):
                     logging.error(f"Failed to send webclip content to Google Docs: {e_gdoc}", exc_info=True)
                     error_reactions.add(GOOGLE_DOCS_ERROR_EMOJI)
                     gdoc_save_success = False
+            # --- ★ 修正ここまで ---
 
             # --- 最終的なリアクション ---
             if obsidian_save_success: # Obsidian保存成功を基準
@@ -300,7 +316,9 @@ class WebClipCog(commands.Cog):
             try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
             except discord.HTTPException: pass
 
-    # --- 元のスラッシュコマンド ( InteractionMessage の扱いに注意が必要 ) ---
+    # ★ 修正: on_message リスナーを削除 (cogs/memo_cog.py が担当するため)
+
+    # --- スラッシュコマンド (手動実行用) ---
     @app_commands.command(name="clip", description="[手動] URLをObsidianとGoogle Docsにクリップします。")
     @app_commands.describe(url="クリップしたいページのURL")
     async def clip_command(self, interaction: discord.Interaction, url: str):
@@ -311,23 +329,21 @@ class WebClipCog(commands.Cog):
              await interaction.response.send_message("❌ 無効なURL形式です。", ephemeral=True)
              return
 
-        await interaction.response.defer(ephemeral=False, thinking=True) # thinking=Trueに変更
+        await interaction.response.defer(ephemeral=False, thinking=True) 
         message_proxy = await interaction.original_response()
 
-        # _perform_clip は Message オブジェクトを期待するため、InteractionMessage ではリアクション操作が不安定になる可能性
-        class TempMessage: # ダミークラス
+        # _perform_clip は Message オブジェクトを期待するため、ダミークラスを使用
+        class TempMessage:
              def __init__(self, proxy):
                  self.id = proxy.id; self.reactions = []; self.channel = proxy.channel; self.jump_url = proxy.jump_url; self._proxy = proxy
              async def add_reaction(self, emoji):
-                 try: await self._proxy.add_reaction(emoji) # 試みる
-                 except: pass # 失敗しても無視
+                 try: await self._proxy.add_reaction(emoji) 
+                 except: pass 
              async def remove_reaction(self, emoji, user):
-                 try: await self._proxy.remove_reaction(emoji, user) # 試みる
-                 except: pass # 失敗しても無視
+                 try: await self._proxy.remove_reaction(emoji, user) 
+                 except: pass
 
         await self._perform_clip(url=url, message=TempMessage(message_proxy))
-        # 完了メッセージはリアクションで示すため、ここでは不要 (編集するとリアクションが見えなくなる)
-        # await interaction.edit_original_response(content=f"クリップ処理を実行しました: {url}")
 
 
 async def setup(bot: commands.Bot):
@@ -335,11 +351,11 @@ async def setup(bot: commands.Bot):
     if int(os.getenv("WEB_CLIP_CHANNEL_ID", 0)) == 0:
         logging.error("WebClipCog: WEB_CLIP_CHANNEL_ID が設定されていません。Cogをロードしません。")
         return
-    # インスタンス作成時に初期化成否をチェック
+    
     cog_instance = WebClipCog(bot)
     if cog_instance.is_ready:
         await bot.add_cog(cog_instance)
         logging.info("WebClipCog loaded successfully.")
     else:
         logging.error("WebClipCog failed to initialize properly and was not loaded.")
-        del cog_instance # 初期化失敗時はインスタンスを削除
+        del cog_instance
