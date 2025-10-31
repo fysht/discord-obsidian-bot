@@ -124,14 +124,15 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             await self.session.close()
             logging.info("YouTubeCog: aiohttp session closed.")
 
-    # --- ★ 修正: on_raw_reaction_add のロジックを「ハンドシェイク」できるように変更 ---
+    # --- ★ 修正: on_raw_reaction_add のロジックを「ユーザーの手動リアクション」を検知するように変更 ---
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """
-        Bot(Render)が付けた 📥 リアクションを検知して処理を開始する
+        ユーザー (人間) が付けた 📥 リアクションを検知して処理を開始する
         """
         
-        if payload.channel_id != self.youtube_summary_channel_id:
+        # チャンネルが違うか、Bot自身のリアクション(⏳, ✅など)なら無視
+        if payload.channel_id != self.youtube_summary_channel_id or payload.user_id == self.bot.user.id:
             return
             
         emoji_str = str(payload.emoji)
@@ -139,11 +140,11 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
         # 1. このリアクションはトリガー(📥)か？
         if emoji_str == BOT_PROCESS_TRIGGER_REACTION: # '📥'
             
-            # 2. このリアクションはRender Bot (＝自分自身) が付けたものか？
-            if payload.user_id != self.bot.user.id:
-                # 違う場合 (人間や他のBotが 📥 を付けた場合) は無視
-                return 
-
+            # 2. このリアクションはユーザー (人間) が付けたもの (Botではない)
+            #    (※ 冒頭の
+            #       if payload.user_id == self.bot.user.id: return
+            #     でBotは除外済み)
+            
             # 3. メッセージを取得
             channel = self.bot.get_channel(payload.channel_id)
             if not channel: return
@@ -162,28 +163,26 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             
             if is_processed:
                 logging.info(f"既に処理中または処理済みのメッセージのためスキップします: {message.jump_url}")
+                # ユーザーが付けた 📥 は削除する (任意)
+                try:
+                    user = await self.bot.fetch_user(payload.user_id)
+                    if user: await message.remove_reaction(payload.emoji, user)
+                except discord.HTTPException: pass
                 return
 
             # 5. 【処理実行】
-            # - Render Bot (自分) が 📥 を付けた
-            # - local worker (自分) はまだ処理をしていない
+            logging.info(f"ユーザーの '{BOT_PROCESS_TRIGGER_REACTION}' を検知しました。要約処理を開始します: {message.jump_url}")
             
-            logging.info(f"Render Bot (self) の '{BOT_PROCESS_TRIGGER_REACTION}' を検知しました。要約処理を開始します: {message.jump_url}")
-            
-            # トリガー 📥 (Render/自分 が付けたもの) を削除
+            # ユーザーが付けた 📥 リアクションを削除 (Botが処理を開始するため)
             try:
-                await message.remove_reaction(payload.emoji, self.bot.user)
+                user = await self.bot.fetch_user(payload.user_id)
+                if user: await message.remove_reaction(payload.emoji, user)
             except discord.HTTPException:
-                logging.warning(f"Render Bot のリアクション削除に失敗しました: {message.jump_url}")
+                logging.warning(f"ユーザーのリアクション削除に失敗しました: {message.jump_url}")
 
             await self._perform_summary(url=message.content.strip(), message=message)
 
-        # 6. このリアクションがトリガー(📥)以外で、かつ自分自身が付けたもの (⏳, ✅, ❌ など)
-        elif payload.user_id == self.bot.user.id:
-            # 自分が付けた処理中・完了リアクションを検知しても何もしない (ループ防止)
-            return
-            
-        # 7. それ以外 (人間が付けたリアクションなど)
+        # 6. それ以外 (人間が 📥 以外を付けた場合)
         else:
             # 無視
             return
@@ -228,17 +227,21 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
         try:
             async for message in channel.history(limit=200):
                 
-                has_pending_trigger = False # 📥 (Render Botが付けた)
+                # ★ 修正: 「ユーザーが 📥 を付けたか」をチェック
+                has_pending_trigger_by_user = False # 📥 (by User)
                 is_processed_by_local = False # ✅, ❌, 🔇... (by local)
-                is_stuck_processing_local = False # ⏳ (by local or Render)
+                is_stuck_processing_local = False # ⏳ (by local)
 
                 for r in message.reactions:
                     emoji_str = str(r.emoji)
 
                     if emoji_str == BOT_PROCESS_TRIGGER_REACTION: # 📥
-                        if not r.me:
-                            # このBot (local) が付けた 📥 ではない = Render Bot が付けた 📥
-                            has_pending_trigger = True
+                        # 📥 を付けたユーザーがBotでない (＝人間) かどうかをチェック
+                        # (r.me は「Bot自身」が付けたかどうかなので、ここでは使えない)
+                        async for user in r.users():
+                            if not user.bot:
+                                has_pending_trigger_by_user = True
+                                break
                     
                     if emoji_str in (
                         PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, TRANSCRIPT_NOT_FOUND_EMOJI, 
@@ -246,15 +249,14 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                     ) and r.me:
                         is_processed_by_local = True
                     
-                    if emoji_str == PROCESS_START_EMOJI: # ⏳
-                        # 誰が ⏳ を付けていても、スタックしているとみなす
+                    if emoji_str == PROCESS_START_EMOJI and r.me: # ⏳
                         is_stuck_processing_local = True 
                         logging.info(f"Message {message.id}: ⏳ (Stuck) を検知。")
 
 
-                # (📥 がある OR ⏳ でスタックしている) AND (まだ処理完了していない)
-                if (has_pending_trigger or is_stuck_processing_local) and not is_processed_by_local:
-                    logging.info(f"Message {message.id}: 📥 (Pending) or ⏳ (Stuck) を検知。処理対象に追加します。")
+                # (📥 がユーザーによって付けられている OR ⏳ でスタックしている) AND (まだ処理完了していない)
+                if (has_pending_trigger_by_user or is_stuck_processing_local) and not is_processed_by_local:
+                    logging.info(f"Message {message.id}: 📥 (Pending by User) or ⏳ (Stuck) を検知。処理対象に追加します。")
                     pending_messages.append(message) # メッセージだけ追加
             
         except discord.Forbidden:
@@ -276,7 +278,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             url = message.content.strip()
             
             try:
-                # 📥 リアクションをクリア
+                # ユーザーが付けた 📥 リアクションをクリア
                 await message.clear_reaction(BOT_PROCESS_TRIGGER_REACTION)
             except (discord.Forbidden, discord.NotFound, discord.HTTPException) as e:
                 logging.warning(f"📥 リアクションのクリアに失敗しました: {e}")
@@ -289,7 +291,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             
             await self._perform_summary(url=url, message=message)
             await asyncio.sleep(5) # 連続処理のための待機
-    # --- 起動時スキャンロジックここまで ---
+    # --- 起動時スキャンロジック修正ここまで ---
 
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
@@ -414,7 +416,8 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                         _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                         daily_note_content = res.content.decode('utf-8')
                     except ApiError as e_dn:
-                        if isinstance(e.dn.error, DownloadError) and e_dn.error.is_path() and e_dn.error.get_path().is_not_found():
+                        # ★ 修正: e.dn.error -> e_dn.error
+                        if isinstance(e_dn.error, DownloadError) and e_dn.error.is_path() and e_dn.error.get_path().is_not_found():
                             daily_note_content = f"# {daily_note_date}\n"
                         else: raise
 

@@ -131,9 +131,11 @@ class MemoCog(commands.Cog):
             forwarded_message = await forward_channel.send(content_to_forward)
             logging.info(f"{forward_type} 用にメッセージ {message.id} をチャンネル '{forward_channel.name}' に転送しました (New ID: {forwarded_message.id})。")
 
-            # --- 新しく投稿したメッセージに処理開始トリガーリアクションを追加 ---
-            await forwarded_message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
-            logging.info(f"転送先メッセージ {forwarded_message.id} にトリガーリアクション {BOT_PROCESS_TRIGGER_REACTION} を追加しました。")
+            # --- ★ 修正: ユーザーのリアクションを待つため、Botはリアクションを追加しない ---
+            # await forwarded_message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
+            # logging.info(f"転送先メッセージ {forwarded_message.id} にトリガーリアクション {BOT_PROCESS_TRIGGER_REACTION} を追加しました。")
+            logging.info(f"転送先メッセージ {forwarded_message.id} を投稿しました。ユーザーの '{BOT_PROCESS_TRIGGER_REACTION}' リアクションを待ちます。")
+            # --- ★ 修正ここまで ---
 
             # 元のメッセージの転送中リアクションを削除
             try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
