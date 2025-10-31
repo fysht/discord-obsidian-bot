@@ -6,7 +6,7 @@ import logging
 import re
 import asyncio
 import dropbox
-from dropbox.files import WriteMode, DownloadError
+from dropbox.files import WriteMode, DownloadError # WriteMode をインポート
 from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
@@ -198,11 +198,11 @@ class WebClipCog(commands.Cog):
             webclip_file_name = f"{timestamp}-{safe_title}.md"
             webclip_file_name_for_link = webclip_file_name.replace('.md', '')
 
-            # ★ 修正: 参考コード (ファイル28) のフォーマットに合わせる
+            # ★ 修正: 参考コード (ファイル28) のフォーマットに合わせる (Clipped: なし)
             webclip_note_content = (
                 f"# {title}\n\n"
                 f"- **Source:** <{url}>\n\n"
-                f"---\n\n" # 参考コードには Clipped: がないため削除
+                f"---\n\n" 
                 f"[[{daily_note_date}]]\n\n"
                 f"{content_md}"
             )
@@ -221,44 +221,55 @@ class WebClipCog(commands.Cog):
                     webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
                     
                     logging.info(f"Uploading web clip file to Dropbox: {webclip_file_path}")
-                    # `with` ブロック内では `dbx` は同期的に動作するため `loop.run_in_executor` を使用
-                    await loop.run_in_executor(
-                        None,
+                    
+                    # --- ★ エラー修正: `run_in_executor` ではなく `asyncio.to_thread` を使用
+                    #    (こちらの方がシンプルで、引数の問題を回避できます)
+                    await asyncio.to_thread(
                         dbx.files_upload,
                         webclip_note_content.encode('utf-8'),
                         webclip_file_path,
-                        mode=WriteMode('add')
+                        mode=WriteMode('add') # to_thread はキーワード引数を正しく渡せます
                     )
+                    # --- ★ エラー修正ここまで ---
+                    
                     logging.info(f"Webclip successfully saved to Obsidian: {webclip_file_path}")
 
                     # --- デイリーノートへのリンク追加 ---
                     daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
                     daily_note_content = ""
                     try:
-                        _, res = dbx.files_download(daily_note_path) # 同期
+                        # ★ 修正: asyncio.to_thread を使用
+                        _, res = await asyncio.to_thread(
+                            dbx.files_download,
+                            daily_note_path
+                        )
                         daily_note_content = res.content.decode('utf-8')
                         logging.info(f"Daily note {daily_note_path} downloaded.")
                     except ApiError as e_dn:
                         if isinstance(e_dn.error, DownloadError) and e_dn.error.is_path() and e_dn.error.get_path().is_not_found():
                             daily_note_content = "" # ★ 修正: 参考コード (ファイル28) に合わせ、新規作成時は空
                             logging.info(f"Daily note {daily_note_path} not found. Creating new.")
-                        else: raise
+                        else: 
+                            logging.error(f"Failed to download daily note: {e_dn}")
+                            raise # 続行不可能なエラー
 
                     # ★ 修正: 参考コード (ファイル28) に合わせ、リンク表示名を指定しない
                     link_to_add = f"- [[WebClips/{webclip_file_name_for_link}]]" 
                     webclips_heading = "## WebClips"
                     
-                    # ★ 修正: utils.obsidian_utils.py の update_section を使用
+                    # utils.obsidian_utils.py の update_section を使用
                     # (※参考コードのロジックは不完全なため、より堅牢なこちらを採用します)
                     new_daily_content = update_section(daily_note_content, link_to_add, webclips_heading)
 
-                    await loop.run_in_executor(
-                        None,
+                    # --- ★ エラー修正: asyncio.to_thread を使用 ---
+                    await asyncio.to_thread(
                         dbx.files_upload,
                         new_daily_content.encode('utf-8'),
                         daily_note_path,
                         mode=WriteMode('overwrite')
                     )
+                    # --- ★ エラー修正ここまで ---
+                    
                     logging.info(f"Daily note updated successfully: {daily_note_path}")
                     obsidian_save_success = True
 
@@ -266,6 +277,7 @@ class WebClipCog(commands.Cog):
                 logging.error(f"Error saving to Obsidian (Dropbox API): {e_obs}", exc_info=True)
                 error_reactions.add(PROCESS_ERROR_EMOJI)
             except Exception as e_obs_other:
+                # `with` ブロック内で発生したその他のエラー (TypeErrorなど)
                 logging.error(f"Unexpected error saving to Obsidian: {e_obs_other}", exc_info=True)
                 error_reactions.add(PROCESS_ERROR_EMOJI)
 
@@ -332,10 +344,10 @@ class WebClipCog(commands.Cog):
              def __init__(self, proxy):
                  self.id = proxy.id; self.reactions = []; self.channel = proxy.channel; self.jump_url = proxy.jump_url; self._proxy = proxy
              async def add_reaction(self, emoji):
-                 try: await self._proxy.add_reaction(emoji) 
+                 try: await self.proxy.add_reaction(emoji) 
                  except: pass 
              async def remove_reaction(self, emoji, user):
-                 try: await self._proxy.remove_reaction(emoji, user) 
+                 try: await self.proxy.remove_reaction(emoji, user) 
                  except: pass
 
         await self._perform_clip(url=url, message=TempMessage(message_proxy))
