@@ -14,7 +14,7 @@ import zoneinfo
 import aiohttp
 import urllib.parse
 import openai # (1) 音声認識 (Whisper) のために追加
-import google.generativeai as genai # ★ (Fix 1) 不足していたインポートを追加
+import google.generativeai as genai # (Fix 1) 不足していたインポートを追加
 from PIL import Image # (2) 画像処理のために追加
 import io
 import pathlib
@@ -88,68 +88,110 @@ except ImportError:
     logging.warning("BookCog: pillow_heif not installed. HEIC/HEIF support is disabled.")
 
 
-# --- メモ入力用モーダル ---
-class BookMemoModal(discord.ui.Modal, title="読書メモの入力"):
+# --- ★ (REQ 1) メモ「編集用」モーダル ---
+class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
     memo_text = discord.ui.TextInput(
-        label="書籍に関するメモを入力してください",
+        label="認識されたテキスト（編集してください）",
         style=discord.TextStyle.paragraph,
-        placeholder="例: p.56 〇〇という視点は新しい...",
         required=True,
         max_length=1500
     )
 
-    def __init__(self, cog, selected_book_path: str):
+    def __init__(self, cog, book_path: str, initial_text: str, original_message: discord.Message, confirmation_message: discord.Message, input_type: str):
         super().__init__(timeout=1800) # 30分
         self.cog = cog
-        self.book_path = selected_book_path
+        self.book_path = book_path
+        self.memo_text.default = initial_text # AIの認識結果を初期値に
+        self.original_message = original_message
+        self.confirmation_message = confirmation_message
+        self.input_type = input_type
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        edited_text = self.memo_text.value
         
         try:
-            # 1. 既存のノートをダウンロード
-            logging.info(f"BookCog: メモ追記のためノートをダウンロード: {self.book_path}")
-            _, res = await asyncio.to_thread(self.cog.dbx.files_download, self.book_path)
-            current_content = res.content.decode('utf-8')
-
-            # 2. メモをフォーマット (日付と時刻)
-            now = datetime.datetime.now(JST)
-            date_time_str = now.strftime('%Y-%m-%d %H:%M') # 日付と時刻
-            # 複数行入力に対応
-            memo_lines = self.memo_text.value.strip().split('\n')
-            formatted_memo = f"- {date_time_str}\n\t- " + "\n\t- ".join(memo_lines)
-
-            # 3. update_section で追記 (英語の見出し)
-            section_header = "## Notes"
-            new_content = update_section(current_content, formatted_memo, section_header)
-
-            # 4. Dropboxにアップロード
-            await asyncio.to_thread(
-                self.cog.dbx.files_upload,
-                new_content.encode('utf-8'),
+            # 編集されたテキストで保存処理を実行
+            await self.cog._save_memo_to_obsidian_and_cleanup(
+                interaction,
                 self.book_path,
-                mode=WriteMode('overwrite')
+                edited_text,
+                self.input_type,
+                self.original_message,
+                self.confirmation_message
             )
-            
-            logging.info(f"BookCog: 読書メモを追記しました: {self.book_path}")
-            await interaction.followup.send(f"✅ テキストメモを追記しました。\n`{os.path.basename(self.book_path)}`", ephemeral=True)
+            # 完了メッセージ (一定時間後に消える)
+            await interaction.followup.send("✅ 編集されたメモを保存しました。", ephemeral=True, delete_after=10)
 
-        except ApiError as e:
-            logging.error(f"BookCog: 読書メモ追記中のDropbox APIエラー: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ メモ追記中にDropboxエラーが発生しました: {e}", ephemeral=True)
         except Exception as e:
-            logging.error(f"BookCog: 読書メモ追記中の予期せぬエラー: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ メモ追記中に予期せぬエラーが発生しました: {e}", ephemeral=True)
+            logging.error(f"BookCog: 編集済みメモの保存中にエラー: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ 編集済みメモの保存中にエラーが発生しました: {e}", ephemeral=True)
+            await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        logging.error(f"Error in BookMemoModal: {error}", exc_info=True)
+        logging.error(f"Error in BookMemoEditModal: {error}", exc_info=True)
         if interaction.response.is_done():
             await interaction.followup.send(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
         else:
-            try:
-                await interaction.response.send_message(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
-            except discord.InteractionResponded:
-                pass
+            try: await interaction.response.send_message(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
+            except discord.InteractionResponded: pass
+        await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+
+# --- ★ (REQ 1) メモ「確認・編集」View ---
+class ConfirmMemoView(discord.ui.View):
+    def __init__(self, cog, book_path: str, recognized_text: str, original_message: discord.Message, input_type: str):
+        super().__init__(timeout=1800) # 30分
+        self.cog = cog
+        self.book_path = book_path
+        self.recognized_text = recognized_text
+        self.original_message = original_message
+        self.input_type = input_type
+        self.confirmation_message = None # ボットが送信するこのViewを含むメッセージ
+
+    @discord.ui.button(label="✅ このまま保存", style=discord.ButtonStyle.success, custom_id="confirm_memo_save")
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            # 認識されたテキストで保存処理を実行
+            await self.cog._save_memo_to_obsidian_and_cleanup(
+                interaction,
+                self.book_path,
+                self.recognized_text,
+                self.input_type,
+                self.original_message,
+                self.confirmation_message
+            )
+            await interaction.followup.send("✅ メモを保存しました。", ephemeral=True, delete_after=10)
+        
+        except Exception as e:
+            logging.error(f"BookCog: 確認済みメモの保存中にエラー: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ メモの保存中にエラーが発生しました: {e}", ephemeral=True)
+            await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+        finally:
+            self.stop()
+
+    @discord.ui.button(label="✏️ 編集する", style=discord.ButtonStyle.primary, custom_id="edit_memo")
+    async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 編集モーダルを起動
+        modal = BookMemoEditModal(
+            self.cog,
+            self.book_path,
+            self.recognized_text,
+            self.original_message,
+            self.confirmation_message,
+            self.input_type
+        )
+        await interaction.response.send_modal(modal)
+        self.stop()
+
+    async def on_timeout(self):
+        try:
+            if self.confirmation_message:
+                await self.confirmation_message.delete()
+            await self.original_message.delete()
+            logging.info(f"BookCog: メモ確認がタイムアウトしたため、関連メッセージを削除しました (Orig ID: {self.original_message.id})")
+        except discord.HTTPException:
+            pass # タイムアウト時にメッセージが既に消えている場合のエラーは無視
 
 # --- ステータス変更用ボタンView ---
 class BookStatusView(discord.ui.View):
@@ -219,15 +261,13 @@ class BookSelectView(discord.ui.View):
         super().__init__(timeout=600)
         self.cog = cog
         self.original_context = original_context
-        self.action_type = action_type 
+        self.action_type = action_type # "status", "add_memo"
         self.attachment = attachment
         self.text_memo = text_memo
-        self.input_type = input_type
+        self.input_type = input_type # "audio", "image", or "text"
         
         placeholder_text = "操作対象の書籍を選択してください..."
-        if action_type == "memo":
-            placeholder_text = "メモを追記する書籍を選択 (コマンド)..."
-        elif action_type == "status":
+        if action_type == "status":
             placeholder_text = "ステータスを変更する書籍を選択..."
         elif action_type == "add_memo":
             placeholder_text = f"この{input_type}メモを追記する書籍を選択..."
@@ -239,6 +279,8 @@ class BookSelectView(discord.ui.View):
         )
         select.callback = self.select_callback
         self.add_item(select)
+        
+        self.bot_reply_message = None # ボットが送信したこのViewを含むメッセージ
 
     async def _edit_original_response(self, **kwargs):
         """Context (Interaction or Message) に応じて応答を編集する"""
@@ -260,12 +302,7 @@ class BookSelectView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         selected_path = interaction.data["values"][0]
         
-        if self.action_type == "memo": # /book_memo コマンド
-            modal = BookMemoModal(self.cog, selected_path)
-            await interaction.response.send_modal(modal)
-            await self._edit_original_response(content="テキストメモを入力中です...", view=None)
-
-        elif self.action_type == "status": # /book_status コマンド
+        if self.action_type == "status": # /book_status コマンド
             selected_option_label = next((opt.label for opt in interaction.message.components[0].children[0].options if opt.value == selected_path), "選択された書籍")
             status_view = BookStatusView(self.cog, selected_path, self.original_context)
             await interaction.response.edit_message(
@@ -274,19 +311,21 @@ class BookSelectView(discord.ui.View):
             )
 
         elif self.action_type == "add_memo": # on_message (text, audio, image)
-            # (Fix 4) 編集を interaction.response.edit_message に変更
-            await interaction.response.edit_message(
-                content=f"`{os.path.basename(selected_path)}` に {self.input_type} メモを処理中です... {PROCESS_START_EMOJI}", 
-                view=None
-            )
+            # ★ (REQ 1) 添付ファイルの処理を開始 (テキスト化)
+            await interaction.response.defer(ephemeral=True, thinking=True)
             
+            # 元のドロップダウンメッセージを「処理中...」に変更
+            await self._edit_original_response(content=f"`{os.path.basename(selected_path)}` に {self.input_type} メモを処理中です... {PROCESS_START_EMOJI}", view=None)
+            
+            # テキスト化処理を呼び出す
             await self.cog.process_posted_memo(
                 interaction, 
                 self.original_context, # 元のファイル添付/テキストメッセージ
                 selected_path, 
                 self.input_type,
                 self.attachment, # None if text
-                self.text_memo   # None if attachment
+                self.text_memo,   # None if attachment
+                self.bot_reply_message # このView(ドロップダウン)のメッセージ
             )
         
         self.stop()
@@ -314,15 +353,10 @@ class BookCreationSelectView(discord.ui.View):
             title = book_data.get("title", "不明なタイトル")
             authors = ", ".join(book_data.get("authors", ["著者不明"]))
             
-            # ラベルと説明を生成
             label = (title[:97] + '...') if len(title) > 100 else title
             description = (authors[:97] + '...') if len(authors) > 100 else authors
             
-            options.append(discord.SelectOption(
-                label=label,
-                description=description,
-                value=str(i) # 値はリストのインデックス
-            ))
+            options.append(discord.SelectOption(label=label, description=description, value=str(i)))
         
         if not options:
             options.append(discord.SelectOption(label="候補が見つかりませんでした", value="-1", default=True))
@@ -350,16 +384,12 @@ class BookCreationSelectView(discord.ui.View):
             selected_index = int(selected_index_str)
             selected_book_data = self.book_results[selected_index]
 
-            # _save_note_to_obsidian を呼び出す
             save_result = await self.cog._save_note_to_obsidian(selected_book_data, self.source_url, self.embed_image_url_fallback)
             
-            # 戻り値(True/"EXISTS"/False)をチェック
             if save_result == True:
-                # 元のメッセージに完了リアクション
                 await self.original_message.add_reaction(PROCESS_COMPLETE_EMOJI)
-                # 確認メッセージを編集して終了
                 await self.confirmation_message.edit(content=f"✅ 読書ノート「{selected_book_data.get('title')}」を作成しました。", embed=None, view=None)
-                # ★ (Fix 2) followup.send から delete_after を削除
+                # (Fix 2) followup.send から delete_after を削除
                 await interaction.followup.send("ノートを作成しました。", ephemeral=True)
             
             elif save_result == "EXISTS":
@@ -469,7 +499,7 @@ class BookCog(commands.Cog):
             logging.error(f"BookCog: ステータス更新中のエラー: {e}", exc_info=True)
             return False
 
-    # (8) on_message リスナー
+    # ★ 修正: on_message リスナー (メモ追記のメインフロー)
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """
@@ -479,15 +509,15 @@ class BookCog(commands.Cog):
         if not self.is_ready or message.author.bot or message.channel.id != self.book_note_channel_id:
             return
         
-        # ★ 修正: リプライは無視
+        # リプライは無視 (リアクショントリガーやUI操作と区別)
         if message.reference:
             return
             
-        # ★ 修正: スラッシュコマンドは無視
-        if message.content.startswith('/'):
+        # スラッシュコマンドは無視
+        if message.content.strip().startswith('/'):
             return
 
-        # ★ 修正: URL (ノート作成トリガー) も無視
+        # URL (ノート作成トリガー) も無視
         if message.content.strip().startswith('http'):
             return
 
@@ -515,6 +545,7 @@ class BookCog(commands.Cog):
         
         logging.info(f"BookCog: {input_type} メモを検知: {message.jump_url}")
         
+        bot_reply_message = None
         try:
             await message.add_reaction("🤔") # 処理中（どの本か考えてる）
 
@@ -538,18 +569,21 @@ class BookCog(commands.Cog):
                 text_memo=text_memo,
                 input_type=input_type
             )
-            await message.reply(f"この {input_type} メモはどの書籍のものですか？", view=view, mention_author=False)
+            bot_reply_message = await message.reply(f"この {input_type} メモはどの書籍のものですか？", view=view, mention_author=False)
+            view.bot_reply_message = bot_reply_message # Viewに自身のメッセージをセット
             
         except Exception as e:
             logging.error(f"BookCog: on_message での添付ファイル/テキスト処理中にエラー: {e}", exc_info=True)
+            if bot_reply_message: # bot_reply_message がNoneでないことを確認
+                await bot_reply_message.delete()
             await message.reply(f"❌ メモの処理開始中にエラーが発生しました: {e}")
             try:
                 await message.remove_reaction("🤔", self.bot.user)
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException:
                 pass
-
-    # (9) process_posted_memo メソッド
+    
+    # ★ 修正: process_posted_memo (REQ 1 実行)
     async def process_posted_memo(
         self, 
         interaction: discord.Interaction, # SelectViewからのInteraction
@@ -557,9 +591,10 @@ class BookCog(commands.Cog):
         book_path: str, 
         input_type: str,
         attachment: discord.Attachment = None, # None if text
-        text_memo: str = None # None if attachment
+        text_memo: str = None, # None if attachment
+        dropdown_message: discord.Message = None # 選択肢が乗っていたメッセージ
     ):
-        """投稿されたメモ（テキスト、音声、画像）をテキスト化し、指定されたノートに追記する"""
+        """投稿されたメモをテキスト化し、確認Viewを提示する"""
         
         temp_audio_path = None
         recognized_text = ""
@@ -605,30 +640,35 @@ class BookCog(commands.Cog):
             if not recognized_text:
                 raise Exception("AIによるテキスト化の結果が空か、入力タイプが不明でした。")
 
-            # 2. ノートに追記
-            _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
-            current_content = res.content.decode('utf-8')
-            
-            now = datetime.datetime.now(JST)
-            date_time_str = now.strftime('%Y-%m-%d %H:%M')
-            memo_lines = recognized_text.strip().split('\n')
-            formatted_memo = f"- {date_time_str} ({input_type} memo)\n\t- " + "\n\t- ".join(memo_lines)
-            
-            section_header = "## Notes"
-            new_content = update_section(current_content, formatted_memo, section_header)
-            
-            await asyncio.to_thread(
-                self.dbx.files_upload, new_content.encode('utf-8'), book_path, mode=WriteMode('overwrite')
+            # 2. ★ (REQ 1) 保存せず、確認Viewを送信
+            confirm_view = ConfirmMemoView(
+                self,
+                book_path,
+                recognized_text,
+                original_message,
+                input_type
             )
             
-            logging.info(f"BookCog: {input_type} メモを追記しました: {book_path}")
-            # (Fix 4) defer 済みの interaction への応答は followup を使う
-            await interaction.followup.send(f"✅ {input_type} メモを追記しました。\n`{os.path.basename(book_path)}`", ephemeral=True)
-            await original_message.add_reaction(PROCESS_COMPLETE_EMOJI)
+            # ドロップダウンメッセージを削除
+            if dropdown_message:
+                try: await dropdown_message.delete()
+                except discord.HTTPException: pass
+            
+            # 新しい確認メッセージを送信
+            confirm_msg = await original_message.reply(
+                f"**📝 認識された {input_type} メモ:**\n```markdown\n{recognized_text}\n```\n内容を確認し、問題なければ「このまま保存」、修正する場合は「編集する」ボタンを押してください。",
+                view=confirm_view
+            )
+            confirm_view.confirmation_message = confirm_msg
+            
+            # (Fix 4) interaction への応答は followup で行う
+            await interaction.followup.send("テキストを認識しました。内容を確認してください。", ephemeral=True, delete_after=10)
+            
+            # ⏳ リアクションは確認Viewのタイムアウト/完了まで保持
+            # await original_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
 
         except Exception as e:
             logging.error(f"BookCog: 添付メモ処理中にエラー: {e}", exc_info=True)
-            # ★ (Fix 4)
             if not interaction.response.is_done():
                  await interaction.response.send_message(f"❌ {input_type} メモの処理中にエラーが発生しました: {e}", ephemeral=True)
             else:
@@ -636,13 +676,75 @@ class BookCog(commands.Cog):
             try: await original_message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
         finally:
-            # 終了リアクション
-            try: await original_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
-            except discord.HTTPException: pass
-            # 一時ファイルの削除
+            # ⏳ リアクションはここでは消さない (ConfirmMemoViewが担当)
             if temp_audio_path:
                 try: temp_audio_path.unlink()
                 except OSError as e_rm: logging.error(f"BookCog: 一時音声ファイルの削除に失敗: {e_rm}")
+
+    # ★ (REQ 1 & 2) 新規追加: メモを保存し、関連メッセージを削除するヘルパー
+    async def _save_memo_to_obsidian_and_cleanup(
+        self,
+        interaction: discord.Interaction, # Confirm または EditModal からの Interaction
+        book_path: str,
+        final_text: str,
+        input_type: str,
+        original_message: discord.Message, # ユーザーが投稿したメモ
+        confirmation_message: discord.Message # ボットが送信した確認View
+    ):
+        """
+        最終的なテキストをObsidianに保存し、
+        元のユーザーメッセージとボットの確認メッセージを削除する。
+        """
+        try:
+            # 1. 既存のノートをダウンロード
+            logging.info(f"BookCog: 最終メモ追記のためノートをダウンロード: {book_path}")
+            _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
+            current_content = res.content.decode('utf-8')
+
+            # 2. メモをフォーマット (日付と時刻)
+            now = datetime.datetime.now(JST)
+            date_time_str = now.strftime('%Y-%m-%d %H:%M')
+            memo_lines = final_text.strip().split('\n')
+            
+            # タイムスタンプの入力タイプサフィックスを調整
+            type_suffix = f"({input_type} memo)"
+            if "edited" in input_type:
+                type_suffix = f"({input_type})" # (audio (edited) memo)
+            elif input_type == "text":
+                type_suffix = "(text memo)" # (text memo)
+                
+            formatted_memo = f"- {date_time_str} {type_suffix}\n\t- " + "\n\t- ".join(memo_lines)
+
+            # 3. update_section で追記 (英語の見出し)
+            section_header = "## Notes"
+            new_content = update_section(current_content, formatted_memo, section_header)
+
+            # 4. Dropboxにアップロード
+            await asyncio.to_thread(
+                self.dbx.files_upload,
+                new_content.encode('utf-8'),
+                book_path,
+                mode=WriteMode('overwrite')
+            )
+            logging.info(f"BookCog: {input_type} メモを追記しました: {book_path}")
+
+            # 5. ★ (REQ 2) メッセージのクリーンアップ
+            try:
+                await confirmation_message.delete()
+                logging.info(f"BookCog: ボットの確認メッセージ (ID: {confirmation_message.id}) を削除しました。")
+            except discord.HTTPException as e_del_conf:
+                logging.warning(f"BookCog: ボットの確認メッセージ削除に失敗: {e_del_conf}")
+                
+            try:
+                await original_message.delete()
+                logging.info(f"BookCog: ユーザーの元メモ (ID: {original_message.id}) を削除しました。")
+            except discord.HTTPException as e_del_orig:
+                 logging.warning(f"BookCog: ユーザーの元メモ削除に失敗: {e_del_orig}")
+
+        except Exception as e:
+            # このエラーは interaction.followup.send で呼び出し元に伝達される
+            logging.error(f"BookCog: _save_memo_to_obsidian_and_cleanup でエラー: {e}", exc_info=True)
+            raise # エラーを再発生させ、モーダル/Viewのon_submit/callback側でキャッチさせる
 
 
     @commands.Cog.listener()
@@ -670,7 +772,6 @@ class BookCog(commands.Cog):
             try: await message.remove_reaction(payload.emoji, self.bot.user)
             except discord.HTTPException: pass
             
-            # 修正: _start_book_selection_workflow を呼び出す
             await self._start_book_selection_workflow(message)
 
     # _start_book_selection_workflow (書籍ノート作成の「選択」ワークフロー)
@@ -876,9 +977,12 @@ cover: {thumbnail_url}
             logging.error(f"BookCog: ノート保存またはデイリーノート更新中に予期せぬエラー: {e}", exc_info=True)
             return False
 
-    # --- ★ 修正: /book_memo コマンド (テキスト入力モーダルを起動) ---
-    @app_commands.command(name="book_memo", description="読書ノートを選択して「テキスト」メモを追記します。")
+    # --- ★ 修正: /book_memo コマンド (説明文を修正) ---
+    @app_commands.command(name="book_memo", description="（非推奨）テキストメモをモーダルで入力します。")
     async def book_memo(self, interaction: discord.Interaction):
+        """(★ 修正: このコマンドは /book_status とUIを合わせるために残しますが、
+            on_message でのテキスト投稿を推奨します)
+        """
         if not self.is_ready:
             await interaction.response.send_message("読書ノート機能は現在利用できません。", ephemeral=True)
             return
@@ -897,14 +1001,14 @@ cover: {thumbnail_url}
             options = [discord.SelectOption(label=entry.name[:-3][:100], value=entry.path_display) for entry in book_files[:25]]
             
             # original_context に interaction を渡す
-            view = BookSelectView(self, options, original_context=interaction, action_type="memo")
-            await interaction.followup.send("どの書籍にメモを追記しますか？", view=view, ephemeral=True)
+            view = BookSelectView(self, options, original_context=interaction, action_type="memo") # "memo" はモーダルを起動
+            await interaction.followup.send("どの書籍にメモを追記しますか？（テキスト・音声・画像の直接投稿も可能です）", view=view, ephemeral=True)
 
         except Exception as e:
             logging.error(f"BookCog: /book_memo コマンド処理中に予期せぬエラー: {e}", exc_info=True)
             await interaction.followup.send(f"❌ コマンド処理中に予期せぬエラーが発生しました: {e}", ephemeral=True)
 
-    # --- /book_status コマンド (修正) ---
+    # --- /book_status コマンド ---
     @app_commands.command(name="book_status", description="読書ノートのステータスを変更します。")
     async def book_status(self, interaction: discord.Interaction):
         if not self.is_ready:
@@ -924,7 +1028,6 @@ cover: {thumbnail_url}
 
             options = [discord.SelectOption(label=entry.name[:-3][:100], value=entry.path_display) for entry in book_files[:25]]
             
-            # original_context に interaction を渡す
             view = BookSelectView(self, options, original_context=interaction, action_type="status")
             await interaction.followup.send("どの書籍のステータスを変更しますか？", view=view, ephemeral=True)
 
@@ -937,7 +1040,6 @@ cover: {thumbnail_url}
         """Dropboxから書籍ノートの一覧を取得する共通ヘルパー"""
         try:
             folder_path = f"{self.dropbox_vault_path}{READING_NOTES_PATH}"
-            # フォルダが存在しない場合を考慮
             try:
                 result = await asyncio.to_thread(self.dbx.files_list_folder, folder_path, recursive=False)
             except ApiError as e:
@@ -945,21 +1047,16 @@ cover: {thumbnail_url}
                     logging.warning(f"BookCog: 読書ノートフォルダが見つかりません: {folder_path}")
                     return [], f"Obsidian Vaultの `{folder_path}` フォルダが見つかりませんでした。"
                 else:
-                    raise # 他のAPIエラーは再発生させる
+                    raise
             
-            book_files = []
-            for entry in result.entries:
-                if isinstance(entry, FileMetadata) and entry.name.endswith('.md'):
-                    book_files.append(entry)
+            book_files = [entry for entry in result.entries if isinstance(entry, FileMetadata) and entry.name.endswith('.md')]
             
-            # 競合チェックのみが目的の場合は、ソートや空リストのチェックは不要
             if check_only:
                 return book_files, None
 
             if not book_files:
                 return [], f"Obsidian Vaultの `{folder_path}` フォルダに読書ノートが見つかりませんでした。"
 
-            # 最終更新日時でソート (新しいものが上)
             book_files.sort(key=lambda x: x.server_modified, reverse=True)
             return book_files, None
         
@@ -970,7 +1067,6 @@ cover: {thumbnail_url}
 
 async def setup(bot: commands.Bot):
     """Cogセットアップ"""
-    # (10) 必要なキーのチェックを強化
     if int(os.getenv("BOOK_NOTE_CHANNEL_ID", 0)) == 0:
         logging.error("BookCog: BOOK_NOTE_CHANNEL_ID が設定されていません。Cogをロードしません。")
         return
