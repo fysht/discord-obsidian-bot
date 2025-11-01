@@ -267,10 +267,10 @@ class ZeroSecondThinkingCog(commands.Cog):
         except Exception as e:
             logging.error(f"思考履歴の保存に失敗: {e}", exc_info=True)
 
-
     @app_commands.command(name="zst_start", description="ゼロ秒思考の新しいお題を開始します。")
-    async def zst_start(self, interaction: discord.Interaction):
-        """Generates and posts a new thinking prompt."""
+    @app_commands.describe(prompt="お題を自分で設定する場合に入力します（AIによる自動生成を省略）。")
+    async def zst_start(self, interaction: discord.Interaction, prompt: str = None):
+        """Generates and posts a new thinking prompt, or uses a user-provided one."""
         if not self.is_ready:
             await interaction.response.send_message("ゼロ秒思考機能は現在準備中です。", ephemeral=True)
             return
@@ -281,37 +281,48 @@ class ZeroSecondThinkingCog(commands.Cog):
         await interaction.response.defer(ephemeral=False, thinking=True)
 
         try:
-            history = await self._get_thinking_history()
-            history_context = "\n".join([f"- {item.get('question', 'Q')}: {item.get('answer', 'A')[:100]}..." for item in history])
+            question = ""
 
-            prompt = f"""
-            あなたは思考を深めるための問いを投げかけるコーチです。
-            私が「ゼロ秒思考」を行うのを支援するため、質の高いお題を1つだけ生成してください。
-            # 指示
-            - ユーザーの過去の思考履歴を参考に、より深い洞察を促す問いを生成してください。
-            - 過去の回答内容を掘り下げるような質問や、関連するが異なる視点からの質問が望ましいです。
-            - 過去数回の質問と重複しないようにしてください。
-            - お題はビジネス、自己啓発、人間関係、創造性など、多岐にわたるテーマから選んでください。
-            - 前置きや挨拶は一切含めず、お題のテキストのみを生成してください。
-            # 過去の思考履歴（質問と回答の要約）
-            {history_context if history_context else "履歴はありません。"}
-            ---
-            お題:
-            """
-            response = await self.gemini_model.generate_content_async(prompt)
-            question = "デフォルトのお題: 今、一番気になっていることは何ですか？"
-            if response and hasattr(response, 'text') and response.text.strip():
-                 question = response.text.strip().replace("*", "")
+            if prompt:
+                # ユーザーがプロンプトを指定した場合
+                question = prompt
+                logging.info(f"New thinking question posted via command (User-defined): Q: {question}")
+            
             else:
-                 logging.warning(f"Geminiからの質問生成に失敗、または空の応答: {response}")
+                # ユーザーがプロンプトを指定しなかった場合 (AIが生成)
+                history = await self._get_thinking_history()
+                history_context = "\n".join([f"- {item.get('question', 'Q')}: {item.get('answer', 'A')[:100]}..." for item in history])
 
+                ai_prompt = f"""
+                あなたは思考を深めるための問いを投げかけるコーチです。
+                私が「ゼロ秒思考」を行うのを支援するため、質の高いお題を1つだけ生成してください。
+                # 指示
+                - ユーザーの過去の思考履歴を参考に、より深い洞察を促す問いを生成してください。
+                - 過去の回答内容を掘り下げるような質問や、関連するが異なる視点からの質問が望ましいです。
+                - 過去数回の質問と重複しないようにしてください。
+                - お題はビジネス、自己啓発、人間関係、創造性など、多岐にわたるテーマから選んでください。
+                - 前置きや挨拶は一切含めず、お題のテキストのみを生成してください。
+                # 過去の思考履歴（質問と回答の要約）
+                {history_context if history_context else "履歴はありません。"}
+                ---
+                お題:
+                """
+                response = await self.gemini_model.generate_content_async(ai_prompt)
+                question = "デフォルトのお題: 今、一番気になっていることは何ですか？"
+                if response and hasattr(response, 'text') and response.text.strip():
+                     question = response.text.strip().replace("*", "")
+                else:
+                     logging.warning(f"Geminiからの質問生成に失敗、または空の応答: {response}")
+                logging.info(f"New thinking question posted via command (AI-generated): Q: {question}")
+
+            # 共通の埋め込み送信処理
             embed = discord.Embed(title="🤔 ゼロ秒思考 - 新しいお題", description=f"お題: **{question}**", color=discord.Color.teal())
             embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください（音声・手書きメモ画像も可）。")
 
             sent_message = await interaction.followup.send(embed=embed)
 
             self.active_questions[sent_message.id] = question
-            logging.info(f"New thinking question posted via command: ID {sent_message.id}, Q: {question}")
+            logging.info(f"New thinking question active: ID {sent_message.id}, Q: {question}")
 
         except Exception as e:
             logging.error(f"[Zero-Second Thinking] /zst_start コマンドエラー: {e}", exc_info=True)
@@ -384,7 +395,6 @@ class ZeroSecondThinkingCog(commands.Cog):
         except discord.HTTPException: pass
 
         try:
-            # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
             if input_type == "audio" and attachment:
                 logging.info("Processing audio memo...")
                 # --- Audio Transcription ---
@@ -399,7 +409,7 @@ class ZeroSecondThinkingCog(commands.Cog):
                 logging.info("Audio transcribed successfully.")
                 # --- End Transcription ---
 
-                # --- Formatting ---
+                # --- ★ 修正: Formatting (Markdown「-」を使用) ---
                 formatting_prompt = (
                     "以下の音声メモの文字起こしを、構造化された箇条書きのMarkdown形式でまとめてください。\n"
                     "箇条書きの本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
@@ -408,13 +418,14 @@ class ZeroSecondThinkingCog(commands.Cog):
                 response = await self.gemini_model.generate_content_async(formatting_prompt)
                 formatted_answer = response.text.strip() if response and hasattr(response, 'text') else transcribed_text
                 logging.info("Audio memo formatted.")
-                # --- End Formatting ---
+                # --- ★ 修正ここまで ---
 
                 # --- Send for confirmation ---
                 try: await user_reply_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 except discord.HTTPException: pass
 
                 confirm_view = ConfirmTextView(self, original_question, formatted_answer, user_reply_message, "audio")
+                # ★ 修正: Discordに表示する際はMarkdownコードブロックを使用
                 bot_confirm_msg = await user_reply_message.reply(
                     f"**🎤 認識された音声メモ:**\n```markdown\n{formatted_answer}\n```\n内容を確認し、問題なければ「このまま投稿」、修正する場合は「編集する」ボタンを押してください。",
                     view=confirm_view
@@ -436,10 +447,15 @@ class ZeroSecondThinkingCog(commands.Cog):
                 except Exception as e_pil:
                      logging.error(f"Failed to open image using Pillow: {e_pil}", exc_info=True)
                      raise Exception("画像ファイルの形式が無効、または破損している可能性があります。")
+                
+                # --- ★ 修正: Vision Prompt (Markdown「-」を使用) ---
                 vision_prompt = [
-                    "この画像は手書きのメモです。内容を読み取り、箇条書きのMarkdown形式でテキスト化してください。返答には前置きや説明は含めず、箇条書きのテキスト本体のみを生成してください。",
+                    "この画像は手書きのメモです。内容を読み取り、箇条書きのMarkdown形式でテキスト化してください。\n"
+                    "返答には前置きや説明は含めず、箇条書きのテキスト本体のみを生成してください。",
                     img,
                 ]
+                # --- ★ 修正ここまで ---
+                
                 response = await self.gemini_vision_model.generate_content_async(vision_prompt)
                 recognized_text = response.text.strip() if response and hasattr(response, 'text') else "手書きメモの読み取りに失敗しました。"
                 logging.info("Image memo recognized by Gemini Vision.")
@@ -450,6 +466,7 @@ class ZeroSecondThinkingCog(commands.Cog):
                 except discord.HTTPException: pass
 
                 confirm_view = ConfirmTextView(self, original_question, recognized_text, user_reply_message, "image")
+                # ★ 修正: Discordに表示する際はMarkdownコードブロックを使用
                 bot_confirm_msg = await user_reply_message.reply(
                     f"**📝 認識された手書きメモ:**\n```markdown\n{recognized_text}\n```\n内容を確認し、問題なければ「このまま投稿」、修正する場合は「編集する」ボタンを押してください。",
                     view=confirm_view
@@ -458,8 +475,6 @@ class ZeroSecondThinkingCog(commands.Cog):
                 logging.info(f"Sent recognized image text and confirm/edit buttons for message {user_reply_message.id}")
                 return # Wait for button interaction
                 # --- End Confirmation ---
-
-            # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
             else: # Text input
                 logging.info("Processing text memo...")
@@ -613,7 +628,6 @@ class ZeroSecondThinkingCog(commands.Cog):
             self.active_questions[sent_message.id] = new_question
             logging.info(f"Follow-up question posted: ID {sent_message.id}, Q: {new_question}")
 
-            # >>>>>>>>>>>>>>>>>> MODIFICATION START (Delete original user reply) <<<<<<<<<<<<<<<<<<
             # --- Delete original user reply message (text, audio, image) ---
             if isinstance(context_message, discord.Message):
                  try:
@@ -621,7 +635,6 @@ class ZeroSecondThinkingCog(commands.Cog):
                      logging.info(f"Deleted original user reply message {context_message.id}")
                  except discord.HTTPException as e_del_user:
                      logging.warning(f"Failed to delete user reply message {context_message.id}: {e_del_user}")
-            # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
 
         except Exception as e_save:
@@ -663,9 +676,6 @@ class ZeroSecondThinkingCog(commands.Cog):
              logging.info(f"User {user_id} ended their ZST session. Cleared state for question {last_interacted_question_id}.")
         else:
              logging.info(f"User {user_id} used /zst_end but had no active interaction tracked.")
-
-        # Also clear any questions potentially asked TO this user if needed?
-        # For now, just clearing the user's interaction state seems sufficient.
 
         await interaction.response.send_message("ゼロ秒思考セッションを終了しました。新しいお題は `/zst_start` で始められます。", ephemeral=True, delete_after=15)
 

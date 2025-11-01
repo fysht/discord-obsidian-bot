@@ -26,9 +26,14 @@ except ImportError:
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", 0))
 WEB_CLIP_CHANNEL_ID = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
+# ★ 新規追加: 読書ノートチャンネルID
+BOOK_NOTE_CHANNEL_ID = int(os.getenv("BOOK_NOTE_CHANNEL_ID", 0))
+
 
 # --- リアクション絵文字 ---
 USER_TRANSFER_REACTION = '➡️' 
+# ★ 新規追加: 読書ノートトリガー
+BOOK_NOTE_REACTION = '📖' 
 BOT_PROCESS_TRIGGER_REACTION = '📥'
 PROCESS_FORWARDING_EMOJI = '➡️' 
 PROCESS_COMPLETE_EMOJI = '✅'
@@ -45,9 +50,9 @@ YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|yo
 class MemoCog(commands.Cog):
     """
     Discordの#memoチャンネルを監視し、テキストメモ保存、
-    またはユーザーリアクション(➡️)に応じてURLを指定チャンネルに転送するCog
+    またはユーザーリアクション(➡️, 📖)に応じてURLを指定チャンネルに転送するCog
     """
-
+    # ... (変更なし) ...
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.session = aiohttp.ClientSession() 
@@ -80,7 +85,7 @@ class MemoCog(commands.Cog):
             title = "タイトル不明"               # 最終的に保存するタイトル
             
             try:
-                # --- ★ 修正: Discord Embedの待機と取得 (YouTube/Web共通) ---
+                # --- ★ 修正: Discord Embedの待機と取得 (YouTube/Web/Book共通) ---
                 logging.info(f"Waiting 7s for Discord embed for {url_from_content}...")
                 await asyncio.sleep(7) # 埋め込みプレビューの生成を待機
                 
@@ -156,6 +161,7 @@ class MemoCog(commands.Cog):
             
         else:
             # URLが含まれない場合
+            # ... (変更なし) ...
             logging.info(f"Text memo detected in message {message.id}. Saving via obsidian_handler.")
             try:
                 await add_memo_async(
@@ -172,6 +178,7 @@ class MemoCog(commands.Cog):
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
 
     async def _forward_message(self, message: discord.Message, content_to_forward: str, target_channel_id: int, forward_type: str):
+        # ... (変更なし) ...
         if target_channel_id == 0:
             logging.warning(f"{forward_type} の転送先チャンネルIDが設定されていません。")
             return False
@@ -217,6 +224,7 @@ class MemoCog(commands.Cog):
 
     async def _handle_forward_error(self, message: discord.Message):
         """転送エラー時のリアクション処理"""
+        # ... (変更なし) ...
         try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
         except discord.HTTPException: pass
         try: await message.add_reaction(PROCESS_ERROR_EMOJI)
@@ -224,13 +232,14 @@ class MemoCog(commands.Cog):
     
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """ユーザーが付けたリアクション(➡️)に応じてURLメッセージを転送"""
+        """ユーザーが付けたリアクション(➡️, 📖)に応じてURLメッセージを転送"""
         if payload.user_id == self.bot.user.id or payload.channel_id != MEMO_CHANNEL_ID:
             return
 
         emoji = str(payload.emoji)
 
-        if emoji != USER_TRANSFER_REACTION:
+        # ★ 修正: 監視対象の絵文字を増やす
+        if emoji not in [USER_TRANSFER_REACTION, BOOK_NOTE_REACTION]:
             return
 
         channel = self.bot.get_channel(payload.channel_id)
@@ -260,34 +269,39 @@ class MemoCog(commands.Cog):
             logging.warning(f"ユーザーリアクション {emoji} の削除に失敗: {message.id}")
 
         
-        # ★ 修正: 転送するURLも、Discordの埋め込み(embed.url)から取得した完全なものを優先する
-        
+        # 転送するURLも、Discordの埋め込み(embed.url)から取得した完全なものを優先する
         final_url_to_forward = url_match.group(0) # デフォルト
         
         try:
-            # message.embeds は on_message で取得したものと違い、
-            # リアクション時点ではキャッシュされている可能性が高い
             if message.embeds and message.embeds[0].url:
                 final_url_to_forward = message.embeds[0].url
                 logging.info(f"Forwarding with full URL from embed: {final_url_to_forward}")
             else:
                 logging.warning(f"No embed.url found for forwarding message {message.id}, using original content.")
-                final_url_to_forward = content # フォールバック (元のメッセージ本文)
+                # ★ 修正: Embedがない場合は元のメッセージ(URLのみのはず)をそのまま使う
+                final_url_to_forward = content 
         except Exception as e:
             logging.warning(f"Could not get embed.url for forwarding message {message.id}: {e}. Using original content.")
             final_url_to_forward = content # フォールバック
 
-        # 転送先の判別
-        youtube_url_match = YOUTUBE_URL_REGEX.search(final_url_to_forward) # ★ 修正: 判定にも final_url_to_forward を使用
-        if youtube_url_match:
-            target_channel_id = YOUTUBE_SUMMARY_CHANNEL_ID
-            forward_type = "YouTube Summary"
-        else:
-            target_channel_id = WEB_CLIP_CHANNEL_ID
-            forward_type = "WebClip"
+        # ★ 修正: リアクションによって転送先を分岐
+        if emoji == USER_TRANSFER_REACTION: # ➡️ の場合
+            # 転送先の判別
+            youtube_url_match = YOUTUBE_URL_REGEX.search(final_url_to_forward)
+            if youtube_url_match:
+                target_channel_id = YOUTUBE_SUMMARY_CHANNEL_ID
+                forward_type = "YouTube Summary"
+            else:
+                target_channel_id = WEB_CLIP_CHANNEL_ID
+                forward_type = "WebClip"
+            
+            await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
 
-        await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
-
+        elif emoji == BOOK_NOTE_REACTION: # 📖 の場合
+            target_channel_id = BOOK_NOTE_CHANNEL_ID
+            forward_type = "Book Note"
+            await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
+        # ★ 修正ここまで
 
 async def setup(bot: commands.Bot):
     """Cogセットアップ"""
@@ -298,5 +312,8 @@ async def setup(bot: commands.Bot):
         logging.warning("MemoCog: WEB_CLIP_CHANNEL_ID が設定されていません。WebClipの転送は無効になります。")
     if YOUTUBE_SUMMARY_CHANNEL_ID == 0:
         logging.warning("MemoCog: YOUTUBE_SUMMARY_CHANNEL_ID が設定されていません。YouTubeの自動転送は無効になります。")
+    # ★ 新規追加: 読書ノートチャンネルの警告
+    if BOOK_NOTE_CHANNEL_ID == 0:
+        logging.warning("MemoCog: BOOK_NOTE_CHANNEL_ID が設定されていません。読書ノートの転送は無効になります。")
 
     await bot.add_cog(MemoCog(bot))
