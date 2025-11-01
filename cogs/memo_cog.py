@@ -37,7 +37,7 @@ PROCESS_FETCHING_EMOJI = '⏱️' # 待機中
 
 # URL Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
-# YouTube URL Regex
+# YouTube URL Regex (転送先の判別のみに使用)
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed|/youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
 
 
@@ -57,25 +57,6 @@ class MemoCog(commands.Cog):
         if self.session and not self.session.closed:
             await self.session.close()
 
-    async def get_video_info(self, video_id: str) -> dict:
-        """YouTube OEmbed APIを使用して動画情報を取得する"""
-        url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'}
-            async with self.session.get(url, headers=headers, timeout=10) as response:
-                if response.status == 200:
-                    try:
-                        data = await response.json()
-                        title = data.get("title")
-                        author_name = data.get("author_name")
-                        if title and author_name:
-                            return {"title": title, "author_name": author_name}
-                    except aiohttp.ContentTypeError: pass 
-            return {"title": f"YouTube_{video_id}", "author_name": "N/A"}
-        except Exception as e:
-            logging.warning(f"OEmbed unexpected error for {video_id}: {e}")
-            return {"title": f"YouTube_{video_id}", "author_name": "N/A"}
-
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """#memo チャンネルに投稿されたメッセージを処理 (テキストとURLの両方)"""
@@ -94,55 +75,64 @@ class MemoCog(commands.Cog):
                 await message.add_reaction(PROCESS_FETCHING_EMOJI) 
             except discord.HTTPException: pass
 
-            url = url_match.group(0)
-            title = "タイトル不明" # デフォルト
+            url_from_content = url_match.group(0) # メッセージ本文から取得したURL (途切れている可能性)
+            url_to_save = url_from_content      # 最終的に保存するURL
+            title = "タイトル不明"               # 最終的に保存するタイトル
             
             try:
-                # --- ★ 修正: タイトル取得ロジックの変更 ---
-                youtube_url_match = YOUTUBE_URL_REGEX.search(url)
+                # --- ★ 修正: Discord Embedの待機と取得 (YouTube/Web共通) ---
+                logging.info(f"Waiting 7s for Discord embed for {url_from_content}...")
+                await asyncio.sleep(7) # 埋め込みプレビューの生成を待機
                 
-                if youtube_url_match:
-                    # 1. YouTubeリンクの場合 (OEmbed API)
-                    logging.info(f"Fetching YouTube title (OEmbed) for {url}...")
-                    video_id = youtube_url_match.group(1)
-                    video_info = await self.get_video_info(video_id)
-                    title = video_info.get("title", f"YouTube Video (ID: {video_id})")
+                full_url_from_embed = None
+                title_from_embed = None
                 
-                else:
-                    # 2. 一般的なWebリンクの場合 (Discord Embedを待機)
-                    logging.info(f"Waiting for Discord embed for {url}...")
-                    await asyncio.sleep(5) # 5秒待機
-                    
-                    try:
-                        # メッセージを再取得して embeds を確認
-                        fetched_message = await message.channel.fetch_message(message.id)
-                        if fetched_message.embeds:
-                            embed_title = fetched_message.embeds[0].title
+                try:
+                    # メッセージを再取得して embeds を確認
+                    fetched_message = await message.channel.fetch_message(message.id)
+                    if fetched_message.embeds:
+                        embed = fetched_message.embeds[0]
+                        
+                        # 完全なURLを embed.url から取得
+                        if embed.url:
+                            full_url_from_embed = embed.url
+                            logging.info(f"Full URL found via embed.url: {full_url_from_embed}")
                             
-                            # --- ★★★ エラー修正箇所 ★★★ ---
-                            # if embed_title and embed_title != discord.Embed.Empty: (← 誤り)
-                            if embed_title: # (← 修正後: これでNoneまたは空文字列""を除外できる)
-                            # --- ★★★ エラー修正ここまで ★★★ ---
-                                title = embed_title
-                                logging.info(f"Title found via Discord embed: {title}")
-                    except (discord.NotFound, discord.Forbidden) as e:
-                         logging.warning(f"Failed to re-fetch message {message.id} for embed: {e}")
-                    
-                    # 3. Embedが取得できなかった場合 (フォールバック)
-                    if title == "タイトル不明":
-                        logging.info(f"No Discord embed. Falling back to web_parser for {url}...")
-                        loop = asyncio.get_running_loop()
-                        parsed_title, _ = await loop.run_in_executor(
-                            None, parse_url_with_readability, url
-                        )
-                        if parsed_title and parsed_title != "No Title Found":
-                            title = parsed_title
-                            logging.info(f"Title found via web_parser: {title}")
-                        else:
-                             logging.warning(f"web_parser also failed for {url}")
+                        # 完全なタイトルを embed.title から取得
+                        if embed.title:
+                            title_from_embed = embed.title
+                            logging.info(f"Title found via embed.title: {title_from_embed}")
+                            
+                except (discord.NotFound, discord.Forbidden) as e:
+                     logging.warning(f"Failed to re-fetch message {message.id} for embed: {e}")
+                
+                # --- 保存するURLとタイトルの決定 ---
+                
+                # URL: embed.url があれば最優先、なければ本文のURL
+                if full_url_from_embed:
+                    url_to_save = full_url_from_embed
+                
+                # タイトル: embed.title があれば最優先
+                # (ただし、タイトルがURLそのものである場合を除く = プレビュー失敗時)
+                if title_from_embed and "http" not in title_from_embed:
+                    title = title_from_embed
+                else:
+                    # Embedが取得できなかった場合 (フォールバック)
+                    logging.info(f"Embed title unusable ('{title_from_embed}'). Falling back to web_parser for {url_to_save}...")
+                    loop = asyncio.get_running_loop()
+                    parsed_title, _ = await loop.run_in_executor(
+                        None, parse_url_with_readability, url_to_save # (完全かもしれない) url_to_save を使用
+                    )
+                    if parsed_title and parsed_title != "No Title Found":
+                        title = parsed_title
+                        logging.info(f"Title found via web_parser: {title}")
+                    else:
+                         logging.warning(f"web_parser also failed for {url_to_save}")
+                         if title_from_embed: # 最後の手段 (タイトルがURLでも採用)
+                             title = title_from_embed
                 # --- ★ 修正ここまで ---
 
-                memo_content_to_save = f"{title}\n{url}"
+                memo_content_to_save = f"{title}\n{url_to_save}"
 
                 await add_memo_async(
                     content=memo_content_to_save,
@@ -155,10 +145,9 @@ class MemoCog(commands.Cog):
                 
                 await message.remove_reaction(PROCESS_FETCHING_EMOJI, self.bot.user)
                 await message.add_reaction(PROCESS_COMPLETE_EMOJI) 
-                logging.info(f"Successfully saved URL bookmark (ID: {message.id}), Title: {title}")
+                logging.info(f"Successfully saved URL bookmark (ID: {message.id}), Title: {title}, URL: {url_to_save}")
             
             except Exception as e:
-                # (asyncio.sleep 中に AttributeError が発生するとここに来る)
                 logging.error(f"Failed to parse URL title or save bookmark (ID: {message.id}): {e}", exc_info=True)
                 try:
                     await message.remove_reaction(PROCESS_FETCHING_EMOJI, self.bot.user)
@@ -166,7 +155,7 @@ class MemoCog(commands.Cog):
                 except discord.HTTPException: pass
             
         else:
-            # URLが含まれない場合 (元のロジック)
+            # URLが含まれない場合
             logging.info(f"Text memo detected in message {message.id}. Saving via obsidian_handler.")
             try:
                 await add_memo_async(
@@ -182,7 +171,6 @@ class MemoCog(commands.Cog):
                 logging.error(f"Failed to save text memo (ID: {message.id}) using add_memo_async: {e}", exc_info=True)
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
 
-    # ( _forward_message と _handle_forward_error は変更なし )
     async def _forward_message(self, message: discord.Message, content_to_forward: str, target_channel_id: int, forward_type: str):
         if target_channel_id == 0:
             logging.warning(f"{forward_type} の転送先チャンネルIDが設定されていません。")
@@ -234,7 +222,6 @@ class MemoCog(commands.Cog):
         try: await message.add_reaction(PROCESS_ERROR_EMOJI)
         except discord.HTTPException: pass
     
-    # ( on_raw_reaction_add は変更なし )
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """ユーザーが付けたリアクション(➡️)に応じてURLメッセージを転送"""
@@ -257,7 +244,7 @@ class MemoCog(commands.Cog):
         content = message.content.strip()
         url_match = URL_REGEX.search(content)
         if not url_match:
-            logging.warning(f"リアクション {emoji} がURLを含まないメッセージ {message.id} に追加されました。処理をスキップします。")
+            logging.warning(f"リアクション {emoji} がURLを含ないメッセージ {message.id} に追加されました。処理をスキップします。")
             try:
                 user = await self.bot.fetch_user(payload.user_id)
                 if user: await message.remove_reaction(payload.emoji, user)
@@ -272,7 +259,26 @@ class MemoCog(commands.Cog):
         except discord.HTTPException:
             logging.warning(f"ユーザーリアクション {emoji} の削除に失敗: {message.id}")
 
-        youtube_url_match = YOUTUBE_URL_REGEX.search(content)
+        
+        # ★ 修正: 転送するURLも、Discordの埋め込み(embed.url)から取得した完全なものを優先する
+        
+        final_url_to_forward = url_match.group(0) # デフォルト
+        
+        try:
+            # message.embeds は on_message で取得したものと違い、
+            # リアクション時点ではキャッシュされている可能性が高い
+            if message.embeds and message.embeds[0].url:
+                final_url_to_forward = message.embeds[0].url
+                logging.info(f"Forwarding with full URL from embed: {final_url_to_forward}")
+            else:
+                logging.warning(f"No embed.url found for forwarding message {message.id}, using original content.")
+                final_url_to_forward = content # フォールバック (元のメッセージ本文)
+        except Exception as e:
+            logging.warning(f"Could not get embed.url for forwarding message {message.id}: {e}. Using original content.")
+            final_url_to_forward = content # フォールバック
+
+        # 転送先の判別
+        youtube_url_match = YOUTUBE_URL_REGEX.search(final_url_to_forward) # ★ 修正: 判定にも final_url_to_forward を使用
         if youtube_url_match:
             target_channel_id = YOUTUBE_SUMMARY_CHANNEL_ID
             forward_type = "YouTube Summary"
@@ -280,7 +286,7 @@ class MemoCog(commands.Cog):
             target_channel_id = WEB_CLIP_CHANNEL_ID
             forward_type = "WebClip"
 
-        await self._forward_message(message, content, target_channel_id, forward_type)
+        await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
 
 
 async def setup(bot: commands.Bot):
