@@ -1,3 +1,4 @@
+# cogs/book_cog.py (修正版)
 import os
 import discord
 from discord import app_commands
@@ -107,7 +108,14 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
         self.input_type = input_type
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        # ★ 修正: ネットワークエラー(ConnectionResetError)発生時も考慮し、deferをtry-exceptで囲む
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except Exception as e_defer:
+            logging.error(f"BookMemoEditModal: on_submitでのdeferに失敗 (ネットワークエラーの可能性): {e_defer}", exc_info=True)
+            # deferに失敗した場合、後続のfollowupも失敗する可能性が高いが、処理は続行してみる
+            pass
+
         edited_text = self.memo_text.value
         
         try:
@@ -125,16 +133,22 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
 
         except Exception as e:
             logging.error(f"BookCog: 編集済みメモの保存中にエラー: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ 編集済みメモの保存中にエラーが発生しました: {e}", ephemeral=True)
+            try:
+                await interaction.followup.send(f"❌ 編集済みメモの保存中にエラーが発生しました: {e}", ephemeral=True)
+            except discord.HTTPException as e_followup:
+                 logging.error(f"BookCog: エラーのfollowup送信にも失敗: {e_followup}")
             await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         logging.error(f"Error in BookMemoEditModal: {error}", exc_info=True)
-        if interaction.response.is_done():
-            await interaction.followup.send(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
-        else:
-            try: await interaction.response.send_message(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
-            except discord.InteractionResponded: pass
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
+            else:
+                try: await interaction.response.send_message(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
+                except discord.InteractionResponded: pass
+        except discord.HTTPException as e_resp:
+             logging.error(f"BookMemoEditModal: on_errorでの応答送信に失敗: {e_resp}")
         await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
 
 # --- ★ (REQ 1) メモ「確認・編集」View ---
@@ -288,12 +302,13 @@ class BookSelectView(discord.ui.View):
             if isinstance(self.original_context, discord.Interaction):
                 await self.original_context.edit_original_response(**kwargs)
             elif isinstance(self.original_context, discord.Message):
-                # (Fix 4) 音声メッセージは編集できないため、HTTPException(code 50162)をキャッチ
                 try:
                     await self.original_context.edit(**kwargs)
                 except discord.HTTPException as e_msg:
-                    if e_msg.code == 50162: # 50162 = Voice messages cannot be edited
-                        logging.warning(f"BookSelectView: 元メッセージは音声メッセージのため編集をスキップ: {e_msg.text}")
+                    # 50162 = Voice messages cannot be edited
+                    # 50005 = Cannot edit a message authored by another user (logで発生していたエラー)
+                    if e_msg.code == 50162 or e_msg.code == 50005: 
+                        logging.warning(f"BookSelectView: 元メッセージは編集不可（音声または他ユーザー）のため編集をスキップ: {e_msg.text}")
                     else:
                         raise # 他のHTTPExceptionは再発生させる
         except discord.HTTPException as e:
@@ -314,8 +329,12 @@ class BookSelectView(discord.ui.View):
             # ★ (REQ 1) 添付ファイルの処理を開始 (テキスト化)
             await interaction.response.defer(ephemeral=True, thinking=True)
             
-            # 元のドロップダウンメッセージを「処理中...」に変更
-            await self._edit_original_response(content=f"`{os.path.basename(selected_path)}` に {self.input_type} メモを処理中です... {PROCESS_START_EMOJI}", view=None)
+            # 元のドロップダウンメッセージ(bot_reply_message)を「処理中...」に変更
+            try:
+                if self.bot_reply_message:
+                    await self.bot_reply_message.edit(content=f"`{os.path.basename(selected_path)}` に {self.input_type} メモを処理中です... {PROCESS_START_EMOJI}", view=None)
+            except discord.HTTPException as e_edit:
+                 logging.warning(f"BookSelectView: ドロップダウンメッセージの編集に失敗: {e_edit}")
             
             # テキスト化処理を呼び出す
             await self.cog.process_posted_memo(
@@ -331,7 +350,14 @@ class BookSelectView(discord.ui.View):
         self.stop()
 
     async def on_timeout(self):
-        await self._edit_original_response(content="書籍の選択がタイムアウトしました。", view=None)
+        # ★ 修正: ユーザーのメッセージ(original_context)ではなく、
+        # ボットが送信したドロップダウンメッセージ(bot_reply_message)を編集する
+        if self.bot_reply_message:
+            try:
+                await self.bot_reply_message.edit(content="書籍の選択がタイムアウトしました。", view=None)
+            except discord.HTTPException as e:
+                logging.warning(f"BookSelectView: タイムアウトメッセージの編集に失敗: {e}")
+        # await self._edit_original_response(content="書籍の選択がタイムアウトしました。", view=None) # 修正前
 
 
 # --- 書籍「作成」の確認View (ドロップダウン) ---
@@ -443,6 +469,10 @@ class BookCog(commands.Cog):
         self.session = None
         self.is_ready = False
         
+        # ★ 修正: gemini_model も None で初期化
+        self.gemini_model = None
+        self.gemini_vision_model = None
+        
         if not all([self.book_note_channel_id, self.google_books_api_key, self.dropbox_refresh_token, self.openai_api_key, self.gemini_api_key]):
             logging.error("BookCog: 必要な環境変数 (BOOK_NOTE_CHANNEL_ID, GOOGLE_BOOKS_API_KEY, DROPBOX_REFRESH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY) が不足。Cogは動作しません。")
             return
@@ -461,7 +491,10 @@ class BookCog(commands.Cog):
             
             self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
             genai.configure(api_key=self.gemini_api_key)
-            self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro") 
+            
+            # ★ 修正: gemini_model (通常モデル) も初期化
+            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro") # (VisionはProモデルを使う)
             
             self.is_ready = True
 
@@ -517,7 +550,7 @@ class BookCog(commands.Cog):
         if message.content.strip().startswith('/'):
             return
 
-        # URL (ノート作成トリガー) も無視
+        # URL (ノート作成トリガー) も無視 (on_raw_reaction_add が担当)
         if message.content.strip().startswith('http'):
             return
 
@@ -575,7 +608,8 @@ class BookCog(commands.Cog):
         except Exception as e:
             logging.error(f"BookCog: on_message での添付ファイル/テキスト処理中にエラー: {e}", exc_info=True)
             if bot_reply_message: # bot_reply_message がNoneでないことを確認
-                await bot_reply_message.delete()
+                try: await bot_reply_message.delete()
+                except discord.HTTPException: pass
             await message.reply(f"❌ メモの処理開始中にエラーが発生しました: {e}")
             try:
                 await message.remove_reaction("🤔", self.bot.user)
@@ -623,16 +657,45 @@ class BookCog(commands.Cog):
                 recognized_text = transcription.text
                 logging.info(f"BookCog: 音声認識完了 (Whisper): {recognized_text[:50]}...")
 
+                # --- ★ (REQ 3) Geminiで整形 (箇条書き記号なし) ---
+                formatting_prompt = (
+                    "以下の音声メモの文字起こしを、構造化されたメモ形式でまとめてください。\n"
+                    "**箇条書きの記号（「-」や「*」など）は使用せず**、各項目を改行して並べてください。\n"
+                    "返答には前置きや説明は一切含めないでください。\n\n"
+                    f"---\n\n{recognized_text}"
+                )
+                try:
+                    # (Fix 1) gemini_model を使う (vision_model ではない)
+                    if not hasattr(self, 'gemini_model') or not self.gemini_model:
+                         self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+                    
+                    response = await self.gemini_model.generate_content_async(formatting_prompt)
+                    formatted_text = response.text.strip()
+                    if formatted_text:
+                        recognized_text = formatted_text
+                        logging.info(f"BookCog: 音声メモをGeminiで整形完了: {recognized_text[:50]}...")
+                    else:
+                        logging.warning("BookCog: Geminiでの音声メモ整形結果が空です。元のテキストを使用します。")
+                except Exception as e_format:
+                    logging.error(f"BookCog: Geminiでの音声メモ整形中にエラー: {e_format}。元のテキストを使用します。")
+                # --- ★ (REQ 3) ここまで ---
+
             elif input_type == "image":
                 async with self.session.get(attachment.url) as resp:
                     if resp.status != 200: raise Exception(f"ファイルダウンロード失敗: Status {resp.status}")
                     file_bytes = await resp.read()
                     
                 img = Image.open(io.BytesIO(file_bytes))
+                
+                # --- ★ (REQ 3) Vision Prompt (箇条書き記号なし) ---
                 vision_prompt = [
-                    "この画像は手書きのメモです。内容を読み取り、箇条書きのMarkdown形式でテキスト化してください。返答には前置きや説明は含めず、箇条書きのテキスト本体のみを生成してください。",
+                    "この画像は手書きのメモです。内容を読み取り、テキスト化してください。\n"
+                    "**箇条書きの記号（「-」や「*」など）は使用せず**、読み取った内容を改行して並べてください。\n"
+                    "返答には前置きや説明は含めず、テキスト本体のみを生成してください。",
                     img,
                 ]
+                # --- ★ (REQ 3) ここまで ---
+                
                 response = await self.gemini_vision_model.generate_content_async(vision_prompt)
                 recognized_text = response.text.strip()
                 logging.info(f"BookCog: 手書きメモ認識完了 (Gemini): {recognized_text[:50]}...")
@@ -662,7 +725,8 @@ class BookCog(commands.Cog):
             confirm_view.confirmation_message = confirm_msg
             
             # (Fix 4) interaction への応答は followup で行う
-            await interaction.followup.send("テキストを認識しました。内容を確認してください。", ephemeral=True, delete_after=10)
+            # ★ 修正: delete_after を削除 (TypeError 修正)
+            await interaction.followup.send("テキストを認識しました。内容を確認してください。", ephemeral=True)
             
             # ⏳ リアクションは確認Viewのタイムアウト/完了まで保持
             # await original_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
@@ -670,7 +734,10 @@ class BookCog(commands.Cog):
         except Exception as e:
             logging.error(f"BookCog: 添付メモ処理中にエラー: {e}", exc_info=True)
             if not interaction.response.is_done():
-                 await interaction.response.send_message(f"❌ {input_type} メモの処理中にエラーが発生しました: {e}", ephemeral=True)
+                 try:
+                     await interaction.response.send_message(f"❌ {input_type} メモの処理中にエラーが発生しました: {e}", ephemeral=True)
+                 except discord.InteractionResponded:
+                      await interaction.followup.send(f"❌ {input_type} メモの処理中にエラーが発生しました: {e}", ephemeral=True)
             else:
                  await interaction.followup.send(f"❌ {input_type} メモの処理中にエラーが発生しました: {e}", ephemeral=True)
             try: await original_message.add_reaction(PROCESS_ERROR_EMOJI)
@@ -1001,7 +1068,8 @@ cover: {thumbnail_url}
             options = [discord.SelectOption(label=entry.name[:-3][:100], value=entry.path_display) for entry in book_files[:25]]
             
             # original_context に interaction を渡す
-            view = BookSelectView(self, options, original_context=interaction, action_type="memo") # "memo" はモーダルを起動
+            # ★ 修正: action_type を "add_memo" に、input_type を "text" に
+            view = BookSelectView(self, options, original_context=interaction, action_type="add_memo", text_memo="（/book_memo からの入力）", input_type="text")
             await interaction.followup.send("どの書籍にメモを追記しますか？（テキスト・音声・画像の直接投稿も可能です）", view=view, ephemeral=True)
 
         except Exception as e:
