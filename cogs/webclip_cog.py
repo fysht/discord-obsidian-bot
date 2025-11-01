@@ -11,10 +11,10 @@ from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
 
-# readabilityベースのパーサーをインポート
+# readabilityベースのパーサーをインポート (フォールバックとして)
 from web_parser import parse_url_with_readability
 
-# --- Google Docs連携 (youtube_cog.py からコピー) ---
+# --- Google Docs連携 ---
 try:
     from google_docs_handler import append_text_to_doc_async
     google_docs_enabled = True
@@ -31,7 +31,7 @@ except ImportError:
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 
-# --- リアクション定数 (youtube_cog.py からコピー) ---
+# --- リアクション定数 ---
 BOT_PROCESS_TRIGGER_REACTION = '📥' 
 PROCESS_START_EMOJI = '⏳'
 PROCESS_COMPLETE_EMOJI = '✅'
@@ -46,7 +46,6 @@ class WebClipCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # .envファイルからDropboxの認証情報を読み込む
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -60,23 +59,18 @@ class WebClipCog(commands.Cog):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """
         Bot(自分自身)が付けた 📥 リアクションを検知して処理を開始する
-        (youtube_cog.py からコピー・修正)
         """
         
-        # WebClipチャンネル以外は無視
         if payload.channel_id != self.web_clip_channel_id:
             return
             
         emoji_str = str(payload.emoji)
 
-        # 1. このリアクションはトリガー(📥)か？
         if emoji_str == BOT_PROCESS_TRIGGER_REACTION: # '📥'
             
-            # 2. このリアクションは Bot (＝自分自身) が付けたものか？
             if payload.user_id != self.bot.user.id:
                 return 
  
-            # 3. メッセージを取得
             channel = self.bot.get_channel(payload.channel_id)
             if not channel: return
             try:
@@ -85,7 +79,6 @@ class WebClipCog(commands.Cog):
                 logging.warning(f"メッセージの取得に失敗しました: {payload.message_id}")
                 return
 
-            # 4. 既に処理中/処理完了のリアクションを付けているか？
             is_processed = any(r.emoji in (
                 PROCESS_START_EMOJI, PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, 
                 SAVE_ERROR_EMOJI, GOOGLE_DOCS_ERROR_EMOJI
@@ -95,42 +88,56 @@ class WebClipCog(commands.Cog):
                 logging.info(f"既に処理中または処理済みのメッセージのためスキップします: {message.jump_url}")
                 return
 
-            # 5. 【処理実行】
             logging.info(f"Bot (self) の '{BOT_PROCESS_TRIGGER_REACTION}' を検知しました。WebClip処理を開始します: {message.jump_url}")
             
-            # トリガー 📥 (Bot/自分 が付けたもの) を削除
             try:
                 await message.remove_reaction(payload.emoji, self.bot.user)
             except discord.HTTPException:
                 logging.warning(f"Bot のリアクション削除に失敗しました: {message.jump_url}")
 
-            await self._perform_clip(url=message.content.strip(), message=message)
+            # ★ 修正: _perform_clip に message オブジェクト自体を渡す
+            await self._perform_clip(message=message)
 
-        # 6. それ以外 (人間が付けたリアクションなど)
         elif payload.user_id == self.bot.user.id:
-            # 自分が付けた処理中・完了リアクションを検知しても何もしない
             return
         else:
             return
 
-    async def _perform_clip(self, url: str, message: discord.Message):
+    # ★ 修正: _perform_clip が message オブジェクトを受け取るように
+    async def _perform_clip(self, message: discord.Message):
         """Webクリップのコアロジック"""
-        # --- ★ 修正: エラーハンドリングとGDocs連携の準備 ---
+        
+        url = message.content.strip() # URLは message.content から取得
+        
         obsidian_save_success = False
         gdoc_save_success = False
         error_reactions = set()
         title = "Untitled"
         content_md = ""
-        # --- ★ 修正ここまで ---
 
         try:
-            # ★ 修正: PROCESS_START_EMOJI を使用
             await message.add_reaction(PROCESS_START_EMOJI)
 
+            # --- ★ 修正: Discord Embedからタイトルを取得 ---
+            if message.embeds:
+                embed_title = message.embeds[0].title
+                if embed_title and embed_title != discord.Embed.Empty:
+                    title = embed_title
+                    logging.info(f"Title found via Discord embed: {title}")
+            # --- ★ 修正ここまで ---
+            
+            # --- 本文取得 (web_parser) ---
             loop = asyncio.get_running_loop()
-            title, content_md = await loop.run_in_executor(
+            # ★ 修正: web_parser から title を受け取るが、既にあれば上書きしない
+            parsed_title, content_md = await loop.run_in_executor(
                 None, parse_url_with_readability, url
             )
+            
+            # Embedからタイトルが取れなかった場合のみ、web_parserのタイトルを採用
+            if title == "Untitled" and parsed_title and parsed_title != "No Title Found":
+                title = parsed_title
+                logging.info(f"Title (fallback) found via web_parser: {title}")
+            # --- ★ 修正ここまで ---
 
             safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
             if not safe_title:
@@ -151,7 +158,6 @@ class WebClipCog(commands.Cog):
                 f"{content_md}"
             )
             
-            # --- ★ 修正: Dropboxクライアント初期化とエラーハンドリング (youtube_cog.py に合わせる) ---
             dbx = None
             if self.dropbox_refresh_token:
                 try:
@@ -171,7 +177,6 @@ class WebClipCog(commands.Cog):
             if dbx:
                 try:
                     webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
-                    # ★ 修正: to_thread を使用
                     await asyncio.to_thread(
                         dbx.files_upload,
                         webclip_note_content.encode('utf-8'),
@@ -183,20 +188,18 @@ class WebClipCog(commands.Cog):
                     daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{daily_note_date}.md"
     
                     try:
-                        # ★ 修正: to_thread を使用
                         _, res = await asyncio.to_thread(dbx.files_download, daily_note_path)
                         daily_note_content = res.content.decode('utf-8')
                     except ApiError as e:
                         if isinstance(e.error, dropbox.files.DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                            daily_note_content = "" # ★ 修正: 新規作成時は空
+                            daily_note_content = "" 
                             logging.info(f"デイリーノート {daily_note_path} は存在しないため、新規作成します。")
                         else:
-                            raise # 他のApiErrorは上位でキャッチ
+                            raise 
     
-                    link_to_add = f"- [[WebClips/{webclip_file_name_for_link}|{title}]]" # ★ 修正: リンクパスとタイトル
+                    link_to_add = f"- [[WebClips/{webclip_file_name_for_link}|{title}]]" 
                     webclips_heading = "## WebClips"
     
-                    # --- ★ 修正: 自前のロジック (元々のコード) を使用 ---
                     lines = daily_note_content.split('\n')
                     try:
                         heading_index = -1
@@ -207,11 +210,9 @@ class WebClipCog(commands.Cog):
                         if heading_index == -1: raise ValueError("Header not found")
                         
                         insert_index = heading_index + 1
-                        # 次の見出し (##) が来るまで進む
                         while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
                             insert_index += 1
                         
-                        # 挿入位置の直前が空行でない場合、空行を挿入
                         if insert_index > heading_index + 1 and lines[insert_index - 1].strip() != "":
                             lines.insert(insert_index, "")
                             insert_index += 1
@@ -219,12 +220,9 @@ class WebClipCog(commands.Cog):
                         lines.insert(insert_index, link_to_add)
                         new_daily_content = "\n".join(lines)
                     except ValueError:
-                        # 「## WebClips」セクションが存在しない場合は、末尾に追加
                         logging.info(f"Section '{webclips_heading}' not found in daily note, appending.")
                         new_daily_content = daily_note_content.strip() + f"\n\n{webclips_heading}\n{link_to_add}\n"
-                    # --- ★ 修正ここまで (自前ロジック) ---
                     
-                    # ★ 修正: to_thread を使用
                     await asyncio.to_thread(
                         dbx.files_upload,
                         new_daily_content.encode('utf-8'),
@@ -240,17 +238,16 @@ class WebClipCog(commands.Cog):
                 except Exception as e_obs_other:
                     logging.error(f"Error saving to Obsidian (Other): {e_obs_other}", exc_info=True)
                     error_reactions.add(SAVE_ERROR_EMOJI)
-            # --- ★ 修正: Dropbox処理ブロックここまで ---
-
-            # --- ★ 追加: Google Docsへの保存 (Goal 2) ---
+            
+            # --- Google Docsへの保存 ---
             if google_docs_enabled:
                 gdoc_text_to_append = ""
                 gdoc_source_type = "WebClip Error"
 
-                if content_md: # 抽出した本文
+                if content_md: 
                     gdoc_text_to_append = content_md
                     gdoc_source_type = "WebClip Content"
-                elif url: # 本文抽出失敗時はURLのみ
+                elif url: 
                     gdoc_text_to_append = "(本文の抽出に失敗しました)"
                     gdoc_source_type = "WebClip URL (Content Failed)"
 
@@ -267,9 +264,8 @@ class WebClipCog(commands.Cog):
                     except Exception as e_gdoc:
                         logging.error(f"Failed to send data to Google Docs for {url}: {e_gdoc}", exc_info=True)
                         error_reactions.add(GOOGLE_DOCS_ERROR_EMOJI)
-            # --- ★ 追加ここまで ---
-
-            # --- ★ 修正: 最終リアクション ---
+            
+            # --- 最終リアクション ---
             if obsidian_save_success:
                 await message.add_reaction(PROCESS_COMPLETE_EMOJI)
                 if error_reactions: # GDocエラーなど
@@ -281,40 +277,38 @@ class WebClipCog(commands.Cog):
                 for reaction in final_reactions:
                     try: await message.add_reaction(reaction)
                     except discord.HTTPException: pass
-            # --- ★ 修正ここまで ---
 
         except Exception as e:
             logging.error(f"Webクリップ処理中にエラー: {e}", exc_info=True)
-            # ★ 修正: PROCESS_ERROR_EMOJI を使用
             try: await message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
         finally:
-            # ★ 修正: PROCESS_START_EMOJI を使用
             try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
             except discord.HTTPException: pass
-
-    # ★ 修正: on_message は memo_cog.py が担当するため、ここではコメントアウト
-    # @commands.Cog.listener()
-    # async def on_message(self, message: discord.Message):
-    #     if message.author.bot or message.channel.id != self.web_clip_channel_id:
-    #         return
-    #     content = message.content.strip()
-    #     if content.startswith('http') and URL_REGEX.match(content):
-    #         url = content
-    #         await self._perform_clip(url=url, message=message)
-    # ★ 修正ここまで
 
     @app_commands.command(name="clip", description="URLをObsidianにクリップします。")
     @app_commands.describe(url="クリップしたいページのURL")
     async def clip(self, interaction: discord.Interaction, url: str):
-        # ★ 修正: youtube_cog.py に合わせたインタラクション制御
+        
+        # ★ 修正: スラッシュコマンドの場合、message.embeds が存在しないため、
+        # web_parser を使うしかないが、プロキシも同様の挙動をするため、
+        # 元のロジック (TempMessage) に戻す。
+        # ただし、_perform_clip が message オブジェクト全体を期待するようになったため、
+        # url だけでなく message オブジェクト (プロキシ) を渡す。
+        
         await interaction.response.defer(ephemeral=False, thinking=True)
         message_proxy = await interaction.original_response()
 
-        # TempMessage クラス (youtube_cog.py からコピー)
+        # TempMessage クラス
         class TempMessage:
              def __init__(self, proxy):
-                 self.id = proxy.id; self.reactions = []; self.channel = proxy.channel; self.jump_url = proxy.jump_url; self._proxy = proxy; self.content=proxy.content
+                 self.id = proxy.id
+                 self.reactions = [] # add_reaction/remove_reactionで使う
+                 self.channel = proxy.channel
+                 self.jump_url = proxy.jump_url
+                 self._proxy = proxy
+                 self.content = proxy.content
+                 self.embeds = [] # ★ スラッシュコマンド起因の場合、embedsは無い
              async def add_reaction(self, emoji):
                  try: await self._proxy.add_reaction(emoji)
                  except: pass
@@ -322,8 +316,12 @@ class WebClipCog(commands.Cog):
                  try: await self._proxy.remove_reaction(emoji, user)
                  except: pass
 
-        await self._perform_clip(url=url, message=TempMessage(message_proxy))
-        # ★ 修正ここまで
+        # ★ 修正: url ではなく message オブジェクトを渡す
+        temp_msg_obj = TempMessage(message_proxy)
+        # TempMessage の content が URL になるように設定
+        temp_msg_obj.content = url 
+        await self._perform_clip(message=temp_msg_obj)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(WebClipCog(bot))
