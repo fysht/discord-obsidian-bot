@@ -37,7 +37,7 @@ PROCESS_FETCHING_EMOJI = '⏱️' # 待機中
 
 # URL Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
-# YouTube URL Regex (★ youtube_cog.py からコピー)
+# YouTube URL Regex
 YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed|/youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
 
 
@@ -70,8 +70,7 @@ class MemoCog(commands.Cog):
                         author_name = data.get("author_name")
                         if title and author_name:
                             return {"title": title, "author_name": author_name}
-                    except aiohttp.ContentTypeError: pass # エラーログは省略
-            # 失敗した場合のフォールバック
+                    except aiohttp.ContentTypeError: pass 
             return {"title": f"YouTube_{video_id}", "author_name": "N/A"}
         except Exception as e:
             logging.warning(f"OEmbed unexpected error for {video_id}: {e}")
@@ -92,7 +91,6 @@ class MemoCog(commands.Cog):
         if url_match:
             logging.info(f"URL detected in message {message.id}. Saving as simple bookmark memo.")
             try:
-                # ★ 修正: 待機中リアクション
                 await message.add_reaction(PROCESS_FETCHING_EMOJI) 
             except discord.HTTPException: pass
 
@@ -120,7 +118,11 @@ class MemoCog(commands.Cog):
                         fetched_message = await message.channel.fetch_message(message.id)
                         if fetched_message.embeds:
                             embed_title = fetched_message.embeds[0].title
-                            if embed_title and embed_title != discord.Embed.Empty:
+                            
+                            # --- ★★★ エラー修正箇所 ★★★ ---
+                            # if embed_title and embed_title != discord.Embed.Empty: (← 誤り)
+                            if embed_title: # (← 修正後: これでNoneまたは空文字列""を除外できる)
+                            # --- ★★★ エラー修正ここまで ★★★ ---
                                 title = embed_title
                                 logging.info(f"Title found via Discord embed: {title}")
                     except (discord.NotFound, discord.Forbidden) as e:
@@ -156,6 +158,7 @@ class MemoCog(commands.Cog):
                 logging.info(f"Successfully saved URL bookmark (ID: {message.id}), Title: {title}")
             
             except Exception as e:
+                # (asyncio.sleep 中に AttributeError が発生するとここに来る)
                 logging.error(f"Failed to parse URL title or save bookmark (ID: {message.id}): {e}", exc_info=True)
                 try:
                     await message.remove_reaction(PROCESS_FETCHING_EMOJI, self.bot.user)
