@@ -6,14 +6,16 @@ import logging
 import re
 import asyncio
 import dropbox
+# ★ FileMetadataを追加
 from dropbox.files import WriteMode, DownloadError, FileMetadata 
 from dropbox.exceptions import ApiError
 import datetime
 import zoneinfo
 import aiohttp
 import urllib.parse
-import openai # ★ (1) 音声認識 (Whisper) のために追加
-from PIL import Image # ★ (2) 画像処理のために追加
+import openai # (1) 音声認識 (Whisper) のために追加
+import google.generativeai as genai # ★ (A) 不足していたインポートを追加
+from PIL import Image # (2) 画像処理のために追加
 import io
 import pathlib
 
@@ -24,12 +26,35 @@ except ImportError:
     logging.warning("BookCog: utils/obsidian_utils.pyが見つからないため、簡易的な追記処理を使用します。")
     # 簡易的なダミー関数 (フォールバック)
     def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
-        # (簡易的な追記処理)
-        return f"{current_content.strip()}\n\n{section_header}\n{text_to_add}\n"
+        # 簡易的な追記処理（元の関数の完全な再現ではない）
+        if section_header in current_content:
+            lines = current_content.split('\n')
+            try:
+                header_index = -1
+                for i, line in enumerate(lines):
+                    if line.strip().lstrip('#').strip() == section_header.lstrip('#').strip():
+                        header_index = i
+                        break
+                if header_index == -1: raise ValueError("Header not found")
+                
+                insert_index = header_index + 1
+                while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
+                    insert_index += 1
+                
+                if insert_index > header_index + 1 and lines[insert_index - 1].strip() != "":
+                    lines.insert(insert_index, "")
+                    insert_index += 1
+                    
+                lines.insert(insert_index, text_to_add)
+                return "\n".join(lines)
+            except ValueError:
+                 return f"{current_content.strip()}\n\n{section_header}\n{text_to_add}\n"
+        else:
+            return f"{current_content.strip()}\n\n{section_header}\n{text_to_add}\n"
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-READING_NOTES_PATH = "/Reading Notes" 
+READING_NOTES_PATH = "/Reading Notes" # Obsidian Vault内の保存先
 
 # --- リアクション定数 ---
 BOT_PROCESS_TRIGGER_REACTION = '📥' 
@@ -46,13 +71,13 @@ STATUS_OPTIONS = {
     "finished": "Finished"
 }
 
-# ★ (3) 対応するファイルタイプ (zero-second_thinking_cog.py から流用)
+# (3) 対応するファイルタイプ (zero-second_thinking_cog.py から流用)
 SUPPORTED_AUDIO_TYPES = [
     'audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm'
 ]
 SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
-# ★ (4) HEIC/HEIF対応 (オプション)
+# (4) HEIC/HEIF対応 (オプション)
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -62,7 +87,7 @@ except ImportError:
     logging.warning("BookCog: pillow_heif not installed. HEIC/HEIF support is disabled.")
 
 
-# --- メモ入力用モーダル (変更なし) ---
+# --- メモ入力用モーダル ---
 class BookMemoModal(discord.ui.Modal, title="読書メモの入力"):
     memo_text = discord.ui.TextInput(
         label="書籍に関するメモを入力してください",
@@ -73,41 +98,59 @@ class BookMemoModal(discord.ui.Modal, title="読書メモの入力"):
     )
 
     def __init__(self, cog, selected_book_path: str):
-        super().__init__(timeout=1800)
+        super().__init__(timeout=1800) # 30分
         self.cog = cog
         self.book_path = selected_book_path
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        
         try:
+            # 1. 既存のノートをダウンロード
+            logging.info(f"BookCog: メモ追記のためノートをダウンロード: {self.book_path}")
             _, res = await asyncio.to_thread(self.cog.dbx.files_download, self.book_path)
             current_content = res.content.decode('utf-8')
+
+            # 2. メモをフォーマット
             now = datetime.datetime.now(JST)
             time_str = now.strftime('%H:%M')
+            # 複数行入力に対応
             memo_lines = self.memo_text.value.strip().split('\n')
             formatted_memo = f"- {time_str}\n\t- " + "\n\t- ".join(memo_lines)
+
+            # 3. update_section で追記 (既存の `## メモ` セクションを利用)
             section_header = "## メモ"
             new_content = update_section(current_content, formatted_memo, section_header)
+
+            # 4. Dropboxにアップロード
             await asyncio.to_thread(
                 self.cog.dbx.files_upload,
                 new_content.encode('utf-8'),
                 self.book_path,
                 mode=WriteMode('overwrite')
             )
+            
             logging.info(f"BookCog: 読書メモを追記しました: {self.book_path}")
             await interaction.followup.send(f"✅ テキストメモを追記しました。\n`{os.path.basename(self.book_path)}`", ephemeral=True)
+
+        except ApiError as e:
+            logging.error(f"BookCog: 読書メモ追記中のDropbox APIエラー: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ メモ追記中にDropboxエラーが発生しました: {e}", ephemeral=True)
         except Exception as e:
-            logging.error(f"BookCog: 読書メモ追記中のエラー: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ メモ追記中にエラーが発生しました: {e}", ephemeral=True)
+            logging.error(f"BookCog: 読書メモ追記中の予期せぬエラー: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ メモ追記中に予期せぬエラーが発生しました: {e}", ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         logging.error(f"Error in BookMemoModal: {error}", exc_info=True)
-        if interaction.response.is_done(): await interaction.followup.send(f"❌ モーダル処理中にエラー: {error}", ephemeral=True)
+        if interaction.response.is_done():
+            await interaction.followup.send(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
         else:
-            try: await interaction.response.send_message(f"❌ モーダル処理中にエラー: {error}", ephemeral=True)
-            except discord.InteractionResponded: pass
+            try:
+                await interaction.response.send_message(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
+            except discord.InteractionResponded:
+                pass
 
-# --- ステータス変更用ボタンView (★ 修正: original_context を受け取る) ---
+# --- ステータス変更用ボタンView ---
 class BookStatusView(discord.ui.View):
     def __init__(self, cog, book_path: str, original_context: discord.Interaction | discord.Message):
         super().__init__(timeout=300) 
@@ -139,6 +182,7 @@ class BookStatusView(discord.ui.View):
 
     async def handle_status_change(self, interaction: discord.Interaction, new_status: str):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        
         try:
             success = await self.cog._update_book_status(self.book_path, new_status)
             if success:
@@ -148,6 +192,7 @@ class BookStatusView(discord.ui.View):
                 await self._delete_original_context()
             else:
                 await interaction.followup.send(f"❌ ステータス変更に失敗しました。", ephemeral=True)
+        
         except Exception as e:
             logging.error(f"BookStatusView: ステータス変更処理中にエラー: {e}", exc_info=True)
             await interaction.followup.send(f"❌ ステータス変更中に予期せぬエラーが発生しました: {e}", ephemeral=True)
@@ -163,7 +208,7 @@ class BookStatusView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-# --- 書籍選択用ドロップダウン (★ 修正: 汎用化) ---
+# --- 書籍選択用ドロップダウン (汎用化) ---
 class BookSelectView(discord.ui.View):
     def __init__(self, 
                  cog, 
@@ -253,7 +298,7 @@ class BookCog(commands.Cog):
         self.bot = bot
         self.book_note_channel_id = int(os.getenv("BOOK_NOTE_CHANNEL_ID", 0))
         self.google_books_api_key = os.getenv("GOOGLE_BOOKS_API_KEY")
-        # ★ (5) OpenAI / Gemini APIキーを追加
+        # (5) OpenAI / Gemini APIキーを追加
         self.openai_api_key = os.getenv("OPENAI_API_KEY")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY") # 既に存在
         
@@ -266,7 +311,7 @@ class BookCog(commands.Cog):
         self.session = None
         self.is_ready = False
         
-        # ★ (6) 必須環境変数に OPENAI_API_KEY を追加
+        # (6) 必須環境変数に OPENAI_API_KEY を追加
         if not all([self.book_note_channel_id, self.google_books_api_key, self.dropbox_refresh_token, self.openai_api_key, self.gemini_api_key]):
             logging.error("BookCog: 必要な環境変数 (BOOK_NOTE_CHANNEL_ID, GOOGLE_BOOKS_API_KEY, DROPBOX_REFRESH_TOKEN, OPENAI_API_KEY, GEMINI_API_KEY) が不足。Cogは動作しません。")
             return
@@ -282,7 +327,7 @@ class BookCog(commands.Cog):
             self.session = aiohttp.ClientSession()
             logging.info("BookCog: aiohttp session started.")
             
-            # ★ (7) OpenAI と Gemini Vision クライアントを初期化
+            # (7) OpenAI と Gemini Vision クライアントを初期化
             self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
             genai.configure(api_key=self.gemini_api_key)
             # gemini-2.5-pro は Vision も兼ねている
@@ -299,21 +344,34 @@ class BookCog(commands.Cog):
             logging.info("BookCog: aiohttp session closed.")
 
     async def _update_book_status(self, book_path: str, new_status: str) -> bool:
-        # ... (変更なし) ...
+        """指定されたノートのYAMLフロントマターのstatusを更新する"""
         try:
+            # 1. ファイルをダウンロード
             _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
             current_content = res.content.decode('utf-8')
+
+            # 2. status: 行を正規表現で置換
+            # (status: "To Read", status: Reading, status:Finished など様々な形式に対応)
             status_pattern = re.compile(r"^(status:\s*)(\S+.*)$", re.MULTILINE)
+            
             if status_pattern.search(current_content):
+                # status: 行が存在する場合、値を置換
                 new_content = status_pattern.sub(f"\\g<1>\"{new_status}\"", current_content, count=1)
+                logging.info(f"BookCog: ステータス行を置換 -> {new_status}")
             else:
+                # status: 行が存在しない場合、フロントマターの末尾 (--- の直前) に追加
                 frontmatter_end_pattern = re.compile(r"^(---)$", re.MULTILINE)
+                # 2番目の '---' を見つける (最初の '---' はファイルの先頭にあるため)
                 matches = list(frontmatter_end_pattern.finditer(current_content))
                 if len(matches) > 1:
                     insert_pos = matches[1].start()
                     new_content = current_content[:insert_pos] + f"status: \"{new_status}\"\n" + current_content[insert_pos:]
+                    logging.info(f"BookCog: ステータス行を新規追加 -> {new_status}")
                 else:
+                    logging.error(f"BookCog: フロントマターの終了(---)が見つかりませんでした: {book_path}")
                     return False
+
+            # 3. Dropboxにアップロード
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 new_content.encode('utf-8'),
@@ -321,11 +379,15 @@ class BookCog(commands.Cog):
                 mode=WriteMode('overwrite')
             )
             return True
+
+        except ApiError as e:
+            logging.error(f"BookCog: ステータス更新中のDropbox APIエラー: {e}", exc_info=True)
+            return False
         except Exception as e:
-            logging.error(f"BookCog: ステータス更新中のエラー: {e}", exc_info=True)
+            logging.error(f"BookCog: ステータス更新中の予期せぬエラー: {e}", exc_info=True)
             return False
 
-    # ★ --- (8) on_message リスナーを新規追加 ---
+    # (8) on_message リスナー
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """
@@ -393,7 +455,7 @@ class BookCog(commands.Cog):
             except discord.HTTPException:
                 pass
 
-    # ★ --- (9) process_attached_memo メソッドを新規追加 ---
+    # (9) process_attached_memo メソッド
     async def process_attached_memo(
         self, 
         interaction: discord.Interaction, # SelectViewからのInteraction
@@ -582,6 +644,7 @@ cover: {thumbnail_url}
             await asyncio.to_thread(
                 self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add')
             )
+            logging.info(f"BookCog: 読書ノートを保存しました: {note_path}")
             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
             daily_note_content = ""
             try:
@@ -598,11 +661,15 @@ cover: {thumbnail_url}
             await asyncio.to_thread(
                 self.dbx.files_upload, new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite')
             )
+            logging.info(f"BookCog: デイリーノートに読書ノートへのリンクを追記しました: {daily_note_path}")
+        except ApiError as e:
+            logging.error(f"BookCog: Dropboxへのノート保存またはデイリーノート更新中にApiError: {e}", exc_info=True)
+            raise
         except Exception as e:
-            logging.error(f"BookCog: ノート保存/デイリーノート更新中エラー: {e}", exc_info=True)
+            logging.error(f"BookCog: ノート保存またはデイリーノート更新中に予期せぬエラー: {e}", exc_info=True)
             raise
 
-    # --- /book_memo コマンド (★ 修正: BookSelectView に渡す context を変更) ---
+    # --- /book_memo コマンド (修正) ---
     @app_commands.command(name="book_memo", description="読書ノートを選択してメモを追記します。")
     async def book_memo(self, interaction: discord.Interaction):
         if not self.is_ready:
@@ -622,7 +689,7 @@ cover: {thumbnail_url}
 
             options = [discord.SelectOption(label=entry.name[:-3][:100], value=entry.path_display) for entry in book_files[:25]]
             
-            # ★ 修正: original_context に interaction を渡す
+            # original_context に interaction を渡す
             view = BookSelectView(self, options, original_context=interaction, action_type="memo")
             await interaction.followup.send("どの書籍にメモを追記しますか？", view=view, ephemeral=True)
 
@@ -630,7 +697,7 @@ cover: {thumbnail_url}
             logging.error(f"BookCog: /book_memo コマンド処理中に予期せぬエラー: {e}", exc_info=True)
             await interaction.followup.send(f"❌ コマンド処理中に予期せぬエラーが発生しました: {e}", ephemeral=True)
 
-    # --- /book_status コマンド (★ 修正: BookSelectView に渡す context を変更) ---
+    # --- /book_status コマンド (修正) ---
     @app_commands.command(name="book_status", description="読書ノートのステータスを変更します。")
     async def book_status(self, interaction: discord.Interaction):
         if not self.is_ready:
@@ -650,7 +717,7 @@ cover: {thumbnail_url}
 
             options = [discord.SelectOption(label=entry.name[:-3][:100], value=entry.path_display) for entry in book_files[:25]]
             
-            # ★ 修正: original_context に interaction を渡す
+            # original_context に interaction を渡す
             view = BookSelectView(self, options, original_context=interaction, action_type="status")
             await interaction.followup.send("どの書籍のステータスを変更しますか？", view=view, ephemeral=True)
 
@@ -660,14 +727,20 @@ cover: {thumbnail_url}
 
     # --- 書籍一覧取得ヘルパー (変更なし) ---
     async def get_book_list(self) -> tuple[list[FileMetadata], str | None]:
+        """Dropboxから書籍ノートの一覧を取得する共通ヘルパー"""
         try:
             folder_path = f"{self.dropbox_vault_path}{READING_NOTES_PATH}"
             result = await asyncio.to_thread(self.dbx.files_list_folder, folder_path, recursive=False)
-            book_files = [entry for entry in result.entries if isinstance(entry, FileMetadata) and entry.name.endswith('.md')]
+            
+            book_files = []
+            for entry in result.entries:
+                if isinstance(entry, FileMetadata) and entry.name.endswith('.md'):
+                    book_files.append(entry)
             
             if not book_files:
                 return [], f"Obsidian Vaultの `{folder_path}` フォルダに読書ノートが見つかりませんでした。"
 
+            # 最終更新日時でソート (新しいものが上)
             book_files.sort(key=lambda x: x.server_modified, reverse=True)
             return book_files, None
         
@@ -678,7 +751,7 @@ cover: {thumbnail_url}
 
 async def setup(bot: commands.Bot):
     """Cogセットアップ"""
-    # ★ (10) 必要なキーのチェックを強化
+    # (10) 必要なキーのチェックを強化
     if int(os.getenv("BOOK_NOTE_CHANNEL_ID", 0)) == 0:
         logging.error("BookCog: BOOK_NOTE_CHANNEL_ID が設定されていません。Cogをロードしません。")
         return
