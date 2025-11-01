@@ -1,4 +1,3 @@
-# cogs/zero-second_thinking_cog.py (修正版)
 import os
 import discord
 from discord import app_commands
@@ -9,7 +8,7 @@ import openai
 import google.generativeai as genai
 from datetime import datetime, time
 import zoneinfo
-from pathlib import Path # ★ pathlib をインポート
+from pathlib import Path
 import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
@@ -70,11 +69,9 @@ class TextEditModal(discord.ui.Modal, title="テキストの編集"):
         max_length=1500 # Discord Modals have limits
     )
 
-    # ★ 修正: original_question_id を受け取る
-    def __init__(self, cog, original_question_id: int, original_question: str, initial_text: str, user_reply_message: discord.Message, bot_confirm_message: discord.Message, input_type_suffix: str):
+    def __init__(self, cog, original_question: str, initial_text: str, user_reply_message: discord.Message, bot_confirm_message: discord.Message, input_type_suffix: str):
         super().__init__(timeout=1800) # 30分
         self.cog = cog
-        self.original_question_id = original_question_id
         self.original_question = original_question
         self.memo_text.default = initial_text # Pre-fill
         self.user_reply_message = user_reply_message
@@ -82,72 +79,63 @@ class TextEditModal(discord.ui.Modal, title="テキストの編集"):
         self.input_type_suffix = input_type_suffix # e.g., "(edited audio)" or "(edited image)"
 
     async def on_submit(self, interaction: discord.Interaction):
+        # ★ (Fix) ネットワークエラー対策
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
-        except Exception as e_defer:
-            logging.error(f"TextEditModal: on_submitでのdeferに失敗 (ネットワークエラーの可能性): {e_defer}", exc_info=True)
-            pass
-
+        except (discord.HTTPException, aiohttp.client_exceptions.ClientOSError) as e_defer:
+             logging.error(f"TextEditModal: deferに失敗: {e_defer}")
+             await self.user_reply_message.add_reaction(PROCESS_ERROR_EMOJI)
+             return
+             
         edited_text = self.memo_text.value
         logging.info(f"Memo edited and submitted by {interaction.user} (Type: {self.input_type_suffix}).")
         try:
-            # 1. Obsidianへの保存処理 (★ 修正: クリーンアップしない関数を呼ぶ)
-            await self.cog._save_memo_to_obsidian(
+            # Call the saving/processing function with the edited text
+            await self.cog._save_and_continue_thinking(
+                interaction,
                 self.original_question,
                 edited_text,
-                f"{self.input_type_suffix}", # Pass the specific edited type
-                self.user_reply_message.author # ★ 修正: authorを渡す
+                self.user_reply_message, # Pass user's reply message
+                f"{self.input_type_suffix}" # Pass the specific edited type
             )
-            
-            # 2. 完了メッセージ (★ 修正: delete_after を削除)
-            await interaction.followup.send("✅ 編集されたメモを処理しました。", ephemeral=True)
-
-            # 3. フォローアップの質問 (★ 修正: 処理をここに移動)
-            await self.cog._ask_followup_question(
-                self.user_reply_message, # context_message
-                self.original_question,
-                edited_text,
-                self.original_question_id
-            )
-
-            # 4. メッセージのクリーンアップ (★ 修正: 成功応答の後に移動)
+            # --- Cleanup intermediate messages ---
             try:
                 await self.bot_confirm_message.delete()
-                await self.user_reply_message.delete() # user_reply_message は元のメモ
-                logging.info(f"Cleanup successful for edited memo (Orig ID: {self.user_reply_message.id})")
-            except discord.HTTPException as e_del:
-                logging.warning(f"Failed to cleanup messages after edit: {e_del}")
-
+                logging.info(f"Deleted bot confirmation message {self.bot_confirm_message.id}")
+            except discord.HTTPException as e_del_bot:
+                logging.warning(f"Failed to delete bot confirmation message {self.bot_confirm_message.id}: {e_del_bot}")
+            # --- End cleanup ---
+            
+            # ★ (Fix) delete_after を削除
+            await interaction.followup.send("✅ 編集されたメモを処理しました。", ephemeral=True)
 
         except Exception as e:
             logging.error(f"Error processing edited memo (Type: {self.input_type_suffix}): {e}", exc_info=True)
-            try:
-                await interaction.followup.send(f"❌ 編集されたメモの処理中にエラーが発生しました: {e}", ephemeral=True)
-            except discord.HTTPException as e_followup:
-                logging.error(f"TextEditModal: エラーのfollowup送信にも失敗: {e_followup}")
+            await interaction.followup.send(f"❌ 編集されたメモの処理中にエラーが発生しました: {e}", ephemeral=True)
             try: await self.user_reply_message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         logging.error(f"Error in TextEditModal: {error}", exc_info=True)
+        error_message = f"❌ モーダル処理中にエラーが発生しました: {type(error).__name__}"
         try:
             if interaction.response.is_done():
-                await interaction.followup.send(f"❌ モーダルの処理中にエラーが発生しました: {error}", ephemeral=True)
+                await interaction.followup.send(error_message, ephemeral=True)
             else:
-                 try: await interaction.response.send_message(f"❌ モーダルの処理中にエラーが発生しました: {error}", ephemeral=True)
-                 except discord.InteractionResponded: pass
-        except discord.HTTPException as e_resp:
-             logging.error(f"TextEditModal: on_errorでの応答送信に失敗: {e_resp}")
-        try: await self.user_reply_message.add_reaction(PROCESS_ERROR_EMOJI)
-        except discord.HTTPException: pass
+                await interaction.response.send_message(error_message, ephemeral=True)
+        except discord.HTTPException as e_followup:
+            logging.error(f"TextEditModal.on_error: フォールバックのfollowup送信にも失敗: {e_followup}")
+            
+        try:
+            await self.user_reply_message.add_reaction(PROCESS_ERROR_EMOJI)
+        except discord.HTTPException:
+            pass
 
 # --- View for Confirming/Editing Text (Used for both Audio and Image) ---
 class ConfirmTextView(discord.ui.View):
-    # ★ 修正: original_question_id を受け取る
-    def __init__(self, cog, original_question_id: int, original_question: str, recognized_text: str, user_reply_message: discord.Message, input_type_raw: str):
+    def __init__(self, cog, original_question: str, recognized_text: str, user_reply_message: discord.Message, input_type_raw: str):
         super().__init__(timeout=3600) # 1時間
         self.cog = cog
-        self.original_question_id = original_question_id
         self.original_question = original_question
         self.recognized_text = recognized_text
         self.user_reply_message = user_reply_message
@@ -159,39 +147,28 @@ class ConfirmTextView(discord.ui.View):
         logging.info(f"Confirm button clicked by {interaction.user} (Type: {self.input_type_raw})")
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            # 1. Obsidianへの保存処理 (★ 修正: クリーンアップしない関数を呼ぶ)
-            await self.cog._save_memo_to_obsidian(
+            # Call saving function with the original recognized text
+            await self.cog._save_and_continue_thinking(
+                interaction,
                 self.original_question,
                 self.recognized_text,
-                f"{self.input_type_raw} (confirmed)",
-                self.user_reply_message.author # ★ 修正: authorを渡す
+                self.user_reply_message,
+                f"{self.input_type_raw} (confirmed)"
             )
-            
-            # 2. 完了メッセージ (★ 修正: delete_after を削除)
-            await interaction.followup.send("✅ メモを処理しました。", ephemeral=True)
-
-            # 3. フォローアップの質問 (★ 修正: 処理をここに移動)
-            await self.cog._ask_followup_question(
-                self.user_reply_message, # context_message
-                self.original_question,
-                self.recognized_text,
-                self.original_question_id
-            )
-
-            # 4. メッセージのクリーンアップ (★ 修正: 成功応答の後に移動)
+            # --- Cleanup intermediate messages ---
             try:
                 await self.bot_confirm_message.delete()
-                await self.user_reply_message.delete()
-                logging.info(f"Cleanup successful for confirmed memo (Orig ID: {self.user_reply_message.id})")
-            except discord.HTTPException as e_del:
-                logging.warning(f"Failed to cleanup messages after confirm: {e_del}")
+                logging.info(f"Deleted bot confirmation message {self.bot_confirm_message.id}")
+            except discord.HTTPException as e_del_bot:
+                logging.warning(f"Failed to delete bot confirmation message {self.bot_confirm_message.id}: {e_del_bot}")
+            # --- End cleanup ---
+            
+            # ★ (Fix) delete_after を削除
+            await interaction.followup.send("✅ メモを処理しました。", ephemeral=True)
 
         except Exception as e:
             logging.error(f"Error processing confirmed memo (Type: {self.input_type_raw}): {e}", exc_info=True)
-            try:
-                await interaction.followup.send(f"❌ 確認されたメモの処理中にエラーが発生しました: {e}", ephemeral=True)
-            except discord.HTTPException as e_followup:
-                 logging.error(f"ConfirmTextView: エラーのfollowup送信にも失敗: {e_followup}")
+            await interaction.followup.send(f"❌ 確認されたメモの処理中にエラーが発生しました: {e}", ephemeral=True)
             try: await self.user_reply_message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
         finally:
@@ -201,10 +178,8 @@ class ConfirmTextView(discord.ui.View):
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
         logging.info(f"Edit button clicked by {interaction.user} (Type: {self.input_type_raw})")
         # Open the Modal for editing
-        # ★ 修正: original_question_id を渡す
         modal = TextEditModal(
             self.cog,
-            self.original_question_id,
             self.original_question,
             self.recognized_text,
             self.user_reply_message,
@@ -222,82 +197,6 @@ class ConfirmTextView(discord.ui.View):
                 await self.user_reply_message.add_reaction("⚠️")
             except discord.HTTPException as e:
                 logging.warning(f"Failed to edit message on ConfirmTextView timeout: {e}")
-
-# ==============================================================================
-# === ★ 新規追加: ZSTSelectView (お題選択用ドロップダウン) ========================
-# ==============================================================================
-
-class ZSTSelectView(discord.ui.View):
-    def __init__(self, 
-                 cog, 
-                 question_options: list[discord.SelectOption], 
-                 original_context: discord.Message, 
-                 attachment: discord.Attachment = None, 
-                 text_memo: str = None, 
-                 input_type: str = None
-                 ):
-        super().__init__(timeout=600) # 10分
-        self.cog = cog
-        self.original_context = original_context # ユーザーが投稿したメモのMessage
-        self.attachment = attachment
-        self.text_memo = text_memo
-        self.input_type = input_type
-        self.bot_reply_message = None # ボットが送信したこのViewを含むメッセージ
-
-        placeholder_text = f"この {input_type} メモはどのお題に対する回答ですか？"
-        
-        select = discord.ui.Select(
-            placeholder=placeholder_text,
-            options=question_options,
-            custom_id="zst_question_select"
-        )
-        select.callback = self.select_callback
-        self.add_item(select)
-
-    async def select_callback(self, interaction: discord.Interaction):
-        # 選択されたお題（のメッセージID）
-        selected_q_id = int(interaction.data["values"][0])
-        
-        # 選択されたお題（のテキスト）
-        try:
-            selected_q_text = self.cog.active_questions[selected_q_id]
-        except KeyError:
-             logging.error(f"ZSTSelectView: 選択されたお題ID {selected_q_id} がアクティブリストに見つかりません。")
-             await interaction.response.send_message("エラー: 選択されたお題が見つかりませんでした。お題が終了した可能性があります。", ephemeral=True)
-             if self.bot_reply_message:
-                 await self.bot_reply_message.edit(content="エラー: 選択されたお題が見つかりませんでした。", view=None)
-             return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        
-        # ドロップダウンメッセージを「処理中...」に変更
-        if self.bot_reply_message:
-            try:
-                await self.bot_reply_message.edit(content=f"お題「{selected_q_text[:50]}...」への {self.input_type} メモを処理中です... {PROCESS_START_EMOJI}", view=None)
-            except discord.HTTPException as e_edit:
-                 logging.warning(f"ZSTSelectView: ドロップダウンメッセージの編集に失敗: {e_edit}")
-
-        # テキスト化処理を呼び出す
-        await self.cog.process_posted_memo(
-            interaction, 
-            self.original_context, # 元のファイル添付/テキストメッセージ
-            selected_q_id,
-            selected_q_text,
-            self.input_type,
-            self.attachment, # None if text
-            self.text_memo,   # None if attachment
-            self.bot_reply_message # このView(ドロップダウン)のメッセージ
-        )
-        
-        self.stop()
-
-    async def on_timeout(self):
-        # ボットが送信したドロップダウンメッセージを編集
-        if self.bot_reply_message:
-            try:
-                await self.bot_reply_message.edit(content="お題の選択がタイムアウトしました。", view=None)
-            except discord.HTTPException as e:
-                logging.warning(f"ZSTSelectView: タイムアウトメッセージの編集に失敗: {e}")
 
 
 # ==============================================================================
@@ -322,10 +221,8 @@ class ZeroSecondThinkingCog(commands.Cog):
         self.history_path = f"{self.dropbox_vault_path}/.bot/zero_second_thinking_history.json"
 
         # --- 状態管理 ---
-        # ★ 修正: {message_id: question_text}
-        self.active_questions = {} 
-        # (user_last_interaction は /zst_end のために残す)
-        self.user_last_interaction = {} # {user_id: message_id} 
+        self.active_questions = {} # {message_id: question_text}
+        self.user_last_interaction = {} # {user_id: message_id}
 
         # --- 初期化 ---
         self.is_ready = False
@@ -435,15 +332,11 @@ class ZeroSecondThinkingCog(commands.Cog):
 
             # 共通の埋め込み送信処理
             embed = discord.Embed(title="🤔 ゼロ秒思考 - 新しいお題", description=f"お題: **{question}**", color=discord.Color.teal())
-            # ★ 修正: フッターの文言を変更
-            embed.set_footer(text="このお題に対する思考を、テキスト、音声、または手書きメモ画像で投稿してください。")
+            embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください（音声・手書きメモ画像も可）。")
 
             sent_message = await interaction.followup.send(embed=embed)
 
-            # ★ 修正: {message_id: question_text} で保存
             self.active_questions[sent_message.id] = question
-            # ★ 修正: ユーザーの最後のインタラクション（お題）も記録
-            self.user_last_interaction[interaction.user.id] = sent_message.id 
             logging.info(f"New thinking question active: ID {sent_message.id}, Q: {question}")
 
         except Exception as e:
@@ -451,111 +344,76 @@ class ZeroSecondThinkingCog(commands.Cog):
             await interaction.followup.send(f"❌ 質問の生成中にエラーが発生しました: {e}", ephemeral=True)
 
 
-    # ★ 修正: on_message リスナー (BookCog と同様のロジックに変更)
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """メッセージ投稿を監視し、Zero-Second Thinkingのフローを処理する"""
         if not self.is_ready or message.author.bot or message.channel.id != self.channel_id:
             return
 
-        # スラッシュコマンドは無視
         if message.content.strip().startswith('/'):
              return
 
-        # リプライは無視 (お題のEmbedへのリプライも含む)
-        if message.reference:
+        if not message.reference or not message.reference.message_id:
             return
 
-        # --- 入力タイプを判別 ---
-        attachment = None
-        input_type = None
-        text_memo = None
+        original_message_id = message.reference.message_id
 
-        if message.attachments:
-            # 添付ファイルがある場合
-            attachment = message.attachments[0]
-            if attachment.content_type in SUPPORTED_AUDIO_TYPES:
-                input_type = "audio"
-            elif attachment.content_type in SUPPORTED_IMAGE_TYPES:
-                input_type = "image"
-            else:
-                logging.debug(f"ZSTCog: サポート対象外の添付ファイルタイプ: {attachment.content_type}")
-                return # サポート対象外のファイル
-        else:
-            # 添付ファイルがない場合 (テキストメモ)
-            text_memo = message.content.strip()
-            if not text_memo:
-                return # 空のメッセージは無視
-            input_type = "text"
-        
-        logging.info(f"ZSTCog: {input_type} メモを検知: {message.jump_url}")
-        
-        bot_reply_message = None
+        if original_message_id not in self.active_questions:
+             return
+
+        self.user_last_interaction[message.author.id] = original_message_id
+        channel = message.channel
+
         try:
-            await message.add_reaction("🤔") # 処理中（どのお題か考えてる）
+            original_msg = await channel.fetch_message(original_message_id)
+            if not original_msg.embeds: return
+        except (discord.NotFound, discord.Forbidden):
+             logging.warning(f"Could not fetch original question message {original_message_id} for verification.")
+        except Exception as e_fetch:
+             logging.error(f"Error fetching original message {original_message_id}: {e_fetch}", exc_info=True)
+             return
 
-            # --- アクティブなお題一覧を取得 ---
-            if not self.active_questions:
-                await message.reply(f"❌ 回答対象のアクティブなお題がありません。`/zst_start` でお題を開始してください。", delete_after=15)
-                await message.remove_reaction("🤔", self.bot.user)
-                return
+        original_question_text = self.active_questions.get(original_message_id, "不明なお題")
+        logging.info(f"Processing reply to question ID {original_message_id}: {original_question_text}")
 
-            # {msg_id: q_text} からオプションを作成
-            options = [
-                discord.SelectOption(
-                    label=(q_text[:97] + '...') if len(q_text) > 100 else q_text, 
-                    value=str(msg_id)
-                ) 
-                for msg_id, q_text in self.active_questions.items()
-            ][:25] # 最大25個
-            
-            # --- 選択Viewを表示 ---
-            view = ZSTSelectView(
-                self, 
-                options, 
-                original_context=message, # 元のメッセージを渡す
-                attachment=attachment, 
-                text_memo=text_memo,
-                input_type=input_type
-            )
-            bot_reply_message = await message.reply(f"この {input_type} メモはどのお題に対する回答ですか？", view=view, mention_author=False)
-            view.bot_reply_message = bot_reply_message # Viewに自身のメッセージをセット
-            
-        except Exception as e:
-            logging.error(f"ZSTCog: on_message での添付ファイル/テキスト処理中にエラー: {e}", exc_info=True)
-            if bot_reply_message: # bot_reply_message がNoneでないことを確認
-                try: await bot_reply_message.delete()
-                except discord.HTTPException: pass
-            await message.reply(f"❌ メモの処理開始中にエラーが発生しました: {e}")
-            try:
-                await message.remove_reaction("🤔", self.bot.user)
-                await message.add_reaction(PROCESS_ERROR_EMOJI)
-            except discord.HTTPException:
-                pass
+        input_type = "text"
+        attachment_to_process = None
+        if message.attachments:
+            img_attachment = next((att for att in message.attachments if att.content_type in SUPPORTED_IMAGE_TYPES), None)
+            audio_attachment = next((att for att in message.attachments if att.content_type in SUPPORTED_AUDIO_TYPES), None)
 
-    # ★ 修正: _process_thinking_memo -> process_posted_memo に改名・シグネチャ変更
-    async def process_posted_memo(self, 
-                                  interaction: discord.Interaction, # SelectViewからのInteraction
-                                  original_message: discord.Message, # ユーザーが投稿したメモ
-                                  original_question_id: int, 
-                                  original_question_text: str, 
-                                  input_type: str, 
-                                  attachment: discord.Attachment = None, 
-                                  text_memo: str = None,
-                                  dropdown_message: discord.Message = None):
+            if img_attachment:
+                input_type = "image"
+                attachment_to_process = img_attachment
+                logging.info(f"Image attachment detected for message {message.id}")
+            elif audio_attachment:
+                input_type = "audio"
+                attachment_to_process = audio_attachment
+                logging.info(f"Audio attachment detected for message {message.id}")
+
+        if input_type == "text" and not message.content.strip():
+             logging.info("Empty text reply detected. Ignoring.")
+             try: await message.add_reaction("❓")
+             except discord.HTTPException: pass
+             return
+
+        # Start processing
+        await self._process_thinking_memo(message, original_question_text, original_message_id, input_type, attachment_to_process)
+
+    async def _process_thinking_memo(self, user_reply_message: discord.Message, original_question: str, original_question_id: int, input_type: str, attachment: discord.Attachment = None):
         """Processes the user's thinking memo. Asks for edit confirmation for audio/image."""
         temp_audio_path = None
         formatted_answer = "回答の処理に失敗しました。"
 
         try:
-            await original_message.add_reaction(PROCESS_START_EMOJI)
+            await user_reply_message.add_reaction(PROCESS_START_EMOJI)
         except discord.HTTPException: pass
 
         try:
             if input_type == "audio" and attachment:
                 logging.info("Processing audio memo...")
                 # --- Audio Transcription ---
-                temp_audio_path = Path(f"./temp_audio_{original_message.id}_{attachment.filename}")
+                temp_audio_path = Path(f"./temp_audio_{user_reply_message.id}_{attachment.filename}")
                 async with self.session.get(attachment.url) as resp:
                     if resp.status == 200:
                         with open(temp_audio_path, 'wb') as f: f.write(await resp.read())
@@ -566,34 +424,29 @@ class ZeroSecondThinkingCog(commands.Cog):
                 logging.info("Audio transcribed successfully.")
                 # --- End Transcription ---
 
-                # --- ★ 修正: Formatting (箇条書き記号なし) ---
+                # --- Formatting (Markdown「-」を使用) ---
                 formatting_prompt = (
-                    "以下の音声メモの文字起こしを、構造化されたメモ形式でまとめてください。\n"
-                    "**箇条書きの記号（「-」や「*」など）は使用せず**、各項目を改行して並べてください。\n"
-                    "返答には前置きや説明は一切含めないでください。\n\n"
+                    "以下の音声メモの文字起こしを、構造化された箇条書きのMarkdown形式でまとめてください。\n"
+                    "箇条書きの本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
                     f"---\n\n{transcribed_text}"
                 )
                 response = await self.gemini_model.generate_content_async(formatting_prompt)
                 formatted_answer = response.text.strip() if response and hasattr(response, 'text') else transcribed_text
                 logging.info("Audio memo formatted.")
-                # --- ★ 修正ここまで ---
+                # --- End Formatting ---
 
                 # --- Send for confirmation ---
-                try: await original_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+                try: await user_reply_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 except discord.HTTPException: pass
-                if dropdown_message:
-                    try: await dropdown_message.delete()
-                    except discord.HTTPException: pass
 
-                confirm_view = ConfirmTextView(self, original_question_id, original_question_text, formatted_answer, original_message, "audio")
-                bot_confirm_msg = await original_message.reply(
+                confirm_view = ConfirmTextView(self, original_question, formatted_answer, user_reply_message, "audio")
+                # Discordに表示する際はMarkdownコードブロックを使用
+                bot_confirm_msg = await user_reply_message.reply(
                     f"**🎤 認識された音声メモ:**\n```markdown\n{formatted_answer}\n```\n内容を確認し、問題なければ「このまま投稿」、修正する場合は「編集する」ボタンを押してください。",
                     view=confirm_view
                 )
                 confirm_view.bot_confirm_message = bot_confirm_msg
-                logging.info(f"Sent recognized audio text and confirm/edit buttons for message {original_message.id}")
-                # ★ 修正: delete_after 削除
-                await interaction.followup.send("テキストを認識しました。内容を確認してください。", ephemeral=True)
+                logging.info(f"Sent recognized audio text and confirm/edit buttons for message {user_reply_message.id}")
                 return # Wait for button interaction
                 # --- End Confirmation ---
 
@@ -610,14 +463,13 @@ class ZeroSecondThinkingCog(commands.Cog):
                      logging.error(f"Failed to open image using Pillow: {e_pil}", exc_info=True)
                      raise Exception("画像ファイルの形式が無効、または破損している可能性があります。")
                 
-                # --- ★ 修正: Vision Prompt (箇条書き記号なし) ---
+                # --- Vision Prompt (Markdown「-」を使用) ---
                 vision_prompt = [
-                    "この画像は手書きのメモです。内容を読み取り、テキスト化してください。\n"
-                    "**箇条書きの記号（「-」や「*」など）は使用せず**、読み取った内容を改行して並べてください。\n"
-                    "返答には前置きや説明は含めず、テキスト本体のみを生成してください。",
+                    "この画像は手書きのメモです。内容を読み取り、箇条書きのMarkdown形式でテキスト化してください。\n"
+                    "返答には前置きや説明は含めず、箇条書きのテキスト本体のみを生成してください。",
                     img,
                 ]
-                # --- ★ 修正ここまで ---
+                # --- End Prompt ---
                 
                 response = await self.gemini_vision_model.generate_content_async(vision_prompt)
                 recognized_text = response.text.strip() if response and hasattr(response, 'text') else "手書きメモの読み取りに失敗しました。"
@@ -625,73 +477,40 @@ class ZeroSecondThinkingCog(commands.Cog):
                 # --- End Recognition ---
 
                 # --- Send for confirmation ---
-                try: await original_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+                try: await user_reply_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 except discord.HTTPException: pass
-                if dropdown_message:
-                    try: await dropdown_message.delete()
-                    except discord.HTTPException: pass
 
-                confirm_view = ConfirmTextView(self, original_question_id, original_question_text, recognized_text, original_message, "image")
-                bot_confirm_msg = await original_message.reply(
+                confirm_view = ConfirmTextView(self, original_question, recognized_text, user_reply_message, "image")
+                # Discordに表示する際はMarkdownコードブロックを使用
+                bot_confirm_msg = await user_reply_message.reply(
                     f"**📝 認識された手書きメモ:**\n```markdown\n{recognized_text}\n```\n内容を確認し、問題なければ「このまま投稿」、修正する場合は「編集する」ボタンを押してください。",
                     view=confirm_view
                 )
                 confirm_view.bot_confirm_message = bot_confirm_msg
-                logging.info(f"Sent recognized image text and confirm/edit buttons for message {original_message.id}")
-                # ★ 修正: delete_after 削除
-                await interaction.followup.send("テキストを認識しました。内容を確認してください。", ephemeral=True)
+                logging.info(f"Sent recognized image text and confirm/edit buttons for message {user_reply_message.id}")
                 return # Wait for button interaction
                 # --- End Confirmation ---
 
             else: # Text input
                 logging.info("Processing text memo...")
-                formatted_answer = text_memo # (text_memo は on_message で .strip() 済み)
-                
-                if dropdown_message:
-                    try: await dropdown_message.delete()
-                    except discord.HTTPException: pass
-                
-                 # 1. 保存
-                await self._save_memo_to_obsidian(
-                    original_question_text,
+                formatted_answer = user_reply_message.content.strip()
+                 # Directly save and continue for text
+                await self._save_and_continue_thinking(
+                    user_reply_message, # Use user's message as context
+                    original_question,
                     formatted_answer,
-                    input_type,
-                    original_message.author
+                    user_reply_message, # Pass user's message for context
+                    input_type
                 )
-                 # 2. 完了応答 (★ 修正: delete_after 削除)
-                await interaction.followup.send("テキストメモを処理しました。", ephemeral=True)
-                
-                 # 3. フォローアップ
-                await self._ask_followup_question(
-                    original_message,
-                    original_question_text,
-                    formatted_answer,
-                    original_question_id
-                )
-                 # 4. クリーンアップ
-                try:
-                    await original_message.delete()
-                    logging.info(f"Cleanup successful for text memo (Orig ID: {original_message.id})")
-                except discord.HTTPException as e_del:
-                    logging.warning(f"Failed to cleanup text memo: {e_del}")
-
 
         except Exception as e:
-            logging.error(f"[Zero-Second Thinking] Error in process_posted_memo: {e}", exc_info=True)
-            try: await original_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+            logging.error(f"[Zero-Second Thinking] Error in _process_thinking_memo: {e}", exc_info=True)
+            try: await user_reply_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
             except discord.HTTPException: pass
-            try: await original_message.add_reaction(PROCESS_ERROR_EMOJI)
+            try: await user_reply_message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
-            try:
-                # interaction が完了していなければ、そちらで応答
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(f"❌ メモの処理中にエラーが発生しました: {e}", ephemeral=True)
-                else:
-                    await interaction.followup.send(f"❌ メモの処理中にエラーが発生しました: {e}", ephemeral=True)
-            except discord.HTTPException:
-                # フォールバックとして元のメッセージにリプライ
-                try: await original_message.reply(f"❌ メモの処理中にエラーが発生しました: {e}")
-                except discord.HTTPException: pass
+            try: await user_reply_message.reply(f"❌ メモの処理中にエラーが発生しました: {e}")
+            except discord.HTTPException: pass
         finally:
             if temp_audio_path and os.path.exists(temp_audio_path):
                 try:
@@ -700,11 +519,26 @@ class ZeroSecondThinkingCog(commands.Cog):
                 except OSError as e_rm:
                      logging.error(f"一時音声ファイル削除失敗: {e_rm}")
 
-    # ★ 新規追加: _save_memo_to_obsidian (保存のみ)
-    async def _save_memo_to_obsidian(self, original_question: str, final_answer: str, input_type: str, author: discord.User | discord.Member):
-        """Saves the final answer, updates history, saves to Obsidian/GDocs."""
-        
+
+    async def _save_and_continue_thinking(self, interaction_or_message, original_question: str, final_answer: str, context_message: discord.Message, input_type: str):
+        """Saves the final answer, updates history, saves to Obsidian/GDocs, asks a follow-up, and manages reactions/cleanup."""
+        original_question_id = context_message.reference.message_id if context_message.reference else None
+
+        # Determine how to send the follow-up question
+        async def send_followup_question(embed):
+            # Always send to the channel of the context message
+            channel = context_message.channel
+            return await channel.send(embed=embed)
+
         try:
+            # Add processing reaction if not already added
+            if isinstance(context_message, discord.Message):
+                 has_hourglass = any(r.emoji == PROCESS_START_EMOJI and r.me for r in context_message.reactions)
+                 if not has_hourglass:
+                      try: await context_message.add_reaction(PROCESS_START_EMOJI)
+                      except discord.HTTPException: pass
+
+
             logging.info(f"Saving final answer for question: {original_question}")
             # --- Update History ---
             history = await self._get_thinking_history()
@@ -740,7 +574,7 @@ class ZeroSecondThinkingCog(commands.Cog):
                 daily_note_content = res.content.decode('utf-8')
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    daily_note_content = f"# {date_str}\n"
+                    daily_note_content = f"# {daily_note_date}\n"
                     logging.info(f"デイリーノートが見つからなかったため新規作成: {daily_note_path}")
                 else: raise
 
@@ -764,38 +598,20 @@ class ZeroSecondThinkingCog(commands.Cog):
                     logging.info("Google Docsにゼロ秒思考ログを保存しました。")
                 except Exception as e_gdoc:
                     logging.error(f"Google Docsへのゼロ秒思考ログ保存中にエラー: {e_gdoc}", exc_info=True)
-        
-        except Exception as e:
-            logging.error(f"_save_memo_to_obsidian 処理中にエラー: {e}", exc_info=True)
-            raise # エラーを呼び出し元に伝達
 
 
-    # ★ 新規追加: _ask_followup_question (フォローアップ質問とクリーンアップ)
-    async def _ask_followup_question(self, context_message: discord.Message, original_question: str, final_answer: str, original_question_id: int):
-        """Asks a follow-up question and manages reactions/cleanup."""
-        
-        # Determine how to send the follow-up question
-        async def send_followup_question(embed):
-            # Always send to the channel of the context message
-            channel = context_message.channel
-            return await channel.send(embed=embed)
-
-        try:
             # --- Add completion reaction ---
             if isinstance(context_message, discord.Message):
                  try:
-                     # ⏳ があれば削除
                      await context_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                      await context_message.add_reaction(PROCESS_COMPLETE_EMOJI)
                  except discord.HTTPException: pass
 
             # --- Remove original question from active list ---
             if original_question_id:
-                popped_question = self.active_questions.pop(original_question_id, None)
-                if popped_question:
-                    logging.info(f"Question ID {original_question_id} removed from active list.")
-                else:
-                    logging.warning(f"Question ID {original_question_id} was already removed from active list.")
+                self.active_questions.pop(original_question_id, None)
+                logging.info(f"Question ID {original_question_id} removed from active list.")
+
 
             # --- Ask Follow-up Question ---
             digging_prompt = f"""
@@ -819,27 +635,40 @@ class ZeroSecondThinkingCog(commands.Cog):
                  logging.warning(f"Geminiからの深掘り質問生成に失敗、または空の応答: {response}")
 
             embed = discord.Embed(title="🤔 さらに深掘りしましょう", description=f"お題: **{new_question}**", color=discord.Color.blue())
-            embed.set_footer(text="このお題に対する思考を投稿してください (テキスト・音声・画像)。`/zst_end`で終了。")
+            embed.set_footer(text="このメッセージに返信する形で、思考を書き出してください。`/zst_end`で終了。")
 
             sent_message = await send_followup_question(embed=embed)
 
             # Store the new follow-up question
             self.active_questions[sent_message.id] = new_question
             logging.info(f"Follow-up question posted: ID {sent_message.id}, Q: {new_question}")
-            
-            # ユーザーの最後のインタラクション（お題）も更新
-            self.user_last_interaction[context_message.author.id] = sent_message.id
 
-            # (テキスト入力の場合、この時点で context_message は削除済み)
-            # (音声/画像の場合、クリーンアップは呼び出し元 (View/Modal) が行う)
+            # ★ --- (REQ) 修正: ユーザーの返信メッセージを削除するブロックをコメントアウト ---
+            #
+            # if isinstance(context_message, discord.Message):
+            #      try:
+            #          await context_message.delete()
+            #          logging.info(f"Deleted original user reply message {context_message.id}")
+            #      except discord.HTTPException as e_del_user:
+            #          logging.warning(f"Failed to delete user reply message {context_message.id}: {e_del_user}")
+            #
+            # ★ --- 修正ここまで ---
 
-        except Exception as e_followup:
-            logging.error(f"[Zero-Second Thinking] Error asking follow-up question: {e_followup}", exc_info=True)
-            try:
-                await context_message.reply(f"❌ 次の質問の生成中にエラーが発生しました: {e_followup}")
-            except discord.HTTPException:
-                pass
+
+        except Exception as e_save:
+            logging.error(f"[Save/Continue Error] Error saving memo or asking follow-up: {e_save}", exc_info=True)
+            error_message_content = f"❌ メモの保存または次の質問の生成中にエラーが発生しました: {e_save}"
+            if isinstance(interaction_or_message, discord.Interaction):
+                 if interaction_or_message.response.is_done(): await interaction_or_message.followup.send(error_message_content, ephemeral=True)
+                 else:
+                      try: await interaction_or_message.response.send_message(error_message_content, ephemeral=True)
+                      except discord.InteractionResponded: await interaction_or_message.followup.send(error_message_content, ephemeral=True)
+            elif isinstance(context_message, discord.Message):
+                 await context_message.reply(error_message_content)
+
             if isinstance(context_message, discord.Message):
+                 try: await context_message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
+                 except discord.HTTPException: pass
                  try: await context_message.add_reaction(PROCESS_ERROR_EMOJI)
                  except discord.HTTPException: pass
             if original_question_id:
@@ -857,22 +686,16 @@ class ZeroSecondThinkingCog(commands.Cog):
             return
 
         user_id = interaction.user.id
-        
-        # ★ 修正: ユーザーが最後に操作したお題IDを取得
         last_interacted_question_id = self.user_last_interaction.pop(user_id, None)
 
         # Remove any active questions associated with the last interaction (if applicable)
         if last_interacted_question_id:
-             # ★ 修正: 該当のお題IDをアクティブリストから削除
-             popped_question = self.active_questions.pop(last_interacted_question_id, None)
-             if popped_question:
-                 logging.info(f"User {user_id} ended their ZST session. Cleared state for question {last_interacted_question_id} ('{popped_question}').")
-             else:
-                 logging.info(f"User {user_id} used /zst_end, but question {last_interacted_question_id} was already inactive.")
+             self.active_questions.pop(last_interacted_question_id, None)
+             logging.info(f"User {user_id} ended their ZST session. Cleared state for question {last_interacted_question_id}.")
         else:
              logging.info(f"User {user_id} used /zst_end but had no active interaction tracked.")
-        
-        # ★ 修正: delete_after 削除
+
+        # ★ (Fix) delete_after を削除
         await interaction.response.send_message("ゼロ秒思考セッションを終了しました。新しいお題は `/zst_start` で始められます。", ephemeral=True)
 
 
