@@ -13,8 +13,8 @@ import aiohttp # URLチェック用に保持
 
 # --- 共通処理インポート ---
 from obsidian_handler import add_memo_async
-# utils.obsidian_utils はこのファイルでは直接使わないため削除 (必要なら戻す)
-# web_parser はこのファイルでは直接使わないため削除
+# ★ 追加: URLのタイトル取得にweb_parserを利用します
+from web_parser import parse_url_with_readability
 
 # --- 定数定義 ---
 try:
@@ -29,14 +29,13 @@ WEB_CLIP_CHANNEL_ID = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
 
 # --- リアクション絵文字 ---
-# ★ 修正: ユーザーが付ける転送トリガー (WebClip, YouTube共通)
 USER_TRANSFER_REACTION = '➡️' 
-# Botが転送先で付けるリアクション (処理開始トリガー)
 BOT_PROCESS_TRIGGER_REACTION = '📥'
-# 処理ステータス用
-PROCESS_FORWARDING_EMOJI = '➡️' # 転送処理中を示す
-PROCESS_COMPLETE_EMOJI = '✅' # テキストメモ保存完了用
+PROCESS_FORWARDING_EMOJI = '➡️' 
+PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
+# ★ 追加: URLタイトル取得中
+PROCESS_FETCHING_EMOJI = '⏱️' 
 
 # URL Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
@@ -57,7 +56,7 @@ class MemoCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """#memo チャンネルに投稿されたメッセージを処理 (テキストメモのみ)"""
+        """#memo チャンネルに投稿されたメッセージを処理 (テキストとURLの両方)"""
         if message.author.bot or message.channel.id != MEMO_CHANNEL_ID:
             return
 
@@ -65,30 +64,75 @@ class MemoCog(commands.Cog):
         if not content:
             return
 
-        # ★ 修正: URLが含まれる場合は on_message では処理せず、リアクションを待つ
+        # ★ 修正: URLが含まれる場合、先に「ブックマーク」として保存する
         url_match = URL_REGEX.search(content)
-        if url_match:
-            logging.info(f"URL detected in message {message.id}. Waiting for user reaction ({USER_TRANSFER_REACTION}).")
-            return
         
-        # 3. URLが含まれない場合: テキストメモとして保存
-        logging.info(f"Text memo detected in message {message.id}. Saving via obsidian_handler.")
-        try:
-            await add_memo_async(
-                content=content,
-                author=str(message.author),
-                created_at=message.created_at.isoformat(), # UTCのISOフォーマット
-                message_id=message.id,
-                context="Discord Memo Channel", # コンテキスト情報を追加
-                category="Memo" # カテゴリ情報を追加
-            )
-            await message.add_reaction(PROCESS_COMPLETE_EMOJI) # 保存成功のリアクション
-        except Exception as e:
-            logging.error(f"Failed to save text memo (ID: {message.id}) using add_memo_async: {e}", exc_info=True)
-            await message.add_reaction(PROCESS_ERROR_EMOJI)
+        if url_match:
+            logging.info(f"URL detected in message {message.id}. Saving as simple bookmark memo.")
+            try:
+                await message.add_reaction(PROCESS_FETCHING_EMOJI) # 処理中
+            except discord.HTTPException: pass
+
+            url = url_match.group(0) # メッセージ内の最初のURLを取得
+            
+            try:
+                # web_parser.pyの関数 (requests) は同期処理のため、別スレッドで実行
+                loop = asyncio.get_running_loop()
+                title, _ = await loop.run_in_executor(
+                    None, parse_url_with_readability, url
+                )
+                
+                if not title or title == "No Title Found":
+                    title = "タイトル不明"
+                    
+                # 保存するメモの形式: "タイトル\nURL"
+                memo_content_to_save = f"{title}\n{url}"
+
+                # テキストメモと同様に add_memo_async で保存
+                await add_memo_async(
+                    content=memo_content_to_save,
+                    author=str(message.author),
+                    created_at=message.created_at.isoformat(),
+                    message_id=message.id,
+                    context="Discord Memo Channel (URL Bookmark)", # コンテキストを変更
+                    category="Memo" # 通常のMemoセクションに保存
+                )
+                
+                await message.remove_reaction(PROCESS_FETCHING_EMOJI, self.bot.user)
+                await message.add_reaction(PROCESS_COMPLETE_EMOJI) # 保存成功
+                logging.info(f"Successfully saved URL bookmark (ID: {message.id})")
+            
+            except Exception as e:
+                logging.error(f"Failed to parse URL title or save bookmark (ID: {message.id}): {e}", exc_info=True)
+                try:
+                    await message.remove_reaction(PROCESS_FETCHING_EMOJI, self.bot.user)
+                    await message.add_reaction(PROCESS_ERROR_EMOJI)
+                except discord.HTTPException: pass
+            
+            # --- 重要 ---
+            # URLのブックマーク保存が完了しても、リアクション(➡️)による転送処理のために
+            # ここで return せず、処理を終了させます。
+            # (on_raw_reaction_add はこのメッセージを引き続き監視できます)
+
+        # ★ 修正: URLが含まれない場合 (元のロジック)
+        else:
+            logging.info(f"Text memo detected in message {message.id}. Saving via obsidian_handler.")
+            try:
+                await add_memo_async(
+                    content=content,
+                    author=str(message.author),
+                    created_at=message.created_at.isoformat(), # UTCのISOフォーマット
+                    message_id=message.id,
+                    context="Discord Memo Channel", # コンテキスト情報を追加
+                    category="Memo" # カテゴリ情報を追加
+                )
+                await message.add_reaction(PROCESS_COMPLETE_EMOJI) # 保存成功のリアクション
+            except Exception as e:
+                logging.error(f"Failed to save text memo (ID: {message.id}) using add_memo_async: {e}", exc_info=True)
+                await message.add_reaction(PROCESS_ERROR_EMOJI)
         # ★ 修正ここまで
 
-    # ★ 修正: 転送ロジックを共通関数化
+    # ( _forward_message と _handle_forward_error は変更なし )
     async def _forward_message(self, message: discord.Message, content_to_forward: str, target_channel_id: int, forward_type: str):
         """指定されたチャンネルにメッセージを転送し、トリガーリアクション(📥)を付与する"""
         if target_channel_id == 0:
@@ -147,8 +191,8 @@ class MemoCog(commands.Cog):
         except discord.HTTPException: pass
         try: await message.add_reaction(PROCESS_ERROR_EMOJI)
         except discord.HTTPException: pass
-    # ★ 修正ここまで
-
+    
+    # ( on_raw_reaction_add は変更なし )
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """ユーザーが付けたリアクション(➡️)に応じてURLメッセージを転送"""
@@ -157,7 +201,6 @@ class MemoCog(commands.Cog):
 
         emoji = str(payload.emoji)
 
-        # ★ 修正: 転送トリガー (➡️) のみを処理
         if emoji != USER_TRANSFER_REACTION:
             return
 
@@ -190,7 +233,7 @@ class MemoCog(commands.Cog):
         except discord.HTTPException:
             logging.warning(f"ユーザーリアクション {emoji} の削除に失敗: {message.id}")
 
-        # ★ 修正: URLの種類を判別して転送先を決定
+        # URLの種類を判別して転送先を決定
         youtube_url_match = YOUTUBE_URL_REGEX.search(content)
         if youtube_url_match:
             target_channel_id = YOUTUBE_SUMMARY_CHANNEL_ID
