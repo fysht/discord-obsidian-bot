@@ -108,36 +108,43 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
         self.input_type = input_type
 
     async def on_submit(self, interaction: discord.Interaction):
-        # ★ 修正: ネットワークエラー(ConnectionResetError)発生時も考慮し、deferをtry-exceptで囲む
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
         except Exception as e_defer:
             logging.error(f"BookMemoEditModal: on_submitでのdeferに失敗 (ネットワークエラーの可能性): {e_defer}", exc_info=True)
-            # deferに失敗した場合、後続のfollowupも失敗する可能性が高いが、処理は続行してみる
             pass
 
         edited_text = self.memo_text.value
+        logging.info(f"Memo edited and submitted by {interaction.user} (Type: {self.input_type}).")
         
         try:
-            # 編集されたテキストで保存処理を実行
-            await self.cog._save_memo_to_obsidian_and_cleanup(
-                interaction,
+            # 1. Obsidianへの保存処理 (クリーンアップなし)
+            await self.cog._save_memo_to_obsidian(
                 self.book_path,
                 edited_text,
-                self.input_type,
-                self.original_message,
-                self.confirmation_message
+                self.input_type # (例: "image (edited)")
             )
-            # 完了メッセージ (一定時間後に消える)
-            await interaction.followup.send("✅ 編集されたメモを保存しました。", ephemeral=True, delete_after=10)
+            
+            # 2. 完了メッセージ (★ 修正: delete_after を削除)
+            await interaction.followup.send("✅ 編集されたメモを保存しました。", ephemeral=True)
+
+            # 3. メッセージのクリーンアップ (★ 修正: 成功応答の後に移動)
+            try:
+                await self.confirmation_message.delete()
+                await self.original_message.delete()
+                logging.info(f"Cleanup successful for edited memo (Orig ID: {self.original_message.id})")
+            except discord.HTTPException as e_del:
+                logging.warning(f"Failed to cleanup messages after edit: {e_del}")
 
         except Exception as e:
             logging.error(f"BookCog: 編集済みメモの保存中にエラー: {e}", exc_info=True)
             try:
                 await interaction.followup.send(f"❌ 編集済みメモの保存中にエラーが発生しました: {e}", ephemeral=True)
             except discord.HTTPException as e_followup:
-                 logging.error(f"BookCog: エラーのfollowup送信にも失敗: {e_followup}")
-            await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+                 logging.error(f"BookMemoEditModal: エラーのfollowup送信にも失敗: {e_followup}")
+            # (クリーンアップが実行されていないため、エラーリアクションの追加は安全)
+            try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+            except discord.HTTPException: pass
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         logging.error(f"Error in BookMemoEditModal: {error}", exc_info=True)
@@ -149,7 +156,8 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
                 except discord.InteractionResponded: pass
         except discord.HTTPException as e_resp:
              logging.error(f"BookMemoEditModal: on_errorでの応答送信に失敗: {e_resp}")
-        await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+        try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+        except discord.HTTPException: pass
 
 # --- ★ (REQ 1) メモ「確認・編集」View ---
 class ConfirmMemoView(discord.ui.View):
@@ -166,21 +174,33 @@ class ConfirmMemoView(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            # 認識されたテキストで保存処理を実行
-            await self.cog._save_memo_to_obsidian_and_cleanup(
-                interaction,
+            # 1. Obsidianへの保存処理 (クリーンアップなし)
+            await self.cog._save_memo_to_obsidian(
                 self.book_path,
                 self.recognized_text,
-                self.input_type,
-                self.original_message,
-                self.confirmation_message
+                f"{self.input_type} (confirmed)"
             )
-            await interaction.followup.send("✅ メモを保存しました。", ephemeral=True, delete_after=10)
+            
+            # 2. 完了メッセージ (★ 修正: delete_after を削除)
+            await interaction.followup.send("✅ メモを保存しました。", ephemeral=True)
+
+            # 3. メッセージのクリーンアップ (★ 修正: 成功応答の後に移動)
+            try:
+                await self.confirmation_message.delete()
+                await self.original_message.delete()
+                logging.info(f"Cleanup successful for confirmed memo (Orig ID: {self.original_message.id})")
+            except discord.HTTPException as e_del:
+                logging.warning(f"Failed to cleanup messages after confirm: {e_del}")
         
         except Exception as e:
             logging.error(f"BookCog: 確認済みメモの保存中にエラー: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ メモの保存中にエラーが発生しました: {e}", ephemeral=True)
-            await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+            try:
+                await interaction.followup.send(f"❌ メモの保存中にエラーが発生しました: {e}", ephemeral=True)
+            except discord.HTTPException as e_followup:
+                logging.error(f"ConfirmMemoView: エラーのfollowup送信にも失敗: {e_followup}")
+            # (クリーンアップが実行されていないため、エラーリアクションの追加は安全)
+            try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+            except discord.HTTPException: pass
         finally:
             self.stop()
 
@@ -193,7 +213,7 @@ class ConfirmMemoView(discord.ui.View):
             self.recognized_text,
             self.original_message,
             self.confirmation_message,
-            self.input_type
+            f"{self.input_type} (edited)" # (edited) サフィックスを渡す
         )
         await interaction.response.send_modal(modal)
         self.stop()
@@ -748,19 +768,16 @@ class BookCog(commands.Cog):
                 try: temp_audio_path.unlink()
                 except OSError as e_rm: logging.error(f"BookCog: 一時音声ファイルの削除に失敗: {e_rm}")
 
-    # ★ (REQ 1 & 2) 新規追加: メモを保存し、関連メッセージを削除するヘルパー
-    async def _save_memo_to_obsidian_and_cleanup(
+    # ★ (REQ 1 & 2) 修正: メモを保存するだけのヘルパーに変更
+    async def _save_memo_to_obsidian(
         self,
-        interaction: discord.Interaction, # Confirm または EditModal からの Interaction
         book_path: str,
         final_text: str,
-        input_type: str,
-        original_message: discord.Message, # ユーザーが投稿したメモ
-        confirmation_message: discord.Message # ボットが送信した確認View
+        input_type: str
     ):
         """
-        最終的なテキストをObsidianに保存し、
-        元のユーザーメッセージとボットの確認メッセージを削除する。
+        最終的なテキストをObsidianに保存する。
+        (クリーンアップは呼び出し元で行う)
         """
         try:
             # 1. 既存のノートをダウンロード
@@ -774,11 +791,7 @@ class BookCog(commands.Cog):
             memo_lines = final_text.strip().split('\n')
             
             # タイムスタンプの入力タイプサフィックスを調整
-            type_suffix = f"({input_type} memo)"
-            if "edited" in input_type:
-                type_suffix = f"({input_type})" # (audio (edited) memo)
-            elif input_type == "text":
-                type_suffix = "(text memo)" # (text memo)
+            type_suffix = f"({input_type})" # (例: "image (confirmed)" や "audio (edited)")
                 
             formatted_memo = f"- {date_time_str} {type_suffix}\n\t- " + "\n\t- ".join(memo_lines)
 
@@ -795,22 +808,9 @@ class BookCog(commands.Cog):
             )
             logging.info(f"BookCog: {input_type} メモを追記しました: {book_path}")
 
-            # 5. ★ (REQ 2) メッセージのクリーンアップ
-            try:
-                await confirmation_message.delete()
-                logging.info(f"BookCog: ボットの確認メッセージ (ID: {confirmation_message.id}) を削除しました。")
-            except discord.HTTPException as e_del_conf:
-                logging.warning(f"BookCog: ボットの確認メッセージ削除に失敗: {e_del_conf}")
-                
-            try:
-                await original_message.delete()
-                logging.info(f"BookCog: ユーザーの元メモ (ID: {original_message.id}) を削除しました。")
-            except discord.HTTPException as e_del_orig:
-                 logging.warning(f"BookCog: ユーザーの元メモ削除に失敗: {e_del_orig}")
-
         except Exception as e:
             # このエラーは interaction.followup.send で呼び出し元に伝達される
-            logging.error(f"BookCog: _save_memo_to_obsidian_and_cleanup でエラー: {e}", exc_info=True)
+            logging.error(f"BookCog: _save_memo_to_obsidian でエラー: {e}", exc_info=True)
             raise # エラーを再発生させ、モーダル/Viewのon_submit/callback側でキャッチさせる
 
 
