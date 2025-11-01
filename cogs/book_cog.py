@@ -6,7 +6,7 @@ import logging
 import re
 import asyncio
 import dropbox
-# ★ FileMetadataを追加
+# FileMetadataを追加
 from dropbox.files import WriteMode, DownloadError, FileMetadata 
 from dropbox.exceptions import ApiError
 import datetime
@@ -14,7 +14,7 @@ import zoneinfo
 import aiohttp
 import urllib.parse
 import openai # (1) 音声認識 (Whisper) のために追加
-import google.generativeai as genai # ★ (A) 不足していたインポートを追加
+import google.generativeai as genai # (A) 不足していたインポートを追加
 from PIL import Image # (2) 画像処理のために追加
 import io
 import pathlib
@@ -32,7 +32,8 @@ except ImportError:
             try:
                 header_index = -1
                 for i, line in enumerate(lines):
-                    if line.strip().lstrip('#').strip() == section_header.lstrip('#').strip():
+                    # ★ 修正: 英語の見出しにも対応できるよう lower() を追加
+                    if line.strip().lstrip('#').strip().lower() == section_header.lstrip('#').strip().lower():
                         header_index = i
                         break
                 if header_index == -1: raise ValueError("Header not found")
@@ -111,15 +112,15 @@ class BookMemoModal(discord.ui.Modal, title="読書メモの入力"):
             _, res = await asyncio.to_thread(self.cog.dbx.files_download, self.book_path)
             current_content = res.content.decode('utf-8')
 
-            # 2. メモをフォーマット
+            # 2. ★ 修正: メモに日付と時刻を含める
             now = datetime.datetime.now(JST)
-            time_str = now.strftime('%H:%M')
+            date_time_str = now.strftime('%Y-%m-%d %H:%M') # 日付と時刻
             # 複数行入力に対応
             memo_lines = self.memo_text.value.strip().split('\n')
-            formatted_memo = f"- {time_str}\n\t- " + "\n\t- ".join(memo_lines)
+            formatted_memo = f"- {date_time_str}\n\t- " + "\n\t- ".join(memo_lines)
 
-            # 3. update_section で追記 (既存の `## メモ` セクションを利用)
-            section_header = "## メモ"
+            # 3. ★ 修正: 英語の見出しに追記
+            section_header = "## Notes"
             new_content = update_section(current_content, formatted_memo, section_header)
 
             # 4. Dropboxにアップロード
@@ -319,7 +320,8 @@ class BookCog(commands.Cog):
         try:
             self.dbx = dropbox.Dropbox(
                 oauth2_refresh_token=self.dropbox_refresh_token,
-                app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret, timeout=300
+                app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret, 
+                timeout=60 # (B) タイムアウトを60秒に短縮
             )
             self.dbx.users_get_current_account()
             logging.info("BookCog: Dropbox client initialized.")
@@ -510,12 +512,14 @@ class BookCog(commands.Cog):
             _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
             current_content = res.content.decode('utf-8')
             
+            # ★ 修正: 日付と時刻を含める
             now = datetime.datetime.now(JST)
-            time_str = now.strftime('%H:%M')
+            date_time_str = now.strftime('%Y-%m-%d %H:%M') # 日付と時刻
             memo_lines = recognized_text.strip().split('\n')
-            formatted_memo = f"- {time_str} ({input_type} memo)\n\t- " + "\n\t- ".join(memo_lines)
+            formatted_memo = f"- {date_time_str} ({input_type} memo)\n\t- " + "\n\t- ".join(memo_lines)
             
-            section_header = "## メモ"
+            # ★ 修正: 英語の見出しに追記
+            section_header = "## Notes"
             new_content = update_section(current_content, formatted_memo, section_header)
             
             await asyncio.to_thread(
@@ -562,33 +566,65 @@ class BookCog(commands.Cog):
             except discord.HTTPException: pass
             await self._create_book_note(message)
 
+    # _create_book_note (修正: 画像フォールバック追加)
     async def _create_book_note(self, message: discord.Message):
-        # (変更なし: 書籍作成ロジック)
+        """書籍ノート作成のコアロジック"""
         error_reactions = set()
         book_data = None
         source_url = message.content.strip()
+
         try:
             await message.add_reaction(PROCESS_START_EMOJI)
+
+            # 1. Embedから書籍タイトルと★画像★を取得 (7秒待機)
             logging.info(f"BookCog: Waiting 7s for Discord embed for {source_url}...")
             await asyncio.sleep(7)
+            
             book_title = None
+            embed_image_url = None # ★ 画像URLフォールバック用
+            
             try:
                 fetched_message = await message.channel.fetch_message(message.id)
-                if fetched_message.embeds and fetched_message.embeds[0].title:
-                    book_title = fetched_message.embeds[0].title
-            except (discord.NotFound, discord.Forbidden): pass
+                if fetched_message.embeds:
+                    embed = fetched_message.embeds[0]
+                    if embed.title:
+                        book_title = embed.title
+                        logging.info(f"BookCog: Embedからタイトルを取得: {book_title}")
+                    
+                    # ★ サムネイルまたは画像を取得
+                    if embed.thumbnail and embed.thumbnail.url:
+                        embed_image_url = embed.thumbnail.url
+                        logging.info(f"BookCog: Embedからサムネイル画像URLを取得: {embed_image_url}")
+                    elif embed.image and embed.image.url:
+                        embed_image_url = embed.image.url
+                        logging.info(f"BookCog: Embedから画像URLを取得: {embed_image_url}")
+                        
+            except (discord.NotFound, discord.Forbidden) as e:
+                 logging.warning(f"BookCog: Embed取得のためのメッセージ再取得に失敗: {e}")
+
             if not book_title:
+                logging.error(f"BookCog: Discord Embedから書籍タイトルを取得できませんでした。URL: {source_url}")
                 error_reactions.add(PROCESS_ERROR_EMOJI)
                 raise Exception("Discord Embedから書籍タイトルを取得できませんでした。")
+
+            # 2. Google Books APIで書籍データを検索
             book_data = await self._fetch_google_book_data(book_title)
             if not book_data:
-                error_reactions.add(NOT_FOUND_EMOJI)
-                raise Exception("Google Books APIで書籍データが見つかりませんでした。")
-            await self._save_note_to_obsidian(book_data, source_url)
+                logging.warning(f"BookCog: Google Books APIで「{book_title}」が見つかりませんでした。")
+                book_data = {"title": book_title} # タイトルだけでも渡す
+
+            logging.info(f"BookCog: Google Books APIで書籍データを取得: {book_data.get('title')}")
+
+            # 3. Obsidianにノートを作成・保存 (★ 画像フォールバックを渡す)
+            await self._save_note_to_obsidian(book_data, source_url, embed_image_url_fallback=embed_image_url)
+
+            # 4. 成功リアクション
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
+
         except Exception as e:
             logging.error(f"BookCog: 書籍ノート作成処理中にエラー: {e}", exc_info=True)
-            if not error_reactions: error_reactions.add(PROCESS_ERROR_EMOJI)
+            if not error_reactions: # 汎用エラー
+                error_reactions.add(PROCESS_ERROR_EMOJI)
             for reaction in error_reactions:
                 try: await message.add_reaction(reaction)
                 except discord.HTTPException: pass
@@ -610,19 +646,34 @@ class BookCog(commands.Cog):
                 else: return None
         except Exception: return None
 
-    async def _save_note_to_obsidian(self, book_data: dict, source_url: str):
-        # (変更なし)
+    # _save_note_to_obsidian (★ 修正: 見出しを英語に変更)
+    async def _save_note_to_obsidian(self, book_data: dict, source_url: str, embed_image_url_fallback: str = None):
+        """取得した書籍データからMarkdownノートを作成し、Dropboxに保存する"""
+        
         title = book_data.get("title", "不明なタイトル")
-        author_str = ", ".join(book_data.get("authors", []))
+        authors = book_data.get("authors", [])
+        author_str = ", ".join(authors)
         published_date = book_data.get("publishedDate", "N/A")
         description = book_data.get("description", "N/A")
+        
+        # 画像フォールバックロジック
         thumbnail_url = book_data.get("imageLinks", {}).get("thumbnail", "")
+        if not thumbnail_url and embed_image_url_fallback:
+            thumbnail_url = embed_image_url_fallback
+            logging.info("BookCog: Google Books APIの画像が見つからないため、Discord Embedの画像URLをカバーとして使用します。")
+        elif not thumbnail_url:
+            logging.warning("BookCog: Google Books APIにもDiscord Embedにもカバー画像が見つかりませんでした。")
+        
+        # ファイル名をサニタイズ
         safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
         if not safe_title: safe_title = "Untitled Book"
+        
         now = datetime.datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
         note_filename = f"{safe_title}.md"
         note_path = f"{self.dropbox_vault_path}{READING_NOTES_PATH}/{note_filename}"
+
+        # --- ★ 修正: ノートテンプレート (見出しを英語に) ---
         note_content = f"""---
 title: "{title}"
 authors: [{author_str}]
@@ -633,18 +684,23 @@ status: "To Read"
 created: {now.isoformat()}
 cover: {thumbnail_url}
 ---
-## 概要
+## Summary
 {description}
-## メモ
 
-## アクション
+## Notes
+
+## Actions
 
 """
+        # --- ★ 修正ここまで ---
+
         try:
             await asyncio.to_thread(
                 self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add')
             )
             logging.info(f"BookCog: 読書ノートを保存しました: {note_path}")
+            
+            # --- デイリーノートにリンクを追記 ---
             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
             daily_note_content = ""
             try:
