@@ -20,6 +20,7 @@ try:
     logging.info("YouTubeCog: utils/obsidian_utils.py を読み込みました。")
 except ImportError:
     logging.warning("YouTubeCog: utils/obsidian_utils.pyが見つからないため、簡易的な追記処理を使用します。")
+    # (フォールバック用の簡易 update_section 関数)
     def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
         lines = current_content.split('\n')
         new_content_lines = list(lines)
@@ -37,12 +38,10 @@ except ImportError:
                 new_content_lines.insert(insert_index, "")
                 insert_index += 1
             new_content_lines.insert(insert_index, text_to_add)
-            # ★ 修正: join(lines) だったものを join(new_content_lines) に
             return "\n".join(new_content_lines) 
         except ValueError:
             logging.info(f"Section '{section_header}' not found in daily note, appending.")
             return current_content.strip() + f"\n\n{section_header}\n{text_to_add}\n"
-# --- ここまで ---
 
 # --- Google Docs連携 ---
 try:
@@ -55,7 +54,6 @@ except ImportError:
     async def append_text_to_doc_async(*args, **kwargs):
         logging.warning("Google Docs handler is not available.")
         pass
-# --- ここまで ---
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -71,12 +69,15 @@ SAVE_ERROR_EMOJI = '💾'
 GOOGLE_DOCS_ERROR_EMOJI = '🇬'
 # --- ここまで ---
 
-class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
+class YouTubeCog(commands.Cog, name="YouTubeCog"):
     """YouTube動画の要約とObsidian/Google Docsへの保存を行うCog (Botリアクショントリガー)"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.youtube_summary_channel_id = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
+        # ★ レシピチャンネルIDも取得
+        self.recipe_channel_id = int(os.getenv("RECIPE_CHANNEL_ID", 0)) 
+        
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -90,8 +91,8 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
 
         missing_vars = []
         if not self.youtube_summary_channel_id: missing_vars.append("YOUTUBE_SUMMARY_CHANNEL_ID")
-        if not self.dropbox_app_key: missing_vars.append("DROPBOX_APP_KEY")
-        if not self.dropbox_app_secret: missing_vars.append("DROPBOX_APP_SECRET")
+        # ★ レシピチャンネルIDも必須チェックに追加
+        if not self.recipe_channel_id: missing_vars.append("RECIPE_CHANNEL_ID") 
         if not self.dropbox_refresh_token: missing_vars.append("DROPBOX_REFRESH_TOKEN")
         if not self.gemini_api_key: missing_vars.append("GEMINI_API_KEY")
 
@@ -124,27 +125,24 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             await self.session.close()
             logging.info("YouTubeCog: aiohttp session closed.")
 
-    # --- ★ 修正: on_raw_reaction_add のロジックを「Bot自身」の 📥 を検知するように（元のコードに戻す） ---
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         """
-        Bot(Render/自分自身)が付けた 📥 リアクションを検知して処理を開始する
+        Bot(自分自身)が付けた 📥 リアクションを検知して処理を開始する
         """
         
-        if payload.channel_id != self.youtube_summary_channel_id:
+        # ★ 監視対象チャンネルを増やす
+        if payload.channel_id not in [self.youtube_summary_channel_id, self.recipe_channel_id]:
             return
             
         emoji_str = str(payload.emoji)
 
-        # 1. このリアクションはトリガー(📥)か？
         if emoji_str == BOT_PROCESS_TRIGGER_REACTION: # '📥'
             
-            # 2. このリアクションは Bot (＝自分自身) が付けたものか？
+            # (local worker の) Bot 自身のリアクションか？
             if payload.user_id != self.bot.user.id:
-                # 違う場合 (人間や他のBotが 📥 を付けた場合) は無視
                 return 
 
-            # 3. メッセージを取得
             channel = self.bot.get_channel(payload.channel_id)
             if not channel: return
             try:
@@ -153,7 +151,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 logging.warning(f"メッセージの取得に失敗しました: {payload.message_id}")
                 return
 
-            # 4. 既に local_worker (r.me) が処理中/処理完了のリアクションを付けているか？
+            # 既に処理中/処理完了のリアクションを付けているか？
             is_processed = any(r.emoji in (
                 PROCESS_START_EMOJI, PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, 
                 TRANSCRIPT_NOT_FOUND_EMOJI, INVALID_URL_EMOJI, SUMMARY_ERROR_EMOJI,
@@ -164,140 +162,165 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 logging.info(f"既に処理中または処理済みのメッセージのためスキップします: {message.jump_url}")
                 return
 
-            # 5. 【処理実行】
-            # - Bot (自分) が 📥 を付けた
-            # - local worker (自分) はまだ処理をしていない
-            
             logging.info(f"Bot (self) の '{BOT_PROCESS_TRIGGER_REACTION}' を検知しました。要約処理を開始します: {message.jump_url}")
             
-            # トリガー 📥 (Bot/自分 が付けたもの) を削除
             try:
                 await message.remove_reaction(payload.emoji, self.bot.user)
             except discord.HTTPException:
                 logging.warning(f"Bot のリアクション削除に失敗しました: {message.jump_url}")
 
+            # ★ _perform_summary に message オブジェクト自体を渡す
             await self._perform_summary(url=message.content.strip(), message=message)
 
-        # 6. このリアクションがトリガー(📥)以外で、かつ自分自身が付けたもの (⏳, ✅, ❌ など)
         elif payload.user_id == self.bot.user.id:
-            # 自分が付けた処理中・完了リアクションを検知しても何もしない (ループ防止)
             return
-            
-        # 7. それ以外 (人間が付けたリアクションなど)
         else:
-            # 無視
             return
-    # --- 修正ここまで ---
 
 
-    # --- 字幕抽出ロジック (参考コードの fetch() ベース) ---
     def _extract_transcript_text(self, fetched_data):
+        """youtube_transcript_apiのfetch()の戻り値からテキストを結合する"""
         texts = []
         try:
+            # v3 (dict)
             for snippet in fetched_data:
                 if isinstance(snippet, dict):
                     texts.append(snippet.get('text', ''))
-                elif hasattr(snippet, 'text'):
-                    texts.append(getattr(snippet, 'text', ''))
-                else:
-                    texts.append(str(snippet))
             return " ".join(t.strip() for t in texts if t and t.strip())
-        except TypeError:
-            if isinstance(fetched_data, list):
+        except TypeError: 
+             # v4 (TranscriptEntry)
+             if isinstance(fetched_data, list):
                 for item in fetched_data:
-                        if isinstance(item, dict):
-                            texts.append(item.get('text', ''))
+                        if hasattr(item, 'text'):
+                            texts.append(getattr(item, 'text', ''))
                 return " ".join(t.strip() for t in texts if t and t.strip())
-            
-            logging.warning(f"予期せぬ字幕データ形式のため、テキスト抽出に失敗しました: {type(fetched_data)}")
-            return ""
-    # --- ここまで ---
+        logging.warning(f"RecipeCog: 予期せぬ字幕データ形式: {type(fetched_data)}")
+        return ""
 
-    # --- 起動時スキャンロジック (★ 修正: Botが付けた 📥 を探すように（元のコードに戻す）) ---
-    async def process_pending_summaries(self):
+
+    # ★ process_pending_summaries の引数を変更
+    async def process_pending_summaries(self, channel_id: int, recipe_channel_id: int):
         """起動時などに未処理の要約リクエストをまとめて処理する関数"""
-        channel = self.bot.get_channel(self.youtube_summary_channel_id)
-        if not channel:
-            logging.error(f"YouTubeCog: チャンネルID {self.youtube_summary_channel_id} が見つかりません。")
-            return
-
-        logging.info(f"チャンネル '{channel.name}' の未処理YouTube要約をスキャンします...")
+        
+        # ★ 2つのチャンネルをスキャンする
+        scan_channels = {channel_id, recipe_channel_id}
+        scan_channels.discard(0) # 0が設定されていたら除外
         
         pending_messages = []
         
-        try:
-            async for message in channel.history(limit=200):
-                
-                has_pending_trigger_by_bot = False # 📥 (Botが付けた)
-                is_processed_by_local = False # ✅, ❌, 🔇... (by local)
-                is_stuck_processing_local = False # ⏳ (by local)
+        for ch_id in scan_channels:
+            channel = self.bot.get_channel(ch_id)
+            if not channel:
+                logging.error(f"YouTubeCog: チャンネルID {ch_id} が見つかりません。")
+                continue
 
-                for r in message.reactions:
-                    emoji_str = str(r.emoji)
-
-                    if emoji_str == BOT_PROCESS_TRIGGER_REACTION: # 📥
-                        if r.me: # このBot (local) が付けた 📥 か？ (※Render BotとLocal Botが同一トークンのため r.me で良い)
-                            has_pending_trigger_by_bot = True
-                    
-                    if emoji_str in (
-                        PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, TRANSCRIPT_NOT_FOUND_EMOJI, 
-                        INVALID_URL_EMOJI, SUMMARY_ERROR_EMOJI, SAVE_ERROR_EMOJI, GOOGLE_DOCS_ERROR_EMOJI
-                    ) and r.me:
-                        is_processed_by_local = True
-                    
-                    if emoji_str == PROCESS_START_EMOJI and r.me: # ⏳
-                        is_stuck_processing_local = True 
-                        logging.info(f"Message {message.id}: ⏳ (Stuck) を検知。")
-
-
-                # (📥 がBotによって付けられている OR ⏳ でスタックしている) AND (まだ処理完了していない)
-                if (has_pending_trigger_by_bot or is_stuck_processing_local) and not is_processed_by_local:
-                    logging.info(f"Message {message.id}: 📥 (Pending by Bot) or ⏳ (Stuck) を検知。処理対象に追加します。")
-                    pending_messages.append(message) # メッセージだけ追加
+            logging.info(f"チャンネル '{channel.name}' の未処理YouTube要約をスキャンします...")
             
-        except discord.Forbidden:
-            logging.error(f"チャンネル {channel.name} の履歴読み取り権限がありません。")
-            return
-        except discord.HTTPException as e:
-            logging.error(f"チャンネル {channel.name} の履歴読み取り中にエラー: {e}")
-            return
+            try:
+                # 制限は多すぎないように (例: 100件)
+                async for message in channel.history(limit=100): 
+                    
+                    has_pending_trigger_by_bot = False # 📥 (Botが付けた)
+                    is_processed_by_local = False # ✅, ❌, 🔇... (by local)
+                    is_stuck_processing_local = False # ⏳ (by local)
+
+                    for r in message.reactions:
+                        emoji_str = str(r.emoji)
+
+                        if emoji_str == BOT_PROCESS_TRIGGER_REACTION: # 📥
+                            if r.me: # このBot (local) が付けた 📥 か？
+                                has_pending_trigger_by_bot = True
+                        
+                        if emoji_str in (
+                            PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, TRANSCRIPT_NOT_FOUND_EMOJI, 
+                            INVALID_URL_EMOJI, SUMMARY_ERROR_EMOJI, SAVE_ERROR_EMOJI, GOOGLE_DOCS_ERROR_EMOJI
+                        ) and r.me:
+                            is_processed_by_local = True
+                        
+                        if emoji_str == PROCESS_START_EMOJI and r.me: # ⏳
+                            is_stuck_processing_local = True 
+                            logging.info(f"Message {message.id}: ⏳ (Stuck) を検知。")
+
+                    # (📥 がBotによって付けられている OR ⏳ でスタックしている) AND (まだ処理完了していない)
+                    if (has_pending_trigger_by_bot or is_stuck_processing_local) and not is_processed_by_local:
+                        logging.info(f"Message {message.id} (Ch: {channel.name}): 処理対象に追加します。")
+                        pending_messages.append(message) # メッセージだけ追加
+                
+            except discord.Forbidden:
+                logging.error(f"チャンネル {channel.name} の履歴読み取り権限がありません。")
+            except discord.HTTPException as e:
+                logging.error(f"チャンネル {channel.name} の履歴読み取り中にエラー: {e}")
 
 
         if not pending_messages:
             logging.info("処理対象の新しいYouTube要約はありませんでした。")
             return
 
+        # 時刻順（古い順）にソートして処理
+        pending_messages.sort(key=lambda m: m.created_at)
+        
         logging.info(f"{len(pending_messages)}件の未処理YouTube要約が見つかりました。古いものから順に処理します...")
         
-        for message in reversed(pending_messages):
+        for message in pending_messages:
             logging.info(f"処理開始: {message.jump_url}")
             url = message.content.strip()
             
             try:
-                # 📥 リアクションをクリア
                 await message.clear_reaction(BOT_PROCESS_TRIGGER_REACTION)
             except (discord.Forbidden, discord.NotFound, discord.HTTPException) as e:
                 logging.warning(f"📥 リアクションのクリアに失敗しました: {e}")
             
             try:
-                # ⏳ リアクションもクリア (スタック対応)
                 await message.clear_reaction(PROCESS_START_EMOJI)
             except (discord.Forbidden, discord.NotFound, discord.HTTPException):
                 pass 
             
+            # ★ message オブジェクトを渡す
             await self._perform_summary(url=url, message=message)
             await asyncio.sleep(5) # 連続処理のための待機
-    # --- 起動時スキャンロジック修正ここまで ---
 
 
     async def _perform_summary(self, url: str, message: discord.Message | discord.InteractionMessage):
-        """YouTube要約処理のコアロジック (fetchを使用)"""
+        """YouTube要約処理のコアロジック (チャンネルIDに応じて処理分岐)"""
         obsidian_save_success = False
         gdoc_save_success = False
         error_reactions = set()
         video_title = "Untitled Video"
         video_id = None
         transcript_text = ""
+
+        # ★ チャンネルIDに基づいてAIプロンプトと保存先を決定
+        is_recipe_channel = (message.channel.id == self.recipe_channel_id)
+        
+        if is_recipe_channel:
+            logging.info("RecipeCog (YouTube) として処理を開始します。")
+            save_folder = "/Recipes" # ★ 保存先フォルダ
+            daily_note_header = "## Recipes" # ★ デイリーノートの見出し
+            gdoc_source_type = "Recipe (YouTube)"
+            concise_prompt = (
+                f"以下のYouTube動画の文字起こしから、レシピ情報（材料と作り方）を抽出し、簡潔なMarkdown形式で要約してください。\n"
+                f"「## 材料」と「## 作り方」の2つのセクションを必ず作成してください。\n"
+                f"材料は箇条書き（-）で、作り方は番号付きリスト（1. ...）で記述してください。\n"
+                f"それ以外の情報（導入、感想など）は含めないでください。\n\n"
+                f"--- 文字起こし全文 ---\n"
+            )
+            # レシピの場合、詳細要約は不要
+            detail_prompt = None 
+        else:
+            logging.info("YouTubeCog (General) として処理を開始します。")
+            save_folder = "/YouTube" # ★ 保存先フォルダ
+            daily_note_header = "## YouTube Summaries" # ★ デイリーノートの見出し
+            gdoc_source_type = "YouTube Transcript"
+            concise_prompt = (
+                "以下のYouTube動画の文字起こし全文を元に、重要なポイントを3～5点で簡潔にまとめてください。\n"
+                "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
+                f"--- 文字起こし全文 ---\n"
+            )
+            detail_prompt = (
+                "以下のYouTube動画の文字起こし全文を元に、その内容を網羅する詳細で包括的な要約を作成してください。\n"
+                "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
+                f"--- 文字起こし全文 ---\n"
+            )
 
         try:
             if isinstance(message, discord.Message):
@@ -310,12 +333,11 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 raise ValueError("Invalid YouTube URL")
             video_id = video_id_match.group(1)
 
-            # --- 字幕取得ロジック (参考コードの fetch() に合わせる) ---
+            # --- 字幕取得ロジック ---
             try:
                 api = YouTubeTranscriptApi() 
-                
                 fetched = await asyncio.to_thread(
-                    api.fetch, # ★ fetch() を使用
+                    api.fetch,
                     video_id,
                     languages=['ja', 'en']
                 )
@@ -334,38 +356,36 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
 
             # --- AI要約 ---
             concise_summary = "(要約対象なし)"
-            detail_summary = "(要約対象なし)"
+            detail_summary = "(対象外)" if is_recipe_channel else "(要約対象なし)"
+            
             if transcript_text and self.gemini_model:
                 try:
-                    concise_prompt = (
-                        "以下のYouTube動画の文字起こし全文を元に、重要なポイントを3～5点で簡潔にまとめてください。\n"
-                        "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
-                        f"--- 文字起こし全文 ---\n{transcript_text}"
-                    )
-                    detail_prompt = (
-                        "以下のYouTube動画の文字起こし全文を元に、その内容を網羅する詳細で包括的な要約を作成してください。\n"
-                        "要約本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
-                        f"--- 文字起こし全文 ---\n{transcript_text}"
-                    )
-                    tasks = [
-                        self.gemini_model.generate_content_async(concise_prompt),
-                        self.gemini_model.generate_content_async(detail_prompt)
-                    ]
+                    tasks = []
+                    # 簡潔（またはレシピ）要約タスク
+                    tasks.append(self.gemini_model.generate_content_async(concise_prompt + transcript_text))
+                    
+                    # 詳細要約タスク（レシピでない場合のみ）
+                    if detail_prompt:
+                        tasks.append(self.gemini_model.generate_content_async(detail_prompt + transcript_text))
+
                     responses = await asyncio.gather(*[asyncio.wait_for(task, timeout=300) for task in tasks], return_exceptions=True)
 
+                    # 簡潔（レシピ）要約の結果
                     if isinstance(responses[0], (Exception, asyncio.TimeoutError)):
-                         concise_summary = f"(簡潔な要約エラー: {type(responses[0]).__name__})"
+                         concise_summary = f"({('レシピ' if is_recipe_channel else '簡潔')}要約エラー: {type(responses[0]).__name__})"
                          error_reactions.add(SUMMARY_ERROR_EMOJI)
                     elif hasattr(responses[0], 'text'): concise_summary = responses[0].text
-                    else: concise_summary = "(簡潔な要約応答不正)"; error_reactions.add(SUMMARY_ERROR_EMOJI)
+                    else: concise_summary = "(要約応答不正)"; error_reactions.add(SUMMARY_ERROR_EMOJI)
 
-                    if isinstance(responses[1], (Exception, asyncio.TimeoutError)):
-                         detail_summary = f"(詳細な要約エラー: {type(responses[1]).__name__})"
-                         error_reactions.add(SUMMARY_ERROR_EMOJI)
-                    elif hasattr(responses[1], 'text'): detail_summary = responses[1].text
-                    else: detail_summary = "(詳細な要約応答不正)"; error_reactions.add(SUMMARY_ERROR_EMOJI)
+                    # 詳細要約の結果（レシピでない場合のみ）
+                    if detail_prompt:
+                        if isinstance(responses[1], (Exception, asyncio.TimeoutError)):
+                             detail_summary = f"(詳細要約エラー: {type(responses[1]).__name__})"
+                             error_reactions.add(SUMMARY_ERROR_EMOJI)
+                        elif hasattr(responses[1], 'text'): detail_summary = responses[1].text
+                        else: detail_summary = "(詳細要約応答不正)"; error_reactions.add(SUMMARY_ERROR_EMOJI)
 
-                    if not error_reactions.intersection({SUMMARY_ERROR_EMOJI}): logging.info(f"AI summaries generated for {video_id}")
+                    if not error_reactions.intersection({SUMMARY_ERROR_EMOJI}): logging.info(f"AI summaries generated for {video_id} (Channel: {message.channel.name})")
 
                 except Exception as e_gather:
                     logging.error(f"AI summary gather failed: {e_gather}", exc_info=True)
@@ -374,6 +394,21 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
 
             elif not self.gemini_model: concise_summary = detail_summary = "(AI要約機能無効)"; error_reactions.add(SUMMARY_ERROR_EMOJI)
             elif not transcript_text: concise_summary = detail_summary = "(字幕なしのため要約不可)"
+
+            # ★ Discordへの投稿 (レシピチャンネルの場合のみ)
+            if is_recipe_channel and isinstance(message, discord.Message):
+                try:
+                    video_info_for_embed = await self.get_video_info(video_id)
+                    title_for_embed = video_info_for_embed.get("title", f"YouTube_{video_id}")
+                    embed = discord.Embed(
+                        title=f"🍳 レシピ要約 (YT): {title_for_embed}",
+                        url=url,
+                        description=concise_summary, # レシピ要約
+                        color=discord.Color.orange()
+                    )
+                    await message.reply(embed=embed, mention_author=False)
+                except Exception as e_discord:
+                    logging.error(f"RecipeCog (YT): Discordへの要約投稿失敗: {e_discord}")
 
             # --- 保存準備 ---
             now = datetime.datetime.now(JST)
@@ -386,23 +421,36 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             note_filename = f"{timestamp}-{safe_title}.md"
             note_filename_for_link = note_filename.replace('.md', '')
 
-            # --- Obsidian用ノート内容 ---
-            note_content = (
-                f"# {video_title}\n\n"
-                f'<iframe width="560" height="315" src="https://www.youtube.com/embed/{video_id}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>\n\n'
-                f"- **URL:** {url}\n"
-                f"- **Channel:** {video_info.get('author_name', 'N/A')}\n"
-                f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
-                f"[[{daily_note_date}]]\n\n"
-                f"---\n\n"
-                f"## Concise Summary\n{concise_summary}\n\n"
-                f"## Detailed Summary\n{detail_summary}\n\n"
-            )
+            # --- Obsidian用ノート内容 (★ チャンネルに応じて分岐) ---
+            if is_recipe_channel:
+                note_content = (
+                    f"# {video_title}\n\n"
+                    f'<iframe width="560" height="315" src="https://www.youtube.com/embed/{video_id}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>\n\n'
+                    f"- **URL:** {url}\n"
+                    f"- **Channel:** {video_info.get('author_name', 'N/A')}\n"
+                    f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+                    f"[[{daily_note_date}]]\n\n"
+                    f"---\n\n"
+                    f"{concise_summary}" # レシピ要約のみ
+                )
+            else:
+                note_content = (
+                    f"# {video_title}\n\n"
+                    f'<iframe width="560" height="315" src="https://www.youtube.com/embed/{video_id}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>\n\n'
+                    f"- **URL:** {url}\n"
+                    f"- **Channel:** {video_info.get('author_name', 'N/A')}\n"
+                    f"- **Clipped:** {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+                    f"[[{daily_note_date}]]\n\n"
+                    f"---\n\n"
+                    f"## Concise Summary\n{concise_summary}\n\n"
+                    f"## Detailed Summary\n{detail_summary}\n\n"
+                )
 
-            # --- Obsidianへの保存 ---
+            # --- Obsidianへの保存 (★ 保存先フォルダとデイリーノート見出しを動的に) ---
             if self.dbx:
                 try:
-                    note_path = f"{self.dropbox_vault_path}/YouTube/{note_filename}"
+                    # ★ save_folder を使用
+                    note_path = f"{self.dropbox_vault_path}{save_folder}/{note_filename}"
                     await asyncio.to_thread(self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add'))
                     logging.info(f"Summary saved to Obsidian note: {note_path}")
 
@@ -412,17 +460,19 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                         _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                         daily_note_content = res.content.decode('utf-8')
                     except ApiError as e_dn:
-                        # ★ 修正: e.dn.error -> e_dn.error
                         if isinstance(e_dn.error, DownloadError) and e_dn.error.is_path() and e_dn.error.get_path().is_not_found():
                             daily_note_content = f"# {daily_note_date}\n"
                         else: raise
 
-                    link_to_add = f"- [[YouTube/{note_filename_for_link}|{video_title}]]" 
-                    youtube_heading = "## YouTube Summaries"
+                    # ★ リンクパスと見出しを動的に
+                    link_path_part = save_folder.lstrip('/')
+                    link_to_add = f"- [[{link_path_part}/{note_filename_for_link}|{video_title}]]" 
+                    youtube_heading = daily_note_header # ★ daily_note_header を使用
+                    
                     new_daily_content = update_section(daily_note_content, link_to_add, youtube_heading)
 
                     await asyncio.to_thread(self.dbx.files_upload, new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
-                    logging.info(f"Daily note updated with YouTube link: {daily_note_path}")
+                    logging.info(f"Daily note updated with link: {daily_note_path} (Header: {youtube_heading})")
                     obsidian_save_success = True
 
                 except ApiError as e_obs_api:
@@ -435,25 +485,29 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 logging.error("Dropbox client not available. Skipping Obsidian save.")
                 error_reactions.add(SAVE_ERROR_EMOJI)
 
-            # --- Google Docsへの保存 ---
+            # --- Google Docsへの保存 (★ gdoc_source_type を動的に) ---
             if google_docs_enabled:
                 gdoc_text_to_append = ""
-                gdoc_source_type = "YouTube Error"
-                if transcript_text:
+                # gdoc_source_type は先頭で設定済み
+                
+                if is_recipe_channel:
+                    # レシピの場合は、要約＋文字起こし
+                    gdoc_text_to_append = f"## レシピ要約 (AI)\n{concise_summary}\n\n## 文字起こし（抜粋）\n{transcript_text[:3000]}..."
+                elif transcript_text:
+                    # 通常のYouTubeの場合は、文字起こし全文
                     gdoc_text_to_append = transcript_text
-                    gdoc_source_type = "YouTube Transcript"
                 elif video_id:
                     error_reason = "(字幕なしまたは取得失敗)"
                     if TRANSCRIPT_NOT_FOUND_EMOJI in error_reactions: error_reason = "(字幕なしまたは取得失敗)"
                     if PROCESS_ERROR_EMOJI in error_reactions: error_reason = "(字幕取得エラー)"
                     gdoc_text_to_append = error_reason
-                    gdoc_source_type = "YouTube Link (No Transcript)"
+                    gdoc_source_type = "YouTube Link (No Transcript)" # ソースタイプを上書き
 
                 if gdoc_text_to_append:
                     try:
                         await append_text_to_doc_async(
                             text_to_append=gdoc_text_to_append,
-                            source_type=gdoc_source_type,
+                            source_type=gdoc_source_type, # ★ 動的に設定
                             url=url,
                             title=video_title
                         )
@@ -505,20 +559,27 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                 try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 except discord.HTTPException: pass
 
-    # --- スラッシュコマンド (添付ファイルのロジックを維持) ---
     @app_commands.command(name="yt_summary", description="[手動] YouTube動画URLをObsidian/Google Docsに保存します。")
     @app_commands.describe(url="処理したいYouTube動画のURL")
     async def yt_summary_command(self, interaction: discord.Interaction, url: str):
         if not self.is_ready:
              await interaction.response.send_message("❌ YouTube Cogが初期化されていません。", ephemeral=True)
              return
+             
+        # ★ スラッシュコマンドは「レシピ」か「通常」か判断できない
+        # 暫定的に、インタラクションが飛んできたチャンネルIDで判断する
+        target_channel_id = interaction.channel_id
+        if target_channel_id not in [self.youtube_summary_channel_id, self.recipe_channel_id]:
+            await interaction.response.send_message(f"❌ このコマンドは <#{self.youtube_summary_channel_id}> または <#{self.recipe_channel_id}> でのみ実行できます。", ephemeral=True)
+            return
 
         await interaction.response.defer(ephemeral=False, thinking=True)
         message_proxy = await interaction.original_response()
 
+        # スラッシュコマンド用のダミーメッセージラッパー
         class TempMessage:
-             def __init__(self, proxy):
-                 self.id = proxy.id; self.reactions = []; self.channel = proxy.channel; self.jump_url = proxy.jump_url; self._proxy = proxy; self.content=proxy.content
+             def __init__(self, proxy, content, channel):
+                 self.id = proxy.id; self.reactions = []; self.channel = channel; self.jump_url = proxy.jump_url; self._proxy = proxy; self.content=content
              async def add_reaction(self, emoji):
                  try: await self._proxy.add_reaction(emoji)
                  except: pass
@@ -526,9 +587,10 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                  try: await self._proxy.remove_reaction(emoji, user)
                  except: pass
 
-        await self._perform_summary(url=url, message=TempMessage(message_proxy))
+        # ★ TempMessage に interaction.channel を渡す
+        temp_msg = TempMessage(message_proxy, content=url, channel=interaction.channel)
+        await self._perform_summary(url=url, message=temp_msg)
 
-    # --- get_video_info (添付ファイルのロジックを維持) ---
     async def get_video_info(self, video_id: str) -> dict:
         url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         try:
@@ -563,8 +625,9 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
 
 async def setup(bot: commands.Bot):
     """Cogセットアップ"""
-    if int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0)) == 0:
-        logging.error("YouTubeCog: YOUTUBE_SUMMARY_CHANNEL_ID が設定されていません。Cogをロードしません。")
+    # ★ 必須IDチェックに RECIPE_CHANNEL_ID を追加
+    if int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0)) == 0 or int(os.getenv("RECIPE_CHANNEL_ID", 0)) == 0:
+        logging.error("YouTubeCog: YOUTUBE_SUMMARY_CHANNEL_ID または RECIPE_CHANNEL_ID が設定されていません。Cogをロードしません。")
         return
     cog_instance = YouTubeCog(bot)
     if cog_instance.is_ready:
