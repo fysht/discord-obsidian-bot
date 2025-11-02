@@ -28,14 +28,18 @@ WEB_CLIP_CHANNEL_ID = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
 # ★ 新規追加: 読書ノートチャンネルID
 BOOK_NOTE_CHANNEL_ID = int(os.getenv("BOOK_NOTE_CHANNEL_ID", 0))
+# ★ 新規追加: レシピチャンネルID
+RECIPE_CHANNEL_ID = int(os.getenv("RECIPE_CHANNEL_ID", 0))
 
 
 # --- リアクション絵文字 ---
 USER_TRANSFER_REACTION = '➡️' 
 # ★ 新規追加: 読書ノートトリガー
 BOOK_NOTE_REACTION = '📖' 
+# ★ 新規追加: レシピトリガー
+RECIPE_REACTION = '🍳'
 BOT_PROCESS_TRIGGER_REACTION = '📥'
-PROCESS_FORWARDING_EMOJI = '➡️' 
+PROCESS_FORWARDING_EMOJI = '➡️' # 転送処理中
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
 PROCESS_FETCHING_EMOJI = '⏱️' # 待機中
@@ -50,7 +54,7 @@ YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|yo
 class MemoCog(commands.Cog):
     """
     Discordの#memoチャンネルを監視し、テキストメモ保存、
-    またはユーザーリアクション(➡️, 📖)に応じてURLを指定チャンネルに転送するCog
+    またはユーザーリアクション(➡️, 📖, 🍳)に応じてURLを指定チャンネルに転送するCog
     """
     # ... (変更なし) ...
     def __init__(self, bot: commands.Bot):
@@ -232,14 +236,14 @@ class MemoCog(commands.Cog):
     
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """ユーザーが付けたリアクション(➡️, 📖)に応じてURLメッセージを転送"""
+        """ユーザーが付けたリアクション(➡️, 📖, 🍳)に応じてURLメッセージを転送"""
         if payload.user_id == self.bot.user.id or payload.channel_id != MEMO_CHANNEL_ID:
             return
 
         emoji = str(payload.emoji)
 
         # ★ 修正: 監視対象の絵文字を増やす
-        if emoji not in [USER_TRANSFER_REACTION, BOOK_NOTE_REACTION]:
+        if emoji not in [USER_TRANSFER_REACTION, BOOK_NOTE_REACTION, RECIPE_REACTION]:
             return
 
         channel = self.bot.get_channel(payload.channel_id)
@@ -301,6 +305,11 @@ class MemoCog(commands.Cog):
             target_channel_id = BOOK_NOTE_CHANNEL_ID
             forward_type = "Book Note"
             await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
+            
+        elif emoji == RECIPE_REACTION: # 🍳 の場合
+            target_channel_id = RECIPE_CHANNEL_ID
+            forward_type = "Recipe"
+            await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
         # ★ 修正ここまで
 
 async def setup(bot: commands.Bot):
@@ -315,5 +324,8 @@ async def setup(bot: commands.Bot):
     # ★ 新規追加: 読書ノートチャンネルの警告
     if BOOK_NOTE_CHANNEL_ID == 0:
         logging.warning("MemoCog: BOOK_NOTE_CHANNEL_ID が設定されていません。読書ノートの転送は無効になります。")
+    # ★ 新規追加: レシピチャンネルの警告
+    if RECIPE_CHANNEL_ID == 0:
+        logging.warning("MemoCog: RECIPE_CHANNEL_ID が設定されていません。レシピの転送は無効になります。")
 
     await bot.add_cog(MemoCog(bot))

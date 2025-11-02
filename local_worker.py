@@ -14,6 +14,8 @@ logging.basicConfig(level=logging.INFO, format=log_format)
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0)) 
+# ★ 新規追加: レシピチャンネルID
+RECIPE_CHANNEL_ID = int(os.getenv("RECIPE_CHANNEL_ID", 0))
 
 # --- 2. Botの定義 ---
 class LocalWorkerBot(commands.Bot):
@@ -29,10 +31,11 @@ class LocalWorkerBot(commands.Bot):
     async def setup_hook(self):
         # 必要なCogだけをロード
         try:
+            # ★ 修正: youtube_cog がレシピ機能も兼任する
             await self.load_extension("cogs.youtube_cog")
             self.youtube_cog = self.get_cog('YouTubeCog')
             if self.youtube_cog:
-                 logging.info("YouTubeCogを読み込み、インスタンスを取得しました。")
+                 logging.info("YouTubeCog (with Recipe support) を読み込み、インスタンスを取得しました。")
             else:
                  logging.error("YouTubeCogのインスタンス取得に失敗しました。")
         except Exception as e:
@@ -40,7 +43,7 @@ class LocalWorkerBot(commands.Bot):
 
 
     async def on_ready(self):
-        logging.info(f"{self.user} としてログインしました (Local - YouTube処理担当)")
+        logging.info(f"{self.user} としてログインしました (Local - YouTube/Recipe処理担当)")
 
         if not self.youtube_cog:
              logging.error("YouTubeCogがロードされていないため、処理を開始できません。")
@@ -54,10 +57,10 @@ class LocalWorkerBot(commands.Bot):
             else:
                 logging.error("YouTubeCogに process_pending_summaries メソッドが見つかりません。")
         except Exception as e:
-            logging.error(f"起動時のYouTube要約一括処理中にエラー: {e}", exc_info=True)
+            logging.error(f"起動時のYouTube/Recipe要約一括処理中にエラー: {e}", exc_info=True)
         # --- 修正ここまで ---
 
-        logging.info(f"リアクション監視モードに移行します。（チャンネル {YOUTUBE_SUMMARY_CHANNEL_ID} の 📥 を待ち受けます）")
+        logging.info(f"リアクション監視モードに移行します。（チャンネル {YOUTUBE_SUMMARY_CHANNEL_ID} / {RECIPE_CHANNEL_ID} の 📥 を待ち受けます）")
 
     # (local_worker.py 本体には on_raw_reaction_add は不要。cogs/youtube_cog.py が検知する)
 
@@ -66,8 +69,9 @@ async def main():
     if not TOKEN:
         logging.critical("DISCORD_BOT_TOKENが設定されていません。ローカルワーカーを起動できません。")
         return
-    if YOUTUBE_SUMMARY_CHANNEL_ID == 0:
-        logging.critical("YOUTUBE_SUMMARY_CHANNEL_IDが設定されていません。ローカルワーカーを起動できません。")
+    # ★ 修正: どちらかのIDがあれば起動
+    if YOUTUBE_SUMMARY_CHANNEL_ID == 0 and RECIPE_CHANNEL_ID == 0:
+        logging.critical("YOUTUBE_SUMMARY_CHANNEL_ID と RECIPE_CHANNEL_ID が両方とも設定されていません。ローカルワーカーを起動できません。")
         return
 
     bot = LocalWorkerBot()
