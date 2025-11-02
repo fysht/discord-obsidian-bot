@@ -7,13 +7,13 @@ from dotenv import load_dotenv
 
 # --- 1. 設定読み込み ---
 load_dotenv()
+# --- 修正: ログフォーマットに 'name' (Cog名) を追加 ---
 log_format = '%(asctime)s [%(levelname)s] [%(name)s] %(message)s'
 logging.basicConfig(level=logging.INFO, format=log_format)
+# --- 修正ここまで ---
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0)) 
-# ★ レシピチャンネルIDも取得
-RECIPE_CHANNEL_ID = int(os.getenv("RECIPE_CHANNEL_ID", 0)) 
 
 # --- 2. Botの定義 ---
 class LocalWorkerBot(commands.Bot):
@@ -25,65 +25,49 @@ class LocalWorkerBot(commands.Bot):
         intents.members = True    # ★ payload.member を取得するために Members も推奨
         super().__init__(command_prefix="!local!", intents=intents)
         self.youtube_cog = None
-        self.reception_cog = None # ★ 追加
 
     async def setup_hook(self):
         # 必要なCogだけをロード
         try:
-            # ★ reception_cog もロードする
-            await self.load_extension("cogs.reception_cog")
-            self.reception_cog = self.get_cog('ReceptionCog')
-            if self.reception_cog:
-                 logging.info("ReceptionCogを読み込み、インスタンスを取得しました。")
-            else:
-                 logging.error("ReceptionCogのインスタンス取得に失敗しました。")
-
             await self.load_extension("cogs.youtube_cog")
             self.youtube_cog = self.get_cog('YouTubeCog')
             if self.youtube_cog:
                  logging.info("YouTubeCogを読み込み、インスタンスを取得しました。")
             else:
                  logging.error("YouTubeCogのインスタンス取得に失敗しました。")
-                 
         except Exception as e:
-            logging.error(f"Cogの読み込みに失敗: {e}", exc_info=True)
+            logging.error(f"YouTubeCogの読み込みに失敗: {e}", exc_info=True)
 
 
     async def on_ready(self):
-        logging.info(f"{self.user} としてログインしました (Local - YouTube/Recipe[YT]処理担当)")
+        logging.info(f"{self.user} としてログインしました (Local - YouTube処理担当)")
 
-        if not self.youtube_cog or not self.reception_cog: # ★ 両方チェック
-             logging.error("必要なCogがロードされていないため、処理を開始できません。")
+        if not self.youtube_cog:
+             logging.error("YouTubeCogがロードされていないため、処理を開始できません。")
              return
 
         # --- 起動時の未処理スキャンを有効化 ---
         logging.info("起動時に未処理のリアクションをスキャンします...")
         try:
             if hasattr(self.youtube_cog, 'process_pending_summaries'):
-                # ★ process_pending_summaries に両方のチャンネルIDを渡す
-                await self.youtube_cog.process_pending_summaries(
-                    channel_id=YOUTUBE_SUMMARY_CHANNEL_ID, 
-                    recipe_channel_id=RECIPE_CHANNEL_ID
-                )
+                await self.youtube_cog.process_pending_summaries()
             else:
                 logging.error("YouTubeCogに process_pending_summaries メソッドが見つかりません。")
         except Exception as e:
             logging.error(f"起動時のYouTube要約一括処理中にエラー: {e}", exc_info=True)
         # --- 修正ここまで ---
 
-        logging.info(f"監視モードに移行します。（監視対象: {YOUTUBE_SUMMARY_CHANNEL_ID}, {RECIPE_CHANNEL_ID}）")
+        logging.info(f"リアクション監視モードに移行します。（チャンネル {YOUTUBE_SUMMARY_CHANNEL_ID} の 📥 を待ち受けます）")
 
-    # (on_raw_reaction_add は cogs/youtube_cog.py が検知)
-    # (on_message は cogs/reception_cog.py が検知)
+    # (local_worker.py 本体には on_raw_reaction_add は不要。cogs/youtube_cog.py が検知する)
 
 # --- 3. 起動処理 ---
 async def main():
     if not TOKEN:
         logging.critical("DISCORD_BOT_TOKENが設定されていません。ローカルワーカーを起動できません。")
         return
-    # ★ 両方のチャンネルIDをチェック
-    if YOUTUBE_SUMMARY_CHANNEL_ID == 0 or RECIPE_CHANNEL_ID == 0:
-        logging.critical("YOUTUBE_SUMMARY_CHANNEL_IDまたはRECIPE_CHANNEL_IDが設定されていません。ローカルワーカーを起動できません。")
+    if YOUTUBE_SUMMARY_CHANNEL_ID == 0:
+        logging.critical("YOUTUBE_SUMMARY_CHANNEL_IDが設定されていません。ローカルワーカーを起動できません。")
         return
 
     bot = LocalWorkerBot()
