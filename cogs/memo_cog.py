@@ -27,14 +27,12 @@ MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", 0))
 WEB_CLIP_CHANNEL_ID = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
 YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
 BOOK_NOTE_CHANNEL_ID = int(os.getenv("BOOK_NOTE_CHANNEL_ID", 0))
-# ★ 新規追加: レシピチャンネルID
 RECIPE_CHANNEL_ID = int(os.getenv("RECIPE_CHANNEL_ID", 0))
 
 
 # --- リアクション絵文字 ---
 USER_TRANSFER_REACTION = '➡️' 
 BOOK_NOTE_REACTION = '📖' 
-# ★ 新規追加: レシピトリガー
 RECIPE_REACTION = '🍳' 
 BOT_PROCESS_TRIGGER_REACTION = '📥'
 PROCESS_FORWARDING_EMOJI = '➡️' 
@@ -170,8 +168,8 @@ class MemoCog(commands.Cog):
                 logging.error(f"Failed to save text memo (ID: {message.id}) using add_memo_async: {e}", exc_info=True)
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
 
-    # ★ _forward_message に引数 (add_trigger_reaction) を追加
-    async def _forward_message(self, message: discord.Message, content_to_forward: str, target_channel_id: int, forward_type: str, add_trigger_reaction: bool = True):
+    # ★ 修正: 引数名を add_trigger_reaction -> add_trigger に変更
+    async def _forward_message(self, message: discord.Message, content_to_forward: str, target_channel_id: int, forward_type: str, add_trigger: bool = True):
         
         if target_channel_id == 0:
             logging.warning(f"{forward_type} の転送先チャンネルIDが設定されていません。")
@@ -195,8 +193,8 @@ class MemoCog(commands.Cog):
             forwarded_message = await forward_channel.send(content_to_forward)
             logging.info(f"{forward_type} 用にメッセージ {message.id} をチャンネル '{forward_channel.name}' に転送しました (New ID: {forwarded_message.id})。")
 
-            # ★ 修正: add_trigger_reaction が True の場合のみ 📥 を追加
-            if add_trigger_reaction:
+            # ★ 修正: add_trigger_reaction -> add_trigger
+            if add_trigger:
                 await forwarded_message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
                 logging.info(f"転送先メッセージ {forwarded_message.id} にトリガーリアクション {BOT_PROCESS_TRIGGER_REACTION} を追加しました。")
             else:
@@ -235,7 +233,6 @@ class MemoCog(commands.Cog):
 
         emoji = str(payload.emoji)
 
-        # ★ 修正: 監視対象の絵文字を増やす
         if emoji not in [USER_TRANSFER_REACTION, BOOK_NOTE_REACTION, RECIPE_REACTION]:
             return
 
@@ -266,7 +263,6 @@ class MemoCog(commands.Cog):
             logging.warning(f"ユーザーリアクション {emoji} の削除に失敗: {message.id}")
 
         
-        # 転送するURLも、Discordの埋め込み(embed.url)から取得した完全なものを優先する
         final_url_to_forward = url_match.group(0) # デフォルト
         
         try:
@@ -280,38 +276,34 @@ class MemoCog(commands.Cog):
             logging.warning(f"Could not get embed.url for forwarding message {message.id}: {e}. Using original content.")
             final_url_to_forward = content # フォールバック
 
-        # YouTubeかどうかの判定
         youtube_url_match = YOUTUBE_URL_REGEX.search(final_url_to_forward)
 
-        # ★ 修正: リアクションによって転送先を分岐
         if emoji == USER_TRANSFER_REACTION: # ➡️ の場合
             if youtube_url_match:
                 target_channel_id = YOUTUBE_SUMMARY_CHANNEL_ID
                 forward_type = "YouTube Summary"
-                add_trigger = False # ★ YouTube転送はトリガー不要 (reception_cogが担当)
+                add_trigger = False # reception_cogが担当
             else:
                 target_channel_id = WEB_CLIP_CHANNEL_ID
                 forward_type = "WebClip"
-                add_trigger = True # ★ WebClipはトリガー必要
+                add_trigger = True # webclip_cogが担当
             
             await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type, add_trigger=add_trigger)
 
         elif emoji == BOOK_NOTE_REACTION: # 📖 の場合
             target_channel_id = BOOK_NOTE_CHANNEL_ID
             forward_type = "Book Note"
-            add_trigger = True # ★ BookNoteはトリガー必要
+            add_trigger = True # book_cogが担当
             await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type, add_trigger=add_trigger)
 
-        # ★ 新規追加: レシピリアクションの分岐
         elif emoji == RECIPE_REACTION: # 🍳 の場合
             target_channel_id = RECIPE_CHANNEL_ID
             forward_type = "Recipe"
             if youtube_url_match:
-                add_trigger = False # ★ YouTubeレシピはトリガー不要 (reception_cogが担当)
+                add_trigger = False # reception_cogが担当
             else:
-                add_trigger = True # ★ Webサイトレシピはトリガー必要
+                add_trigger = True # recipe_cogが担当
             await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type, add_trigger=add_trigger)
-        # ★ 修正ここまで
 
 async def setup(bot: commands.Bot):
     """Cogセットアップ"""
@@ -324,7 +316,6 @@ async def setup(bot: commands.Bot):
         logging.warning("MemoCog: YOUTUBE_SUMMARY_CHANNEL_ID が設定されていません。YouTubeの自動転送は無効になります。")
     if BOOK_NOTE_CHANNEL_ID == 0:
         logging.warning("MemoCog: BOOK_NOTE_CHANNEL_ID が設定されていません。読書ノートの転送は無効になります。")
-    # ★ 新規追加: レシピチャンネルの警告
     if RECIPE_CHANNEL_ID == 0:
         logging.warning("MemoCog: RECIPE_CHANNEL_ID が設定されていません。レシピの転送は無効になります。")
 
