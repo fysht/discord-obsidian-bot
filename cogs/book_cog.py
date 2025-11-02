@@ -8,7 +8,7 @@ import asyncio
 import dropbox
 # FileMetadataを追加
 from dropbox.files import WriteMode, DownloadError, FileMetadata 
-from dropbox.exceptions import ApiError
+from dropbox.exceptions import ApiError, AuthError # ★ AuthErrorを追加 (デバッグ用)
 import datetime
 import zoneinfo
 import aiohttp
@@ -127,7 +127,6 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
                 self.original_message,
                 self.confirmation_message
             )
-            # ★ 修正: delete_after を削除
             await interaction.followup.send("✅ 編集されたメモを保存しました。", ephemeral=True)
 
         except Exception as e:
@@ -150,6 +149,107 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
             await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
         except discord.HTTPException:
             pass
+
+# ★ 新規追加: 書籍情報手動入力モーダル
+class BookManualInputModal(discord.ui.Modal, title="書籍情報の手動入力"):
+    title_input = discord.ui.TextInput(
+        label="書籍のタイトル",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=200
+    )
+    authors_input = discord.ui.TextInput(
+        label="著者名（複数の場合、カンマ区切り）",
+        style=discord.TextStyle.short,
+        required=False,
+        placeholder="例: 著者A, 著者B"
+    )
+    published_input = discord.ui.TextInput(
+        label="出版日",
+        style=discord.TextStyle.short,
+        required=False,
+        placeholder="例: 2024-01-01"
+    )
+    cover_url_input = discord.ui.TextInput(
+        label="カバー画像のURL (任意)",
+        style=discord.TextStyle.short,
+        required=False,
+        placeholder="https://... (Amazonの書影URLなど)"
+    )
+    description_input = discord.ui.TextInput(
+        label="概要 (任意)",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1000
+    )
+
+    def __init__(self, cog, source_url: str, original_message: discord.Message, confirmation_message: discord.Message):
+        super().__init__(timeout=1800) # 30分
+        self.cog = cog
+        self.source_url = source_url
+        self.original_message = original_message
+        self.confirmation_message = confirmation_message
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        # ユーザー入力をGoogle Books APIと同様の辞書形式に組み立てる
+        book_data = {
+            "title": self.title_input.value,
+            "authors": [a.strip() for a in self.authors_input.value.split(',')] if self.authors_input.value else ["著者不明"],
+            "publishedDate": self.published_input.value if self.published_input.value else "N/A",
+            "description": self.description_input.value if self.description_input.value else "N/A",
+            "imageLinks": {
+                "thumbnail": self.cover_url_input.value
+            } if self.cover_url_input.value else {}
+        }
+
+        try:
+            # _save_note_to_obsidian を呼び出す
+            save_result = await self.cog._save_note_to_obsidian(
+                book_data, 
+                self.source_url, 
+                embed_image_url_fallback=None # 手動入力のカバーURLを優先
+            )
+            
+            if save_result == True:
+                # ★ 修正: 元のメッセージ(original_message)は削除しない
+                
+                # ボットの確認メッセージ(ドロップダウン)は削除する
+                try: 
+                    await self.confirmation_message.delete()
+                    logging.info(f"BookCog: ボットの書籍選択メッセージ (ID: {self.confirmation_message.id}) を削除しました。")
+                except discord.HTTPException: pass
+                
+                await interaction.followup.send(f"✅ 手動入力ノート「{book_data.get('title')}」を作成しました。", ephemeral=True)
+            
+            elif save_result == "EXISTS":
+                await interaction.followup.send(f"❌ ノート作成に失敗。\n`{book_data.get('title')}` は既に存在します。", ephemeral=True)
+                # 元のメッセージにはリアクションを追加
+                try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+                except discord.HTTPException: pass
+                if self.confirmation_message:
+                    await self.confirmation_message.edit(content="❌ 作成に失敗しました。ノートが既に存在します。", embed=None, view=None)
+
+            else: # False
+                raise Exception("手動入力の _save_note_to_obsidian が False を返しました。")
+
+        except Exception as e:
+            logging.error(f"BookManualInputModal: ノート作成処理中にエラー: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ 手動ノート作成中にエラーが発生しました: {e}", ephemeral=True)
+            try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+            except discord.HTTPException: pass
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        logging.error(f"Error in BookManualInputModal: {error}", exc_info=True)
+        if interaction.response.is_done():
+            await interaction.followup.send(f"❌ モーダル処理中にエラー: {error}", ephemeral=True)
+        else:
+            try: await interaction.response.send_message(f"❌ モーダル処理中にエラー: {error}", ephemeral=True)
+            except discord.InteractionResponded: await interaction.followup.send(f"❌ モーダル処理中にエラー: {error}", ephemeral=True)
+        try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+        except discord.HTTPException: pass
+# ★ 新規追加ここまで
 
 # --- メモ「確認・編集」View ---
 class ConfirmMemoView(discord.ui.View):
@@ -175,7 +275,6 @@ class ConfirmMemoView(discord.ui.View):
                 self.original_message,
                 self.confirmation_message
             )
-            # ★ 修正: delete_after を削除
             await interaction.followup.send("✅ メモを保存しました。", ephemeral=True)
         
         except Exception as e:
@@ -412,14 +511,26 @@ class BookCreationSelectView(discord.ui.View):
         select.callback = self.select_callback
         self.add_item(select)
 
+        # ★ 新規追加: 手動入力ボタン
+        manual_input_button = discord.ui.Button(
+            label="候補にない (手動入力)",
+            style=discord.ButtonStyle.primary,
+            custom_id="manual_book_input",
+            row=1 # 2行目に配置
+        )
+        manual_input_button.callback = self.manual_input_callback
+        self.add_item(manual_input_button)
+        # ★ 新規追加ここまで
+
     async def select_callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         selected_index_str = interaction.data["values"][0]
         
         if selected_index_str == "-1":
             await interaction.followup.send("有効な書籍が選択されませんでした。", ephemeral=True, delete_after=10)
-            await self.confirmation_message.edit(content="処理がキャンセルされました。", embed=None, view=None)
-            await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
+            # ★ 修正: メッセージ削除要求に基づき、元のメッセージへのリアクションは行わない
+            # await self.confirmation_message.edit(content="処理がキャンセルされました。", embed=None, view=None)
+            # await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
             self.stop()
             return
 
@@ -430,21 +541,30 @@ class BookCreationSelectView(discord.ui.View):
             save_result = await self.cog._save_note_to_obsidian(selected_book_data, self.source_url, self.embed_image_url_fallback)
             
             if save_result == True:
-                # ★ (REQ 2) 元のメッセージを削除
-                try:
-                    await self.original_message.delete()
-                    logging.info(f"BookCog: 元のAmazonリンクメッセージ (ID: {self.original_message.id}) を削除しました。")
-                except discord.HTTPException as e_del_orig:
-                    logging.warning(f"BookCog: 元のAmazonリンクメッセージ削除に失敗: {e_del_orig}")
+                # ★ (REQ 1) 元のメッセージを削除 -> コメントアウト
+                # try:
+                #     await self.original_message.delete()
+                #     logging.info(f"BookCog: 元のAmazonリンクメッセージ (ID: {self.original_message.id}) を削除しました。")
+                # except discord.HTTPException as e_del_orig:
+                #     logging.warning(f"BookCog: 元のAmazonリンクメッセージ削除に失敗: {e_del_orig}")
                     
-                # ★ (REQ 2) 確認メッセージを削除
-                try:
-                    await self.confirmation_message.delete()
-                    logging.info(f"BookCog: ボットの書籍選択メッセージ (ID: {self.confirmation_message.id}) を削除しました。")
-                except discord.HTTPException as e_del_conf:
-                    logging.warning(f"BookCog: ボットの書籍選択メッセージ削除に失敗: {e_del_conf}")
+                # ★ (REQ 1) 確認メッセージを削除 -> コメントアウト
+                # try:
+                #     await self.confirmation_message.delete()
+                #     logging.info(f"BookCog: ボットの書籍選択メッセージ (ID: {self.confirmation_message.id}) を削除しました。")
+                # except discord.HTTPException as e_del_conf:
+                #     logging.warning(f"BookCog: ボットの書籍選択メッセージ削除に失敗: {e_del_conf}")
 
-                # (Fix 2) followup.send から delete_after を削除
+                # ★ 修正: メッセージを削除しない代わり、確認メッセージを編集して完了を通知
+                if self.confirmation_message:
+                    try:
+                        await self.confirmation_message.edit(
+                            content=f"✅ 読書ノート「{selected_book_data.get('title')}」を作成しました。", 
+                            embed=None, 
+                            view=None
+                        )
+                    except discord.HTTPException: pass
+
                 await interaction.followup.send(f"✅ 読書ノート「{selected_book_data.get('title')}」を作成しました。", ephemeral=True)
             
             elif save_result == "EXISTS":
@@ -469,6 +589,30 @@ class BookCreationSelectView(discord.ui.View):
                 await self.confirmation_message.edit(content=f"❌ エラーが発生しました: {e}", embed=None, view=None)
         finally:
             self.stop()
+
+    # ★ 新規追加: 手動入力ボタンのコールバック
+    async def manual_input_callback(self, interaction: discord.Interaction):
+        logging.info(f"BookCreationSelectView manual_input_callback called by {interaction.user}")
+        try:
+            # 新しく定義した BookManualInputModal を起動
+            modal = BookManualInputModal(
+                self.cog,
+                self.source_url,
+                self.original_message,
+                self.confirmation_message # ボットの確認メッセージ(このViewが乗っているメッセージ)を渡す
+            )
+            await interaction.response.send_modal(modal)
+        except Exception as e_modal:
+             logging.error(f"manual_input_callback error sending modal: {e_modal}", exc_info=True)
+             if not interaction.response.is_done():
+                 try: await interaction.response.send_message(f"❌ 手動入力モーダルの表示に失敗: {e_modal}", ephemeral=True)
+                 except discord.InteractionResponded: pass
+             else:
+                 await interaction.followup.send(f"❌ 手動入力モーダルの表示に失敗: {e_modal}", ephemeral=True)
+        finally:
+            self.stop()
+            # モーダル表示後、ドロップダウンのメッセージは編集しない (モーダル側で完了時に削除するため)
+    # ★ 新規追加ここまで
     
     async def on_timeout(self):
         try:
@@ -516,6 +660,7 @@ class BookCog(commands.Cog):
             
             self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
             genai.configure(api_key=self.gemini_api_key)
+            # ★ 修正: gemini-pro を gemini-2.5-pro に変更 (Visionと合わせる)
             self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro") 
             
             self.is_ready = True
@@ -719,7 +864,6 @@ class BookCog(commands.Cog):
             confirm_view.confirmation_message = confirm_msg
             
             # (Fix 4) interaction への応答は followup で行う
-            # ★ 修正: delete_after を削除
             await interaction.followup.send("テキストを認識しました。内容を確認してください。", ephemeral=True)
             
             # ⏳ リアクションは確認Viewのタイムアウト/完了まで保持
@@ -867,21 +1011,27 @@ class BookCog(commands.Cog):
             if not book_results:
                 logging.warning(f"BookCog: Google Books APIで「{book_title}」の候補が見つかりませんでした。")
                 error_reactions.add(NOT_FOUND_EMOJI)
-                raise Exception("Google Books APIで書籍データが見つかりませんでした。")
+                # ★ 修正: 候補が見つからなくても、手動入力があるのでワークフローを継続
+                # raise Exception("Google Books APIで書籍データが見つかりませんでした。")
+                book_results = [] # 空のリストとして扱う
 
             logging.info(f"BookCog: Google Books APIで {len(book_results)} 件の候補を取得しました。")
 
             # 3. 選択肢Viewを送信
             view = BookCreationSelectView(
                 self, 
-                book_results, 
+                book_results, # 空のリストが渡される可能性あり
                 source_url, 
                 embed_image_url, 
                 message
             )
             
+            confirm_msg_content = "Google Books APIで以下の候補が見つかりました。\n作成したい書籍を選択するか、「手動で入力」を選んでください (10分以内)。"
+            if not book_results:
+                 confirm_msg_content = "Google Books APIで候補が見つかりませんでした。\n「手動で入力」ボタンから書籍情報を登録してください (10分以内)。"
+
             confirm_msg = await message.reply(
-                "Google Books APIで以下の候補が見つかりました。\n作成したい書籍を選択してください (10分以内)。", 
+                confirm_msg_content, 
                 view=view, 
                 mention_author=False
             )
@@ -944,12 +1094,13 @@ class BookCog(commands.Cog):
         published_date = book_data.get("publishedDate", "N/A")
         description = book_data.get("description", "N/A")
         
+        # ★ 修正: 手動入力(thumbnail)とAPI(thumbnail)とフォールバック(embed)を考慮
         thumbnail_url = book_data.get("imageLinks", {}).get("thumbnail", "")
         if not thumbnail_url and embed_image_url_fallback:
             thumbnail_url = embed_image_url_fallback
-            logging.info("BookCog: Google Books APIの画像が見つからないため、Discord Embedの画像URLをカバーとして使用します。")
+            logging.info("BookCog: Google Books API/手動入力の画像が見つからないため、Discord Embedの画像URLをカバーとして使用します。")
         elif not thumbnail_url:
-            logging.warning("BookCog: Google Books APIにもDiscord Embedにもカバー画像が見つかりませんでした。")
+            logging.warning("BookCog: Google Books API/手動入力にもDiscord Embedにもカバー画像が見つかりませんでした。")
         
         safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
         if not safe_title: safe_title = "Untitled Book"
@@ -1126,6 +1277,10 @@ cover: {thumbnail_url}
         except ApiError as e:
             logging.error(f"BookCog: 読書ノート一覧の取得中にApiError: {e}", exc_info=True)
             return [], f"❌ 読書ノート一覧の取得中にDropboxエラーが発生しました: {e}"
+        # ★ 修正: 認証エラー (AuthError) をキャッチ
+        except AuthError as e:
+            logging.error(f"BookCog: 読書ノート一覧の取得中にDropbox認証エラー: {e}", exc_info=True)
+            return [], f"❌ Dropbox認証エラーが発生しました。トークンが失効している可能性があります。"
 
 
 async def setup(bot: commands.Bot):
