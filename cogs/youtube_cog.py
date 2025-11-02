@@ -419,8 +419,9 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
                         logging.info("Generating AI Recipe summary...")
                         recipe_prompt = (
                             "以下のWebページ本文またはYouTube動画の文字起こしから、レシピ情報（材料と作り方）を抽出し、簡潔なMarkdown形式で要約してください。\n"
-                            "「## 材料」と「## 作り方」の2つのセクションを必ず作成してください。\n"
-                            "材料は箇条書き（-）で、作り方は番号付きリスト（1. ...）で記述してください。\n"
+                            "「## Ingredients」と「## Instructions」の2つのセクションを必ず作成してください。\n"
+                            "「## Ingredients」セクションには、**何人前のレシピか**（例: 2人分）を明記し、各材料の**分量も必ず記載**してください。（例: - 卵 2個）\n"
+                            "「## Instructions」セクションは番号付きリスト（1. ...）で記述してください。\n"
                             "それ以外の情報（導入、感想など）は含めないでください。\n\n"
                             f"--- 本文/文字起こし ---\n{transcript_text}"
                         )
