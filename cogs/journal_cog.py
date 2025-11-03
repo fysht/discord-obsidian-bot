@@ -14,7 +14,8 @@ import aiohttp
 from pathlib import Path
 import dropbox
 from dropbox.files import WriteMode, DownloadError
-from dropbox.exceptions import ApiError, PathLookupError
+# ★ 修正(1): PathLookupError のインポートを削除
+from dropbox.exceptions import ApiError
 import re
 import asyncio
 import jpholiday
@@ -56,7 +57,6 @@ HIGHLIGHT_EMOJI = "✨"
 BASE_PATH = os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')
 PLANNING_SCHEDULE_PATH = f"{BASE_PATH}/.bot/planning_schedule.json"
 JOURNAL_SCHEDULE_PATH = f"{BASE_PATH}/.bot/journal_schedule.json"
-# HH:MM または H:MM 形式の正規表現
 TIME_SCHEDULE_REGEX = re.compile(r'^(\d{1,2}:\d{2})\s+(.+)$')
 
 
@@ -75,24 +75,22 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
         label="今日の予定 (編集/追加)",
         style=discord.TextStyle.paragraph,
         required=True,
-        max_length=1500 # Discordのモーダル制限
+        max_length=1500
     )
 
     def __init__(self, cog, existing_schedule_text: str):
-        super().__init__(timeout=1800) # 30分
+        super().__init__(timeout=1800)
         self.cog = cog
-        # Googleカレンダーの予定を事前入力
         self.schedule.default = existing_schedule_text
 
     async def on_submit(self, interaction: discord.Interaction):
         logging.info(f"MorningPlanningModal on_submit called by {interaction.user}")
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            # 計画保存処理
             await self.cog._save_planning_entry(
                 interaction,
                 self.highlight.value,
-                self.schedule.value # 編集後の予定
+                self.schedule.value
             )
         except Exception as e:
              logging.error(f"MorningPlanningModal on_submit error: {e}", exc_info=True)
@@ -111,10 +109,10 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
 # --- 朝の計画用View (日本語UI) ---
 class MorningPlanningView(discord.ui.View):
     def __init__(self, cog, existing_schedule_text: str):
-        super().__init__(timeout=7200) # 2時間
+        super().__init__(timeout=7200)
         self.cog = cog
-        self.existing_schedule_text = existing_schedule_text # モーダルに渡す用
-        self.message = None # 送信されたメッセージを保持する
+        self.existing_schedule_text = existing_schedule_text
+        self.message = None
 
     @discord.ui.button(label="今日の計画を立てる", style=discord.ButtonStyle.success, emoji="☀️")
     async def plan_day(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -123,10 +121,9 @@ class MorningPlanningView(discord.ui.View):
             await interaction.response.send_modal(
                 MorningPlanningModal(self.cog, self.existing_schedule_text)
             )
-            # 正常にモーダルが開いたら、元のメッセージのViewを消す
             if self.message:
                 await self.message.edit(view=None)
-            self.stop() # Viewを停止
+            self.stop()
         except Exception as e_modal:
              logging.error(f"Error sending MorningPlanningModal: {e_modal}", exc_info=True)
              if not interaction.response.is_done():
@@ -140,7 +137,7 @@ class MorningPlanningView(discord.ui.View):
     async def on_timeout(self):
         if self.message:
             try:
-                await self.message.edit(view=None) # タイムアウトしたらボタンを消す
+                await self.message.edit(view=None)
             except discord.HTTPException:
                 pass
 
@@ -174,7 +171,7 @@ class NightlyReviewModal(discord.ui.Modal, title="今日一日の振り返り"):
     )
     
     def __init__(self, cog):
-        super().__init__(timeout=1800) # 30分
+        super().__init__(timeout=1800)
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -206,7 +203,7 @@ class NightlyReviewModal(discord.ui.Modal, title="今日一日の振り返り"):
 # --- 夜の振り返り用View (日本語UI) ---
 class NightlyJournalView(discord.ui.View):
     def __init__(self, cog):
-        super().__init__(timeout=7200) # 2時間有効
+        super().__init__(timeout=7200)
         self.cog = cog
         self.message = None
 
@@ -216,7 +213,7 @@ class NightlyJournalView(discord.ui.View):
         try:
             await interaction.response.send_modal(NightlyReviewModal(self.cog))
             if self.message:
-                await self.message.edit(view=None) # モーダルを開いたらボタンを消す
+                await self.message.edit(view=None)
             self.stop()
         except Exception as e:
             logging.error(f"NightlyJournalView button click error sending modal: {e}", exc_info=True)
@@ -232,7 +229,7 @@ class NightlyJournalView(discord.ui.View):
         logging.info("NightlyJournalView timed out.")
         if self.message:
             try:
-                await self.message.edit(view=None) # タイムアウトしたらボタンを消す
+                await self.message.edit(view=None)
             except discord.HTTPException:
                 pass
 
@@ -274,7 +271,6 @@ class JournalCog(commands.Cog):
             logging.error(f"❌ JournalCogの初期化中にエラー: {e}", exc_info=True)
             self.is_ready = False
 
-    # ( _load_env_vars, _validate_env_vars, _get_google_creds は変更なし)
     def _load_env_vars(self):
         self.channel_id = int(os.getenv("JOURNAL_CHANNEL_ID", 0))
         self.google_calendar_id = os.getenv("GOOGLE_CALENDAR_ID")
@@ -340,12 +336,10 @@ class JournalCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Cogの準備完了時の処理、タスクの開始"""
         if self.is_ready:
             logging.info("JournalCog is ready. Starting tasks...")
             await self.bot.wait_until_ready()
             
-            # 1. 朝の計画タスク
             planning_schedule = await self._load_schedule_from_db(self.planning_schedule_path)
             if planning_schedule:
                 plan_time = time(hour=planning_schedule['hour'], minute=planning_schedule['minute'], tzinfo=JST)
@@ -356,7 +350,6 @@ class JournalCog(commands.Cog):
             else:
                 logging.info("朝の計画タスクのスケジュールが設定されていません。タスクは開始しません。")
 
-            # 2. 夜の振り返りタスク
             journal_schedule = await self._load_schedule_from_db(self.journal_schedule_path)
             if journal_schedule:
                 journal_time = time(hour=journal_schedule['hour'], minute=journal_schedule['minute'], tzinfo=JST)
@@ -371,7 +364,6 @@ class JournalCog(commands.Cog):
 
 
     async def cog_unload(self):
-        """Cogアンロード時の処理"""
         logging.info("Unloading JournalCog...")
         if hasattr(self, 'session') and self.session and not self.session.closed:
             await self.session.close()
@@ -382,7 +374,6 @@ class JournalCog(commands.Cog):
         logging.info("JournalCog unloaded.")
 
     async def _get_todays_events(self, target_date: date = None) -> list:
-        """指定された日付 (デフォルトは今日) のGoogle Calendarイベントを取得"""
         if not self.calendar_service:
              logging.warning("Calendar service is not available.")
              return []
@@ -418,7 +409,6 @@ class JournalCog(commands.Cog):
 
 
     async def set_highlight_on_calendar(self, highlight_text: str, interaction: discord.Interaction) -> bool:
-        """指定されたテキストに一致する予定をハイライトする"""
         if not self.calendar_service:
              logging.warning("Cannot set highlight: Calendar service is not available.")
              if interaction and interaction.response.is_done():
@@ -501,7 +491,6 @@ class JournalCog(commands.Cog):
              return
 
         try:
-            # 1. Googleカレンダーから今日の予定を取得
             events = await self._get_todays_events()
             event_summaries = []
             if events:
@@ -523,13 +512,10 @@ class JournalCog(commands.Cog):
                         if start_date:
                             event_summaries.append(f"終日: {summary}")
             
-            # 2. モーダルに渡すためのテキストをキャッシュ
             self.today_events_text_cache = "\n".join(event_summaries) if event_summaries else "（カレンダーに予定はありません）"
             
-            # 3. Viewを作成
             view = MorningPlanningView(self, self.today_events_text_cache)
 
-            # 4. Embedを作成して送信 (日本語UI)
             embed = discord.Embed(
                 title="おはようございます！☀️ 今日の計画を立てましょう",
                 description="Googleカレンダーから以下の予定を取得しました。\n内容を確認・編集し、今日のハイライトを決めてください。",
@@ -740,7 +726,6 @@ class JournalCog(commands.Cog):
              await interaction.followup.send(f"❌ 保存処理中に予期せぬエラーが発生しました: {e_gather}", ephemeral=True)
 
 
-    # ( _parse_schedule_text は変更なし)
     def _parse_schedule_text(self, tasks_text: str) -> list[dict]:
         schedule_list = []
         for line in tasks_text.strip().split('\n'):
@@ -765,7 +750,6 @@ class JournalCog(commands.Cog):
         return schedule_list
 
 
-    # ( _register_schedule_to_calendar は変更なし)
     async def _register_schedule_to_calendar(self, interaction: discord.Interaction, schedule: list, target_date: date) -> bool:
         logging.info(f"Registering {len(schedule)} events to Google Calendar for {target_date}...")
         if not self.calendar_service:
@@ -852,11 +836,13 @@ class JournalCog(commands.Cog):
             await asyncio.to_thread(self.dbx.files_delete_v2, path)
             logging.info(f"Dropboxからスケジュールファイル ({path}) を削除しました。")
         except ApiError as e:
-            if isinstance(e.error, PathLookupError) and e.error.is_not_found():
+            # ★ 修正(2): dropbox.exceptions.PathLookupError -> e.error.is_path_lookup()
+            # dropbox.files.PathLookupError を使うために dropbox.files をインポート
+            if e.error.is_path_lookup() and e.error.get_path_lookup().is_not_found():
                 logging.info(f"スケジュールファイル ({path}) は既に削除されています。")
                 pass
             else:
-                logging.error(f"スケジュールファイルの削除に失敗 ({path}): {e}")
+                logging.error(f"スケジュールファイルの削除に失敗: {e}")
                 raise
         except Exception as e:
             logging.error(f"スケジュールファイルの削除中に予期せぬエラー ({path}): {e}")
