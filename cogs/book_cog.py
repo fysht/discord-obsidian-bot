@@ -65,11 +65,12 @@ PROCESS_ERROR_EMOJI = '❌'
 API_ERROR_EMOJI = '☁️'
 NOT_FOUND_EMOJI = '🧐'
 
-# --- ステータス定義 ---
+# --- ★ 修正: ステータス定義 (4項目・英語) ---
 STATUS_OPTIONS = {
-    "to_read": "To Read",
-    "reading": "Reading",
-    "finished": "Finished"
+    "wishlist": "Wishlist", # ① 読みたい、買いたい本
+    "to_read": "To Read",    # ② 読む前の本 (積読)
+    "reading": "Reading",   # ③ 読んでいる本
+    "finished": "Finished"  # ④ 読んだ後の本
 }
 
 # (3) 対応するファイルタイプ (zero-second_thinking_cog.py から流用)
@@ -308,13 +309,36 @@ class ConfirmMemoView(discord.ui.View):
             pass # タイムアウト時にメッセージが既に消えている場合のエラーは無視
 
 
-# --- ステータス変更用ボタンView ---
+# --- ★ 修正: ステータス変更用ボタンView ---
 class BookStatusView(discord.ui.View):
-    def __init__(self, cog, book_path: str, original_context: discord.Interaction | discord.Message):
+    # ★ 修正: __init__ で current_status を受け取る
+    def __init__(self, cog, book_path: str, original_context: discord.Interaction | discord.Message, current_status: str):
         super().__init__(timeout=300) 
         self.cog = cog
         self.book_path = book_path
         self.original_context = original_context
+        self.current_status = current_status # ★ 現在のステータスを保持
+
+        # ★ 修正: 新しいステータスオプションに基づいてボタンを動的に生成
+        self.add_status_button(STATUS_OPTIONS["wishlist"], "📚", "status_wishlist") # 📚 Wishlist
+        self.add_status_button(STATUS_OPTIONS["to_read"], "📖", "status_to_read")    # 📖 To Read (積読)
+        self.add_status_button(STATUS_OPTIONS["reading"], "▶️", "status_reading")   # ▶️ Reading (読書中)
+        self.add_status_button(STATUS_OPTIONS["finished"], "✅", "status_finished")  # ✅ Finished (読了)
+
+    def add_status_button(self, label: str, emoji: str, custom_id: str):
+        """ヘルパー: 現在のステータスかチェックしてボタンを追加"""
+        is_current = (label.lower() == self.current_status.lower()) # ★ 比較 (念のため小文字化)
+        
+        button = discord.ui.Button(
+            label=label,
+            # ★ 現在のステータスは Secondary (灰色) で無効化、他は Primary (青)
+            style=discord.ButtonStyle.secondary if is_current else discord.ButtonStyle.primary,
+            emoji=emoji,
+            custom_id=custom_id,
+            disabled=is_current # ★ 現在のステータスは無効化
+        )
+        button.callback = self.handle_status_change # ★ 汎用コールバック
+        self.add_item(button)
 
     async def _delete_original_context(self):
         try:
@@ -325,26 +349,31 @@ class BookStatusView(discord.ui.View):
         except discord.HTTPException:
             logging.warning("BookStatusView: 元のコンテキストメッセージの削除に失敗しました。")
 
-    @discord.ui.button(label="積読 (To Read)", style=discord.ButtonStyle.secondary, emoji="📚", custom_id="status_to_read")
-    async def to_read_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_status_change(interaction, STATUS_OPTIONS["to_read"])
-
-    @discord.ui.button(label="読書中 (Reading)", style=discord.ButtonStyle.primary, emoji="📖", custom_id="status_reading")
-    async def reading_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_status_change(interaction, STATUS_OPTIONS["reading"])
-
-    @discord.ui.button(label="読了 (Finished)", style=discord.ButtonStyle.success, emoji="✅", custom_id="status_finished")
-    async def finished_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_status_change(interaction, STATUS_OPTIONS["finished"])
-
-    async def handle_status_change(self, interaction: discord.Interaction, new_status: str):
+    # ★ 修正: 4つのボタンを1つのコールバックに統合
+    async def handle_status_change(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        custom_id = interaction.data["custom_id"]
+        new_status = ""
+        # ★ 修正: 新しいIDとSTATUS_OPTIONSの「値」をマッピング
+        if custom_id == "status_wishlist": new_status = STATUS_OPTIONS["wishlist"]
+        elif custom_id == "status_to_read": new_status = STATUS_OPTIONS["to_read"]
+        elif custom_id == "status_reading": new_status = STATUS_OPTIONS["reading"]
+        elif custom_id == "status_finished": new_status = STATUS_OPTIONS["finished"]
+        
+        if not new_status:
+            await interaction.followup.send("❌ 不明なステータスが選択されました。", ephemeral=True); return
+
         try:
             success = await self.cog._update_book_status(self.book_path, new_status)
             if success:
                 book_name = os.path.basename(self.book_path)
-                await interaction.followup.send(f"✅ ステータスを変更しました。\n`{book_name}` -> **{new_status}**", ephemeral=True)
-                await self._delete_original_context()
+                # ★ 修正: 変更前後のステータスを表示
+                await interaction.followup.send(
+                    f"✅ ステータスを変更しました。\n`{book_name}`\n`{self.current_status}` -> **{new_status}**", 
+                    ephemeral=True
+                )
+                await self._delete_original_context() # 元のUIを削除
             else:
                 await interaction.followup.send(f"❌ ステータス変更に失敗しました。", ephemeral=True)
         except Exception as e:
@@ -382,9 +411,8 @@ class BookSelectView(discord.ui.View):
         self.input_type = input_type
         
         placeholder_text = "操作対象の書籍を選択してください..."
-        if action_type == "memo":
-            placeholder_text = "メモを追記する書籍を選択 (コマンド)..."
-        elif action_type == "status":
+        # ★ 修正: "memo" ( /book_memo ) を削除
+        if action_type == "status":
             placeholder_text = "ステータスを変更する書籍を選択..."
         elif action_type == "add_memo":
             placeholder_text = f"この{input_type}メモを追記する書籍を選択..."
@@ -429,18 +457,32 @@ class BookSelectView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         selected_path = interaction.data["values"][0]
         
-        if self.action_type == "memo": # /book_memo コマンド
-            modal = BookMemoModal(self.cog, selected_path)
-            await interaction.response.send_modal(modal)
-            await self._edit_original_response(content="テキストメモを入力中です...", view=None)
+        # ★ 修正: action_type == "memo" を削除
 
-        elif self.action_type == "status": # /book_status コマンド
+        if self.action_type == "status": # /book_status コマンド
+            # ★ 修正: defer し、現在のステータスを取得してから View を表示
+            await interaction.response.defer(ephemeral=True, thinking=True) # Select menuのクリックに応答
+            
+            try:
+                current_status = await self.cog._get_current_status(selected_path)
+            except Exception as e_get_status:
+                logging.error(f"BookSelectView: ステータス取得失敗: {e_get_status}", exc_info=True)
+                await interaction.followup.send(f"❌ ファイルのステータスの読み取りに失敗しました: {e_get_status}", ephemeral=True)
+                return
+            
             selected_option_label = next((opt.label for opt in interaction.message.components[0].children[0].options if opt.value == selected_path), "選択された書籍")
-            status_view = BookStatusView(self.cog, selected_path, self.original_context)
-            await interaction.response.edit_message(
-                content=f"**{selected_option_label}** のステータスを選択してください:",
+            
+            status_view = BookStatusView(self.cog, selected_path, self.original_context, current_status)
+            
+            # ★ 修正: /book_status コマンドの応答 (self.original_context) を編集
+            await self.original_context.edit_original_response(
+                content=f"**{selected_option_label}**\n現在のステータス: **{current_status}**\n\n変更後のステータスを選択してください:",
                 view=status_view
             )
+            
+            # defer したので followup で応答
+            await interaction.followup.send("ステータスを読み込みました。", ephemeral=True, delete_after=3)
+
 
         elif self.action_type == "add_memo": # on_message (text, audio, image)
             # (Fix 4) 編集を interaction.response.edit_message に変更
@@ -673,21 +715,58 @@ class BookCog(commands.Cog):
             await self.session.close()
             logging.info("BookCog: aiohttp session closed.")
 
+    # ★ 新規追加: 現在のステータスを読み取るヘルパー
+    async def _get_current_status(self, book_path: str) -> str:
+        """指定されたノートのYAMLフロントマターからstatusを読み取る"""
+        try:
+            _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
+            current_content = res.content.decode('utf-8')
+            
+            # YAMLフロントマター内の status: "..." または status: ... を探す
+            # (IGNORECASEを追加)
+            status_pattern = re.compile(r"^(status:\s*)([\"']?)(.*?)([\"']?\s*)$", re.MULTILINE | re.IGNORECASE)
+            match = status_pattern.search(current_content)
+            
+            if match:
+                status_value = match.group(3).strip() # 引用符の中身を抽出
+                # STATUS_OPTIONS の「値」(Wishlist, To Read...) になっているかチェック
+                if status_value in STATUS_OPTIONS.values():
+                    return status_value
+                else:
+                    logging.warning(f"BookCog: 不明なステータス値 '{status_value}' を {book_path} で検出しました。")
+                    return status_value # 不明な値でもそのまま返す
+            else:
+                # status: が見つからない場合はデフォルト (Wishlist がないので To Read)
+                return STATUS_OPTIONS["to_read"] 
+                
+        except Exception as e:
+            logging.error(f"BookCog: 現在のステータス読み取り中にエラー: {e}", exc_info=True)
+            return "N/A" # エラー時
+
     async def _update_book_status(self, book_path: str, new_status: str) -> bool:
         """指定されたノートのYAMLフロントマターのstatusを更新する"""
         try:
             _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
             current_content = res.content.decode('utf-8')
-            status_pattern = re.compile(r"^(status:\s*)(\S+.*)$", re.MULTILINE)
+            
+            # ★ 修正: 正規表現を IGNORECASE に
+            status_pattern = re.compile(r"^(status:\s*)(\S+.*)$", re.MULTILINE | re.IGNORECASE)
+            
             if status_pattern.search(current_content):
+                # ★ 修正: 確実に引用符で囲むように
                 new_content = status_pattern.sub(f"\\g<1>\"{new_status}\"", current_content, count=1)
             else:
+                # status: がない場合、--- の直前に追加
                 frontmatter_end_pattern = re.compile(r"^(---)$", re.MULTILINE)
                 matches = list(frontmatter_end_pattern.finditer(current_content))
                 if len(matches) > 1:
                     insert_pos = matches[1].start()
+                    # ★ 修正: 確実に引用符で囲むように
                     new_content = current_content[:insert_pos] + f"status: \"{new_status}\"\n" + current_content[insert_pos:]
-                else: return False
+                else: 
+                    logging.error(f"BookCog: フロントマターの終了(---)が見つかりません: {book_path}")
+                    return False
+            
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 new_content.encode('utf-8'),
@@ -1132,7 +1211,7 @@ authors: [{author_str}]
 published: {published_date}
 source: {source_url}
 tags: [book]
-status: "To Read"
+status: "{STATUS_OPTIONS['to_read']}"
 created: {now.isoformat()}
 cover: {thumbnail_url}
 ---
@@ -1194,33 +1273,8 @@ cover: {thumbnail_url}
             logging.error(f"BookCog: ノート保存またはデイリーノート更新中に予期せぬエラー: {e}", exc_info=True)
             return False
 
-    # --- ★ 修正: /book_memo コマンド (テキスト入力モーダルを起動) ---
-    @app_commands.command(name="book_memo", description="読書ノートを選択して「テキスト」メモを追記します。")
-    async def book_memo(self, interaction: discord.Interaction):
-        if not self.is_ready:
-            await interaction.response.send_message("読書ノート機能は現在利用できません。", ephemeral=True)
-            return
-        if interaction.channel_id != self.book_note_channel_id:
-            await interaction.response.send_message(f"このコマンドは <#{self.book_note_channel_id}> でのみ利用できます。", ephemeral=True)
-            return
-
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        try:
-            book_files, error = await self.get_book_list()
-            if error:
-                await interaction.followup.send(error, ephemeral=True)
-                return
-
-            options = [discord.SelectOption(label=entry.name[:-3][:100], value=entry.path_display) for entry in book_files[:25]]
-            
-            # original_context に interaction を渡す
-            view = BookSelectView(self, options, original_context=interaction, action_type="memo") # "memo" はモーダルを起動
-            await interaction.followup.send("どの書籍にメモを追記しますか？（テキスト・音声・画像の直接投稿も可能です）", view=view, ephemeral=True)
-
-        except Exception as e:
-            logging.error(f"BookCog: /book_memo コマンド処理中に予期せぬエラー: {e}", exc_info=True)
-            await interaction.followup.send(f"❌ コマンド処理中に予期せぬエラーが発生しました: {e}", ephemeral=True)
+    # --- ★ 削除: /book_memo コマンド (Request 3) ---
+    # (Lines 1088-1111 deleted)
 
     # --- /book_status コマンド ---
     @app_commands.command(name="book_status", description="読書ノートのステータスを変更します。")
