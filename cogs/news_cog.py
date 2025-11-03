@@ -13,7 +13,7 @@ import asyncio
 import aiohttp
 import feedparser
 from urllib.parse import quote_plus
-import re # ★ 時刻のバリデーションのために re をインポート
+import re # ★ 複数入力のパースと時刻バリデーションのために re をインポート
 import requests
 from typing import Optional
 
@@ -33,15 +33,16 @@ NEWS_SCHEDULE_PATH = f"{BASE_PATH}/.bot/news_schedule.json"
 
 
 # ==============================================================================
-# === 株式ウォッチリスト編集用 UI コンポーネント (変更なし) ===
+# === 株式ウォッチリスト編集用 UI コンポーネント (★ 修正) ===
 # ==============================================================================
 
 class StockAddModal(discord.ui.Modal, title="銘柄の追加"):
-    code_input = discord.ui.TextInput(
-        label="銘柄コード", placeholder="例: 7203", required=True, style=discord.TextStyle.short, max_length=10
-    )
-    name_input = discord.ui.TextInput(
-        label="企業名", placeholder="例: トヨタ自動車", required=True, style=discord.TextStyle.short, max_length=100
+    # ★ 修正: 複数銘柄を一度に追加できるように Paragraph スタイルに変更
+    entries_input = discord.ui.TextInput(
+        label="追加する銘柄 (複数可)",
+        placeholder="例:\n7203,トヨタ自動車\n9984,ソフトバンクグループ\n4755,楽天グループ",
+        style=discord.TextStyle.paragraph,
+        required=True
     )
 
     def __init__(self, cog: 'NewsCog', parent_view: 'StockEditView'):
@@ -51,18 +52,51 @@ class StockAddModal(discord.ui.Modal, title="銘柄の追加"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
-        code = self.code_input.value.strip()
-        name = self.name_input.value.strip()
+        
+        lines = self.entries_input.value.splitlines()
+        added_stocks = []
+        skipped_stocks = []
         
         async with self.parent_view.lock: 
             watchlist = await self.cog._get_watchlist()
-            if code in watchlist:
-                await interaction.followup.send(f"⚠️ {name} ({code}) は既にリストに存在します。", ephemeral=True)
-            else:
-                watchlist[code] = name
-                await self.cog._save_watchlist(watchlist)
-                await interaction.followup.send(f"✅ {name} ({code}) を監視リストに追加しました。", ephemeral=True)
-                await self.parent_view.update_message(interaction)
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # ★ 修正: カンマ、スペース、コロンなどで柔軟に分割 (コードと名前の2要素を取得)
+                parts = re.split(r'[,\s:;]+', line, 1)
+                
+                if len(parts) == 2:
+                    code = parts[0].strip()
+                    name = parts[1].strip()
+                    if code and name:
+                        if code not in watchlist:
+                            watchlist[code] = name
+                            added_stocks.append(f"{name} ({code})")
+                        else:
+                            skipped_stocks.append(f"{name} ({code}) (既に存在)")
+                    else:
+                        skipped_stocks.append(f"{line} (形式不正: コードまたは名前が空)")
+                else:
+                    skipped_stocks.append(f"{line} (形式不正: 2要素に分割不可)")
+            
+            await self.cog._save_watchlist(watchlist)
+
+        # --- ユーザーへのフィードバックを構築 ---
+        message_parts = []
+        if added_stocks:
+            message_parts.append(f"✅ 以下の銘柄を追加しました:\n- " + "\n- ".join(added_stocks))
+        if skipped_stocks:
+            message_parts.append(f"⚠️ 以下の入力はスキップされました:\n- " + "\n- ".join(skipped_stocks))
+        if not message_parts:
+            message_parts.append("有効な入力がありませんでした。")
+        # --- ここまで ---
+
+        await interaction.followup.send("\n\n".join(message_parts), ephemeral=True)
+        await self.parent_view.update_message(interaction)
+
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logging.error(f"StockAddModalでエラー: {error}", exc_info=True)
@@ -91,7 +125,7 @@ class StockRemoveSelectView(discord.ui.View):
             placeholder="削除する銘柄を選択 (複数可)...",
             options=options[:25],
             min_values=1,
-            max_values=min(len(options), 25)
+            max_values=min(len(options), 25) # 複数削除に対応
         )
         self.select_menu.callback = self.select_callback
         self.add_item(self.select_menu)
@@ -150,12 +184,12 @@ class StockEditView(discord.ui.View):
             logging.warning(f"StockEditView message update failed: {e}")
             self.stop()
 
-    @discord.ui.button(label="➕ 銘柄を追加", style=discord.ButtonStyle.success, custom_id="stock_edit_add")
+    @discord.ui.button(label="➕ 銘柄を追加 (複数可)", style=discord.ButtonStyle.success, custom_id="stock_edit_add")
     async def add_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = StockAddModal(self.cog, self)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="➖ 銘柄を削除", style=discord.ButtonStyle.danger, custom_id="stock_edit_remove")
+    @discord.ui.button(label="➖ 銘柄を削除 (複数可)", style=discord.ButtonStyle.danger, custom_id="stock_edit_remove")
     async def remove_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         
@@ -342,7 +376,7 @@ class NewsCog(commands.Cog):
             logging.error(f"ピン留めニュースの解析に失敗: {e}")
             return []
 
-    # --- ブリーフィング実行ロジック (変更なし) ---
+    # --- ブリーフィング実行ロジック (★ 修正) ---
     async def run_daily_briefing(self, channel: discord.TextChannel):
         """ブリーフィング（天気、ピン留めメモ、株価）の実行"""
         if not channel:
@@ -374,7 +408,8 @@ class NewsCog(commands.Cog):
                 pinned_memos = await self._get_pinned_news_from_db()
                 if pinned_memos:
                     logging.info(f"{len(pinned_memos)}件のピン留めメモを投稿します。")
-                    await channel.send("--- 📌 今朝のピン留めメモ ---")
+                    # ★ 修正: 見出しを英語に変更
+                    await channel.send("--- 📌 Today's Pinned Memos ---")
                     
                     for memo in pinned_memos:
                         content = memo.get("content", "内容不明")
@@ -382,7 +417,7 @@ class NewsCog(commands.Cog):
                         memo_embed = discord.Embed(
                             description=content,
                             color=discord.Color.from_rgb(255, 238, 153)
-                        ).set_footer(text=f"メモ作成者: {author}")
+                        ).set_footer(text=f"Memo creator: {author}") # フッターも英語に
                         
                         await channel.send(embed=memo_embed)
                         await asyncio.sleep(1)
@@ -461,7 +496,6 @@ class NewsCog(commands.Cog):
         logging.info(f"定時ブリーフィングタスクがトリガーされました (実行時刻: {self.daily_news_briefing.time})")
         
         # ★ 追加: 実行時刻が設定されていない場合は何もしない
-        # (on_readyで起動しなかった場合、change_intervalされていない可能性への念押し)
         if not self.daily_news_briefing.time:
              logging.warning("daily_news_briefing: タスクが実行されましたが、有効な実行時刻が設定されていません。")
              return
@@ -473,7 +507,6 @@ class NewsCog(commands.Cog):
             
         await self.run_daily_briefing(channel)
 
-    # ★ 削除: before_loop は on_ready のロジックに統合されたため不要
 
     # --- ★ 修正: スケジュール保存/読み込み/削除用ヘルパー ---
     async def _load_schedule_from_db(self) -> Optional[dict]:
@@ -532,7 +565,7 @@ class NewsCog(commands.Cog):
             raise # エラーを呼び出し元に伝播させる
 
 
-    # --- 株式ウォッチリスト管理 (変更なし) ---
+    # --- 株式ウォッチリスト管理 (★ 修正) ---
     async def _get_watchlist(self) -> dict:
         try:
             _, res = self.dbx.files_download(self.stock_watchlist_path)
@@ -550,42 +583,13 @@ class NewsCog(commands.Cog):
         except Exception as e:
             logging.error(f"ウォッチリストの保存に失敗: {e}")
 
+    # --- ★ 修正: briefing グループを新設 ---
+    briefing_group = app_commands.Group(name="briefing", description="ニュースブリーフィングの実行やスケジュールを管理します。")
+    
+    # --- 株式グループ (stock) は edit のみ残す ---
     stock_group = app_commands.Group(name="stock", description="株価ニュースの監視リストを管理します。")
 
-    @stock_group.command(name="add", description="[非推奨] 監視リストに銘柄コードと企業名を追加します。")
-    @app_commands.describe(code="追加する銘柄コード（例: 7203）", name="企業名（例: トヨタ自動車）")
-    async def stock_add(self, interaction: discord.Interaction, code: str, name: str):
-        await interaction.response.defer(ephemeral=True)
-        watchlist = await self._get_watchlist()
-        if code not in watchlist:
-            watchlist[code] = name
-            await self._save_watchlist(watchlist)
-            await interaction.followup.send(f"✅ {name} ({code}) を監視リストに追加しました。\n（推奨: `/stock edit` コマンドの使用をおすすめします）")
-        else:
-            await interaction.followup.send(f"⚠️ {code} は既にリストに存在します。")
-
-    @stock_group.command(name="remove", description="[非推奨] 監視リストから銘柄コードを削除します。")
-    @app_commands.describe(code="削除する銘柄コード")
-    async def stock_remove(self, interaction: discord.Interaction, code: str):
-        await interaction.response.defer(ephemeral=True)
-        watchlist = await self._get_watchlist()
-        if code in watchlist:
-            name = watchlist.pop(code)
-            await self._save_watchlist(watchlist)
-            await interaction.followup.send(f"🗑️ {name} ({code}) を監視リストから削除しました。\n（推奨: `/stock edit` コマンドの使用をおすすめします）")
-        else:
-            await interaction.followup.send(f"⚠️ {code} はリストに存在しません。")
-
-    @stock_group.command(name="list", description="現在の監視リストを表示します。")
-    async def stock_list(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        watchlist = await self._get_watchlist()
-        if watchlist:
-            list_str = "\n".join([f"• **{name}** (`{code}`)" for code, name in watchlist.items()])
-            embed = discord.Embed(title="📈 株式ニュース 監視リスト", description=list_str, color=discord.Color.blue())
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send("監視リストは現在空です。", ephemeral=True)
+    # ★ 削除: stock_add, stock_remove, stock_list コマンド (Request 3A)
 
     @stock_group.command(name="edit", description="監視リストを対話形式で編集します。")
     async def stock_edit(self, interaction: discord.Interaction):
@@ -599,8 +603,10 @@ class NewsCog(commands.Cog):
         await interaction.followup.send("監視リストをロード中...", embed=None, view=view)
         await view.update_message()
 
-    @stock_group.command(name="run_briefing", description="毎朝のニュースブリーフィングを手動で実行します。")
-    async def stock_run_briefing(self, interaction: discord.Interaction):
+    # --- ★ 修正: briefing グループにコマンドを移動 (Request 1) ---
+
+    @briefing_group.command(name="run_now", description="毎朝のニュースブリーフィングを手動で実行します。")
+    async def news_run_now(self, interaction: discord.Interaction):
         if interaction.channel_id != self.news_channel_id:
             await interaction.response.send_message(f"このコマンドはニュースチャンネル (<#{self.news_channel_id}>) で実行してください。", ephemeral=True)
             return
@@ -608,10 +614,10 @@ class NewsCog(commands.Cog):
         await interaction.response.send_message("✅ 手動ブリーフィングを開始します...", ephemeral=True)
         await self.run_daily_briefing(interaction.channel)
 
-    # --- ★ 修正: スケジュール設定コマンド ---
-    @stock_group.command(name="set_schedule", description="ニュースブリーフィングの定時実行時刻 (JST) を設定します。")
+
+    @briefing_group.command(name="set_schedule", description="ニュースブリーフィングの定時実行時刻 (JST) を設定します。")
     @app_commands.describe(schedule_time="実行時刻 (HH:MM形式, 24時間表記, JST)。例: 06:30")
-    async def stock_set_schedule(self, interaction: discord.Interaction, schedule_time: str):
+    async def news_set_schedule(self, interaction: discord.Interaction, schedule_time: str):
         if interaction.channel_id != self.news_channel_id:
             await interaction.response.send_message(f"このコマンドは <#{self.news_channel_id}> で実行してください。", ephemeral=True)
             return
@@ -669,9 +675,8 @@ class NewsCog(commands.Cog):
             logging.error(f"スケジュール設定中にエラー: {e}", exc_info=True)
             await interaction.followup.send(f"❌ スケジュールの設定中に予期せぬエラーが発生しました: {e}", ephemeral=True)
 
-    # ★ 新規追加: /stock cancel_schedule コマンド
-    @stock_group.command(name="cancel_schedule", description="ニュースブリーフィングの定時実行を停止し、スケジュールを削除します。")
-    async def stock_cancel_schedule(self, interaction: discord.Interaction):
+    @briefing_group.command(name="cancel_schedule", description="ニュースブリーフィングの定時実行を停止し、スケジュールを削除します。")
+    async def news_cancel_schedule(self, interaction: discord.Interaction):
         if interaction.channel_id != self.news_channel_id:
             await interaction.response.send_message(f"このコマンドは <#{self.news_channel_id}> で実行してください。", ephemeral=True)
             return
