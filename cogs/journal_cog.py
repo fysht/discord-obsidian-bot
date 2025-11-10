@@ -381,8 +381,9 @@ class JournalCog(commands.Cog):
             if target_date is None:
                 target_date = datetime.now(JST).date()
             
-            dt_start = JST.localize(datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0))
-            dt_end = JST.localize(datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59))
+            # ★ 修正: .localize() を tzinfo=JST に変更
+            dt_start = datetime(target_date.year, target_date.month, target_date.day, 0, 0, 0, tzinfo=JST)
+            dt_end = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=JST)
             
             time_min = dt_start.isoformat()
             time_max = dt_end.isoformat()
@@ -566,9 +567,9 @@ class JournalCog(commands.Cog):
             logging.error(f"Error in prompt_daily_journal loop: {e}", exc_info=True)
 
 
-    # --- 朝の計画保存 (英語項目) ---
+    # --- ★ 修正: 朝の計画保存 (Googleカレンダーへの「新規」登録機能を追加) ---
     async def _save_planning_entry(self, interaction: discord.Interaction, highlight: str, schedule: str):
-        logging.info("Saving planning entry to Obsidian (Eng) and Calendar (Highlight)...")
+        logging.info("Saving planning entry to Obsidian (Eng) and Calendar (Highlight + New)...")
         if not self.is_ready:
              await interaction.followup.send("❌ 保存機能が利用できません。", ephemeral=True)
              return
@@ -577,53 +578,107 @@ class JournalCog(commands.Cog):
         date_str = now.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
 
+        # 1. ハイライトをカレンダーに登録 (先に行う)
         highlight_success = False
         if highlight:
             highlight_success = await self.set_highlight_on_calendar(highlight, interaction)
         
-        try:
-            # Obsidianの項目は英語
-            planning_content = f"""
+        # 2. (新規) モーダルに入力されたスケジュールをパース
+        schedule_list_for_calendar = self._parse_schedule_text(schedule)
+        
+        # 3. (新規) 元のカレンダーテキストと比較し、新規追加分のみを抽出
+        original_calendar_text = self.today_events_text_cache
+        new_events_to_register = []
+        if schedule_list_for_calendar:
+            for item in schedule_list_for_calendar:
+                # 簡易的なチェック: 予定の「概要(summary)」が元のカレンダーテキストに含まれていなければ、新規とみなす
+                # (時刻変更は検知せず、あくまで「新規」のテキストのみ)
+                if item['summary'] not in original_calendar_text:
+                    new_events_to_register.append(item)
+        logging.info(f"朝の計画から {len(new_events_to_register)} 件の新規予定をカレンダーに登録します。")
+
+        # 4. (新規) 今日の日付を取得
+        today_date = now.date()
+
+        # 5. (新規) カレンダー保存タスクを定義
+        async def save_new_events_to_calendar():
+            if not new_events_to_register or not self.calendar_service:
+                return None # 登録対象なし、またはカレンダーサービスなし
+            try:
+                # _register_schedule_to_calendar を「本日」の日付で実行
+                success = await self._register_schedule_to_calendar(interaction, new_events_to_register, today_date)
+                return success
+            except Exception as e:
+                logging.error(f"朝の計画のカレンダー登録中に予期せぬエラー: {e}", exc_info=True)
+                return False # 失敗
+
+        # 6. (既存) Obsidian保存タスクを定義
+        async def save_planning_to_obsidian():
+            try:
+                # Obsidianの項目は英語
+                planning_content = f"""
 - **Highlight:** {highlight}
 ### Schedule
 {schedule.strip()}
 """
-            section_header = "## Planning"
+                section_header = "## Planning"
 
-            current_content = ""
-            try:
-                logging.debug(f"Downloading daily note: {daily_note_path}")
-                _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
-                current_content = res.content.decode('utf-8')
-                logging.debug("Daily note downloaded successfully.")
-            except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    logging.info(f"Daily note {daily_note_path} not found. Creating new file content.")
-                    current_content = f"# {date_str}\n"
-                else:
-                    raise
+                current_content = ""
+                try:
+                    logging.debug(f"Downloading daily note: {daily_note_path}")
+                    _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
+                    current_content = res.content.decode('utf-8')
+                    logging.debug("Daily note downloaded successfully.")
+                except ApiError as e:
+                    if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                        logging.info(f"Daily note {daily_note_path} not found. Creating new file content.")
+                        current_content = f"# {date_str}\n"
+                    else:
+                        raise
 
-            new_content = update_section(current_content, planning_content, section_header)
+                new_content = update_section(current_content, planning_content, section_header)
 
-            await asyncio.to_thread(
-                self.dbx.files_upload,
-                new_content.encode('utf-8'), 
-                daily_note_path, 
-                mode=WriteMode('overwrite')
+                await asyncio.to_thread(
+                    self.dbx.files_upload,
+                    new_content.encode('utf-8'), 
+                    daily_note_path, 
+                    mode=WriteMode('overwrite')
+                )
+                logging.info(f"Planning entry saved successfully to Obsidian: {daily_note_path}")
+                return True
+            except Exception as e:
+                logging.error(f"Obsidianへの計画保存中に予期せぬエラーが発生: {e}", exc_info=True)
+                return False
+        
+        # 7. (新規) Obsidian保存とカレンダー保存を並列実行
+        try:
+            obsidian_success, calendar_success = await asyncio.gather(
+                save_planning_to_obsidian(),
+                save_new_events_to_calendar()
             )
-            logging.info(f"Planning entry saved successfully to Obsidian: {daily_note_path}")
-            
-            # 応答は日本語
-            response_message = "✅ 今日の計画をObsidianに記録しました。"
-            if highlight:
-                response_message += f"\n✅ ハイライト「**{highlight}**」をカレンダーに登録しました。" if highlight_success else ""
-            
-            await interaction.followup.send(response_message, ephemeral=True)
 
-        except Exception as e:
-            logging.error(f"Obsidianへの計画保存中に予期せぬエラーが発生: {e}", exc_info=True)
-            if not interaction.response.is_done():
-                 await interaction.followup.send(f"❌ 計画のObsidian保存中に予期せぬエラーが発生しました: {e}", ephemeral=True)
+            # 8. (新規) 実行結果をまとめてフィードバック (日本語)
+            response_messages = []
+            if obsidian_success:
+                response_messages.append("✅ 今日の計画をObsidianに記録しました。")
+            else:
+                response_messages.append("❌ 計画のObsidian記録に失敗しました。")
+
+            if highlight:
+                response_messages.append(f"✅ ハイライト「**{highlight}**」をカレンダーに登録しました。" if highlight_success else f"❌ ハイライト「**{highlight}**」のカレンダー登録に失敗しました。")
+            
+            # カレンダーの新規登録結果
+            if calendar_success is True:
+                response_messages.append(f"✅ スケジュールから **{len(new_events_to_register)}** 件の新規予定をカレンダーに登録しました。")
+            elif calendar_success is False:
+                response_messages.append(f"❌ スケジュールからの新規予定のカレンダー登録に失敗しました。")
+            # (calendar_success is None の場合は（対象なし）、何も表示しない)
+            
+            await interaction.followup.send("\n".join(response_messages), ephemeral=True)
+
+        except Exception as e_gather:
+             logging.error(f"計画保存の並列処理中にエラー: {e_gather}", exc_info=True)
+             await interaction.followup.send(f"❌ 保存処理中に予期せぬエラーが発生しました: {e_gather}", ephemeral=True)
 
 
     # --- 夜の振り返り保存 (英語項目) ---
@@ -754,7 +809,9 @@ class JournalCog(commands.Cog):
         logging.info(f"Registering {len(schedule)} events to Google Calendar for {target_date}...")
         if not self.calendar_service:
              logging.warning("Cannot register schedule: Calendar service is not available.")
-             await interaction.followup.send("❌ カレンダー機能が利用できません (API認証エラー)。", ephemeral=True)
+             # (★ 修正: 朝の実行時に interaction が None でないことを確認)
+             if interaction and interaction.response.is_done():
+                 await interaction.followup.send("❌ カレンダー機能が利用できません (API認証エラー)。", ephemeral=True)
              return False
 
         successful_registrations = 0
@@ -765,8 +822,9 @@ class JournalCog(commands.Cog):
                     start_time = datetime.strptime(event['start_time'], '%H:%M').time()
                     end_time = datetime.strptime(event['end_time'], '%H:%M').time()
                     
-                    start_dt = JST.localize(datetime.combine(target_date, start_time))
-                    end_dt = JST.localize(datetime.combine(target_date, end_time))
+                    # ★ 修正: .localize() を tzinfo=JST に変更
+                    start_dt = datetime.combine(target_date, start_time, tzinfo=JST)
+                    end_dt = datetime.combine(target_date, end_time, tzinfo=JST)
                     if end_dt <= start_dt:
                          logging.warning(f"Event '{event['summary']}' has end time <= start time. Assuming 1 hour duration.")
                          end_dt = start_dt + timedelta(hours=1)
