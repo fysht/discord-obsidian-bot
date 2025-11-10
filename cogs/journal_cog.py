@@ -57,7 +57,8 @@ HIGHLIGHT_EMOJI = "✨"
 BASE_PATH = os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')
 PLANNING_SCHEDULE_PATH = f"{BASE_PATH}/.bot/planning_schedule.json"
 JOURNAL_SCHEDULE_PATH = f"{BASE_PATH}/.bot/journal_schedule.json"
-TIME_SCHEDULE_REGEX = re.compile(r'^(\d{1,2}:\d{2})\s+(.+)$')
+# ★ 修正: 時刻の正規表現を拡張 (HH:MM | H:MM | H | HH | Hmm | HHmm)
+TIME_SCHEDULE_REGEX = re.compile(r'^(\d{1,2}:\d{2}|\d{1,4})(?:[~-](\d{1,2}:\d{2}|\d{1,4}))?\s+(.+)$')
 
 
 # --- UIコンポーネント ---
@@ -780,26 +781,93 @@ class JournalCog(commands.Cog):
              logging.error(f"ジャーナル保存の並列処理中にエラー: {e_gather}", exc_info=True)
              await interaction.followup.send(f"❌ 保存処理中に予期せぬエラーが発生しました: {e_gather}", ephemeral=True)
 
+    # ★ 修正: 簡略化された時刻入力をパースするヘルパー
+    def _normalize_time_str(self, time_str: str) -> Optional[str]:
+        """
+        "9", "930", "1015", "9:30" などを "HH:MM" 形式に正規化する。
+        失敗した場合は None を返す。
+        """
+        if not time_str:
+            return None
+        
+        time_str = time_str.strip()
+        
+        # 1. "HH:MM" または "H:MM" 形式
+        if ':' in time_str:
+            try:
+                parts = time_str.split(':')
+                hour = int(parts[0])
+                minute = int(parts[1])
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    return f"{hour:02d}:{minute:02d}"
+            except (ValueError, IndexError):
+                pass # 他の形式でパース試行
+                
+        # 2. "H" または "HH" 形式 (例: "9" -> 09:00, "10" -> 10:00)
+        if len(time_str) <= 2:
+            try:
+                hour = int(time_str)
+                if 0 <= hour <= 23:
+                    return f"{hour:02d}:00"
+            except ValueError:
+                pass # 他の形式でパース試行
 
+        # 3. "Hmm" または "HHmm" 形式 (例: "930" -> 09:30, "1015" -> 10:15)
+        if len(time_str) == 3 or len(time_str) == 4:
+            try:
+                if len(time_str) == 3: # "930"
+                    hour = int(time_str[0])
+                    minute = int(time_str[1:])
+                else: # "1015"
+                    hour = int(time_str[:2])
+                    minute = int(time_str[2:])
+                    
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    return f"{hour:02d}:{minute:02d}"
+            except ValueError:
+                pass # パース失敗
+
+        logging.warning(f"サポートされていない時刻形式です: '{time_str}'")
+        return None # どの形式にも一致しない
+
+    # ★ 修正: _normalize_time_str を使うように _parse_schedule_text を変更
     def _parse_schedule_text(self, tasks_text: str) -> list[dict]:
         schedule_list = []
         for line in tasks_text.strip().split('\n'):
+            # 修正後のREGEX: (HH:MM|Hmm|HHmm|H|HH)(-(HH:MM|...))?( )+(Summary)
             match = TIME_SCHEDULE_REGEX.match(line.strip())
             if match:
-                start_time_str = match.group(1)
-                summary = match.group(2).strip()
+                start_time_raw = match.group(1)
+                end_time_raw = match.group(2) # オプショナルな終了時刻
+                summary = match.group(3).strip()
+                
+                # ★ 正規化処理
+                start_time_str = self._normalize_time_str(start_time_raw)
+                end_time_str = self._normalize_time_str(end_time_raw) if end_time_raw else None
+
+                if not start_time_str:
+                    logging.warning(f"スケジュール行の開始時刻パースに失敗: '{line}' (入力: {start_time_raw})")
+                    continue # 開始時刻がパースできなければスキップ
+
                 try:
-                    if ':' in start_time_str and len(start_time_str.split(':')[0]) == 1:
-                        start_time_str = f"0{start_time_str}"
                     start_time_obj = datetime.strptime(start_time_str, '%H:%M').time()
-                    end_time_obj = (datetime.combine(date.today(), start_time_obj) + timedelta(hours=1)).time()
+
+                    # 終了時刻の決定
+                    if end_time_str:
+                        # 終了時刻が指定されている (かつ パース成功) 場合
+                        end_time_obj = datetime.strptime(end_time_str, '%H:%M').time()
+                    else:
+                        # 終了時刻が指定されていない (または パース失敗) 場合 (デフォルト1時間)
+                        end_time_obj = (datetime.combine(date.today(), start_time_obj) + timedelta(hours=1)).time()
+                    
                     schedule_list.append({
                         "summary": summary,
                         "start_time": start_time_obj.strftime('%H:%M'),
                         "end_time": end_time_obj.strftime('%H:%M')
                     })
                 except ValueError as e_time:
-                    logging.warning(f"スケジュール行の時刻パースに失敗: '{line}'. エラー: {e_time}")
+                    # strptime が失敗することは _normalize_time_str が正しければないはずだが、念のため
+                    logging.warning(f"スケジュール行の時刻パースに失敗 (strptime): '{line}'. エラー: {e_time}")
             elif line.strip():
                  logging.warning(f"スケジュール行の形式が不正 (HH:MM なし): '{line}'")
         return schedule_list
