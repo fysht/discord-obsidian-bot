@@ -25,6 +25,7 @@ SECTION_ORDER = [
     # --- 4. 健康・ログ ---
     "## Health Metrics", # fitbit_cog
     "## Location Logs", # location_log_cog
+    "## Life Logs", # lifelog_cog
     
     # --- 5. サマリー ---
     "## Daily Summary" # (summary_cog.py 用 - ※現在は未使用)

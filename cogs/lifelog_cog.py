@@ -1,4 +1,5 @@
 import os
+import asyncio  # ★ここを追加しました
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -158,7 +159,7 @@ class LifeLogCog(commands.Cog):
         duration_str = ""
         if hours > 0: duration_str += f"{hours}h"
         duration_str += f"{minutes}m"
-        if total_seconds < 60: duration_str = "0m" # 秒単位は切り捨てて0mとするか、1mにするかはお好みで
+        if total_seconds < 60: duration_str = "0m"
 
         # Obsidian用フォーマット
         date_str = start_time.strftime('%Y-%m-%d')
