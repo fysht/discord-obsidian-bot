@@ -31,7 +31,7 @@ DAILY_SUMMARY_TIME = time(hour=6, minute=0, tzinfo=JST)
 # --- 新規モーダル: メモ入力 ---
 class LifeLogMemoModal(discord.ui.Modal, title="作業メモの入力"):
     memo_text = discord.ui.TextInput(
-        label="メモ（詳細、進捗など）",
+        label="メモ（詳細、進捗など））",
         placeholder="例: 今日のメニューはカレーとサラダ",
         style=discord.TextStyle.paragraph,
         required=True,
@@ -247,7 +247,8 @@ class LifeLogCog(commands.Cog):
         # 2. メモをネストされた箇条書きとして整形して追記
         if memos:
             # メモの各行から Markdown 箇条書きを作成 (改行はスペースに置換)
-            nested_memos = "\n".join([f"\t- {m.replace('\n', ' ').strip()}" for m in memos])
+            # ★ 修正: メモの時刻は既に `add_memo_to_task` で付いているので、そのまま使用
+            nested_memos = "\n".join([f"\t- {m.strip()}" for m in memos])
             obsidian_line += f"\n{nested_memos}"
 
         # Obsidianに保存
@@ -277,12 +278,14 @@ class LifeLogCog(commands.Cog):
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
         
         try:
+            current_content = ""
             try:
                 _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 current_content = res.content.decode('utf-8')
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    current_content = f"# {date_str}\n"
+                    # ★ 修正: 新規ファイル作成時に日付を挿入しないように空文字列に変更
+                    current_content = ""
                 else:
                     raise
 

@@ -2,6 +2,7 @@ import logging
 
 # --- 定数定義 ---
 # デイリーノートの見出しの順序をここで一元管理します
+# (全cogsをスキャンし、使用されるすべてのヘッダーを網羅・整理)
 SECTION_ORDER = [
     # --- 1. メディアクリップ ---
     "## WebClips",
@@ -34,6 +35,14 @@ SECTION_ORDER = [
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
     """
     Obsidianのデイリーノート内で、定義された順序に基づいてセクションの内容を更新または新規追加する共通関数
+
+    Args:
+        current_content (str): 現在のノートの全内容
+        text_to_add (str): 追加または更新するテキスト。リンクやリストなど
+        section_header (str): 対象となるセクションの見出し (例: "## WebClips")
+
+    Returns:
+        str: 更新後のノートの全内容
     """
     lines = current_content.split('\n')
     original_lines = list(lines) # 元のリストをコピー
@@ -60,10 +69,10 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
         while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
             insert_index += 1
         
-        # 挿入するテキストの前に空行がない場合、追加する
-        if insert_index > 0 and lines[insert_index-1].strip() != "":
-            lines.insert(insert_index, "")
-            insert_index += 1
+        # ★ 修正: 連続リストの行間を空けないため、この自動空行挿入ロジックを削除
+        # if insert_index > 0 and lines[insert_index-1].strip() != "":
+        #     lines.insert(insert_index, "")
+        #     insert_index += 1
             
         lines.insert(insert_index, text_to_add)
         return "\n".join(lines)
