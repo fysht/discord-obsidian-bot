@@ -702,8 +702,7 @@ class BookCog(commands.Cog):
             
             self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
             genai.configure(api_key=self.gemini_api_key)
-            # ★ 修正: gemini-pro を gemini-2.5-pro に変更 (Visionと合わせる)
-            self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro") 
+            self.gemini_vision_model = genai.GenerativeModel("gemini-3-pro-preview") 
             
             self.is_ready = True
 

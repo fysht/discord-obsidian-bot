@@ -58,7 +58,7 @@ class FitbitCog(commands.Cog):
                 self.fitbit_client_id, self.fitbit_client_secret, self.dbx, self.fitbit_user_id
             )
             genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview")
             return True
         except Exception as e:
             logging.error(f"FitbitCogのクライアント初期化中にエラー: {e}", exc_info=True)

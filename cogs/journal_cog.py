@@ -14,7 +14,6 @@ import aiohttp
 from pathlib import Path
 import dropbox
 from dropbox.files import WriteMode, DownloadError
-# ★ 修正(1): PathLookupError のインポートを削除
 from dropbox.exceptions import ApiError
 import re
 import asyncio
@@ -27,7 +26,7 @@ try:
     from utils.obsidian_utils import update_section
 except ImportError:
     logging.warning("utils/obsidian_utils.pyが見つかりません。ダミー関数を使用します。")
-    # (ダミー関数の定義)
+    # (ダミー関数の定義 - 省略)
     def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
         if section_header in current_content:
             lines = current_content.split('\n')
@@ -51,6 +50,7 @@ except ImportError:
         else:
             return f"{current_content.strip()}\n\n{section_header}\n{text_to_add}\n"
 
+
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 HIGHLIGHT_EMOJI = "✨"
@@ -63,7 +63,7 @@ TIME_SCHEDULE_REGEX = re.compile(r'^(\d{1,2}:\d{2}|\d{1,4})(?:[~-](\d{1,2}:\d{2}
 
 # --- UIコンポーネント ---
 
-# --- 朝の計画用モーダル (日本語UI) ---
+# --- 朝の計画用モーダル (修正) ---
 class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
     highlight = discord.ui.TextInput(
         label="今日のハイライト (最重要タスク)",
@@ -78,11 +78,24 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
         required=True,
         max_length=1500
     )
+    
+    # ★ ライフログサマリー表示用フィールド
+    log_summary_display = discord.ui.TextInput(
+        label="昨日の活動サマリー（参照のみ）",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=1500,
+        disabled=True
+    )
 
-    def __init__(self, cog, existing_schedule_text: str):
+    def __init__(self, cog, existing_schedule_text: str, log_summary: str): # ★ log_summaryを追加
         super().__init__(timeout=1800)
         self.cog = cog
         self.schedule.default = existing_schedule_text
+        
+        # ★ サマリーフィールドの設定と追加
+        self.log_summary_display.default = log_summary
+        self.add_item(self.log_summary_display) 
 
     async def on_submit(self, interaction: discord.Interaction):
         logging.info(f"MorningPlanningModal on_submit called by {interaction.user}")
@@ -107,20 +120,22 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
              except discord.InteractionResponded:
                   await interaction.followup.send(f"❌ モーダル処理中にエラーが発生しました: {error}", ephemeral=True)
 
-# --- 朝の計画用View (日本語UI) ---
+# --- 朝の計画用View (修正) ---
 class MorningPlanningView(discord.ui.View):
-    def __init__(self, cog, existing_schedule_text: str):
+    def __init__(self, cog, existing_schedule_text: str, log_summary: str): # ★ log_summaryを追加
         super().__init__(timeout=7200)
         self.cog = cog
         self.existing_schedule_text = existing_schedule_text
+        self.log_summary = log_summary # ★ サマリーを保持
         self.message = None
 
     @discord.ui.button(label="今日の計画を立てる", style=discord.ButtonStyle.success, emoji="☀️")
     async def plan_day(self, interaction: discord.Interaction, button: discord.ui.Button):
         logging.info(f"MorningPlanningView button clicked by {interaction.user}")
         try:
+            # ★ モーダルにサマリーを渡す
             await interaction.response.send_modal(
-                MorningPlanningModal(self.cog, self.existing_schedule_text)
+                MorningPlanningModal(self.cog, self.existing_schedule_text, self.log_summary)
             )
             if self.message:
                 await self.message.edit(view=None)
@@ -251,7 +266,7 @@ class JournalCog(commands.Cog):
         try:
             self.session = aiohttp.ClientSession()
             genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") 
+            self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview") 
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
 
             self.planning_schedule_path = PLANNING_SCHEDULE_PATH
@@ -475,6 +490,29 @@ class JournalCog(commands.Cog):
             await interaction.followup.send(f"❌ ハイライト設定中に予期せぬエラーが発生しました: {e}", ephemeral=True)
             return False
 
+    # ★ 新規: ライフログサマリーを読み込むヘルパー
+    async def _get_lifelog_summary(self, target_date: date) -> str:
+        """指定日のライフログサマリーをObsidianから読み込む"""
+        date_str = target_date.strftime('%Y-%m-%d')
+        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+        summary_header = "## Life Logs Summary"
+
+        try:
+            _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
+            content = res.content.decode('utf-8')
+            
+            # サマリーセクションの内容を抽出
+            summary_match = re.search(r'##\s*Life\s*Logs\s*Summary\s*(.*?)(?=\n##|$)', content, re.DOTALL | re.IGNORECASE)
+
+            if summary_match and summary_match.group(1).strip():
+                return summary_match.group(1).strip()
+            else:
+                return f"昨日のログ ({date_str}) にAIサマリーは見つかりませんでした。"
+
+        except Exception:
+            return f"昨日のデイリーノート ({date_str}) の読み込みに失敗しました。"
+
+
     # --- 朝の計画タスク (日本語UI) ---
     @tasks.loop()
     async def daily_planning_task(self):
@@ -493,6 +531,11 @@ class JournalCog(commands.Cog):
              return
 
         try:
+            # 1. 昨日のライフログサマリーを取得
+            yesterday = datetime.now(JST).date() - timedelta(days=1)
+            lifelog_summary = await self._get_lifelog_summary(yesterday)
+            
+            # 2. 今日のカレンダー予定を取得
             events = await self._get_todays_events()
             event_summaries = []
             if events:
@@ -516,22 +559,30 @@ class JournalCog(commands.Cog):
             
             self.today_events_text_cache = "\n".join(event_summaries) if event_summaries else "（カレンダーに予定はありません）"
             
-            view = MorningPlanningView(self, self.today_events_text_cache)
+            # 3. Viewにサマリーと予定を渡す
+            view = MorningPlanningView(self, self.today_events_text_cache, lifelog_summary) # ★ サマリーを渡す
 
             embed = discord.Embed(
                 title="おはようございます！☀️ 今日の計画を立てましょう",
-                description="Googleカレンダーから以下の予定を取得しました。\n内容を確認・編集し、今日のハイライトを決めてください。",
+                description=f"昨日の活動実績（AIサマリー）を参考に、今日のハイライトを決めてください。",
                 color=discord.Color.green()
+            )
+            # ★ ライフログサマリーを埋め込みに表示
+            embed.add_field(
+                name="【昨日実績】AI活動サマリー",
+                value=lifelog_summary,
+                inline=False
             )
             embed.add_field(
                 name="今日の予定 (Googleカレンダー)",
                 value=f"```\n{self.today_events_text_cache}\n```",
                 inline=False
             )
+            
             sent_message = await channel.send(embed=embed, view=view)
             view.message = sent_message
 
-            logging.info("Planning prompt (with GCal events) sent successfully.")
+            logging.info("Planning prompt (with GCal events and LifeLog Summary) sent successfully.")
         except Exception as e:
             logging.error(f"Error in daily_planning_task loop: {e}", exc_info=True)
 
@@ -593,7 +644,6 @@ class JournalCog(commands.Cog):
         if schedule_list_for_calendar:
             for item in schedule_list_for_calendar:
                 # 簡易的なチェック: 予定の「概要(summary)」が元のカレンダーテキストに含まれていなければ、新規とみなす
-                # (時刻変更は検知せず、あくまで「新規」のテキストのみ)
                 if item['summary'] not in original_calendar_text:
                     new_events_to_register.append(item)
         logging.info(f"朝の計画から {len(new_events_to_register)} 件の新規予定をカレンダーに登録します。")
@@ -604,14 +654,13 @@ class JournalCog(commands.Cog):
         # 5. (新規) カレンダー保存タスクを定義
         async def save_new_events_to_calendar():
             if not new_events_to_register or not self.calendar_service:
-                return None # 登録対象なし、またはカレンダーサービスなし
+                return None
             try:
-                # _register_schedule_to_calendar を「本日」の日付で実行
                 success = await self._register_schedule_to_calendar(interaction, new_events_to_register, today_date)
                 return success
             except Exception as e:
                 logging.error(f"朝の計画のカレンダー登録中に予期せぬエラー: {e}", exc_info=True)
-                return False # 失敗
+                return False
 
         # 6. (既存) Obsidian保存タスクを定義
         async def save_planning_to_obsidian():
@@ -673,7 +722,6 @@ class JournalCog(commands.Cog):
                 response_messages.append(f"✅ スケジュールから **{len(new_events_to_register)}** 件の新規予定をカレンダーに登録しました。")
             elif calendar_success is False:
                 response_messages.append(f"❌ スケジュールからの新規予定のカレンダー登録に失敗しました。")
-            # (calendar_success is None の場合は（対象なし）、何も表示しない)
             
             await interaction.followup.send("\n".join(response_messages), ephemeral=True)
 
@@ -801,7 +849,7 @@ class JournalCog(commands.Cog):
                 if 0 <= hour <= 23 and 0 <= minute <= 59:
                     return f"{hour:02d}:{minute:02d}"
             except (ValueError, IndexError):
-                pass # 他の形式でパース試行
+                pass
                 
         # 2. "H" または "HH" 形式 (例: "9" -> 09:00, "10" -> 10:00)
         if len(time_str) <= 2:
@@ -810,7 +858,7 @@ class JournalCog(commands.Cog):
                 if 0 <= hour <= 23:
                     return f"{hour:02d}:00"
             except ValueError:
-                pass # 他の形式でパース試行
+                pass
 
         # 3. "Hmm" または "HHmm" 形式 (例: "930" -> 09:30, "1015" -> 10:15)
         if len(time_str) == 3 or len(time_str) == 4:
@@ -825,39 +873,34 @@ class JournalCog(commands.Cog):
                 if 0 <= hour <= 23 and 0 <= minute <= 59:
                     return f"{hour:02d}:{minute:02d}"
             except ValueError:
-                pass # パース失敗
+                pass
 
         logging.warning(f"サポートされていない時刻形式です: '{time_str}'")
-        return None # どの形式にも一致しない
+        return None
 
     # ★ 修正: _normalize_time_str を使うように _parse_schedule_text を変更
     def _parse_schedule_text(self, tasks_text: str) -> list[dict]:
         schedule_list = []
         for line in tasks_text.strip().split('\n'):
-            # 修正後のREGEX: (HH:MM|Hmm|HHmm|H|HH)(-(HH:MM|...))?( )+(Summary)
             match = TIME_SCHEDULE_REGEX.match(line.strip())
             if match:
                 start_time_raw = match.group(1)
-                end_time_raw = match.group(2) # オプショナルな終了時刻
+                end_time_raw = match.group(2)
                 summary = match.group(3).strip()
                 
-                # ★ 正規化処理
                 start_time_str = self._normalize_time_str(start_time_raw)
                 end_time_str = self._normalize_time_str(end_time_raw) if end_time_raw else None
 
                 if not start_time_str:
                     logging.warning(f"スケジュール行の開始時刻パースに失敗: '{line}' (入力: {start_time_raw})")
-                    continue # 開始時刻がパースできなければスキップ
+                    continue
 
                 try:
                     start_time_obj = datetime.strptime(start_time_str, '%H:%M').time()
 
-                    # 終了時刻の決定
                     if end_time_str:
-                        # 終了時刻が指定されている (かつ パース成功) 場合
                         end_time_obj = datetime.strptime(end_time_str, '%H:%M').time()
                     else:
-                        # 終了時刻が指定されていない (または パース失敗) 場合 (デフォルト1時間)
                         end_time_obj = (datetime.combine(date.today(), start_time_obj) + timedelta(hours=1)).time()
                     
                     schedule_list.append({
@@ -866,7 +909,6 @@ class JournalCog(commands.Cog):
                         "end_time": end_time_obj.strftime('%H:%M')
                     })
                 except ValueError as e_time:
-                    # strptime が失敗することは _normalize_time_str が正しければないはずだが、念のため
                     logging.warning(f"スケジュール行の時刻パースに失敗 (strptime): '{line}'. エラー: {e_time}")
             elif line.strip():
                  logging.warning(f"スケジュール行の形式が不正 (HH:MM なし): '{line}'")
@@ -877,7 +919,6 @@ class JournalCog(commands.Cog):
         logging.info(f"Registering {len(schedule)} events to Google Calendar for {target_date}...")
         if not self.calendar_service:
              logging.warning("Cannot register schedule: Calendar service is not available.")
-             # (★ 修正: 朝の実行時に interaction が None でないことを確認)
              if interaction and interaction.response.is_done():
                  await interaction.followup.send("❌ カレンダー機能が利用できません (API認証エラー)。", ephemeral=True)
              return False
@@ -890,7 +931,6 @@ class JournalCog(commands.Cog):
                     start_time = datetime.strptime(event['start_time'], '%H:%M').time()
                     end_time = datetime.strptime(event['end_time'], '%H:%M').time()
                     
-                    # ★ 修正: .localize() を tzinfo=JST に変更
                     start_dt = datetime.combine(target_date, start_time, tzinfo=JST)
                     end_dt = datetime.combine(target_date, end_time, tzinfo=JST)
                     if end_dt <= start_dt:
@@ -962,8 +1002,6 @@ class JournalCog(commands.Cog):
             await asyncio.to_thread(self.dbx.files_delete_v2, path)
             logging.info(f"Dropboxからスケジュールファイル ({path}) を削除しました。")
         except ApiError as e:
-            # ★ 修正(2): dropbox.exceptions.PathLookupError -> e.error.is_path_lookup()
-            # dropbox.files.PathLookupError を使うために dropbox.files をインポート
             if e.error.is_path_lookup() and e.error.get_path_lookup().is_not_found():
                 logging.info(f"スケジュールファイル ({path}) は既に削除されています。")
                 pass

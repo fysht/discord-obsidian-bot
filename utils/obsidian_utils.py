@@ -2,7 +2,6 @@ import logging
 
 # --- 定数定義 ---
 # デイリーノートの見出しの順序をここで一元管理します
-# (全cogsをスキャンし、使用されるすべてのヘッダーを網羅・整理)
 SECTION_ORDER = [
     # --- 1. メディアクリップ ---
     "## WebClips",
@@ -25,23 +24,16 @@ SECTION_ORDER = [
     # --- 4. 健康・ログ ---
     "## Health Metrics", # fitbit_cog
     "## Location Logs", # location_log_cog
-    "## Life Logs", # lifelog_cog
+    "## Life Logs", # ★ LifeLogCog (新規)
     
     # --- 5. サマリー ---
+    "## Life Logs Summary", # ★ LifeLogCog (新規)
     "## Daily Summary" # (summary_cog.py 用 - ※現在は未使用)
 ]
 
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
     """
     Obsidianのデイリーノート内で、定義された順序に基づいてセクションの内容を更新または新規追加する共通関数
-
-    Args:
-        current_content (str): 現在のノートの全内容
-        text_to_add (str): 追加または更新するテキスト。リンクやリストなど
-        section_header (str): 対象となるセクションの見出し (例: "## WebClips")
-
-    Returns:
-        str: 更新後のノートの全内容
     """
     lines = current_content.split('\n')
     original_lines = list(lines) # 元のリストをコピー

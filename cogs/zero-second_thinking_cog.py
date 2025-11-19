@@ -233,8 +233,8 @@ class ZeroSecondThinkingCog(commands.Cog):
                 self.session = aiohttp.ClientSession()
                 self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
                 genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
-                self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro")
+                self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview")
+                self.gemini_vision_model = genai.GenerativeModel("gemini-3-pro-preview")
                 self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
                 self.dbx.users_get_current_account()
                 self.is_ready = True

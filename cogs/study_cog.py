@@ -132,7 +132,7 @@ class StudyCog(commands.Cog, name="Study"):
 {conversation_log}
 """
         try:
-            model = genai.GenerativeModel("gemini-2.5-pro")
+            model = genai.GenerativeModel("gemini-3-pro-preview")
             response = await model.generate_content_async(prompt)
             return response.text
         except Exception as e:
@@ -186,7 +186,7 @@ class StudyCog(commands.Cog, name="Study"):
 {study_content}
 """
         
-        model = genai.GenerativeModel("gemini-2.5-pro", system_instruction=system_instruction)
+        model = genai.GenerativeModel("gemini-3-pro-preview", system_instruction=system_instruction)
         
         history_json = await self._load_session_from_dropbox(interaction.user.id)
         history = [

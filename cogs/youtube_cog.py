@@ -125,7 +125,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"): # name を指定
             logging.info("YouTubeCog: Dropbox client initialized.")
 
             genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview")
             logging.info("YouTubeCog: Gemini client initialized.")
 
             self.session = aiohttp.ClientSession()
