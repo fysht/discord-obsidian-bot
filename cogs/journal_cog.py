@@ -80,12 +80,12 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
     )
     
     # ★ ライフログサマリー表示用フィールド
+    # 注: TextInputにはdisabled属性がないため削除しました。ユーザーは編集可能ですが、送信処理では無視されます。
     log_summary_display = discord.ui.TextInput(
         label="昨日の活動サマリー（参照のみ）",
         style=discord.TextStyle.paragraph,
         required=False,
-        max_length=1500,
-        disabled=True
+        max_length=1500
     )
 
     def __init__(self, cog, existing_schedule_text: str, log_summary: str): # ★ log_summaryを追加
