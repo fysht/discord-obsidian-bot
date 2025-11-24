@@ -55,19 +55,34 @@ class WebClipCog(commands.Cog):
         if not all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token]):
             logging.warning("WebClipCog: Dropboxの認証情報が.envファイルに設定されていません。")
 
+    # ★ 新規追加: WebClipチャンネルへのURL投稿を検知して処理トリガーを付与
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """WebClipチャンネルにURLが投稿された場合、処理トリガー(📥)を付与する"""
+        if message.author.bot:
+            return
+            
+        if message.channel.id != self.web_clip_channel_id:
+            return
+
+        content = message.content.strip()
+        if URL_REGEX.search(content):
+            logging.info(f"WebClipCog: URL detected in WebClip channel. Adding trigger.")
+            try:
+                if not any(str(r.emoji) == BOT_PROCESS_TRIGGER_REACTION and r.me for r in message.reactions):
+                    await message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
+            except discord.HTTPException as e:
+                logging.warning(f"WebClipCog: Failed to add trigger reaction: {e}")
+
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """
-        Bot(自分自身)が付けた 📥 リアクションを検知して処理を開始する
-        """
-        
+        """Bot(自分自身)が付けた 📥 リアクションを検知して処理を開始する"""
         if payload.channel_id != self.web_clip_channel_id:
             return
             
         emoji_str = str(payload.emoji)
 
-        if emoji_str == BOT_PROCESS_TRIGGER_REACTION: # '📥'
-            
+        if emoji_str == BOT_PROCESS_TRIGGER_REACTION:
             if payload.user_id != self.bot.user.id:
                 return 
  
@@ -85,7 +100,6 @@ class WebClipCog(commands.Cog):
                 ) and r.me for r in message.reactions)
             
             if is_processed:
-                logging.info(f"既に処理中または処理済みのメッセージのためスキップします: {message.jump_url}")
                 return
 
             logging.info(f"Bot (self) の '{BOT_PROCESS_TRIGGER_REACTION}' を検知しました。WebClip処理を開始します: {message.jump_url}")
@@ -95,19 +109,12 @@ class WebClipCog(commands.Cog):
             except discord.HTTPException:
                 logging.warning(f"Bot のリアクション削除に失敗しました: {message.jump_url}")
 
-            # ★ 修正: _perform_clip に message オブジェクト自体を渡す
             await self._perform_clip(message=message)
 
-        elif payload.user_id == self.bot.user.id:
-            return
-        else:
-            return
 
-    # ★ 修正: _perform_clip が message オブジェクトを受け取るように
     async def _perform_clip(self, message: discord.Message):
         """Webクリップのコアロジック"""
-        
-        url = message.content.strip() # URLは message.content から取得
+        url = message.content.strip()
         
         obsidian_save_success = False
         gdoc_save_success = False
@@ -118,26 +125,20 @@ class WebClipCog(commands.Cog):
         try:
             await message.add_reaction(PROCESS_START_EMOJI)
 
-            # --- ★ 修正: Discord Embedからタイトルを取得 ---
             if message.embeds:
                 embed_title = message.embeds[0].title
                 if embed_title and embed_title != discord.Embed.Empty:
                     title = embed_title
                     logging.info(f"Title found via Discord embed: {title}")
-            # --- ★ 修正ここまで ---
             
-            # --- 本文取得 (web_parser) ---
             loop = asyncio.get_running_loop()
-            # ★ 修正: web_parser から title を受け取るが、既にあれば上書きしない
             parsed_title, content_md = await loop.run_in_executor(
                 None, parse_url_with_readability, url
             )
             
-            # Embedからタイトルが取れなかった場合のみ、web_parserのタイトルを採用
             if title == "Untitled" and parsed_title and parsed_title != "No Title Found":
                 title = parsed_title
                 logging.info(f"Title (fallback) found via web_parser: {title}")
-            # --- ★ 修正ここまで ---
 
             safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
             if not safe_title:
@@ -173,7 +174,6 @@ class WebClipCog(commands.Cog):
                 logging.error("Dropboxリフレッシュトークンがありません。")
                 error_reactions.add(SAVE_ERROR_EMOJI)
 
-            # --- Obsidianへの保存 ---
             if dbx:
                 try:
                     webclip_file_path = f"{self.dropbox_vault_path}/WebClips/{webclip_file_name}"
@@ -239,7 +239,6 @@ class WebClipCog(commands.Cog):
                     logging.error(f"Error saving to Obsidian (Other): {e_obs_other}", exc_info=True)
                     error_reactions.add(SAVE_ERROR_EMOJI)
             
-            # --- Google Docsへの保存 ---
             if google_docs_enabled:
                 gdoc_text_to_append = ""
                 gdoc_source_type = "WebClip Error"
@@ -265,10 +264,9 @@ class WebClipCog(commands.Cog):
                         logging.error(f"Failed to send data to Google Docs for {url}: {e_gdoc}", exc_info=True)
                         error_reactions.add(GOOGLE_DOCS_ERROR_EMOJI)
             
-            # --- 最終リアクション ---
             if obsidian_save_success:
                 await message.add_reaction(PROCESS_COMPLETE_EMOJI)
-                if error_reactions: # GDocエラーなど
+                if error_reactions:
                     for reaction in error_reactions:
                         try: await message.add_reaction(reaction)
                         except discord.HTTPException: pass
@@ -289,26 +287,18 @@ class WebClipCog(commands.Cog):
     @app_commands.command(name="clip", description="URLをObsidianにクリップします。")
     @app_commands.describe(url="クリップしたいページのURL")
     async def clip(self, interaction: discord.Interaction, url: str):
-        
-        # ★ 修正: スラッシュコマンドの場合、message.embeds が存在しないため、
-        # web_parser を使うしかないが、プロキシも同様の挙動をするため、
-        # 元のロジック (TempMessage) に戻す。
-        # ただし、_perform_clip が message オブジェクト全体を期待するようになったため、
-        # url だけでなく message オブジェクト (プロキシ) を渡す。
-        
         await interaction.response.defer(ephemeral=False, thinking=True)
         message_proxy = await interaction.original_response()
 
-        # TempMessage クラス
         class TempMessage:
              def __init__(self, proxy):
                  self.id = proxy.id
-                 self.reactions = [] # add_reaction/remove_reactionで使う
+                 self.reactions = []
                  self.channel = proxy.channel
                  self.jump_url = proxy.jump_url
                  self._proxy = proxy
                  self.content = proxy.content
-                 self.embeds = [] # ★ スラッシュコマンド起因の場合、embedsは無い
+                 self.embeds = []
              async def add_reaction(self, emoji):
                  try: await self._proxy.add_reaction(emoji)
                  except: pass
@@ -316,9 +306,7 @@ class WebClipCog(commands.Cog):
                  try: await self._proxy.remove_reaction(emoji, user)
                  except: pass
 
-        # ★ 修正: url ではなく message オブジェクトを渡す
         temp_msg_obj = TempMessage(message_proxy)
-        # TempMessage の content が URL になるように設定
         temp_msg_obj.content = url 
         await self._perform_clip(message=temp_msg_obj)
 

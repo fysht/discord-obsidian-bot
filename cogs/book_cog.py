@@ -6,16 +6,15 @@ import logging
 import re
 import asyncio
 import dropbox
-# FileMetadataを追加
 from dropbox.files import WriteMode, DownloadError, FileMetadata 
-from dropbox.exceptions import ApiError, AuthError # ★ AuthErrorを追加 (デバッグ用)
+from dropbox.exceptions import ApiError, AuthError
 import datetime
 import zoneinfo
 import aiohttp
 import urllib.parse
-import openai # (1) 音声認識 (Whisper) のために追加
-import google.generativeai as genai # (Fix 1) 不足していたインポートを追加
-from PIL import Image # (2) 画像処理のために追加
+import openai
+import google.generativeai as genai
+from PIL import Image
 import io
 import pathlib
 
@@ -24,28 +23,22 @@ try:
     from utils.obsidian_utils import update_section
 except ImportError:
     logging.warning("BookCog: utils/obsidian_utils.pyが見つからないため、簡易的な追記処理を使用します。")
-    # 簡易的なダミー関数 (フォールバック)
     def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
-        # 簡易的な追記処理（元の関数の完全な再現ではない）
         if section_header in current_content:
             lines = current_content.split('\n')
             try:
                 header_index = -1
                 for i, line in enumerate(lines):
-                    # 修正: 英語の見出しにも対応できるよう lower() を追加
                     if line.strip().lstrip('#').strip().lower() == section_header.lstrip('#').strip().lower():
                         header_index = i
                         break
                 if header_index == -1: raise ValueError("Header not found")
-                
                 insert_index = header_index + 1
                 while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
                     insert_index += 1
-                
                 if insert_index > header_index + 1 and lines[insert_index - 1].strip() != "":
                     lines.insert(insert_index, "")
                     insert_index += 1
-                    
                 lines.insert(insert_index, text_to_add)
                 return "\n".join(lines)
             except ValueError:
@@ -55,7 +48,7 @@ except ImportError:
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-READING_NOTES_PATH = "/Reading Notes" # Obsidian Vault内の保存先
+READING_NOTES_PATH = "/Reading Notes" 
 
 # --- リアクション定数 ---
 BOT_PROCESS_TRIGGER_REACTION = '📥' 
@@ -65,21 +58,18 @@ PROCESS_ERROR_EMOJI = '❌'
 API_ERROR_EMOJI = '☁️'
 NOT_FOUND_EMOJI = '🧐'
 
-# --- ★ 修正: ステータス定義 (4項目・英語) ---
 STATUS_OPTIONS = {
-    "wishlist": "Wishlist", # ① 読みたい、買いたい本
-    "to_read": "To Read",    # ② 読む前の本 (積読)
-    "reading": "Reading",   # ③ 読んでいる本
-    "finished": "Finished"  # ④ 読んだ後の本
+    "wishlist": "Wishlist",
+    "to_read": "To Read",
+    "reading": "Reading",
+    "finished": "Finished"
 }
 
-# (3) 対応するファイルタイプ (zero-second_thinking_cog.py から流用)
 SUPPORTED_AUDIO_TYPES = [
     'audio/mpeg', 'audio/x-m4a', 'audio/ogg', 'audio/wav', 'audio/webm'
 ]
 SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
 
-# (4) HEIC/HEIF対応 (オプション)
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
@@ -89,7 +79,6 @@ except ImportError:
     logging.warning("BookCog: pillow_heif not installed. HEIC/HEIF support is disabled.")
 
 
-# --- メモ入力用モーダル ---
 class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
     memo_text = discord.ui.TextInput(
         label="認識されたテキスト（編集してください）",
@@ -99,10 +88,10 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
     )
 
     def __init__(self, cog, book_path: str, initial_text: str, original_message: discord.Message, confirmation_message: discord.Message, input_type: str):
-        super().__init__(timeout=1800) # 30分
+        super().__init__(timeout=1800)
         self.cog = cog
         self.book_path = book_path
-        self.memo_text.default = initial_text # AIの認識結果を初期値に
+        self.memo_text.default = initial_text
         self.original_message = original_message
         self.confirmation_message = confirmation_message
         self.input_type = input_type
@@ -111,7 +100,6 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
         try:
             await interaction.response.defer(ephemeral=True, thinking=True)
         except (discord.HTTPException, aiohttp.client_exceptions.ClientOSError) as e_defer:
-             # (Fix 4) deferがネットワークエラーで失敗した場合
              logging.error(f"BookMemoEditModal: deferに失敗: {e_defer}")
              await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
              return
@@ -119,7 +107,6 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
         edited_text = self.memo_text.value
         
         try:
-            # 編集されたテキストで保存処理を実行
             await self.cog._save_memo_to_obsidian_and_cleanup(
                 interaction,
                 self.book_path,
@@ -151,7 +138,6 @@ class BookMemoEditModal(discord.ui.Modal, title="読書メモの編集"):
         except discord.HTTPException:
             pass
 
-# ★ 新規追加: 書籍情報手動入力モーダル
 class BookManualInputModal(discord.ui.Modal, title="書籍情報の手動入力"):
     title_input = discord.ui.TextInput(
         label="書籍のタイトル",
@@ -185,7 +171,7 @@ class BookManualInputModal(discord.ui.Modal, title="書籍情報の手動入力"
     )
 
     def __init__(self, cog, source_url: str, original_message: discord.Message, confirmation_message: discord.Message):
-        super().__init__(timeout=1800) # 30分
+        super().__init__(timeout=1800)
         self.cog = cog
         self.source_url = source_url
         self.original_message = original_message
@@ -194,7 +180,6 @@ class BookManualInputModal(discord.ui.Modal, title="書籍情報の手動入力"
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         
-        # ユーザー入力をGoogle Books APIと同様の辞書形式に組み立てる
         book_data = {
             "title": self.title_input.value,
             "authors": [a.strip() for a in self.authors_input.value.split(',')] if self.authors_input.value else ["著者不明"],
@@ -206,17 +191,13 @@ class BookManualInputModal(discord.ui.Modal, title="書籍情報の手動入力"
         }
 
         try:
-            # _save_note_to_obsidian を呼び出す
             save_result = await self.cog._save_note_to_obsidian(
                 book_data, 
                 self.source_url, 
-                embed_image_url_fallback=None # 手動入力のカバーURLを優先
+                embed_image_url_fallback=None
             )
             
             if save_result == True:
-                # ★ 修正: 元のメッセージ(original_message)は削除しない
-                
-                # ボットの確認メッセージ(ドロップダウン)は削除する
                 try: 
                     await self.confirmation_message.delete()
                     logging.info(f"BookCog: ボットの書籍選択メッセージ (ID: {self.confirmation_message.id}) を削除しました。")
@@ -226,13 +207,12 @@ class BookManualInputModal(discord.ui.Modal, title="書籍情報の手動入力"
             
             elif save_result == "EXISTS":
                 await interaction.followup.send(f"❌ ノート作成に失敗。\n`{book_data.get('title')}` は既に存在します。", ephemeral=True)
-                # 元のメッセージにはリアクションを追加
                 try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
                 except discord.HTTPException: pass
                 if self.confirmation_message:
                     await self.confirmation_message.edit(content="❌ 作成に失敗しました。ノートが既に存在します。", embed=None, view=None)
 
-            else: # False
+            else:
                 raise Exception("手動入力の _save_note_to_obsidian が False を返しました。")
 
         except Exception as e:
@@ -250,24 +230,21 @@ class BookManualInputModal(discord.ui.Modal, title="書籍情報の手動入力"
             except discord.InteractionResponded: await interaction.followup.send(f"❌ モーダル処理中にエラー: {error}", ephemeral=True)
         try: await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
         except discord.HTTPException: pass
-# ★ 新規追加ここまで
 
-# --- メモ「確認・編集」View ---
 class ConfirmMemoView(discord.ui.View):
     def __init__(self, cog, book_path: str, recognized_text: str, original_message: discord.Message, input_type: str):
-        super().__init__(timeout=1800) # 30分
+        super().__init__(timeout=1800)
         self.cog = cog
         self.book_path = book_path
         self.recognized_text = recognized_text
         self.original_message = original_message
         self.input_type = input_type
-        self.confirmation_message = None # ボットが送信するこのViewを含むメッセージ
+        self.confirmation_message = None
 
     @discord.ui.button(label="✅ このまま保存", style=discord.ButtonStyle.success, custom_id="confirm_memo_save")
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
-            # 認識されたテキストで保存処理を実行
             await self.cog._save_memo_to_obsidian_and_cleanup(
                 interaction,
                 self.book_path,
@@ -287,7 +264,6 @@ class ConfirmMemoView(discord.ui.View):
 
     @discord.ui.button(label="✏️ 編集する", style=discord.ButtonStyle.primary, custom_id="edit_memo")
     async def edit(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 編集モーダルを起動
         modal = BookMemoEditModal(
             self.cog,
             self.book_path,
@@ -306,38 +282,32 @@ class ConfirmMemoView(discord.ui.View):
             await self.original_message.delete()
             logging.info(f"BookCog: メモ確認がタイムアウトしたため、関連メッセージを削除しました (Orig ID: {self.original_message.id})")
         except discord.HTTPException:
-            pass # タイムアウト時にメッセージが既に消えている場合のエラーは無視
+            pass 
 
-
-# --- ★ 修正: ステータス変更用ボタンView ---
 class BookStatusView(discord.ui.View):
-    # ★ 修正: __init__ で current_status を受け取る
     def __init__(self, cog, book_path: str, original_context: discord.Interaction | discord.Message, current_status: str):
         super().__init__(timeout=300) 
         self.cog = cog
         self.book_path = book_path
         self.original_context = original_context
-        self.current_status = current_status # ★ 現在のステータスを保持
+        self.current_status = current_status
 
-        # ★ 修正: 新しいステータスオプションに基づいてボタンを動的に生成
-        self.add_status_button(STATUS_OPTIONS["wishlist"], "📚", "status_wishlist") # 📚 Wishlist
-        self.add_status_button(STATUS_OPTIONS["to_read"], "📖", "status_to_read")    # 📖 To Read (積読)
-        self.add_status_button(STATUS_OPTIONS["reading"], "▶️", "status_reading")   # ▶️ Reading (読書中)
-        self.add_status_button(STATUS_OPTIONS["finished"], "✅", "status_finished")  # ✅ Finished (読了)
+        self.add_status_button(STATUS_OPTIONS["wishlist"], "📚", "status_wishlist")
+        self.add_status_button(STATUS_OPTIONS["to_read"], "📖", "status_to_read")
+        self.add_status_button(STATUS_OPTIONS["reading"], "▶️", "status_reading")
+        self.add_status_button(STATUS_OPTIONS["finished"], "✅", "status_finished")
 
     def add_status_button(self, label: str, emoji: str, custom_id: str):
-        """ヘルパー: 現在のステータスかチェックしてボタンを追加"""
-        is_current = (label.lower() == self.current_status.lower()) # ★ 比較 (念のため小文字化)
+        is_current = (label.lower() == self.current_status.lower())
         
         button = discord.ui.Button(
             label=label,
-            # ★ 現在のステータスは Secondary (灰色) で無効化、他は Primary (青)
             style=discord.ButtonStyle.secondary if is_current else discord.ButtonStyle.primary,
             emoji=emoji,
             custom_id=custom_id,
-            disabled=is_current # ★ 現在のステータスは無効化
+            disabled=is_current
         )
-        button.callback = self.handle_status_change # ★ 汎用コールバック
+        button.callback = self.handle_status_change
         self.add_item(button)
 
     async def _delete_original_context(self):
@@ -349,13 +319,11 @@ class BookStatusView(discord.ui.View):
         except discord.HTTPException:
             logging.warning("BookStatusView: 元のコンテキストメッセージの削除に失敗しました。")
 
-    # ★ 修正: 4つのボタンを1つのコールバックに統合
     async def handle_status_change(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         
         custom_id = interaction.data["custom_id"]
         new_status = ""
-        # ★ 修正: 新しいIDとSTATUS_OPTIONSの「値」をマッピング
         if custom_id == "status_wishlist": new_status = STATUS_OPTIONS["wishlist"]
         elif custom_id == "status_to_read": new_status = STATUS_OPTIONS["to_read"]
         elif custom_id == "status_reading": new_status = STATUS_OPTIONS["reading"]
@@ -368,12 +336,11 @@ class BookStatusView(discord.ui.View):
             success = await self.cog._update_book_status(self.book_path, new_status)
             if success:
                 book_name = os.path.basename(self.book_path)
-                # ★ 修正: 変更前後のステータスを表示
                 await interaction.followup.send(
                     f"✅ ステータスを変更しました。\n`{book_name}`\n`{self.current_status}` -> **{new_status}**", 
                     ephemeral=True
                 )
-                await self._delete_original_context() # 元のUIを削除
+                await self._delete_original_context()
             else:
                 await interaction.followup.send(f"❌ ステータス変更に失敗しました。", ephemeral=True)
         except Exception as e:
@@ -391,7 +358,6 @@ class BookStatusView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-# --- 書籍選択用ドロップダウン (汎用化) ---
 class BookSelectView(discord.ui.View):
     def __init__(self, 
                  cog, 
@@ -411,7 +377,6 @@ class BookSelectView(discord.ui.View):
         self.input_type = input_type
         
         placeholder_text = "操作対象の書籍を選択してください..."
-        # ★ 修正: "memo" ( /book_memo ) を削除
         if action_type == "status":
             placeholder_text = "ステータスを変更する書籍を選択..."
         elif action_type == "add_memo":
@@ -425,27 +390,24 @@ class BookSelectView(discord.ui.View):
         select.callback = self.select_callback
         self.add_item(select)
         
-        self.bot_reply_message = None # ボットが送信したこのViewを含むメッセージ
+        self.bot_reply_message = None
 
     async def _edit_original_response(self, **kwargs):
-        """Context (Interaction or Message) に応じて応答を編集する"""
         try:
             if isinstance(self.original_context, discord.Interaction):
                 await self.original_context.edit_original_response(**kwargs)
             elif isinstance(self.original_context, discord.Message):
-                # (Fix 4) 音声メッセージは編集できないため、HTTPException(code 50162)をキャッチ
                 try:
                     await self.original_context.edit(**kwargs)
                 except discord.HTTPException as e_msg:
-                    if e_msg.code == 50162: # 50162 = Voice messages cannot be edited
+                    if e_msg.code == 50162:
                         logging.warning(f"BookSelectView: 元メッセージは音声メッセージのため編集をスキップ: {e_msg.text}")
                     else:
-                        raise # 他のHTTPExceptionは再発生させる
+                        raise
         except discord.HTTPException as e:
             logging.warning(f"BookSelectView: 元のメッセージの編集に失敗: {e}")
             
     async def _edit_bot_reply(self, **kwargs):
-        """ボットが送信したUIメッセージ（self.bot_reply_message）を編集する"""
         if not self.bot_reply_message:
             logging.warning("BookSelectView: bot_reply_messageがNoneのため編集をスキップ")
             return
@@ -457,11 +419,8 @@ class BookSelectView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         selected_path = interaction.data["values"][0]
         
-        # ★ 修正: action_type == "memo" を削除
-
-        if self.action_type == "status": # /book_status コマンド
-            # ★ 修正: defer し、現在のステータスを取得してから View を表示
-            await interaction.response.defer(ephemeral=True, thinking=True) # Select menuのクリックに応答
+        if self.action_type == "status":
+            await interaction.response.defer(ephemeral=True, thinking=True)
             
             try:
                 current_status = await self.cog._get_current_status(selected_path)
@@ -474,28 +433,21 @@ class BookSelectView(discord.ui.View):
             
             status_view = BookStatusView(self.cog, selected_path, self.original_context, current_status)
             
-            # ★ 修正: /book_status コマンドの応答 (self.original_context) を編集
             await self.original_context.edit_original_response(
                 content=f"**{selected_option_label}**\n現在のステータス: **{current_status}**\n\n変更後のステータスを選択してください:",
                 view=status_view
             )
             
-            # defer したので followup で応答
             await interaction.followup.send("ステータスを読み込みました。", ephemeral=True, delete_after=3)
 
 
-        elif self.action_type == "add_memo": # on_message (text, audio, image)
-            # (Fix 4) 編集を interaction.response.edit_message に変更
-            # ★ 修正: ボットがリプライしたメッセージ(self.bot_reply_message)を編集
+        elif self.action_type == "add_memo":
             try:
                 await interaction.response.edit_message(
                     content=f"`{os.path.basename(selected_path)}` に {self.input_type} メモを処理中です... {PROCESS_START_EMOJI}", 
                     view=None
                 )
             except discord.HTTPException:
-                # ユーザーがインタラクションに素早く反応しすぎた場合、
-                # response.edit_message が失敗することがあるため、
-                # 元のボットメッセージの編集を試みる
                 await self._edit_bot_reply(
                     content=f"`{os.path.basename(selected_path)}` に {self.input_type} メモを処理中です... {PROCESS_START_EMOJI}", 
                     view=None
@@ -503,36 +455,34 @@ class BookSelectView(discord.ui.View):
             
             await self.cog.process_posted_memo(
                 interaction, 
-                self.original_context, # 元のファイル添付/テキストメッセージ
+                self.original_context,
                 selected_path, 
                 self.input_type,
-                self.attachment, # None if text
-                self.text_memo,   # None if attachment
-                interaction.message # ドロップダウンがついていたメッセージ（=self.bot_reply_message）
+                self.attachment,
+                self.text_memo,
+                interaction.message
             )
         
         self.stop()
 
     async def on_timeout(self):
-        # (Fix 4) 編集対象を bot_reply_message に変更
         await self._edit_bot_reply(content="書籍の選択がタイムアウトしました。", view=None)
 
 
-# --- 書籍「作成」の確認View (ドロップダウン) ---
 class BookCreationSelectView(discord.ui.View):
     def __init__(self, cog, book_results: list[dict], source_url: str, embed_image_url_fallback: str | None, original_message: discord.Message):
-        super().__init__(timeout=600) # 10分
+        super().__init__(timeout=600)
         self.cog = cog
-        self.book_results = book_results # Google APIからの結果リスト
+        self.book_results = book_results
         self.source_url = source_url
         self.embed_image_url_fallback = embed_image_url_fallback
         self.original_message = original_message
-        self.confirmation_message = None # ボットが送信する確認メッセージ
+        self.confirmation_message = None
 
         options = []
         for i, book_data in enumerate(book_results):
-            if i >= 25: break # Selectの最大オプション数
-            if not book_data: continue # API結果がNoneのものはスキップ
+            if i >= 25: break
+            if not book_data: continue
             
             title = book_data.get("title", "不明なタイトル")
             authors = ", ".join(book_data.get("authors", ["著者不明"]))
@@ -553,16 +503,14 @@ class BookCreationSelectView(discord.ui.View):
         select.callback = self.select_callback
         self.add_item(select)
 
-        # ★ 新規追加: 手動入力ボタン
         manual_input_button = discord.ui.Button(
             label="候補にない (手動入力)",
             style=discord.ButtonStyle.primary,
             custom_id="manual_book_input",
-            row=1 # 2行目に配置
+            row=1
         )
         manual_input_button.callback = self.manual_input_callback
         self.add_item(manual_input_button)
-        # ★ 新規追加ここまで
 
     async def select_callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -570,9 +518,6 @@ class BookCreationSelectView(discord.ui.View):
         
         if selected_index_str == "-1":
             await interaction.followup.send("有効な書籍が選択されませんでした。", ephemeral=True, delete_after=10)
-            # ★ 修正: メッセージ削除要求に基づき、元のメッセージへのリアクションは行わない
-            # await self.confirmation_message.edit(content="処理がキャンセルされました。", embed=None, view=None)
-            # await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
             self.stop()
             return
 
@@ -583,21 +528,6 @@ class BookCreationSelectView(discord.ui.View):
             save_result = await self.cog._save_note_to_obsidian(selected_book_data, self.source_url, self.embed_image_url_fallback)
             
             if save_result == True:
-                # ★ (REQ 1) 元のメッセージを削除 -> コメントアウト
-                # try:
-                #     await self.original_message.delete()
-                #     logging.info(f"BookCog: 元のAmazonリンクメッセージ (ID: {self.original_message.id}) を削除しました。")
-                # except discord.HTTPException as e_del_orig:
-                #     logging.warning(f"BookCog: 元のAmazonリンクメッセージ削除に失敗: {e_del_orig}")
-                    
-                # ★ (REQ 1) 確認メッセージを削除 -> コメントアウト
-                # try:
-                #     await self.confirmation_message.delete()
-                #     logging.info(f"BookCog: ボットの書籍選択メッセージ (ID: {self.confirmation_message.id}) を削除しました。")
-                # except discord.HTTPException as e_del_conf:
-                #     logging.warning(f"BookCog: ボットの書籍選択メッセージ削除に失敗: {e_del_conf}")
-
-                # ★ 修正: メッセージを削除しない代わり、確認メッセージを編集して完了を通知
                 if self.confirmation_message:
                     try:
                         await self.confirmation_message.edit(
@@ -616,7 +546,7 @@ class BookCreationSelectView(discord.ui.View):
                 await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
                 await self.confirmation_message.edit(content="❌ 作成に失敗しました。ノートが既に存在します。", embed=None, view=None)
             
-            else: # False (予期せぬエラー)
+            else:
                 raise Exception("_save_note_to_obsidianがFalseを返しました。")
 
         except (ValueError, IndexError) as e_idx:
@@ -632,16 +562,14 @@ class BookCreationSelectView(discord.ui.View):
         finally:
             self.stop()
 
-    # ★ 新規追加: 手動入力ボタンのコールバック
     async def manual_input_callback(self, interaction: discord.Interaction):
         logging.info(f"BookCreationSelectView manual_input_callback called by {interaction.user}")
         try:
-            # 新しく定義した BookManualInputModal を起動
             modal = BookManualInputModal(
                 self.cog,
                 self.source_url,
                 self.original_message,
-                self.confirmation_message # ボットの確認メッセージ(このViewが乗っているメッセージ)を渡す
+                self.confirmation_message
             )
             await interaction.response.send_modal(modal)
         except Exception as e_modal:
@@ -653,8 +581,6 @@ class BookCreationSelectView(discord.ui.View):
                  await interaction.followup.send(f"❌ 手動入力モーダルの表示に失敗: {e_modal}", ephemeral=True)
         finally:
             self.stop()
-            # モーダル表示後、ドロップダウンのメッセージは編集しない (モーダル側で完了時に削除するため)
-    # ★ 新規追加ここまで
     
     async def on_timeout(self):
         try:
@@ -692,7 +618,7 @@ class BookCog(commands.Cog):
             self.dbx = dropbox.Dropbox(
                 oauth2_refresh_token=self.dropbox_refresh_token,
                 app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret, 
-                timeout=60 # タイムアウトを60秒に短縮
+                timeout=60
             )
             self.dbx.users_get_current_account()
             logging.info("BookCog: Dropbox client initialized.")
@@ -714,53 +640,42 @@ class BookCog(commands.Cog):
             await self.session.close()
             logging.info("BookCog: aiohttp session closed.")
 
-    # ★ 新規追加: 現在のステータスを読み取るヘルパー
     async def _get_current_status(self, book_path: str) -> str:
-        """指定されたノートのYAMLフロントマターからstatusを読み取る"""
         try:
             _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
             current_content = res.content.decode('utf-8')
             
-            # YAMLフロントマター内の status: "..." または status: ... を探す
-            # (IGNORECASEを追加)
             status_pattern = re.compile(r"^(status:\s*)([\"']?)(.*?)([\"']?\s*)$", re.MULTILINE | re.IGNORECASE)
             match = status_pattern.search(current_content)
             
             if match:
-                status_value = match.group(3).strip() # 引用符の中身を抽出
-                # STATUS_OPTIONS の「値」(Wishlist, To Read...) になっているかチェック
+                status_value = match.group(3).strip()
                 if status_value in STATUS_OPTIONS.values():
                     return status_value
                 else:
                     logging.warning(f"BookCog: 不明なステータス値 '{status_value}' を {book_path} で検出しました。")
-                    return status_value # 不明な値でもそのまま返す
+                    return status_value
             else:
-                # status: が見つからない場合はデフォルト (Wishlist がないので To Read)
                 return STATUS_OPTIONS["to_read"] 
                 
         except Exception as e:
             logging.error(f"BookCog: 現在のステータス読み取り中にエラー: {e}", exc_info=True)
-            return "N/A" # エラー時
+            return "N/A"
 
     async def _update_book_status(self, book_path: str, new_status: str) -> bool:
-        """指定されたノートのYAMLフロントマターのstatusを更新する"""
         try:
             _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
             current_content = res.content.decode('utf-8')
             
-            # ★ 修正: 正規表現を IGNORECASE に
             status_pattern = re.compile(r"^(status:\s*)(\S+.*)$", re.MULTILINE | re.IGNORECASE)
             
             if status_pattern.search(current_content):
-                # ★ 修正: 確実に引用符で囲むように
                 new_content = status_pattern.sub(f"\\g<1>\"{new_status}\"", current_content, count=1)
             else:
-                # status: がない場合、--- の直前に追加
                 frontmatter_end_pattern = re.compile(r"^(---)$", re.MULTILINE)
                 matches = list(frontmatter_end_pattern.finditer(current_content))
                 if len(matches) > 1:
                     insert_pos = matches[1].start()
-                    # ★ 修正: 確実に引用符で囲むように
                     new_content = current_content[:insert_pos] + f"status: \"{new_status}\"\n" + current_content[insert_pos:]
                 else: 
                     logging.error(f"BookCog: フロントマターの終了(---)が見つかりません: {book_path}")
@@ -777,35 +692,37 @@ class BookCog(commands.Cog):
             logging.error(f"BookCog: ステータス更新中のエラー: {e}", exc_info=True)
             return False
 
-    # on_message (メモ追記のメインフロー)
+    # on_message (メモ追記と新規書籍URLの検知)
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """
-        BOOK_NOTE_CHANNEL_ID に投稿されたメッセージ（テキスト・添付ファイル）を検知し、
-        どの書籍ノートに追記するかをユーザーに尋ねる。
+        BOOK_NOTE_CHANNEL_ID に投稿されたメッセージを検知。
+        URLなら書籍作成フローを開始(📥付与)、それ以外ならメモ追記フロー。
         """
         if not self.is_ready or message.author.bot or message.channel.id != self.book_note_channel_id:
             return
         
-        # リプライは無視 (リアクショントリガーやUI操作と区別)
         if message.reference:
             return
             
-        # スラッシュコマンドは無視
         if message.content.strip().startswith('/'):
             return
 
-        # URL (ノート作成トリガー) も無視
+        # ★ 修正: URL (ノート作成トリガー) の場合、📥 リアクションを付けて終了
         if message.content.strip().startswith('http'):
+            logging.info(f"BookCog: URL detected. Adding creation trigger.")
+            try:
+                if not any(str(r.emoji) == BOT_PROCESS_TRIGGER_REACTION and r.me for r in message.reactions):
+                    await message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
+            except discord.HTTPException: pass
             return
 
-        # --- 入力タイプを判別 ---
+        # --- 以下、既存のメモ追記ロジック ---
         attachment = None
         input_type = None
         text_memo = None
 
         if message.attachments:
-            # 添付ファイルがある場合
             attachment = message.attachments[0]
             if attachment.content_type in SUPPORTED_AUDIO_TYPES:
                 input_type = "audio"
@@ -813,21 +730,19 @@ class BookCog(commands.Cog):
                 input_type = "image"
             else:
                 logging.debug(f"BookCog: サポート対象外の添付ファイルタイプ: {attachment.content_type}")
-                return # サポート対象外のファイル
+                return
         else:
-            # 添付ファイルがない場合 (テキストメモ)
             text_memo = message.content.strip()
             if not text_memo:
-                return # 空のメッセージは無視
+                return
             input_type = "text"
         
         logging.info(f"BookCog: {input_type} メモを検知: {message.jump_url}")
         
         bot_reply_message = None
         try:
-            await message.add_reaction("🤔") # 処理中（どの本か考えてる）
+            await message.add_reaction("🤔")
 
-            # --- 書籍一覧を取得 ---
             book_files, error = await self.get_book_list()
             if error:
                 await message.reply(f"❌ {error}")
@@ -837,22 +752,21 @@ class BookCog(commands.Cog):
 
             options = [discord.SelectOption(label=entry.name[:-3][:100], value=entry.path_display) for entry in book_files[:25]]
             
-            # --- 選択Viewを表示 ---
             view = BookSelectView(
                 self, 
                 options, 
-                original_context=message, # 元のメッセージを渡す
-                action_type="add_memo", # "add_memo" タイプに変更
+                original_context=message,
+                action_type="add_memo",
                 attachment=attachment, 
                 text_memo=text_memo,
                 input_type=input_type
             )
             bot_reply_message = await message.reply(f"この {input_type} メモはどの書籍のものですか？", view=view, mention_author=False)
-            view.bot_reply_message = bot_reply_message # Viewに自身のメッセージをセット
+            view.bot_reply_message = bot_reply_message
             
         except Exception as e:
             logging.error(f"BookCog: on_message での添付ファイル/テキスト処理中にエラー: {e}", exc_info=True)
-            if bot_reply_message: # bot_reply_message がNoneでないことを確認
+            if bot_reply_message:
                 try: await bot_reply_message.delete()
                 except discord.HTTPException: pass
             await message.reply(f"❌ メモの処理開始中にエラーが発生しました: {e}")
@@ -862,28 +776,23 @@ class BookCog(commands.Cog):
             except discord.HTTPException:
                 pass
     
-    # process_posted_memo (REQ 1 実行)
     async def process_posted_memo(
         self, 
-        interaction: discord.Interaction, # SelectViewからのInteraction
-        original_message: discord.Message, # ユーザーが添付/投稿した元のMessage
+        interaction: discord.Interaction,
+        original_message: discord.Message,
         book_path: str, 
         input_type: str,
-        attachment: discord.Attachment = None, # None if text
-        text_memo: str = None, # None if attachment
-        dropdown_message: discord.Message = None # 選択肢が乗っていたメッセージ
+        attachment: discord.Attachment = None,
+        text_memo: str = None,
+        dropdown_message: discord.Message = None
     ):
-        """投稿されたメモをテキスト化し、確認Viewを提示する"""
-        
         temp_audio_path = None
         recognized_text = ""
         
         try:
-            # 元メッセージのリアクションを更新
             await original_message.remove_reaction("🤔", self.bot.user)
             await original_message.add_reaction(PROCESS_START_EMOJI)
 
-            # 1. テキスト化 (入力タイプで分岐)
             if input_type == "text":
                 recognized_text = text_memo
                 logging.info(f"BookCog: テキストメモを処理: {recognized_text[:50]}...")
@@ -893,7 +802,6 @@ class BookCog(commands.Cog):
                     if resp.status != 200: raise Exception(f"ファイルダウンロード失敗: Status {resp.status}")
                     file_bytes = await resp.read()
                 
-                # (Fix 3) 拡張子を含めるように修正 (attachment.filename を使う)
                 temp_audio_path = pathlib.Path(f"./temp_book_audio_{original_message.id}_{attachment.filename}")
                 temp_audio_path.write_bytes(file_bytes)
                 
@@ -919,7 +827,6 @@ class BookCog(commands.Cog):
             if not recognized_text:
                 raise Exception("AIによるテキスト化の結果が空か、入力タイプが不明でした。")
 
-            # 2. (REQ 1) 保存せず、確認Viewを送信
             confirm_view = ConfirmMemoView(
                 self,
                 book_path,
@@ -928,12 +835,10 @@ class BookCog(commands.Cog):
                 input_type
             )
             
-            # ドロップダウンメッセージを削除
             if dropdown_message:
                 try: await dropdown_message.delete()
                 except discord.HTTPException: pass
             
-            # 新しい確認メッセージを送信
             confirm_msg = await original_message.reply(
                 f"**📝 認識された {input_type} メモ:**\n```markdown\n{recognized_text}\n```\n内容を確認し、問題なければ「このまま保存」、修正する場合は「編集する」ボタンを押してください。",
                 view=confirm_view,
@@ -941,11 +846,8 @@ class BookCog(commands.Cog):
             )
             confirm_view.confirmation_message = confirm_msg
             
-            # (Fix 4) interaction への応答は followup で行う
             await interaction.followup.send("テキストを認識しました。内容を確認してください。", ephemeral=True)
             
-            # ⏳ リアクションは確認Viewのタイムアウト/完了まで保持
-
         except Exception as e:
             logging.error(f"BookCog: 添付メモ処理中にエラー: {e}", exc_info=True)
             if not interaction.response.is_done():
@@ -955,49 +857,39 @@ class BookCog(commands.Cog):
             try: await original_message.add_reaction(PROCESS_ERROR_EMOJI)
             except discord.HTTPException: pass
         finally:
-            # ⏳ リアクションはここでは消さない (ConfirmMemoViewが担当)
             if temp_audio_path:
                 try: temp_audio_path.unlink()
                 except OSError as e_rm: logging.error(f"BookCog: 一時音声ファイルの削除に失敗: {e_rm}")
 
-    # (REQ 1 & 2) メモを保存し、関連メッセージを削除するヘルパー
     async def _save_memo_to_obsidian_and_cleanup(
         self,
-        interaction: discord.Interaction, # Confirm または EditModal からの Interaction
+        interaction: discord.Interaction,
         book_path: str,
         final_text: str,
         input_type: str,
-        original_message: discord.Message, # ユーザーが投稿したメモ
-        confirmation_message: discord.Message # ボットが送信した確認View
+        original_message: discord.Message,
+        confirmation_message: discord.Message
     ):
-        """
-        最終的なテキストをObsidianに保存し、
-        元のユーザーメッセージとボットの確認メッセージを削除する。
-        """
         try:
-            # 1. 既存のノートをダウンロード
             logging.info(f"BookCog: 最終メモ追記のためノートをダウンロード: {book_path}")
             _, res = await asyncio.to_thread(self.dbx.files_download, book_path)
             current_content = res.content.decode('utf-8')
 
-            # 2. メモをフォーマット (日付と時刻)
             now = datetime.datetime.now(JST)
             date_time_str = now.strftime('%Y-%m-%d %H:%M')
             memo_lines = final_text.strip().split('\n')
             
             type_suffix = f"({input_type} memo)"
             if "edited" in input_type:
-                type_suffix = f"({input_type})" # (audio (edited) memo)
+                type_suffix = f"({input_type})"
             elif input_type == "text":
-                type_suffix = "(text memo)" # (text memo)
+                type_suffix = "(text memo)"
                 
             formatted_memo = f"- {date_time_str} {type_suffix}\n\t- " + "\n\t- ".join(memo_lines)
 
-            # 3. update_section で追記 (英語の見出し)
             section_header = "## Notes"
             new_content = update_section(current_content, formatted_memo, section_header)
 
-            # 4. Dropboxにアップロード
             await asyncio.to_thread(
                 self.dbx.files_upload,
                 new_content.encode('utf-8'),
@@ -1006,7 +898,6 @@ class BookCog(commands.Cog):
             )
             logging.info(f"BookCog: {input_type} メモを追記しました: {book_path}")
 
-            # 5. (REQ 2) メッセージのクリーンアップ
             try:
                 await confirmation_message.delete()
                 logging.info(f"BookCog: ボットの確認メッセージ (ID: {confirmation_message.id}) を削除しました。")
@@ -1020,10 +911,8 @@ class BookCog(commands.Cog):
                  logging.warning(f"BookCog: ユーザーの元メモ削除に失敗: {e_del_orig}")
 
         except Exception as e:
-            # このエラーは interaction.followup.send で呼び出し元に伝達される
             logging.error(f"BookCog: _save_memo_to_obsidian_and_cleanup でエラー: {e}", exc_info=True)
-            raise # エラーを再発生させ、モーダル/Viewのon_submit/callback側でキャッチさせる
-
+            raise
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
@@ -1039,7 +928,6 @@ class BookCog(commands.Cog):
             try: message = await channel.fetch_message(payload.message_id)
             except (discord.NotFound, discord.Forbidden): return
             
-            # URLで始まるメッセージでなければ、このトリガーは無視
             if not message.content.strip().startswith('http'):
                 return
 
@@ -1052,7 +940,6 @@ class BookCog(commands.Cog):
             
             await self._start_book_selection_workflow(message)
 
-    # _start_book_selection_workflow (書籍ノート作成の「選択」ワークフロー)
     async def _start_book_selection_workflow(self, message: discord.Message):
         """書籍ノート作成の「選択」ワークフローを開始する"""
         error_reactions = set()
@@ -1061,7 +948,6 @@ class BookCog(commands.Cog):
         try:
             await message.add_reaction(PROCESS_START_EMOJI)
 
-            # 1. Embedから書籍タイトルと画像を取得 (7秒待機)
             logging.info(f"BookCog: Waiting 7s for Discord embed for {source_url}...")
             await asyncio.sleep(7)
             
@@ -1083,22 +969,18 @@ class BookCog(commands.Cog):
                 error_reactions.add(PROCESS_ERROR_EMOJI)
                 raise Exception("Discord Embedから書籍タイトルを取得できませんでした。")
 
-            # 2. Google Books APIで書籍データを「複数」検索
             book_results = await self._fetch_google_book_data(book_title)
             
             if not book_results:
                 logging.warning(f"BookCog: Google Books APIで「{book_title}」の候補が見つかりませんでした。")
                 error_reactions.add(NOT_FOUND_EMOJI)
-                # ★ 修正: 候補が見つからなくても、手動入力があるのでワークフローを継続
-                # raise Exception("Google Books APIで書籍データが見つかりませんでした。")
-                book_results = [] # 空のリストとして扱う
+                book_results = []
 
             logging.info(f"BookCog: Google Books APIで {len(book_results)} 件の候補を取得しました。")
 
-            # 3. 選択肢Viewを送信
             view = BookCreationSelectView(
                 self, 
-                book_results, # 空のリストが渡される可能性あり
+                book_results,
                 source_url, 
                 embed_image_url, 
                 message
@@ -1113,9 +995,8 @@ class BookCog(commands.Cog):
                 view=view, 
                 mention_author=False
             )
-            view.confirmation_message = confirm_msg # Viewに確認メッセージ自身を渡す
+            view.confirmation_message = confirm_msg
 
-            # 元メッセージの ⏳ はViewが表示されたら消す
             await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
 
         except Exception as e:
@@ -1128,7 +1009,6 @@ class BookCog(commands.Cog):
             try: await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
             except discord.HTTPException: pass
 
-    # _fetch_google_book_data (maxResults=5, 戻り値をlist[dict]に)
     async def _fetch_google_book_data(self, title: str) -> list[dict] | None:
         """Google Books API v1 を叩いて書籍情報を取得する"""
         if not self.google_books_api_key or not self.session:
@@ -1136,7 +1016,6 @@ class BookCog(commands.Cog):
             return None
             
         query = urllib.parse.quote_plus(title)
-        # maxResults=5 に変更
         url = f"https://www.googleapis.com/books/v1/volumes?q={query}&key={self.google_books_api_key}&maxResults=5&langRestrict=ja"
         
         try:
@@ -1148,7 +1027,6 @@ class BookCog(commands.Cog):
                 data = await response.json()
                 
                 if data.get("totalItems", 0) > 0 and "items" in data:
-                    # volumeInfo のリストを返す
                     return [item.get("volumeInfo") for item in data["items"] if item.get("volumeInfo")]
                 else:
                     return None
@@ -1159,20 +1037,13 @@ class BookCog(commands.Cog):
             logging.error(f"Google Books API client error for title {title}: {e}", exc_info=True)
             return None
 
-    # ★ 修正: _save_note_to_obsidian (競合チェック機能の追加)
     async def _save_note_to_obsidian(self, book_data: dict, source_url: str, embed_image_url_fallback: str = None) -> bool | str:
-        """
-        取得した書籍データからMarkdownノートを作成し、Dropboxに保存する。
-        成功時は True、競合時は "EXISTS"、失敗時は False を返す。
-        """
-        
         title = book_data.get("title", "不明なタイトル")
         authors = book_data.get("authors", [])
         author_str = ", ".join(authors)
         published_date = book_data.get("publishedDate", "N/A")
         description = book_data.get("description", "N/A")
         
-        # ★ 修正: 手動入力(thumbnail)とAPI(thumbnail)とフォールバック(embed)を考慮
         thumbnail_url = book_data.get("imageLinks", {}).get("thumbnail", "")
         if not thumbnail_url and embed_image_url_fallback:
             thumbnail_url = embed_image_url_fallback
@@ -1188,22 +1059,17 @@ class BookCog(commands.Cog):
         note_filename = f"{safe_title}.md"
         note_path = f"{self.dropbox_vault_path}{READING_NOTES_PATH}/{note_filename}"
 
-        # --- 競合チェック ---
         try:
-            # 既存のファイル一覧を取得 (軽量なメタデータのみ)
             existing_files, _ = await self.get_book_list(check_only=True)
-            existing_paths = [entry.path_display.lower() for entry in existing_files] # 比較用に小文字化
+            existing_paths = [entry.path_display.lower() for entry in existing_files]
 
             if note_path.lower() in existing_paths:
                 logging.warning(f"BookCog: ノート作成が競合しました。ファイルが既に存在します: {note_path}")
-                return "EXISTS" # 競合を通知
+                return "EXISTS"
         except Exception as e_check:
-            # チェックに失敗した場合は、エラーとして処理を中断
             logging.error(f"BookCog: 既存ノートのチェック中にエラー: {e_check}", exc_info=True)
             return False
-        # --- 競合チェックここまで ---
 
-        # --- ノートテンプレート (見出しを英語に) ---
         note_content = f"""---
 title: "{title}"
 authors: [{author_str}]
@@ -1222,16 +1088,13 @@ cover: {thumbnail_url}
 ## Actions
 
 """
-        # --- ここまで ---
 
         try:
-            # (Fix 2) 競合チェックが通ったので 'add' (新規追加) でOK
             await asyncio.to_thread(
                 self.dbx.files_upload, note_content.encode('utf-8'), note_path, mode=WriteMode('add')
             )
             logging.info(f"BookCog: 読書ノートを保存しました: {note_path}")
             
-            # --- デイリーノートにリンクを追記 ---
             daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
             daily_note_content = ""
             try:
@@ -1249,10 +1112,9 @@ cover: {thumbnail_url}
                 self.dbx.files_upload, new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite')
             )
             logging.info(f"BookCog: デイリーノートに読書ノートへのリンクを追記しました: {daily_note_path}")
-            return True # 成功
+            return True
 
         except ApiError as e:
-            # (Fix 1 / Fix 2) ログから特定した詳細な競合エラーチェック
             if (isinstance(e.error, dropbox.files.UploadError) and
                 e.error.is_path() and 
                 isinstance(e.error.get_path(), dropbox.files.UploadWriteFailed) and
@@ -1261,21 +1123,16 @@ cover: {thumbnail_url}
                 logging.warning(f"BookCog: ノート保存が競合しました (UploadWriteFailed): {note_path}")
                 return "EXISTS"
             
-            # 従来のフォールバック競合チェック
             if isinstance(e.error, dropbox.files.WriteError) and e.error.is_conflict():
                  logging.warning(f"BookCog: ノート保存が競合しました (WriteError): {note_path}")
                  return "EXISTS"
 
             logging.error(f"BookCog: Dropboxへのノート保存またはデイリーノート更新中にApiError: {e}", exc_info=True)
-            return False # その他のエラー
+            return False
         except Exception as e:
             logging.error(f"BookCog: ノート保存またはデイリーノート更新中に予期せぬエラー: {e}", exc_info=True)
             return False
 
-    # --- ★ 削除: /book_memo コマンド (Request 3) ---
-    # (Lines 1088-1111 deleted)
-
-    # --- /book_status コマンド ---
     @app_commands.command(name="book_status", description="読書ノートのステータスを変更します。")
     async def book_status(self, interaction: discord.Interaction):
         if not self.is_ready:
@@ -1302,7 +1159,6 @@ cover: {thumbnail_url}
             logging.error(f"BookCog: /book_status コマンド処理中に予期せぬエラー: {e}", exc_info=True)
             await interaction.followup.send(f"❌ コマンド処理中に予期せぬエラーが発生しました: {e}", ephemeral=True)
 
-    # --- 書籍一覧取得ヘルパー (修正) ---
     async def get_book_list(self, check_only: bool = False) -> tuple[list[FileMetadata], str | None]:
         """Dropboxから書籍ノートの一覧を取得する共通ヘルパー"""
         try:
@@ -1330,7 +1186,6 @@ cover: {thumbnail_url}
         except ApiError as e:
             logging.error(f"BookCog: 読書ノート一覧の取得中にApiError: {e}", exc_info=True)
             return [], f"❌ 読書ノート一覧の取得中にDropboxエラーが発生しました: {e}"
-        # ★ 修正: 認証エラー (AuthError) をキャッチ
         except AuthError as e:
             logging.error(f"BookCog: 読書ノート一覧の取得中にDropbox認証エラー: {e}", exc_info=True)
             return [], f"❌ Dropbox認証エラーが発生しました。トークンが失効している可能性があります。"

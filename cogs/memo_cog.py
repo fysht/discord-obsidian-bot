@@ -1,13 +1,14 @@
 import os
 import discord
+from discord import app_commands
 from discord.ext import commands
 import asyncio
 import logging
-import dropbox  # ★ 追加
-from dropbox.files import WriteMode, DownloadError  # ★ 追加
-from dropbox.exceptions import ApiError  # ★ 追加
+import dropbox
+from dropbox.files import WriteMode, DownloadError
+from dropbox.exceptions import ApiError
 from datetime import datetime, timezone, timedelta
-import json  # ★ 追加
+import json
 import re
 import aiohttp 
 
@@ -24,44 +25,118 @@ except ImportError:
 
 # --- チャンネルID ---
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", 0))
-WEB_CLIP_CHANNEL_ID = int(os.getenv("WEB_CLIP_CHANNEL_ID", 0))
-YOUTUBE_SUMMARY_CHANNEL_ID = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
-BOOK_NOTE_CHANNEL_ID = int(os.getenv("BOOK_NOTE_CHANNEL_ID", 0))
-RECIPE_CHANNEL_ID = int(os.getenv("RECIPE_CHANNEL_ID", 0))
 
 # --- リアクション絵文字 ---
-USER_TRANSFER_REACTION = '➡️' 
-BOOK_NOTE_REACTION = '📖' 
-RECIPE_REACTION = '🍳'
-BOT_PROCESS_TRIGGER_REACTION = '📥'
-PROCESS_FORWARDING_EMOJI = '➡️' 
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
 PROCESS_FETCHING_EMOJI = '⏱️' 
 
-# ★ 新規追加: ピン留めニュース機能用
+# ピン留めニュース機能用
 PINNED_NEWS_REACTION = '📰'
 PINNED_NEWS_JSON_PATH = f"{os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')}/.bot/pinned_news_memos.json"
-# ★ ここまで
 
 # URL Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
-# YouTube URL Regex (転送先の判別のみに使用)
-YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed|/youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
+
+
+# --- ピン留め削除用View ---
+class PinnedListDeleteView(discord.ui.View):
+    def __init__(self, cog, pinned_memos):
+        super().__init__(timeout=300)
+        self.cog = cog
+        
+        # セレクトメニューのオプションを作成 (最新25件まで)
+        # DiscordのSelectメニューの上限が25件のため
+        options = []
+        for memo in list(reversed(pinned_memos))[:25]:
+            msg_id = memo.get('id')
+            content = memo.get('content', '内容なし').replace('\n', ' ')
+            
+            # 表示用ラベルの作成 (日付 + 内容の抜粋)
+            date_str = memo.get('pinned_at', '')
+            try:
+                dt = datetime.fromisoformat(date_str)
+                date_disp = dt.strftime('%m/%d %H:%M')
+            except:
+                date_disp = "??"
+            
+            label = f"{date_disp}: {content[:20]}"
+            description = content[:50] + "..." if len(content) > 50 else content
+            
+            options.append(discord.SelectOption(
+                label=label,
+                value=msg_id,
+                description=description
+            ))
+
+        if not options:
+            self.add_item(discord.ui.Select(
+                placeholder="ピン留めされたメモはありません",
+                disabled=True,
+                options=[discord.SelectOption(label="none", value="none")]
+            ))
+        else:
+            select = discord.ui.Select(
+                placeholder="削除するメモを選択してください (複数可)",
+                min_values=1,
+                max_values=len(options),
+                options=options
+            )
+            select.callback = self.select_callback
+            self.add_item(select)
+
+    async def select_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        selected_ids = interaction.data["values"]
+        
+        if not selected_ids:
+            return
+
+        async with self.cog.pinned_news_lock:
+            try:
+                # 現在のリストを再取得
+                current_list = await self.cog._get_pinned_news()
+                initial_count = len(current_list)
+                
+                # 選択されたIDを除外
+                new_list = [m for m in current_list if m.get('id') not in selected_ids]
+                
+                if len(new_list) < initial_count:
+                    await self.cog._save_pinned_news(new_list)
+                    deleted_count = initial_count - len(new_list)
+                    await interaction.followup.send(f"✅ {deleted_count} 件のメモをピン留めから削除しました。", ephemeral=True)
+                    
+                    # 元のメッセージからリアクションを削除する試み (視覚的な同期のため)
+                    channel = self.cog.bot.get_channel(MEMO_CHANNEL_ID)
+                    if channel:
+                        for msg_id in selected_ids:
+                            try:
+                                msg = await channel.fetch_message(int(msg_id))
+                                # ユーザー自身のリアクションを消すのは権限的に難しい場合があるため、
+                                # Botが付けたリアクションがあれば消す、あるいはゴミ箱リアクションを一瞬つけて消す
+                                await msg.remove_reaction(PINNED_NEWS_REACTION, interaction.user)
+                            except Exception:
+                                pass # メッセージが見つからない、権限がない等は無視
+                else:
+                    await interaction.followup.send("⚠️ 削除対象が見つかりませんでした（既に削除されている可能性があります）。", ephemeral=True)
+            
+            except Exception as e:
+                logging.error(f"ピン留め削除中にエラー: {e}", exc_info=True)
+                await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
 
 
 # Cog Class
 class MemoCog(commands.Cog):
     """
-    Discordの#memoチャンネルを監視し、テキストメモ保存、
-    またはユーザーリアクション(➡️, 📖, 🍳, 📰)に応じて処理を分岐するCog
+    Discordの#memoチャンネルを監視し、テキストメモを保存するCog
+    (備忘録保存機能 + ピン留めニュース機能)
     """
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.session = aiohttp.ClientSession() 
         
-        # ★ 追加: Dropboxクライアントの初期化 (ニュースピン留め機能用)
+        # Dropboxクライアントの初期化 (ニュースピン留め機能用)
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
@@ -82,7 +157,6 @@ class MemoCog(commands.Cog):
                 self.dbx = None
         else:
             logging.warning("MemoCog: Dropbox認証情報が不足しているため、ピン留めニュース機能(📰)は無効です。")
-        # ★ ここまで
 
         logging.info("MemoCog: Initialized.")
 
@@ -90,7 +164,7 @@ class MemoCog(commands.Cog):
         if self.session and not self.session.closed:
             await self.session.close()
 
-    # ★ 新規追加: ピン留めニュースJSONをDropboxから取得
+    # ピン留めニュースJSONをDropboxから取得
     async def _get_pinned_news(self) -> list:
         """Dropboxからピン留めニュースのリストを取得する"""
         if not self.dbx: return []
@@ -108,7 +182,7 @@ class MemoCog(commands.Cog):
             logging.error(f"ピン留めニュースの解析に失敗: {e}")
             return []
 
-    # ★ 新規追加: ピン留めニュースJSONをDropboxに保存
+    # ピン留めニュースJSONをDropboxに保存
     async def _save_pinned_news(self, pinned_list: list):
         """Dropboxにピン留めニュースのリストを保存する"""
         if not self.dbx: return
@@ -118,9 +192,57 @@ class MemoCog(commands.Cog):
         except Exception as e:
             logging.error(f"ピン留めニュースの保存に失敗: {e}")
 
+    # --- ピン留めリスト表示コマンド (削除機能付き) ---
+    @app_commands.command(name="pinned_list", description="ピン留め中のメモ一覧を表示・削除します。")
+    async def pinned_list(self, interaction: discord.Interaction):
+        if interaction.channel_id != MEMO_CHANNEL_ID:
+             await interaction.response.send_message(f"このコマンドは <#{MEMO_CHANNEL_ID}> でのみ実行できます。", ephemeral=True)
+             return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        # 最新のデータを取得
+        pinned_memos = await self._get_pinned_news()
+        
+        if not pinned_memos:
+            await interaction.followup.send("📌 現在ピン留めされているメモはありません。", ephemeral=True)
+            return
+            
+        # 埋め込みメッセージの作成
+        embed = discord.Embed(title="📌 ピン留めメモ一覧", description="削除したいメモは下のメニューから選択してください。", color=discord.Color.gold())
+        
+        # 最新10件を表示
+        for i, memo in enumerate(reversed(pinned_memos)):
+            if i >= 10: break
+            content = memo.get('content', '')
+            short_content = (content[:60] + '...') if len(content) > 60 else content
+            msg_id = memo.get('id')
+            msg_link = f"https://discord.com/channels/{interaction.guild_id}/{MEMO_CHANNEL_ID}/{msg_id}"
+            
+            date_str = memo.get('pinned_at', '')
+            try:
+                dt = datetime.fromisoformat(date_str)
+                date_display = dt.strftime('%Y/%m/%d %H:%M')
+            except:
+                date_display = "日時不明"
+
+            embed.add_field(
+                name=f"{i+1}. {date_display}",
+                value=f"{short_content}\n[メッセージへ移動]({msg_link})",
+                inline=False
+            )
+        
+        if len(pinned_memos) > 10:
+            embed.set_footer(text=f"他 {len(pinned_memos) - 10} 件... (メニューからは25件まで選択可能)")
+
+        # 削除用Viewを付与して送信
+        view = PinnedListDeleteView(self, pinned_memos)
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """#memo チャンネルに投稿されたメッセージを処理 (テキストとURLの両方)"""
+        """#memo チャンネルに投稿されたメッセージを備忘録として保存"""
         if message.author.bot or message.channel.id != MEMO_CHANNEL_ID:
             return
 
@@ -141,7 +263,7 @@ class MemoCog(commands.Cog):
             title = "タイトル不明"               
             
             try:
-                # --- Discord Embedの待機と取得 (YouTube/Web/Book共通) ---
+                # --- Discord Embedの待機と取得 ---
                 logging.info(f"Waiting 7s for Discord embed for {url_from_content}...")
                 await asyncio.sleep(7) 
                 
@@ -154,10 +276,8 @@ class MemoCog(commands.Cog):
                         embed = fetched_message.embeds[0]
                         if embed.url:
                             full_url_from_embed = embed.url
-                            logging.info(f"Full URL found via embed.url: {full_url_from_embed}")
                         if embed.title:
                             title_from_embed = embed.title
-                            logging.info(f"Title found via embed.title: {title_from_embed}")
                 except (discord.NotFound, discord.Forbidden) as e:
                      logging.warning(f"Failed to re-fetch message {message.id} for embed: {e}")
                 
@@ -168,16 +288,14 @@ class MemoCog(commands.Cog):
                 if title_from_embed and "http" not in title_from_embed:
                     title = title_from_embed
                 else:
-                    logging.info(f"Embed title unusable ('{title_from_embed}'). Falling back to web_parser for {url_to_save}...")
+                    logging.info(f"Embed title unusable. Falling back to web_parser for {url_to_save}...")
                     loop = asyncio.get_running_loop()
                     parsed_title, _ = await loop.run_in_executor(
                         None, parse_url_with_readability, url_to_save
                     )
                     if parsed_title and parsed_title != "No Title Found":
                         title = parsed_title
-                        logging.info(f"Title found via web_parser: {title}")
                     else:
-                         logging.warning(f"web_parser also failed for {url_to_save}")
                          if title_from_embed:
                              title = title_from_embed
 
@@ -194,7 +312,7 @@ class MemoCog(commands.Cog):
                 
                 await message.remove_reaction(PROCESS_FETCHING_EMOJI, self.bot.user)
                 await message.add_reaction(PROCESS_COMPLETE_EMOJI) 
-                logging.info(f"Successfully saved URL bookmark (ID: {message.id}), Title: {title}, URL: {url_to_save}")
+                logging.info(f"Successfully saved URL bookmark (ID: {message.id}), Title: {title}")
             
             except Exception as e:
                 logging.error(f"Failed to parse URL title or save bookmark (ID: {message.id}): {e}", exc_info=True)
@@ -204,7 +322,7 @@ class MemoCog(commands.Cog):
                 except discord.HTTPException: pass
             
         else:
-            # URLが含まれない場合
+            # URLが含まれない場合（通常のテキストメモ）
             logging.info(f"Text memo detected in message {message.id}. Saving via obsidian_handler.")
             try:
                 await add_memo_async(
@@ -220,67 +338,17 @@ class MemoCog(commands.Cog):
                 logging.error(f"Failed to save text memo (ID: {message.id}) using add_memo_async: {e}", exc_info=True)
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
 
-    async def _forward_message(self, message: discord.Message, content_to_forward: str, target_channel_id: int, forward_type: str):
-        if target_channel_id == 0:
-            logging.warning(f"{forward_type} の転送先チャンネルIDが設定されていません。")
-            return False
-
-        if any(r.emoji == PROCESS_FORWARDING_EMOJI and r.me for r in message.reactions):
-            logging.warning(f"メッセージ {message.id} は既に転送処理中です。スキップします。")
-            return False
-
-        try:
-            await message.add_reaction(PROCESS_FORWARDING_EMOJI)
-        except discord.HTTPException: pass
-
-        forward_channel = self.bot.get_channel(target_channel_id)
-        if not forward_channel:
-            logging.error(f"転送先チャンネル ID:{target_channel_id} が見つかりません。")
-            await self._handle_forward_error(message)
-            return False
-
-        try:
-            forwarded_message = await forward_channel.send(content_to_forward)
-            logging.info(f"{forward_type} 用にメッセージ {message.id} をチャンネル '{forward_channel.name}' に転送しました (New ID: {forwarded_message.id})。")
-
-            await forwarded_message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
-            logging.info(f"転送先メッセージ {forwarded_message.id} にトリガーリアクション {BOT_PROCESS_TRIGGER_REACTION} を追加しました。")
-
-            try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
-            except discord.HTTPException: pass
-            
-            return True
-
-        except discord.Forbidden:
-            logging.error(f"チャンネル '{forward_channel.name}' (ID:{target_channel_id}) への投稿権限がありません。")
-            await self._handle_forward_error(message)
-            return False
-        except discord.HTTPException as e:
-            logging.error(f"メッセージの転送またはリアクション追加中にHTTPエラーが発生: {e}")
-            await self._handle_forward_error(message)
-            return False
-        except Exception as e:
-            logging.error(f"予期せぬ転送エラーが発生しました: {e}", exc_info=True)
-            await self._handle_forward_error(message)
-            return False
-
-    async def _handle_forward_error(self, message: discord.Message):
-        """転送エラー時のリアクション処理"""
-        try: await message.remove_reaction(PROCESS_FORWARDING_EMOJI, self.bot.user)
-        except discord.HTTPException: pass
-        try: await message.add_reaction(PROCESS_ERROR_EMOJI)
-        except discord.HTTPException: pass
     
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        """ユーザーが付けたリアクション(➡️, 📖, 🍳, 📰)に応じて処理を分岐"""
+        """ユーザーが付けたリアクションに応じて処理を分岐 (現在はピン留めのみ)"""
         if payload.user_id == self.bot.user.id or payload.channel_id != MEMO_CHANNEL_ID:
             return
 
         emoji = str(payload.emoji)
 
-        # ★ 修正: 監視対象の絵文字を増やす
-        if emoji not in [USER_TRANSFER_REACTION, BOOK_NOTE_REACTION, RECIPE_REACTION, PINNED_NEWS_REACTION]:
+        # ピン留めのみ監視
+        if emoji != PINNED_NEWS_REACTION:
             return
 
         channel = self.bot.get_channel(payload.channel_id)
@@ -296,12 +364,8 @@ class MemoCog(commands.Cog):
             user = await self.bot.fetch_user(payload.user_id)
             if user:
                 await message.remove_reaction(payload.emoji, user)
-                logging.info(f"ユーザーリアクション {emoji} をメッセージ {message.id} から削除しました。")
         except discord.HTTPException:
-            logging.warning(f"ユーザーリアクション {emoji} の削除に失敗: {message.id}")
-
-        content = message.content.strip()
-        url_match = URL_REGEX.search(content)
+            pass
 
         # --- 📰 (ピン留めニュース) 処理 ---
         if emoji == PINNED_NEWS_REACTION:
@@ -323,73 +387,31 @@ class MemoCog(commands.Cog):
 
                     new_pin = {
                         "id": str(message.id),
-                        "content": message.content, # メッセージ内容全体
+                        "content": message.content,
                         "author": str(message.author),
                         "pinned_at": datetime.now(JST).isoformat()
                     }
                     pinned_list.append(new_pin)
                     await self._save_pinned_news(pinned_list)
                     
-                    await message.add_reaction(PROCESS_COMPLETE_EMOJI) # 転送ではなく「完了」
+                    await message.add_reaction(PROCESS_COMPLETE_EMOJI)
                     logging.info(f"メッセージ {message.id} をピン留めニュースとして保存しました。")
                 
                 except Exception as e:
                     logging.error(f"ピン留めニュースの保存中にエラー: {e}", exc_info=True)
-                    await self._handle_forward_error(message) # エラーリアクション
-            return # 転送処理は行わないのでここで終了
+                    await message.add_reaction(PROCESS_ERROR_EMOJI)
 
-        # --- 以下、従来の転送処理 (➡️, 📖, 🍳) ---
-        
-        if not url_match:
-            logging.warning(f"転送リアクション {emoji} がURLを含ないメッセージ {message.id} に追加されました。処理をスキップします。")
-            return
-        
-        final_url_to_forward = url_match.group(0) # デフォルト
-        
-        try:
-            if message.embeds and message.embeds[0].url:
-                final_url_to_forward = message.embeds[0].url
-                logging.info(f"Forwarding with full URL from embed: {final_url_to_forward}")
-            else:
-                logging.warning(f"No embed.url found for forwarding message {message.id}, using original content.")
-                final_url_to_forward = content 
-        except Exception as e:
-            logging.warning(f"Could not get embed.url for forwarding message {message.id}: {e}. Using original content.")
-            final_url_to_forward = content 
-
-        if emoji == USER_TRANSFER_REACTION: # ➡️ の場合
-            youtube_url_match = YOUTUBE_URL_REGEX.search(final_url_to_forward)
-            if youtube_url_match:
-                target_channel_id = YOUTUBE_SUMMARY_CHANNEL_ID
-                forward_type = "YouTube Summary"
-            else:
-                target_channel_id = WEB_CLIP_CHANNEL_ID
-                forward_type = "WebClip"
-            await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
-
-        elif emoji == BOOK_NOTE_REACTION: # 📖 の場合
-            target_channel_id = BOOK_NOTE_CHANNEL_ID
-            forward_type = "Book Note"
-            await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
-            
-        elif emoji == RECIPE_REACTION: # 🍳 の場合
-            target_channel_id = RECIPE_CHANNEL_ID
-            forward_type = "Recipe"
-            await self._forward_message(message, final_url_to_forward, target_channel_id, forward_type)
-
-    # ★ 新規追加: ピン留め解除 (リアクション削除) の監視
+    # ピン留め解除 (リアクション削除) の監視
     @commands.Cog.listener()
     async def on_raw_reaction_remove(self, payload: discord.RawReactionActionEvent):
-        """ユーザーが 📰 リアクションを削除した際の処理"""
+        """ユーザーが 📰 リアクションを削除した際の処理 (ピン留め解除)"""
         if payload.user_id == self.bot.user.id or payload.channel_id != MEMO_CHANNEL_ID:
             return
         
         if str(payload.emoji) != PINNED_NEWS_REACTION:
             return
         
-        if not self.dbx:
-            logging.warning(f"ピン留め解除リアクション (📰) が検知されましたが、Dropboxが未初期化のためスキップします (Msg: {payload.message_id})")
-            return
+        if not self.dbx: return
             
         logging.info(f"ピン留め解除リアクションを検知 (Msg: {payload.message_id})。")
 
@@ -415,12 +437,9 @@ class MemoCog(commands.Cog):
                             await message.remove_reaction("🗑️", self.bot.user)
                     except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
                         logging.warning(f"ピン留め解除のリアクション操作に失敗: {e}")
-                else:
-                    logging.warning(f"ピン留め解除が要求されましたが、メッセージ {message_id_to_remove} はリストに見つかりませんでした。")
             
             except Exception as e:
                 logging.error(f"ピン留めニュースの削除中にエラー: {e}", exc_info=True)
-        # ★ ここまで
 
 
 async def setup(bot: commands.Bot):
@@ -428,13 +447,4 @@ async def setup(bot: commands.Bot):
     if MEMO_CHANNEL_ID == 0:
         logging.error("MemoCog: MEMO_CHANNEL_ID が設定されていません。Cogをロードしません。")
         return
-    if WEB_CLIP_CHANNEL_ID == 0:
-        logging.warning("MemoCog: WEB_CLIP_CHANNEL_ID が設定されていません。WebClipの転送は無効になります。")
-    if YOUTUBE_SUMMARY_CHANNEL_ID == 0:
-        logging.warning("MemoCog: YOUTUBE_SUMMARY_CHANNEL_ID が設定されていません。YouTubeの自動転送は無効になります。")
-    if BOOK_NOTE_CHANNEL_ID == 0:
-        logging.warning("MemoCog: BOOK_NOTE_CHANNEL_ID が設定されていません。読書ノートの転送は無効になります。")
-    if RECIPE_CHANNEL_ID == 0:
-        logging.warning("MemoCog: RECIPE_CHANNEL_ID が設定されていません。レシピの転送は無効になります。")
-
     await bot.add_cog(MemoCog(bot))
