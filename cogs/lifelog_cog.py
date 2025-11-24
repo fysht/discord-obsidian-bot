@@ -120,9 +120,14 @@ class LifeLogTimeoutView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのタスクです。", ephemeral=True)
             return
         
+        # ★ 修正: 先にdeferしてタイムアウトを防ぐ
+        await interaction.response.defer()
+        
         await self.cog.extend_task(interaction)
         for item in self.children: item.disabled = True
-        await interaction.response.edit_message(content="✅ タスクを延長しました。", view=self)
+        
+        # ★ 修正: defer済みなので edit_message ではなく message.edit を使用
+        await interaction.message.edit(content="✅ タスクを延長しました。", view=self)
         self.stop()
 
     @discord.ui.button(label="終了する", style=discord.ButtonStyle.danger, emoji="⏹️")
@@ -131,9 +136,14 @@ class LifeLogTimeoutView(discord.ui.View):
             await interaction.response.send_message("他のユーザーのタスクです。", ephemeral=True)
             return
         
+        # ★ 修正: 先にdeferしてタイムアウトを防ぐ
+        await interaction.response.defer()
+        
         await self.cog.finish_current_task(interaction.user, interaction)
         for item in self.children: item.disabled = True
-        await interaction.response.edit_message(content="✅ タスクを終了しました。", view=self)
+        
+        # ★ 修正: defer済みなので message.edit を使用
+        await interaction.message.edit(content="✅ タスクを終了しました。", view=self)
         self.stop()
 
 
@@ -145,6 +155,8 @@ class LifeLogView(discord.ui.View):
 
     @discord.ui.button(label="終了", style=discord.ButtonStyle.danger, custom_id="lifelog_finish")
     async def finish_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # ★ 修正: Dropbox処理など時間がかかるため、先にdeferする
+        await interaction.response.defer(ephemeral=True)
         await self.cog.finish_current_task(interaction.user, interaction, next_task_name=None)
     
     @discord.ui.button(label="メモ入力", style=discord.ButtonStyle.primary, custom_id="lifelog_memo")
@@ -382,7 +394,11 @@ class LifeLogCog(commands.Cog):
 
         if user_id not in active_logs:
             if isinstance(context, discord.Interaction):
-                await context.response.send_message("⚠️ 進行中のタスクはありません。", ephemeral=True)
+                # 既に応答済みの場合は followup を使う
+                if context.response.is_done():
+                    await context.followup.send("⚠️ 進行中のタスクはありません。", ephemeral=True)
+                else:
+                    await context.response.send_message("⚠️ 進行中のタスクはありません。", ephemeral=True)
             return None
 
         log_data = active_logs.pop(user_id)
@@ -438,9 +454,13 @@ class LifeLogCog(commands.Cog):
                 new_book_content = update_section(book_content, book_log_line, "## Notes")
                 await asyncio.to_thread(self.dbx.files_upload, new_book_content.encode('utf-8'), book_path, mode=WriteMode('overwrite'))
                 logging.info(f"LifeLogCog: 読書ノート「{task_name}」にログを連携しました。")
+                
+                # ★ 修正: contextの状態を確認して送信
                 if isinstance(context, discord.Interaction) and not next_task_name:
-                    await context.followup.send(f"📖 読書ノート `{task_name}` にも記録しました。", ephemeral=True)
-            except ApiError: pass # ファイルがない場合は無視
+                    if context.response.is_done():
+                        await context.followup.send(f"📖 読書ノート `{task_name}` にも記録しました。", ephemeral=True)
+                    # response.send_message はここでは使わない（finish_buttonなどでdefer済みと想定）
+            except ApiError: pass
             except Exception as e: logging.error(f"LifeLogCog: 読書ノート連携中にエラー: {e}", exc_info=True)
 
         # パネル更新
@@ -455,25 +475,41 @@ class LifeLogCog(commands.Cog):
         except Exception:
             pass
 
+        # 完了メッセージ送信
         if isinstance(context, discord.Interaction) and not next_task_name:
-            if not context.response.is_done():
-                await context.response.send_message(f"お疲れ様でした！記録しました: `{task_name} ({duration_str})`", ephemeral=True)
+            # ★ 修正: defer済みならfollowup, 未ならresponseを使う
+            msg = f"お疲れ様でした！記録しました: `{task_name} ({duration_str})`"
+            if context.response.is_done():
+                await context.followup.send(msg, ephemeral=True)
+            else:
+                await context.response.send_message(msg, ephemeral=True)
         
         return obsidian_line
 
     async def _save_to_obsidian(self, date_str: str, line_to_add: str) -> bool:
         if not self.dbx: return False
+        
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+        
         try:
             current_content = ""
             try:
                 _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 current_content = res.content.decode('utf-8')
             except ApiError as e:
-                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found(): current_content = ""
-                else: raise
+                if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
+                    current_content = ""
+                else:
+                    raise
+
             new_content = update_section(current_content, line_to_add, DAILY_NOTE_HEADER)
-            await asyncio.to_thread(self.dbx.files_upload, new_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
+
+            await asyncio.to_thread(
+                self.dbx.files_upload,
+                new_content.encode('utf-8'),
+                daily_note_path,
+                mode=WriteMode('overwrite')
+            )
             return True
         except Exception as e:
             logging.error(f"LifeLogCog: Obsidian保存エラー: {e}", exc_info=True)
@@ -481,7 +517,10 @@ class LifeLogCog(commands.Cog):
 
     # --- タスク延長処理 ---
     async def extend_task(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
+        # ★ 追加: タイムアウト処理内から呼ばれるため、ここでのdeferは不要（呼び出し元で対応するか、ここでするか統一）
+        # LifeLogTimeoutView.extend_button で defer しているので、ここでは不要だが、
+        # 安全のため is_done チェックを入れても良い。今回は呼び出し元でdeferしているので省略。
+        
         user_id = str(interaction.user.id)
         active_logs = await self._get_active_logs()
         
@@ -489,6 +528,7 @@ class LifeLogCog(commands.Cog):
             if 'last_warning' in active_logs[user_id]:
                 del active_logs[user_id]['last_warning']
                 await self._save_active_logs(active_logs)
+                # メッセージは呼び出し元のViewで更新するため、ここではFollowupのみ
                 await interaction.followup.send("タスクを延長しました。引き続き計測します。", ephemeral=True)
             else:
                 await interaction.followup.send("タスクは既に延長されているか、警告状態ではありません。", ephemeral=True)
