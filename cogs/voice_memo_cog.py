@@ -150,8 +150,10 @@ class VoiceMemoCog(commands.Cog):
                     mode=WriteMode('overwrite')
                 )
 
-            # Discordへの投稿
-            await message.channel.send(f"**音声メモが追加されました** ({current_time})\n{formatted_text}")
+            # ★ 修正: 結果をEmbedで送信
+            embed = discord.Embed(title="🎙️ 音声メモを保存しました", description=formatted_text, color=discord.Color.blue())
+            embed.set_footer(text=f"Saved at {current_time}")
+            await message.channel.send(embed=embed)
 
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")

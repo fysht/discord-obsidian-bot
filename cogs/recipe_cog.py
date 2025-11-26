@@ -34,7 +34,8 @@ RECIPE_INDEX_PATH = f"{os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')}/.bot/r
 class RecipeDetailView(discord.ui.View):
     def __init__(self, recipe_data):
         super().__init__(timeout=None)
-        self.add_item(discord.ui.Button(label="元記事を開く", url=recipe_data.get('source', '')))
+        if recipe_data.get('source'):
+            self.add_item(discord.ui.Button(label="元記事を開く", url=recipe_data.get('source', '')))
 
 class RecipeListView(discord.ui.View):
     def __init__(self, cog, recipes, page=0):
@@ -159,7 +160,9 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.channel_id != self.recipe_channel_id: return
         if str(payload.emoji) != BOT_PROCESS_TRIGGER_REACTION: return
-        if payload.user_id == self.bot.user.id: return
+        
+        # ★ 修正: Bot自身によるリアクションのみをトリガーとして受け付ける（自動化のため）
+        if payload.user_id != self.bot.user.id: return
 
         channel = self.bot.get_channel(payload.channel_id)
         if not channel: return
@@ -182,13 +185,16 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
             # 1. コンテンツ取得
             content_text = await self._fetch_content(url)
             if not content_text:
-                await message.reply("❌ コンテンツの取得に失敗しました。", delete_after=10)
+                # エラーもEmbedで表示
+                err_embed = discord.Embed(title="❌ エラー", description="コンテンツの取得に失敗しました。", color=discord.Color.red())
+                await message.reply(embed=err_embed, delete_after=10)
                 return
 
             # 2. AI抽出
             recipe_data = await self._extract_recipe_data_with_ai(content_text, url)
             if not recipe_data:
-                await message.reply("❌ レシピ情報の抽出に失敗しました。", delete_after=10)
+                err_embed = discord.Embed(title="❌ エラー", description="レシピ情報の抽出に失敗しました。\n(JSON解析エラー)", color=discord.Color.red())
+                await message.reply(embed=err_embed, delete_after=10)
                 return
 
             # 3. 保存
@@ -196,7 +202,24 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
             await self._update_recipe_index(recipe_data, filename)
 
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
-            await message.reply(f"🍳 レシピブックに追加しました: **{recipe_data['title']}**", delete_after=10)
+            
+            # ★ 修正: 完了メッセージをEmbedに変更（見た目の改善）
+            embed = discord.Embed(title="🍳 レシピを保存しました", description=f"**[{recipe_data['title']}]({url})**", color=discord.Color.green())
+            tags = ", ".join(recipe_data.get('tags', []))
+            if tags:
+                embed.add_field(name="🏷️ タグ", value=tags)
+            ingredients = recipe_data.get('ingredients', [])
+            if ingredients:
+                # 材料を最初の数個だけ表示
+                ing_preview = "\n".join([f"• {i}" for i in ingredients[:5]])
+                if len(ingredients) > 5: ing_preview += "\n..."
+                embed.add_field(name="🛒 材料", value=ing_preview)
+                
+            embed.set_footer(text=f"Saved to: Recipes/{filename}")
+            if recipe_data.get('image_url'):
+                embed.set_thumbnail(url=recipe_data['image_url'])
+                
+            await message.reply(embed=embed)
             
         except Exception as e:
             logging.error(f"Recipe processing error: {e}", exc_info=True)
@@ -217,7 +240,10 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
 
     async def _extract_recipe_data_with_ai(self, text: str, url: str) -> dict:
         prompt = f"""
-        以下のテキストから料理レシピの情報を抽出し、JSON形式で出力してください。
+        以下のテキストから料理レシピの情報を抽出し、JSON形式のみを出力してください。
+        余計な会話やMarkdownのコードブロック記号（```jsonなど）は含めないでください。
+
+        出力フォーマット:
         {{
             "title": "料理名",
             "tags": ["メイン食材", "ジャンル", "特性"],
@@ -231,13 +257,25 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
         """
         try:
             response = await self.gemini_model.generate_content_async(prompt)
-            cleaned_text = response.text.strip().replace("```json", "").replace("```", "")
-            data = json.loads(cleaned_text)
+            raw_text = response.text.strip()
+            
+            # ★ 修正: 正規表現でJSONブロックを探し出す（より堅牢に）
+            json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                # マッチしない場合はそのまま試す（クリーニングのみ）
+                json_str = raw_text.replace("```json", "").replace("```", "")
+
+            data = json.loads(json_str)
             data['source'] = url
             data['created_at'] = datetime.datetime.now(JST).isoformat()
             return data
         except Exception as e:
             logging.error(f"AI extraction failed: {e}")
+            # デバッグ用に生の応答をログに出す
+            if 'response' in locals() and hasattr(response, 'text'):
+                logging.error(f"Raw AI response: {response.text}")
             return None
 
     async def _save_recipe_to_obsidian(self, data: dict) -> str:
@@ -312,7 +350,8 @@ cover: "{data.get('image_url', '')}"
             _, res = await asyncio.to_thread(self.dbx.files_download, RECIPE_INDEX_PATH)
             all_recipes = json.loads(res.content.decode('utf-8'))
         except Exception:
-            await interaction.followup.send("❌ レシピデータの読み込みに失敗しました。", ephemeral=True)
+            # ★ 修正: ファイルがない場合のメッセージを優しくする
+            await interaction.followup.send("📂 まだ保存されたレシピはありません。", ephemeral=True)
             return
 
         filtered_recipes = all_recipes

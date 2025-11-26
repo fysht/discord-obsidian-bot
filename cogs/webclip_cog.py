@@ -14,19 +14,6 @@ import zoneinfo
 # readabilityベースのパーサーをインポート (フォールバックとして)
 from web_parser import parse_url_with_readability
 
-# --- Google Docs連携 ---
-try:
-    from google_docs_handler import append_text_to_doc_async
-    google_docs_enabled = True
-    logging.info("WebClipCog: Google Docs連携が有効です。")
-except ImportError:
-    logging.warning("WebClipCog: google_docs_handler.pyが見つからないため、Google Docs連携は無効です。")
-    google_docs_enabled = False
-    async def append_text_to_doc_async(*args, **kwargs):
-        logging.warning("Google Docs handler is not available.")
-        pass
-# --- ここまで ---
-
 # --- 定数定義 ---
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -37,7 +24,6 @@ PROCESS_START_EMOJI = '⏳'
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
 SAVE_ERROR_EMOJI = '💾'
-GOOGLE_DOCS_ERROR_EMOJI = '🇬'
 # --- ここまで ---
 
 
@@ -96,7 +82,7 @@ class WebClipCog(commands.Cog):
 
             is_processed = any(r.emoji in (
                 PROCESS_START_EMOJI, PROCESS_COMPLETE_EMOJI, PROCESS_ERROR_EMOJI, 
-                SAVE_ERROR_EMOJI, GOOGLE_DOCS_ERROR_EMOJI
+                SAVE_ERROR_EMOJI
                 ) and r.me for r in message.reactions)
             
             if is_processed:
@@ -117,7 +103,6 @@ class WebClipCog(commands.Cog):
         url = message.content.strip()
         
         obsidian_save_success = False
-        gdoc_save_success = False
         error_reactions = set()
         title = "Untitled"
         content_md = ""
@@ -239,31 +224,6 @@ class WebClipCog(commands.Cog):
                 except Exception as e_obs_other:
                     logging.error(f"Error saving to Obsidian (Other): {e_obs_other}", exc_info=True)
                     error_reactions.add(SAVE_ERROR_EMOJI)
-            
-            if google_docs_enabled:
-                gdoc_text_to_append = ""
-                gdoc_source_type = "WebClip Error"
-
-                if content_md: 
-                    gdoc_text_to_append = content_md
-                    gdoc_source_type = "WebClip Content"
-                elif url: 
-                    gdoc_text_to_append = "(本文の抽出に失敗しました)"
-                    gdoc_source_type = "WebClip URL (Content Failed)"
-
-                if gdoc_text_to_append:
-                    try:
-                        await append_text_to_doc_async(
-                            text_to_append=gdoc_text_to_append,
-                            source_type=gdoc_source_type,
-                            url=url,
-                            title=title
-                        )
-                        gdoc_save_success = True
-                        logging.info(f"Data ({gdoc_source_type}) sent to Google Docs for {url}")
-                    except Exception as e_gdoc:
-                        logging.error(f"Failed to send data to Google Docs for {url}: {e_gdoc}", exc_info=True)
-                        error_reactions.add(GOOGLE_DOCS_ERROR_EMOJI)
             
             if obsidian_save_success:
                 await message.add_reaction(PROCESS_COMPLETE_EMOJI)

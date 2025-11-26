@@ -427,6 +427,21 @@ class NewsCog(commands.Cog):
             except Exception as e:
                 logging.error(f"ピン留めメモの投稿中にエラー: {e}", exc_info=True)
                 await channel.send(f"⚠️ ピン留めメモの取得または投稿中にエラーが発生しました。\n`{e}`")
+            
+            # ★ 新規追加: Todoリストの投稿
+            try:
+                todo_cog = self.bot.get_cog("TodoCog")
+                if todo_cog:
+                    logging.info("Todoリストを投稿します。")
+                    await channel.send("--- 📝 Today's Todo List ---")
+                    todo_embed = await todo_cog.get_todos_formatted()
+                    await channel.send(embed=todo_embed)
+                else:
+                    logging.warning("TodoCogが見つからないため、Todoリストの投稿をスキップします。")
+            except Exception as e:
+                logging.error(f"Todoリストの投稿中にエラー: {e}", exc_info=True)
+                await channel.send(f"⚠️ Todoリストの取得または投稿中にエラーが発生しました。\n`{e}`")
+
 
             # 3. 株式ウォッチリストの投稿
             try:

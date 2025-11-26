@@ -5,31 +5,15 @@ import logging
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-from openai import AsyncOpenAI
 import google.generativeai as genai
 import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError, AuthError
-import io
 import re
 from datetime import time, datetime
 import zoneinfo
 import aiohttp
 import random
-
-# --- Google Docs Handler Import ---
-try:
-    from google_docs_handler import append_text_to_doc_async
-    google_docs_enabled = True
-    logging.info("Google Docs連携が有効です。")
-except ImportError:
-    logging.warning("google_docs_handler.pyが見つからないため、Google Docs連携は無効です。")
-    google_docs_enabled = False
-    # Define a dummy async function if import fails
-    async def append_text_to_doc_async(*args, **kwargs):
-        logging.warning("Google Docs handler is not available.")
-        pass # Do nothing
-
 
 # --- Common function import (Obsidian Utils) ---
 try:
@@ -39,40 +23,7 @@ except ImportError:
     logging.warning("utils/obsidian_utils.pyが見つかりません。")
     # Define a dummy function if import fails
     def update_section(current_content: str, link_to_add: str, section_header: str) -> str:
-        if section_header in current_content:
-            lines = current_content.split('\n')
-            try:
-                # Find the line index containing the section header (case-insensitive)
-                header_index = -1
-                for i, line in enumerate(lines):
-                    if line.strip().lower() == section_header.lower():
-                        header_index = i
-                        break
-                if header_index == -1: raise ValueError("Header not found")
-
-                insert_index = header_index + 1
-                # Find the next header or end of file
-                while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
-                    insert_index += 1
-
-                # Ensure blank line before adding if needed
-                if insert_index > header_index + 1 and lines[insert_index - 1].strip() != "":
-                    lines.insert(insert_index, "")
-                    insert_index += 1 # Adjust index after insertion
-
-                # Insert the new link/text
-                lines.insert(insert_index, link_to_add)
-                return "\n".join(lines)
-            except ValueError:
-                # Append if header exists but something went wrong finding insertion point
-                 logging.warning(f"Could not find insertion point for {section_header}, appending.")
-                 return f"{current_content.strip()}\n\n{section_header}\n{link_to_add}\n"
-
-        else:
-            # Append new section at the end if header doesn't exist
-            # (Ideally, use SECTION_ORDER logic here if available)
-            logging.info(f"Section '{section_header}' not found, appending to the end.")
-            return f"{current_content.strip()}\n\n{section_header}\n{link_to_add}\n"
+        return f"{current_content.strip()}\n\n{section_header}\n{link_to_add}\n"
 
 # --- Constants ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -85,130 +36,13 @@ DAILY_NOTE_ENGLISH_LOG_HEADER = "## English Learning Logs" # デイリーノー�
 DAILY_NOTE_SAKUBUN_LOG_HEADER = "## Sakubun Logs" # デイリーノートの見出し名 (瞬間英作文)
 
 
-# --- Helper Function to Extract Phrases/Sentences --- # Renamed for clarity
-def extract_phrases_from_markdown_list(text: str, heading: str) -> list[str]:
-    """特定のMarkdown見出しの下にある箇条書き項目 (フレーズまたは文) を抽出する"""
-    items = []
-    try:
-        # 見出しの下のセクションを見つける正規表現 (ヘッダーレベル不問、大文字小文字無視)
-        pattern = rf"^\#+\s*{re.escape(heading)}\s*?\n((?:^\s*[-*+]\s+.*(?:\n|$))+)"
-        match = re.search(pattern, text, re.MULTILINE | re.IGNORECASE)
-
-        if match:
-            list_section = match.group(1)
-            # 個々のリスト項目（箇条書き記号の後のテキスト）を抽出
-            raw_items = re.findall(r"^\s*[-*+]\s+(.+)", list_section, re.MULTILINE)
-            # Markdown記号を除去し、前後の空白を削除
-            items = [re.sub(r'[*_`~]', '', item.strip()) for item in raw_items if item.strip()] # 空の項目は除外
-            logging.info(f"見出し '{heading}' の下から項目を抽出しました: {items}")
-        else:
-            logging.warning(f"指定された見出し '{heading}' またはその下の箇条書きが見つかりませんでした。")
-    except Exception as e:
-        logging.error(f"見出し '{heading}' の下の項目抽出中にエラー: {e}", exc_info=True)
-    return items
-
-
-# --- UI Component: TTSView ---
-class TTSView(discord.ui.View):
-    MAX_BUTTONS = 5 # Limit to 5 buttons per view for clarity
-
-    def __init__(self, phrases_or_sentences: list[str] | str, openai_client): # Renamed variable
-        super().__init__(timeout=3600) # Keep timeout 1 hour
-        self.openai_client = openai_client
-        self.items_to_speak = [] # Renamed variable
-
-        if isinstance(phrases_or_sentences, str):
-            # Clean mentions and markdown from single text input
-            clean_text = re.sub(r'<@!?\d+>', '', phrases_or_sentences) # Remove mentions
-            clean_text = re.sub(r'[*_`~#]', '', clean_text) # Remove markdown
-            full_text = clean_text.strip()[:2000] # Limit length for API safety
-            if full_text:
-                self.items_to_speak.append(full_text)
-                # Truncate label text for button display
-                label = (full_text[:25] + '...') if len(full_text) > 28 else full_text
-                button = discord.ui.Button(
-                    label=f"🔊 {label}", style=discord.ButtonStyle.secondary, custom_id="tts_item_0" # Changed custom_id prefix
-                )
-                button.callback = self.tts_button_callback
-                self.add_item(button)
-        elif isinstance(phrases_or_sentences, list):
-            self.items_to_speak = phrases_or_sentences[:self.MAX_BUTTONS] # Limit number of items
-            for index, item_text in enumerate(self.items_to_speak): # Use item_text
-                # Clean markdown from each item in the list
-                clean_item = re.sub(r'[*_`~#]', '', item_text.strip())[:2000] # Limit length
-                if not clean_item: continue # Skip empty items after cleaning
-                # Truncate label text
-                label = (clean_item[:25] + '...') if len(clean_item) > 28 else clean_item
-                button = discord.ui.Button(
-                    label=f"🔊 {label}", style=discord.ButtonStyle.secondary,
-                    custom_id=f"tts_item_{index}", row=index // 5 # Changed custom_id prefix
-                )
-                button.callback = self.tts_button_callback
-                self.add_item(button)
-
-    async def tts_button_callback(self, interaction: discord.Interaction):
-        custom_id = interaction.data.get("custom_id")
-        logging.info(f"TTSボタンクリック: {custom_id} by {interaction.user}")
-
-        # Helper function for sending messages (handles deferral)
-        async def send_response(msg: str, **kwargs):
-            if interaction.response.is_done():
-                await interaction.followup.send(msg, ephemeral=True, **kwargs)
-            else:
-                await interaction.response.send_message(msg, ephemeral=True, **kwargs)
-
-        if not custom_id or not custom_id.startswith("tts_item_"): # Changed custom_id prefix check
-            await send_response("無効なボタンIDです。", delete_after=10)
-            return
-        try:
-            item_index = int(custom_id.split("_")[-1]) # Renamed variable
-            if not (0 <= item_index < len(self.items_to_speak)):
-                 await send_response("無効な項目インデックスです。", delete_after=10)
-                 return
-
-            item_to_speak = self.items_to_speak[item_index] # Renamed variable
-            if not item_to_speak:
-                 await send_response("空のテキストは読み上げできません。", delete_after=10)
-                 return
-            if not self.openai_client:
-                 await send_response("TTS機能が設定されていません (OpenAI APIキー未設定)。", delete_after=10)
-                 return
-
-            # Defer only if not already done
-            if not interaction.response.is_done():
-                await interaction.response.defer(ephemeral=True, thinking=True)
-
-            # Generate speech using OpenAI API
-            response = await self.openai_client.audio.speech.create(
-                model="tts-1", voice="alloy", input=item_to_speak, response_format="mp3"
-            )
-            audio_bytes = response.content
-
-            audio_buffer = io.BytesIO(audio_bytes)
-            audio_file = discord.File(fp=audio_buffer, filename=f"item_{item_index}.mp3") # Changed filename prefix
-            # Always use followup after deferring
-            await interaction.followup.send(f"🔊 \"{item_to_speak}\"", file=audio_file, ephemeral=True)
-        except ValueError:
-            logging.error(f"custom_idからインデックスの解析に失敗: {custom_id}")
-            # Always use followup after deferring
-            await interaction.followup.send("ボタン処理エラー。", ephemeral=True)
-        except openai.APIError as e: # Catch specific OpenAI errors
-             logging.error(f"OpenAI APIエラー (TTS生成中): {e}", exc_info=True)
-             await interaction.followup.send(f"音声生成中にOpenAI APIエラーが発生しました: {e}", ephemeral=True)
-        except Exception as e:
-            logging.error(f"tts_button_callback内でエラー: {e}", exc_info=True)
-            # Always use followup after deferring
-            await interaction.followup.send(f"音声の生成・送信中にエラーが発生しました: {e}", ephemeral=True)
-
-
 # --- Cog: EnglishLearningCog ---
 class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
     """瞬間英作文とAI壁打ちチャットによる英語学習を支援するCog"""
 
     # --- __init__ ---
-    def __init__(self, bot: commands.Bot, openai_api_key, gemini_api_key, dropbox_refresh_token, dropbox_app_key, dropbox_app_secret):
+    def __init__(self, bot: commands.Bot, gemini_api_key, dropbox_refresh_token, dropbox_app_key, dropbox_app_secret):
         self.bot = bot
-        self.openai_client = AsyncOpenAI(api_key=openai_api_key) if openai_api_key else None
         genai.configure(api_key=gemini_api_key)
         self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview") # Use pro model
         self.dropbox_refresh_token = dropbox_refresh_token
@@ -244,7 +78,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             self.is_ready = False # Dropbox is required for persistence
 
         # Check other requirements and update readiness
-        if not self.openai_client: logging.warning("OpenAI API Key not found. TTS functionality will be disabled.")
         if not gemini_api_key: logging.error("Gemini API key missing. Cog cannot function."); self.is_ready = False
         if self.channel_id == 0: logging.error("ENGLISH_LEARNING_CHANNEL_ID is not set. Cog cannot function."); self.is_ready = False
 
@@ -258,7 +91,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 
     # --- _get_session_path ---
     def _get_session_path(self, user_id: int) -> str:
-        # vault_path を考慮しない（session_dir がルートからのパス）
         return f"{self.session_dir}/{user_id}.json"
 
     # --- on_ready ---
@@ -291,13 +123,10 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
     async def _load_sakubun_questions(self):
         if not self.is_ready or not self.dbx: return # Check Dropbox client
         try:
-            # Construct full path within vault
             path = f"{self.dropbox_vault_path}{SAKUBUN_NOTE_PATH}"
             logging.info(f"Loading Sakubun questions from: {path}")
-            # Use asyncio.to_thread for Dropbox calls
             metadata, res = await asyncio.to_thread(self.dbx.files_download, path)
             content = res.content.decode('utf-8')
-            # Regex to find list items, potentially ignoring model answers ("::")
             questions = re.findall(r'^\s*-\s*(.+?)(?:\s*::\s*.*)?$', content, re.MULTILINE)
             if questions:
                 self.sakubun_questions = [q.strip() for q in questions if q.strip()] # Filter empty questions
@@ -306,7 +135,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 logging.warning(f"Obsidianのファイル ({SAKUBUN_NOTE_PATH}) に問題が見つかりませんでした (形式: '- 日本語文')。")
         except AuthError as e: logging.error(f"Dropbox AuthError loading Sakubun questions: {e}")
         except ApiError as e:
-            # Handle specific "not found" error
             if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                 logging.warning(f"瞬間英作文ファイルが見つかりません: {path}")
             else: logging.error(f"Dropbox APIエラー (瞬間英作文読み込み): {e}")
@@ -376,8 +204,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         session_path = self._get_session_path(user_id)
         session = await self._load_session_from_dropbox(user_id)
 
-        # >>>>>>>>>>>>>>>>>> MODIFICATION START (System Instruction Update) <<<<<<<<<<<<<<<<<<
-        # Define system instruction for the AI model - make it lighter and shorter
         system_instruction = """
         あなたはフレンドリーな英会話パートナーです。気軽なチャット相手として、ユーザーと短いメッセージで会話のキャッチボールをしてください。
 
@@ -388,7 +214,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         4.  **常に英語:** あなたの返答は常に自然な英語で行ってください。
         """
         model_with_instruction = genai.GenerativeModel("gemini-3-pro-preview", system_instruction=system_instruction)
-        # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
 
         chat_session = None
         response_text = ""
@@ -399,9 +224,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 logging.info(f"セッション再開: {session_path}")
                 chat_session = model_with_instruction.start_chat(history=session)
                 # Send a light resume message
-                # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
                 resume_prompt = "Hey there! Let's pick up where we left off. What's up?"
-                # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
                 response = await asyncio.wait_for(chat_session.send_message_async(resume_prompt), timeout=60)
                 response_text = response.text if response and hasattr(response, "text") else "Hi again! What's new?"
             # Start new session if no history
@@ -409,9 +232,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 logging.info(f"新規セッション開始: {session_path}")
                 chat_session = model_with_instruction.start_chat(history=[])
                 # Send a light initial greeting
-                # >>>>>>>>>>>>>>>>>> MODIFICATION START <<<<<<<<<<<<<<<<<<
                 initial_prompt = "Hey! Ready to chat in English? How's your day going?"
-                # >>>>>>>>>>>>>>>>>> MODIFICATION END <<<<<<<<<<<<<<<<<<
                 response = await asyncio.wait_for(chat_session.send_message_async(initial_prompt), timeout=60)
                 response_text = response.text if response and hasattr(response, "text") else "Hi! Let's chat."
 
@@ -429,8 +250,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         else:
              await interaction.followup.send("チャットセッションを開始できませんでした。", ephemeral=True); return
 
-        view = TTSView(response_text, self.openai_client) if self.openai_client else None
-        await interaction.followup.send(f"**AI:** {response_text}", view=view)
+        await interaction.followup.send(f"**AI:** {response_text}")
 
         try:
             await interaction.followup.send("会話を続けるには、メッセージを送信してください。終了は `/end`", ephemeral=True)
@@ -635,7 +455,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 
         review_text = "レビューの生成に失敗しました。"
         history_to_save = []
-        important_sentences = [] # Renamed variable
 
         if hasattr(chat_session, 'history'):
             history_to_save = chat_session.history
@@ -643,20 +462,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 logging.info(f"Generating review for user {user_id}...")
                 review_text = await self._generate_chat_review(history_to_save)
                 logging.info(f"Review generated for user {user_id}.")
-
-                # Extract example sentences for TTS
-                important_sentences = extract_phrases_from_markdown_list(review_text, "重要例文")
-
-                if google_docs_enabled:
-                    try:
-                        await append_text_to_doc_async(
-                            text_to_append=review_text,
-                            source_type="English Chat Review",
-                            title=f"English Review - {interaction.user.display_name} - {datetime.now(JST).strftime('%Y-%m-%d')}"
-                        )
-                        logging.info(f"Review saved to Google Docs for user {user_id}.")
-                    except Exception as e_gdoc:
-                        logging.error(f"Failed to save review to Google Docs for user {user_id}: {e_gdoc}", exc_info=True)
 
                 if self.dbx:
                     await self._save_chat_log_to_obsidian(interaction.user, history_to_save, review_text)
@@ -675,22 +480,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             timestamp=datetime.now(JST)
         ).set_footer(text=f"{interaction.user.display_name}'s session")
 
-        # Pass important_sentences to TTSView
-        view = TTSView(important_sentences, self.openai_client) if important_sentences and self.openai_client else None
-
-        try:
-            if view:
-                await interaction.followup.send(embed=review_embed, view=view)
-            else:
-                await interaction.followup.send(embed=review_embed)
-        except discord.HTTPException as e:
-             logging.error(f"Failed to send review embed: {e}")
-             try:
-                 fallback_kwargs = {"view": view} if view else {}
-                 await interaction.followup.send(f"**Conversation Review:**\n{review_text[:1900]}", **fallback_kwargs)
-             except discord.HTTPException as e2:
-                 logging.error(f"Failed to send fallback review text: {e2}")
-                 await interaction.followup.send("レビューの表示に失敗しました。ログを確認してください。", ephemeral=True)
+        await interaction.followup.send(embed=review_embed)
 
         if self.dbx:
             try:
@@ -762,8 +552,8 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                          logging.warning(f"Invalid response structure from Gemini: {response}")
 
                     logging.info(f"Received response from Gemini for user {user_id}")
-                    view = TTSView(response_text, self.openai_client) if self.openai_client else None
-                    await message.reply(f"**AI:** {response_text}", view=view)
+                    # TTSView生成を削除
+                    await message.reply(f"**AI:** {response_text}")
 
                     await self._save_session_to_dropbox(user_id, chat.history)
 
@@ -802,7 +592,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 {user_answer}"""
 
         feedback_text = "フィードバック生成失敗。"
-        view = None
         try:
             response = await self.gemini_model.generate_content_async(prompt)
             if response and hasattr(response, 'text') and response.text: feedback_text = response.text
@@ -810,26 +599,9 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 
             feedback_embed = discord.Embed(title=f"添削結果: 「{japanese_question}」", description=feedback_text[:4000], color=discord.Color.green())
 
-            important_phrases = extract_phrases_from_markdown_list(feedback_text, "重要フレーズ")
-
-            if important_phrases and self.openai_client:
-                view = TTSView(important_phrases, self.openai_client)
-
-            await message.reply(embed=feedback_embed, view=view)
+            await message.reply(embed=feedback_embed)
 
             await self._save_sakubun_log_to_obsidian(japanese_question, user_answer, feedback_text)
-
-            if google_docs_enabled:
-                 try:
-                    gdoc_content = f"## 問題\n{japanese_question}\n\n## 回答\n{user_answer}\n\n## フィードバック\n{feedback_text}"
-                    await append_text_to_doc_async(
-                        text_to_append=gdoc_content,
-                        source_type="Sakubun Log",
-                        title=f"Sakubun - {japanese_question[:30]}... - {datetime.now(JST).strftime('%Y-%m-%d')}"
-                    )
-                    logging.info("Sakubun log saved to Google Docs.")
-                 except Exception as e_gdoc_sakubun:
-                      logging.error(f"Failed to save Sakubun log to Google Docs: {e_gdoc_sakubun}", exc_info=True)
 
         except Exception as e_fb:
             logging.error(f"瞬間英作文フィードバック/保存エラー: {e_fb}", exc_info=True)
@@ -843,7 +615,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
 
 # --- setup Function ---
 async def setup(bot):
-    openai_key = os.getenv("OPENAI_API_KEY")
     gemini_key = os.getenv("GEMINI_API_KEY")
     dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
     dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
@@ -862,7 +633,6 @@ async def setup(bot):
 
     cog_instance = EnglishLearningCog(
         bot,
-        openai_key,
         gemini_key,
         dropbox_refresh_token,
         dropbox_app_key,

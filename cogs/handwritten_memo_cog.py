@@ -132,8 +132,11 @@ class HandwrittenMemoCog(commands.Cog):
                     mode=dropbox.files.WriteMode('overwrite')
                 )
 
-            # Discordへのフィードバック
-            await message.reply(f"**手書きメモが追加されました** ({current_time})\n{formatted_text}")
+            # ★ 修正: 結果をEmbedで送信
+            embed = discord.Embed(title="📝 手書きメモを保存しました", description=formatted_text, color=discord.Color.orange())
+            embed.set_footer(text=f"Saved at {current_time}")
+            await message.reply(embed=embed)
+            
             await message.remove_reaction("⏳", self.bot.user)
             await message.add_reaction("✅")
             logging.info(f"手書きメモの処理が正常に完了しました: {message.jump_url}")

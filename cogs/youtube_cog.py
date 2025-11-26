@@ -74,13 +74,16 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"):
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.channel_id != self.youtube_summary_channel_id: return
         if str(payload.emoji) != BOT_PROCESS_TRIGGER_REACTION: return
-        if payload.user_id == self.bot.user.id: return
+        
+        # ★ 修正ポイント: Bot自身のリアクション以外は無視する (Botがトリガーを引くため)
+        if payload.user_id != self.bot.user.id: return
 
         channel = self.bot.get_channel(payload.channel_id)
         if not channel: return
         try: message = await channel.fetch_message(payload.message_id)
         except: return
 
+        # 既に処理中または完了済みの場合はスキップ
         if any(r.emoji in (PROCESS_START_EMOJI, PROCESS_COMPLETE_EMOJI) and r.me for r in message.reactions):
             return
 
@@ -124,6 +127,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"):
 
     async def _get_transcript(self, video_id: str):
         try:
+            # 字幕取得処理
             transcript = await asyncio.to_thread(YouTubeTranscriptApi.get_transcript, video_id, languages=['ja', 'en'])
             return " ".join([t['text'] for t in transcript])
         except: return None

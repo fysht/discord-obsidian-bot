@@ -253,8 +253,10 @@ class LifeLogCog(commands.Cog):
         active_logs[user_id]["memos"] = current_memos
         await self._save_active_logs(active_logs)
 
-        # ★ 修正: メモ入力結果を公開メッセージとして送信 (ephemeral=False)
-        await interaction.followup.send(f"✅ メモをタスクに追加しました。\n> `{memo_content}`", ephemeral=False)
+        # ★ 修正: メモ入力結果をEmbedで送信
+        embed = discord.Embed(title="✅ 作業メモを追加しました", description=memo_content, color=discord.Color.green())
+        embed.set_footer(text=f"Task: {active_logs[user_id]['task']}")
+        await interaction.followup.send(embed=embed, ephemeral=False)
 
     # --- 計画からのタスク選択ロジック ---
     async def prompt_plan_selection(self, interaction: discord.Interaction):
@@ -465,11 +467,16 @@ class LifeLogCog(commands.Cog):
             pass
 
         if isinstance(context, discord.Interaction) and not next_task_name:
-            msg = f"お疲れ様でした！記録しました: `{task_name} ({duration_str})`"
+            # ★ 修正: 完了メッセージをEmbed化
+            embed = discord.Embed(title="✅ タスク完了", color=discord.Color.light_grey())
+            embed.add_field(name="Task", value=task_name, inline=True)
+            embed.add_field(name="Duration", value=duration_str, inline=True)
+            embed.set_footer(text=f"{start_hm} - {end_hm}")
+            
             if context.response.is_done():
-                await context.followup.send(msg, ephemeral=True)
+                await context.followup.send(embed=embed, ephemeral=True)
             else:
-                await context.response.send_message(msg, ephemeral=True)
+                await context.response.send_message(embed=embed, ephemeral=True)
         
         return obsidian_line
 
