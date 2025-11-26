@@ -215,22 +215,35 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
         try:
             await message.add_reaction(PROCESS_START_EMOJI)
             
+            # ★ 修正: DiscordのEmbedからタイトル取得を試みる
+            embed_title = message.embeds[0].title if message.embeds else None
+
             # 1. コンテンツ取得
             page_title, content_text = await self._fetch_content(url)
-            if not content_text:
-                err_embed = discord.Embed(title="❌ エラー", description="コンテンツの取得に失敗しました。", color=discord.Color.red())
-                await message.reply(embed=err_embed, delete_after=10)
-                return
             
-            if not page_title: page_title = "無題のレシピ"
+            # タイトルの決定 (Embed > WebParser > Default)
+            final_title = embed_title or page_title or "無題のレシピ"
 
-            # 2. AI抽出 (失敗時はフォールバック)
-            recipe_data = await self._extract_recipe_data_with_ai(content_text, url, page_title)
+            recipe_data = None
             
+            # 2. AI抽出 (コンテンツが取得できた場合のみ)
+            if content_text:
+                recipe_data = await self._extract_recipe_data_with_ai(content_text, url, final_title)
+            
+            # ★ 修正: 抽出失敗、またはコンテンツ取得失敗時のフォールバック（シンプルモード）
             if not recipe_data:
-                err_embed = discord.Embed(title="❌ エラー", description="レシピ情報の抽出に失敗しました。", color=discord.Color.red())
-                await message.reply(embed=err_embed, delete_after=10)
-                return
+                logging.info(f"Recipe extraction failed or content unavailable. Falling back to simple mode for {url}")
+                recipe_data = {
+                    'title': final_title,
+                    'source': url,
+                    'created_at': datetime.datetime.now(JST).isoformat(),
+                    'is_fallback': True,
+                    'is_simple': True, # 新フラグ: 本文なし
+                    'ingredients': [],
+                    'instructions': [],
+                    'description': "（情報の自動抽出に失敗しました。リンク先を確認してください）",
+                    'tags': ["未分類"]
+                }
 
             # 3. 保存
             filename = await self._save_recipe_to_obsidian(recipe_data)
@@ -238,10 +251,12 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
 
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
             
-            title_display = recipe_data.get('title', page_title)
-            embed = discord.Embed(title="🍳 レシピを保存しました", description=f"**[{title_display}]({url})**", color=discord.Color.green())
+            embed = discord.Embed(title="🍳 レシピを保存しました", description=f"**[{recipe_data['title']}]({url})**", color=discord.Color.green())
             
-            if recipe_data.get('is_fallback'):
+            if recipe_data.get('is_simple'):
+                embed.set_footer(text=f"Saved to: Recipes/{filename} (Simple Mode)")
+                embed.add_field(name="⚠️ Note", value="情報の抽出に失敗したため、タイトルとリンクのみ保存しました。", inline=False)
+            elif recipe_data.get('is_fallback'):
                 embed.set_footer(text=f"Saved to: Recipes/{filename} (Text Mode)")
                 embed.add_field(name="⚠️ Note", value="構造化データの抽出に失敗したため、テキスト形式で保存しました。", inline=False)
             else:
@@ -351,7 +366,25 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
         file_path = f"{self.dropbox_vault_path}/Recipes/{filename}"
         daily_note_date = now.strftime('%Y-%m-%d')
 
-        if data.get('is_fallback'):
+        # ★ 修正: シンプルモード（抽出失敗時）の保存形式
+        if data.get('is_simple'):
+            tags_str = json.dumps(data.get('tags', []), ensure_ascii=False)
+            content = f"""---
+title: "{title}"
+tags: {tags_str}
+source: "{data['source']}"
+created: "{daily_note_date}"
+---
+# {title}
+
+- **Source:** {data['source']}
+- **Created:** [[{daily_note_date}]]
+
+> [!info]
+> 情報の自動抽出に失敗したため、タイトルとリンクのみ保存しました。
+"""
+
+        elif data.get('is_fallback'):
             # フォールバックモード（単純なMarkdown保存）
             content = f"""{data['markdown_content']}
 
