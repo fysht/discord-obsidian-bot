@@ -61,6 +61,64 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"):
         except Exception as e:
             logging.error(f"YouTubeCog: Initialization failed: {e}", exc_info=True)
 
+    # ★ 追加: 起動時に未処理メッセージをスキャンするメソッド
+    async def process_pending_summaries(self):
+        """未処理のYouTube要約リクエスト（📥リアクション付き）をスキャンして実行する"""
+        if not self.is_ready: return
+
+        channel = self.bot.get_channel(self.youtube_summary_channel_id)
+        if not channel:
+            logging.warning(f"YouTubeCog: チャンネルID {self.youtube_summary_channel_id} が見つかりません。")
+            return
+
+        logging.info(f"Scanning {channel.name} for pending YouTube summaries...")
+        
+        # 過去50件のメッセージを確認（必要に応じて増やしてください）
+        try:
+            async for message in channel.history(limit=50):
+                # 1. URLが含まれているか確認
+                if not YOUTUBE_URL_REGEX.search(message.content):
+                    continue
+
+                # 2. Bot自身の「📥」リアクションが付いているか確認
+                has_trigger = False
+                for reaction in message.reactions:
+                    if str(reaction.emoji) == BOT_PROCESS_TRIGGER_REACTION and reaction.me:
+                        has_trigger = True
+                        break
+                
+                if not has_trigger:
+                    continue
+
+                # 3. 既に処理中(⏳)または完了(✅)していないか確認
+                is_processed = False
+                for reaction in message.reactions:
+                    if str(reaction.emoji) in (PROCESS_START_EMOJI, PROCESS_COMPLETE_EMOJI) and reaction.me:
+                        is_processed = True
+                        break
+                
+                if is_processed:
+                    continue
+
+                # 4. 未処理なら実行
+                logging.info(f"Found pending summary: {message.jump_url}")
+                
+                # 二重処理防止のため、まずトリガーリアクションを消す
+                try:
+                    await message.remove_reaction(BOT_PROCESS_TRIGGER_REACTION, self.bot.user)
+                except:
+                    pass
+                
+                # 処理実行
+                await self._perform_summary(message.content.strip(), message)
+                
+                # API制限考慮のウェイト
+                await asyncio.sleep(2)
+                
+        except Exception as e:
+            logging.error(f"Error during pending scan: {e}", exc_info=True)
+
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if not self.is_ready or message.author.bot or message.channel.id != self.youtube_summary_channel_id: return
@@ -75,7 +133,7 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"):
         if payload.channel_id != self.youtube_summary_channel_id: return
         if str(payload.emoji) != BOT_PROCESS_TRIGGER_REACTION: return
         
-        # ★ 修正ポイント: Bot自身のリアクション以外は無視する (Botがトリガーを引くため)
+        # Bot自身によるリアクションのみをトリガーとする
         if payload.user_id != self.bot.user.id: return
 
         channel = self.bot.get_channel(payload.channel_id)
@@ -83,7 +141,6 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"):
         try: message = await channel.fetch_message(payload.message_id)
         except: return
 
-        # 既に処理中または完了済みの場合はスキップ
         if any(r.emoji in (PROCESS_START_EMOJI, PROCESS_COMPLETE_EMOJI) and r.me for r in message.reactions):
             return
 
@@ -127,7 +184,6 @@ class YouTubeCog(commands.Cog, name="YouTubeCog"):
 
     async def _get_transcript(self, video_id: str):
         try:
-            # 字幕取得処理
             transcript = await asyncio.to_thread(YouTubeTranscriptApi.get_transcript, video_id, languages=['ja', 'en'])
             return " ".join([t['text'] for t in transcript])
         except: return None

@@ -31,11 +31,42 @@ PROCESS_ERROR_EMOJI = '❌'
 RECIPE_INDEX_PATH = f"{os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')}/.bot/recipe_index.json"
 
 # --- UI Components ---
+
 class RecipeDetailView(discord.ui.View):
     def __init__(self, recipe_data):
         super().__init__(timeout=None)
         if recipe_data.get('source'):
-            self.add_item(discord.ui.Button(label="元記事を開く", url=recipe_data.get('source', '')))
+            self.add_item(discord.ui.Button(label="元記事を開く", url=recipe_data['source']))
+
+class RecipeDeleteSelect(discord.ui.Select):
+    def __init__(self, cog, recipes):
+        self.cog = cog
+        self.recipes = recipes
+        # 最新25件を表示
+        options = []
+        for i, recipe in enumerate(recipes[:25]):
+            label = recipe.get('title', '無題')[:90]
+            options.append(discord.SelectOption(
+                label=f"{i+1}. {label}",
+                value=str(i),
+                description=recipe.get('added_at', '')[:10]
+            ))
+        
+        super().__init__(placeholder="削除するレシピを選択してください...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        index = int(self.values[0])
+        if 0 <= index < len(self.recipes):
+            target_recipe = self.recipes[index]
+            await self.cog._delete_recipe(target_recipe, interaction)
+        else:
+            await interaction.followup.send("❌ レシピが見つかりませんでした。", ephemeral=True)
+
+class RecipeDeleteView(discord.ui.View):
+    def __init__(self, cog, recipes):
+        super().__init__(timeout=60)
+        self.add_item(RecipeDeleteSelect(cog, recipes))
 
 class RecipeListView(discord.ui.View):
     def __init__(self, cog, recipes, page=0):
@@ -56,6 +87,7 @@ class RecipeListView(discord.ui.View):
         end = start + self.items_per_page
         current_items = self.recipes[start:end]
         
+        # 詳細表示用セレクトメニュー
         options = []
         for i, recipe in enumerate(current_items):
             label = recipe.get('title', '無題')[:90]
@@ -66,6 +98,7 @@ class RecipeListView(discord.ui.View):
                 value=str(start + i)
             ))
         
+        # 既存のセレクトメニューを削除して再追加
         for item in self.children:
             if isinstance(item, discord.ui.Select):
                 self.remove_item(item)
@@ -96,12 +129,12 @@ class RecipeListView(discord.ui.View):
             self.page += 1
             await self.update_message(interaction)
 
-    @discord.ui.button(label="🎲 ランダム", style=discord.ButtonStyle.success, row=0)
-    async def random_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.recipes: return
-        recipe = random.choice(self.recipes)
-        embed = self.cog.create_recipe_detail_embed(recipe)
-        await interaction.response.send_message(embed=embed, view=RecipeDetailView(recipe), ephemeral=True)
+    @discord.ui.button(label="🗑️ 削除", style=discord.ButtonStyle.danger, row=2)
+    async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.recipes:
+            await interaction.response.send_message("削除できるレシピがありません。", ephemeral=True)
+            return
+        await interaction.response.send_message("削除するレシピを選択してください:", view=RecipeDeleteView(self.cog, self.recipes), ephemeral=True)
 
     async def select_callback(self, interaction: discord.Interaction):
         index = int(interaction.data["values"][0])
@@ -182,44 +215,45 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
         try:
             await message.add_reaction(PROCESS_START_EMOJI)
             
-            # 1. コンテンツ取得 (タイトルと本文を取得)
+            # 1. コンテンツ取得
             page_title, content_text = await self._fetch_content(url)
             if not content_text:
                 err_embed = discord.Embed(title="❌ エラー", description="コンテンツの取得に失敗しました。", color=discord.Color.red())
                 await message.reply(embed=err_embed, delete_after=10)
                 return
             
-            if not page_title:
-                 page_title = "無題のレシピ"
+            if not page_title: page_title = "無題のレシピ"
 
-            # 2. AI抽出 (タイトルが空の場合はページタイトルを使用)
-            recipe_data = await self._extract_recipe_data_with_ai(content_text, url)
+            # 2. AI抽出 (失敗時はフォールバック)
+            recipe_data = await self._extract_recipe_data_with_ai(content_text, url, page_title)
+            
             if not recipe_data:
-                err_embed = discord.Embed(title="❌ エラー", description="レシピ情報の抽出に失敗しました。\n(JSON解析エラー)", color=discord.Color.red())
+                err_embed = discord.Embed(title="❌ エラー", description="レシピ情報の抽出に失敗しました。", color=discord.Color.red())
                 await message.reply(embed=err_embed, delete_after=10)
                 return
-            
-            # AIがタイトルを抽出できなかった場合、ページタイトルで補完
-            if not recipe_data.get('title') or recipe_data['title'] == "料理名":
-                recipe_data['title'] = page_title
 
-            # 3. 保存 (Obsidianにはシンプルに保存)
+            # 3. 保存
             filename = await self._save_recipe_to_obsidian(recipe_data)
             await self._update_recipe_index(recipe_data, filename)
 
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
             
-            embed = discord.Embed(title="🍳 レシピを保存しました", description=f"**[{recipe_data['title']}]({url})**", color=discord.Color.green())
-            tags = ", ".join(recipe_data.get('tags', []))
-            if tags:
-                embed.add_field(name="🏷️ タグ", value=tags)
-            ingredients = recipe_data.get('ingredients', [])
-            if ingredients:
-                ing_preview = "\n".join([f"• {i}" for i in ingredients[:5]])
-                if len(ingredients) > 5: ing_preview += "\n..."
-                embed.add_field(name="🛒 材料", value=ing_preview)
-                
-            embed.set_footer(text=f"Saved to: Recipes/{filename}")
+            title_display = recipe_data.get('title', page_title)
+            embed = discord.Embed(title="🍳 レシピを保存しました", description=f"**[{title_display}]({url})**", color=discord.Color.green())
+            
+            if recipe_data.get('is_fallback'):
+                embed.set_footer(text=f"Saved to: Recipes/{filename} (Text Mode)")
+                embed.add_field(name="⚠️ Note", value="構造化データの抽出に失敗したため、テキスト形式で保存しました。", inline=False)
+            else:
+                tags = ", ".join(recipe_data.get('tags', []))
+                if tags: embed.add_field(name="🏷️ タグ", value=tags)
+                ingredients = recipe_data.get('ingredients', [])
+                if ingredients:
+                    ing_preview = "\n".join([f"• {i}" for i in ingredients[:5]])
+                    if len(ingredients) > 5: ing_preview += "\n..."
+                    embed.add_field(name="🛒 材料", value=ing_preview)
+                embed.set_footer(text=f"Saved to: Recipes/{filename}")
+            
             if recipe_data.get('image_url'):
                 embed.set_thumbnail(url=recipe_data['image_url'])
                 
@@ -234,25 +268,23 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
             except: pass
 
     async def _fetch_content(self, url: str) -> tuple[str | None, str | None]:
-        """タイトルと本文の両方を返すように変更"""
         if parse_url_with_readability:
             try:
                 loop = asyncio.get_running_loop()
-                # web_parser.parse_url_with_readability は (title, content) を返す
                 title, content = await loop.run_in_executor(None, parse_url_with_readability, url)
                 return title, content
             except: pass
         return None, None
 
-    async def _extract_recipe_data_with_ai(self, text: str, url: str) -> dict:
+    async def _extract_recipe_data_with_ai(self, text: str, url: str, page_title: str) -> dict:
+        # アプローチ1: 構造化データ(JSON)抽出を試みる
         prompt = f"""
         以下のテキストから料理レシピの情報を抽出し、JSON形式のみを出力してください。
-        余計な会話やMarkdownのコードブロック記号（```jsonなど）は含めないでください。
-
+        
         出力フォーマット:
         {{
             "title": "料理名",
-            "tags": ["メイン食材", "ジャンル", "特性"],
+            "tags": ["メイン食材", "ジャンル"],
             "ingredients": ["材料1 分量", "材料2 分量"],
             "instructions": ["手順1", "手順2"],
             "description": "簡単な説明",
@@ -264,46 +296,93 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
         try:
             response = await self.gemini_model.generate_content_async(prompt)
             raw_text = response.text.strip()
-            
             json_match = re.search(r'\{.*\}', raw_text, re.DOTALL)
             if json_match:
                 json_str = json_match.group(0)
-            else:
-                json_str = raw_text.replace("```json", "").replace("```", "")
-
-            data = json.loads(json_str)
-            data['source'] = url
-            data['created_at'] = datetime.datetime.now(JST).isoformat()
-            return data
+                data = json.loads(json_str)
+                data['source'] = url
+                data['created_at'] = datetime.datetime.now(JST).isoformat()
+                data['is_fallback'] = False
+                if not data.get('title') or data['title'] == "料理名":
+                    data['title'] = page_title
+                return data
         except Exception as e:
-            logging.error(f"AI extraction failed: {e}")
-            if 'response' in locals() and hasattr(response, 'text'):
-                logging.error(f"Raw AI response: {response.text}")
+            logging.warning(f"JSON extraction failed, trying fallback: {e}")
+
+        # アプローチ2 (フォールバック): Markdownテキストとして要約
+        logging.info("Switching to fallback text extraction.")
+        fallback_prompt = f"""
+        以下のテキストを、Obsidianに保存するためのMarkdown形式のレシピノートとして整理してください。
+        JSONは不要です。以下の見出しを使って構成してください。
+        
+        # {page_title}
+        
+        ## 概要
+        (料理の概要)
+        
+        ## 材料
+        (箇条書きで)
+        
+        ## 作り方
+        (番号付きリストで)
+        
+        --- テキスト ---
+        {text[:15000]}
+        """
+        try:
+            response = await self.gemini_model.generate_content_async(fallback_prompt)
+            return {
+                'title': page_title,
+                'source': url,
+                'created_at': datetime.datetime.now(JST).isoformat(),
+                'is_fallback': True,
+                'markdown_content': response.text.strip()
+            }
+        except Exception as e:
+            logging.error(f"Fallback extraction failed: {e}")
             return None
 
     async def _save_recipe_to_obsidian(self, data: dict) -> str:
-        """
-        Obsidianの /Recipes フォルダに保存する。
-        ファイル名はタイムスタンプ + タイトル。
-        内容はタイトル、URL、日付のみのシンプル形式。
-        """
         now = datetime.datetime.now(JST)
         timestamp = now.strftime('%Y%m%d%H%M%S')
-        
         title = data.get("title", "Untitled")
         safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)
         filename = f"{timestamp}-{safe_title}.md"
         file_path = f"{self.dropbox_vault_path}/Recipes/{filename}"
-        
         daily_note_date = now.strftime('%Y-%m-%d')
 
-        # 内容をシンプルにする
-        content = f"""# {title}
+        if data.get('is_fallback'):
+            # フォールバックモード（単純なMarkdown保存）
+            content = f"""{data['markdown_content']}
 
+---
 - **Source:** {data['source']}
+- **Created:** [[{daily_note_date}]]
+"""
+        else:
+            # 通常モード（構造化データから生成）
+            tags_str = json.dumps(data.get('tags', []), ensure_ascii=False)
+            content = f"""---
+title: "{title}"
+tags: {tags_str}
+source: "{data['source']}"
+created: "{daily_note_date}"
+cover: "{data.get('image_url', '')}"
+---
+# {title}
 
+## 概要
+{data.get('description', '')}
+
+## 材料
+{chr(10).join([f"- {i}" for i in data.get('ingredients', [])])}
+
+## 作り方
+{chr(10).join([f"{idx+1}. {step}" for idx, step in enumerate(data.get('instructions', []))])}
+
+---
+[Source]({data['source']})
 [[{daily_note_date}]]
-
 """
         await asyncio.to_thread(
             self.dbx.files_upload, content.encode('utf-8'), file_path, mode=WriteMode('overwrite')
@@ -318,15 +397,17 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
             except (ApiError, json.JSONDecodeError):
                 index = []
 
+            # 既存のエントリを削除（重複防止）
+            index = [item for item in index if item.get('filename') != filename]
+            
             new_entry = {
                 "title": data['title'],
-                "tags": data['tags'],
+                "tags": data.get('tags', []),
                 "filename": filename,
                 "source": data['source'],
-                "ingredients": data['ingredients'],
+                "ingredients": data.get('ingredients', []), # フォールバック時は空リストになる可能性あり
                 "added_at": data['created_at']
             }
-            index = [item for item in index if item['source'] != data['source']]
             index.insert(0, new_entry)
 
             await asyncio.to_thread(
@@ -338,6 +419,43 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
         except Exception as e:
             logging.error(f"Failed to update recipe index: {e}")
 
+    async def _delete_recipe(self, recipe_entry: dict, interaction: discord.Interaction):
+        filename = recipe_entry.get('filename')
+        if not filename:
+            await interaction.followup.send("❌ ファイル名が不明なため削除できません。", ephemeral=True)
+            return
+            
+        file_path = f"{self.dropbox_vault_path}/Recipes/{filename}"
+        
+        try:
+            # 1. ファイル削除
+            await asyncio.to_thread(self.dbx.files_delete_v2, file_path)
+            
+            # 2. インデックス更新
+            try:
+                _, res = await asyncio.to_thread(self.dbx.files_download, RECIPE_INDEX_PATH)
+                index = json.loads(res.content.decode('utf-8'))
+                new_index = [r for r in index if r.get('filename') != filename]
+                
+                await asyncio.to_thread(
+                    self.dbx.files_upload,
+                    json.dumps(new_index, ensure_ascii=False, indent=2).encode('utf-8'),
+                    RECIPE_INDEX_PATH,
+                    mode=WriteMode('overwrite')
+                )
+            except Exception as e_idx:
+                logging.error(f"インデックス更新エラー: {e_idx}")
+            
+            await interaction.followup.send(f"🗑️ レシピ「{recipe_entry.get('title')}」を削除しました。", ephemeral=True)
+            
+        except ApiError as e:
+            if isinstance(e.error, dropbox.files.DeleteError) and e.error.is_path_lookup() and e.error.get_path_lookup().is_not_found():
+                 await interaction.followup.send("⚠️ ファイルが見つかりませんでしたが、インデックスからは削除を試みます。", ephemeral=True)
+                 # ファイルがなくてもインデックスからは消す処理を入れるべきだが、ここでは簡易的に
+            else:
+                logging.error(f"削除エラー: {e}")
+                await interaction.followup.send("❌ 削除中にエラーが発生しました。", ephemeral=True)
+
     @app_commands.command(name="recipes", description="保存済みのレシピ一覧を表示します。")
     @app_commands.describe(query="検索キーワード")
     async def recipes_command(self, interaction: discord.Interaction, query: str = None):
@@ -347,7 +465,7 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
             all_recipes = json.loads(res.content.decode('utf-8'))
         except Exception as e:
             if isinstance(e, ApiError) and isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                 await interaction.followup.send("📂 保存されたレシピはまだありません。", ephemeral=True)
+                 await interaction.followup.send("📂 まだ保存されたレシピはありません。", ephemeral=True)
             else:
                  logging.error(f"Recipe load error: {e}")
                  await interaction.followup.send("❌ レシピデータの読み込みに失敗しました。", ephemeral=True)
@@ -392,10 +510,16 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
     def create_recipe_detail_embed(self, recipe):
         embed = discord.Embed(title=f"🍽️ {recipe['title']}", url=recipe['source'], color=discord.Color.green())
         ingredients = recipe.get('ingredients', [])
-        ing_text = "\n".join([f"• {i}" for i in ingredients[:15]])
-        if len(ingredients) > 15: ing_text += "\n..."
-        embed.add_field(name="🛒 材料", value=ing_text, inline=False)
-        embed.add_field(name="🏷️ タグ", value=", ".join(recipe.get('tags', [])), inline=False)
+        if ingredients:
+            ing_text = "\n".join([f"• {i}" for i in ingredients[:15]])
+            if len(ingredients) > 15: ing_text += "\n..."
+            embed.add_field(name="🛒 材料", value=ing_text, inline=False)
+        
+        tags = recipe.get('tags', [])
+        if tags:
+            embed.add_field(name="🏷️ タグ", value=", ".join(tags), inline=False)
+        
+        embed.set_footer(text=f"Added: {recipe.get('added_at', '')[:10]}")
         return embed
 
 async def setup(bot: commands.Bot):
