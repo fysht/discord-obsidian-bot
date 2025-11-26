@@ -69,8 +69,7 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
         self.cog = cog
         self.schedule.default = existing_schedule_text
         self.log_summary_display.default = log_summary
-        # log_summary_display は表示専用だが、Modalにはreadonlyがないため入力可能に見える（が処理では無視する）
-        self.add_item(self.log_summary_display) 
+        # ★修正: 自動追加されるため、self.add_item は不要（削除済み）
 
     async def on_submit(self, interaction: discord.Interaction):
         logging.info(f"MorningPlanningModal on_submit called by {interaction.user}")
@@ -91,34 +90,30 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
         logging.error(f"Error in MorningPlanningModal: {error}", exc_info=True)
         await interaction.followup.send(f"❌ エラーが発生しました: {error}", ephemeral=True)
 
-# --- 朝の計画用View ---
+# --- 朝の計画用View (永続化対応) ---
 class MorningPlanningView(discord.ui.View):
-    def __init__(self, cog, existing_schedule_text: str, log_summary: str):
-        super().__init__(timeout=7200)
+    def __init__(self, cog):
+        # 永続化のため timeout=None に設定
+        super().__init__(timeout=None)
         self.cog = cog
-        self.existing_schedule_text = existing_schedule_text
-        self.log_summary = log_summary
-        self.message = None
 
-    @discord.ui.button(label="今日の計画を立てる", style=discord.ButtonStyle.success, emoji="☀️")
+    # custom_id を固定することで、Bot再起動後もこのIDのボタンイベントをフックできる
+    @discord.ui.button(label="今日の計画を立てる", style=discord.ButtonStyle.success, emoji="☀️", custom_id="journal_morning_plan")
     async def plan_day(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            # ボタンが押された時点で最新の予定を取得する (Viewにデータを持たせない)
+            events = await self.cog._get_todays_events()
+            event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or "予定なし"
+            
+            # 昨日のサマリー (現時点ではプレースホルダー。必要に応じてObsidianから取得処理を追加可能)
+            log_summary = "（昨日のサマリーはここには表示されません）" 
+
             await interaction.response.send_modal(
-                MorningPlanningModal(self.cog, self.existing_schedule_text, self.log_summary)
+                MorningPlanningModal(self.cog, event_text, log_summary)
             )
-            # ボタンを押したら元のメッセージのボタンは消す（二重投稿防止）
-            if self.message: 
-                try: await self.message.edit(view=None)
-                except: pass
-            self.stop()
         except Exception as e:
              logging.error(f"Error sending MorningPlanningModal: {e}", exc_info=True)
              await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
-
-    async def on_timeout(self):
-        if self.message:
-            try: await self.message.edit(view=None)
-            except: pass
 
 
 # --- 夜の振り返り用モーダル ---
@@ -174,27 +169,20 @@ class NightlyReviewModal(discord.ui.Modal, title="今日一日の振り返り"):
         await interaction.followup.send(f"❌ エラーが発生しました: {error}", ephemeral=True)
 
 
-# --- 夜の振り返り用View ---
+# --- 夜の振り返り用View (永続化対応) ---
 class NightlyJournalView(discord.ui.View):
     def __init__(self, cog):
-        super().__init__(timeout=7200)
+        # 永続化のため timeout=None に設定
+        super().__init__(timeout=None)
         self.cog = cog
-        self.message = None
 
-    @discord.ui.button(label="今日を振り返る", style=discord.ButtonStyle.primary, emoji="📝")
+    @discord.ui.button(label="今日を振り返る", style=discord.ButtonStyle.primary, emoji="📝", custom_id="journal_nightly_review")
     async def write_journal(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.send_modal(NightlyReviewModal(self.cog))
-            if self.message: await self.message.edit(view=None)
-            self.stop()
         except Exception as e:
             logging.error(f"NightlyJournalView error: {e}", exc_info=True)
             await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
-
-    async def on_timeout(self):
-        if self.message:
-            try: await self.message.edit(view=None)
-            except: pass
 
 
 # --- Cog本体 ---
@@ -256,9 +244,13 @@ class JournalCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
+            # ★ Bot起動時に永続化Viewを登録する
+            self.bot.add_view(MorningPlanningView(self))
+            self.bot.add_view(NightlyJournalView(self))
+            
             await self.bot.wait_until_ready()
             
-            # スケジュール設定 (省略可だが維持)
+            # スケジュール設定
             for path, task in [(self.planning_schedule_path, self.daily_planning_task), (self.journal_schedule_path, self.prompt_daily_journal)]:
                 sched = await self._load_schedule_from_db(path)
                 if sched:
@@ -300,19 +292,18 @@ class JournalCog(commands.Cog):
         if not channel: return
 
         try:
-            # 昨日のサマリーを取得 (Obsidianの昨日のノートからLife Logs Summaryを取得するのが理想だが、簡易化)
-            lifelog_summary = "（昨日のサマリーはここには表示されません）"
-
+            # メッセージ表示用のデータを取得
             events = await self._get_todays_events()
             event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or "予定なし"
-            self.today_events_text_cache = event_text
-
-            view = MorningPlanningView(self, event_text, lifelog_summary)
+            
+            # Viewは永続化するためデータを渡さずに初期化
+            view = MorningPlanningView(self)
+            
             embed = discord.Embed(title="☀️ 今日の計画を立てましょう", description="1日の始まりです。ハイライトとスケジュールを決めましょう。", color=discord.Color.orange())
             embed.add_field(name="📅 カレンダーの予定", value=f"```\n{event_text}\n```", inline=False)
             embed.set_footer(text="下のボタンを押して計画を入力してください")
             
-            view.message = await channel.send(embed=embed, view=view)
+            await channel.send(embed=embed, view=view)
         except Exception as e:
             logging.error(f"Planning task error: {e}")
 
@@ -324,7 +315,7 @@ class JournalCog(commands.Cog):
         if not channel: return
 
         try:
-            # ★ 今日のライフログを取得して表示
+            # 今日のライフログを取得して表示
             todays_log = await self._get_todays_lifelog_content()
             
             embed = discord.Embed(
@@ -337,18 +328,15 @@ class JournalCog(commands.Cog):
             embed.add_field(name="⏱️ 今日のライフログ", value=f"```markdown\n{display_log}\n```", inline=False)
             embed.set_footer(text="下のボタンを押して振り返りを入力してください")
 
+            # Viewは永続化対応版を使用
             view = NightlyJournalView(self)
-            view.message = await channel.send(embed=embed, view=view)
+            await channel.send(embed=embed, view=view)
         except Exception as e:
             logging.error(f"Journal prompt error: {e}")
 
     # --- データ保存・AIコメント処理 ---
     
     def _format_bullet_list(self, text: str, indent: str = "") -> str:
-        """
-        テキストを改行で分割し、各行に '- ' を付与する。
-        既に '- ' 等で始まっている場合はそのままにする。
-        """
         if not text: return ""
         lines = []
         for line in text.strip().split('\n'):

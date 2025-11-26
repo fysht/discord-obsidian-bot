@@ -3,7 +3,8 @@ import sys
 import asyncio
 import logging
 import dropbox
-from dropbox.exceptions import ApiError, DownloadError
+from dropbox.exceptions import ApiError
+from dropbox.files import DownloadError # ★修正: ここからインポートする
 import google.generativeai as genai
 from dotenv import load_dotenv
 import datetime
@@ -29,7 +30,11 @@ DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
 DROPBOX_VAULT_PATH = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+try:
+    JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+except Exception:
+    # tzdataがない環境へのフォールバック（基本はインストール推奨）
+    JST = datetime.timezone(datetime.timedelta(hours=9))
 
 async def generate_summary(period: str, target_date_str: str):
     """
@@ -56,7 +61,13 @@ async def generate_summary(period: str, target_date_str: str):
         return
 
     # 2. 対象期間のファイルを収集
-    target_date = datetime.datetime.strptime(target_date_str, '%Y-%m-%d').date()
+    try:
+        target_date = datetime.datetime.strptime(target_date_str, '%Y-%m-%d').date()
+    except ValueError:
+        logging.error(f"日付形式エラー: {target_date_str}")
+        print("ERROR: 日付形式が不正です。")
+        return
+
     files_to_read = []
 
     if period == "daily":
@@ -84,12 +95,11 @@ async def generate_summary(period: str, target_date_str: str):
             _, res = dbx.files_download(file_path)
             content = res.content.decode('utf-8')
             
-            # 日次サマリーの場合は、特定のセクションだけ抽出すると精度が上がる
-            # (ここではファイル全体を結合する簡易実装とします)
             full_text += f"\n--- Date: {file_path.split('/')[-1]} ---\n{content}\n"
             
         except ApiError as e:
             # ファイルがない日はスキップ
+            # ★ 修正箇所: DownloadError は dropbox.files からインポートしたものを使用
             if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                 continue
             else:
