@@ -127,7 +127,8 @@ class WebClipCog(commands.Cog):
 
             if message.embeds:
                 embed_title = message.embeds[0].title
-                if embed_title and embed_title != discord.Embed.Empty:
+                # ★修正: discord.Embed.Empty は廃止されたため、Noneチェックに変更
+                if embed_title:
                     title = embed_title
                     logging.info(f"Title found via Discord embed: {title}")
             
