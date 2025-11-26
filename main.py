@@ -10,7 +10,7 @@ import re
 try:
     from obsidian_handler import add_memo_async
 except ImportError:
-    logging.error("obsidian_handler.pyが見つかりません。起動時メモ処理が無効になります。")
+    logging.error("obsidian_handler.pyが見つからないため、起動時メモ処理が無効になります。")
     add_memo_async = None
 import dropbox
 
@@ -51,9 +51,9 @@ class MyBot(commands.Bot):
             if filename == "__pycache__":
                 continue
             
-            # ★ 修正: YouTubeCog と ReceptionCog はローカルワーカーに任せるためスキップ
-            # RecipeCog はここでロードさせるため、スキップリストには含めない
-            if filename == 'youtube_cog.py' or filename == 'reception_cog.py':
+            # ★ 修正: youtube_cog.py はローカルワーカー(重い処理)用なのでRenderではスキップ
+            # ★ 修正: reception_cog.py はRender(受付)用なので読み込む！
+            if filename == 'youtube_cog.py':
                 logging.info(f" -> cogs/{filename} はローカルワーカーが担当するためスキップします。")
                 continue
 
