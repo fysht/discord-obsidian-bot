@@ -44,7 +44,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
     def __init__(self, bot: commands.Bot, gemini_api_key, dropbox_refresh_token, dropbox_app_key, dropbox_app_secret):
         self.bot = bot
         genai.configure(api_key=gemini_api_key)
-        self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview") # Use pro model
+        self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") # Use pro model
         self.dropbox_refresh_token = dropbox_refresh_token
         self.dropbox_app_key = dropbox_app_key
         self.dropbox_app_secret = dropbox_app_secret
@@ -213,7 +213,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         3.  **自然な訂正:** もしユーザーの英語に明らかな誤りや不自然な点があれば、会話の流れの中でさりげなく修正してください。例: User: "I go park yesterday." -> AI: "Oh, you went to the park yesterday! Cool. Did you have fun?"
         4.  **常に英語:** あなたの返答は常に自然な英語で行ってください。
         """
-        model_with_instruction = genai.GenerativeModel("gemini-3-pro-preview", system_instruction=system_instruction)
+        model_with_instruction = genai.GenerativeModel("gemini-2.5-pro", system_instruction=system_instruction)
 
         chat_session = None
         response_text = ""

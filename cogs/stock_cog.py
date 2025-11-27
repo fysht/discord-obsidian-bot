@@ -129,7 +129,7 @@ class StockCog(commands.Cog):
                     app_secret=self.dropbox_app_secret
                 )
                 genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview")
+                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
                 self.is_ready = True
                 logging.info("StockCog initialized.")
             except Exception as e:

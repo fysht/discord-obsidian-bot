@@ -173,7 +173,7 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
             self.dbx.users_get_current_account()
             
             genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview")
+            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
             
             self.is_ready = True
             logging.info("RecipeCog: Initialized successfully.")

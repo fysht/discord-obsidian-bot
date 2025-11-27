@@ -414,7 +414,7 @@ class BookCog(commands.Cog):
                 self.session = aiohttp.ClientSession()
                 self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
                 genai.configure(api_key=self.gemini_api_key)
-                self.gemini_vision_model = genai.GenerativeModel("gemini-3-pro-preview")
+                self.gemini_vision_model = genai.GenerativeModel("gemini-2.5-pro")
                 self.is_ready = True
                 logging.info("BookCog initialized.")
             except Exception as e:

@@ -200,7 +200,7 @@ class JournalCog(commands.Cog):
         try:
             self.session = aiohttp.ClientSession()
             genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-3-pro-preview") 
+            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") 
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
 
             self.planning_schedule_path = PLANNING_SCHEDULE_PATH

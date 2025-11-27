@@ -170,7 +170,7 @@ class YouTubeCog(commands.Cog):
             
             # 2. AIによる要約生成
             # ★修正: 実在する安定版モデル名に変更
-            model = genai.GenerativeModel("gemini-3-pro-preview")
+            model = genai.GenerativeModel("gemini-2.5-pro")
             
             concise_prompt = (
                 "以下のYouTube動画の文字起こし全文を元に、重要なポイントを3～5点で簡潔にまとめてください。\n"

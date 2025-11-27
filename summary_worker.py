@@ -54,7 +54,7 @@ async def generate_summary(period: str, target_date_str: str):
             app_secret=DROPBOX_APP_SECRET
         )
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-3-pro-preview")
+        model = genai.GenerativeModel("gemini-2.5-pro")
     except Exception as e:
         logging.error(f"クライアント初期化エラー: {e}")
         print(f"ERROR: 初期化エラー: {e}")
