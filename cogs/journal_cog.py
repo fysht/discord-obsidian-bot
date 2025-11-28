@@ -69,18 +69,35 @@ class MorningPlanningModal(discord.ui.Modal, title="今日の計画"):
         self.cog = cog
         self.schedule.default = existing_schedule_text
         self.log_summary_display.default = log_summary
-        # ★修正: 自動追加されるため、self.add_item は不要（削除済み）
 
     async def on_submit(self, interaction: discord.Interaction):
         logging.info(f"MorningPlanningModal on_submit called by {interaction.user}")
         # 公開メッセージとして送信するため ephemeral=False
         await interaction.response.defer(ephemeral=False, thinking=True)
         try:
+            # 1. Obsidianへの保存とDiscord投稿
             await self.cog._save_planning_entry(
                 interaction,
                 self.highlight.value,
                 self.schedule.value
             )
+
+            # 2. Googleカレンダーへの登録 (追加機能)
+            schedule_text = self.schedule.value
+            if schedule_text:
+                # スケジュールテキストを解析
+                schedule_list = self.cog._parse_schedule_text(schedule_text)
+                
+                # 今日の日付を取得
+                now = datetime.now(JST)
+                today = now.date()
+                
+                # カレンダー登録実行
+                if await self.cog._register_schedule_to_calendar(interaction, schedule_list, today):
+                    await interaction.followup.send("✅ Googleカレンダーに予定を追加しました。", ephemeral=True)
+                else:
+                    await interaction.followup.send("⚠️ Googleカレンダーへの追加に失敗しました（設定を確認してください）。", ephemeral=True)
+
         except Exception as e:
              logging.error(f"MorningPlanningModal on_submit error: {e}", exc_info=True)
              # エラー時はephemeralで通知
@@ -105,7 +122,7 @@ class MorningPlanningView(discord.ui.View):
             events = await self.cog._get_todays_events()
             event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or "予定なし"
             
-            # 昨日のサマリー (現時点ではプレースホルダー。必要に応じてObsidianから取得処理を追加可能)
+            # 昨日のサマリー (現時点ではプレースホルダー)
             log_summary = "（昨日のサマリーはここには表示されません）" 
 
             await interaction.response.send_modal(
@@ -467,9 +484,8 @@ class JournalCog(commands.Cog):
             logging.error(f"Obsidian save error: {e}")
             return False
 
-    # --- 既存のカレンダー関連ヘルパー (省略なし) ---
+    # --- カレンダー関連ヘルパー ---
     async def _get_todays_events(self):
-        # (既存の実装と同じ)
         if not self.calendar_service: return []
         try:
             now = datetime.now(JST)
@@ -480,20 +496,74 @@ class JournalCog(commands.Cog):
         except: return []
 
     def _parse_schedule_text(self, text):
-        # (既存の実装と同じ: 正規表現でパース)
         events = []
         for line in text.split('\n'):
-            m = TIME_SCHEDULE_REGEX.match(line.strip())
+            line = line.strip()
+            if not line: continue
+            
+            m = TIME_SCHEDULE_REGEX.match(line)
             if m:
                 start, end, summary = m.groups()
                 events.append({"start_time": start, "end_time": end or start, "summary": summary})
+            else:
+                # 正規表現にマッチしなくても、何らかのテキストがあれば予定として扱う（時間は終日扱い等）
+                # ここでは簡易的に 09:00 開始とする等のフォールバックも考えられるが、
+                # 今回はスキップまたはエラーログとする
+                logging.warning(f"Skipping line in schedule parsing: {line}")
         return events
 
-    async def _register_schedule_to_calendar(self, interaction, schedule, target_date):
-        # (既存の実装と同じ)
-        if not self.calendar_service: return False
-        # ... (登録処理: 詳細は省略されていますが元のコードを保持してください) ...
-        return True
+    async def _register_schedule_to_calendar(self, interaction, schedule_list, target_date):
+        if not self.calendar_service:
+            logging.error("Google Calendar service not initialized.")
+            return False
+        
+        try:
+            for item in schedule_list:
+                start_str = item["start_time"]
+                end_str = item["end_time"]
+                summary = item["summary"]
+
+                # 時間のパース (HH:MM or HMM or HHMM)
+                def parse_time_str(t_str):
+                    if ':' in t_str:
+                        return datetime.strptime(t_str, "%H:%M").time()
+                    elif len(t_str) == 3:
+                        return datetime.strptime(t_str, "%H%M").time()
+                    elif len(t_str) == 4:
+                        return datetime.strptime(t_str, "%H%M").time()
+                    return None
+
+                start_time = parse_time_str(start_str)
+                end_time = parse_time_str(end_str)
+                
+                if not start_time: continue
+                if not end_time: end_time = start_time
+
+                # datetimeオブジェクトの作成 (JST)
+                start_dt = datetime.combine(target_date, start_time).replace(tzinfo=JST)
+                end_dt = datetime.combine(target_date, end_time).replace(tzinfo=JST)
+                
+                # 終了時刻が開始時刻より前の場合は日付をまたいだとみなす（例：23:00~01:00）
+                if end_dt < start_dt:
+                    end_dt += timedelta(days=1)
+                
+                # 終了時刻が同じ場合はデフォルトで1時間後に設定
+                if end_dt == start_dt:
+                    end_dt += timedelta(hours=1)
+
+                event = {
+                    'summary': summary,
+                    'start': {'dateTime': start_dt.isoformat()},
+                    'end': {'dateTime': end_dt.isoformat()},
+                }
+
+                await asyncio.to_thread(self.calendar_service.events().insert(calendarId=self.google_calendar_id, body=event).execute)
+                logging.info(f"Created calendar event: {summary} at {start_dt}")
+                
+            return True
+        except Exception as e:
+            logging.error(f"Failed to register to calendar: {e}", exc_info=True)
+            return False
 
     async def _load_schedule_from_db(self, path):
         try:

@@ -28,22 +28,23 @@ PROCESS_START_EMOJI = '⏳'
 PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
 
-# 銘柄コードの正規表現 (例: 7203, $7203, 1234.T など)
-STOCK_CODE_REGEX = re.compile(r'(?:^|[\s$])([0-9]{4})(?:[\s.]|$)')
+# 銘柄コードの正規表現 (例: 7203, $7203, AAPL, $TSLA など)
+# 数字4桁 または 英字1〜5文字 にマッチするように変更
+STOCK_CODE_REGEX = re.compile(r'(?:^|[\s$])([0-9]{4}|[a-zA-Z]{1,5})(?:[\s.]|$)')
 
 class StockStrategyModal(discord.ui.Modal, title="新規銘柄ノート作成"):
     name = discord.ui.TextInput(
         label="銘柄名",
-        placeholder="例: トヨタ自動車",
+        placeholder="例: トヨタ自動車, Apple",
         style=discord.TextStyle.short,
         required=True
     )
     code = discord.ui.TextInput(
         label="銘柄コード",
-        placeholder="例: 7203",
+        placeholder="例: 7203, AAPL",
         style=discord.TextStyle.short,
         required=True,
-        min_length=4,
+        min_length=1, # 米国株(例: T, F)に対応するため1に変更
         max_length=10
     )
     thesis = discord.ui.TextInput(
@@ -67,7 +68,8 @@ class StockStrategyModal(discord.ui.Modal, title="新規銘柄ノート作成"):
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
-        code_val = self.code.value.strip()
+        # 入力値を大文字に統一 (aapl -> AAPL)
+        code_val = self.code.value.strip().upper()
         name_val = self.name.value.strip()
         
         # ノート内容の作成
@@ -129,7 +131,8 @@ class StockCog(commands.Cog):
                     app_secret=self.dropbox_app_secret
                 )
                 genai.configure(api_key=self.gemini_api_key)
-                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+                # エラー回避のため軽量モデルに変更
+                self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") #
                 self.is_ready = True
                 logging.info("StockCog initialized.")
             except Exception as e:
@@ -183,7 +186,8 @@ class StockCog(commands.Cog):
         if not self.is_ready: return
         await interaction.response.defer()
 
-        path = await self._find_stock_note(code)
+        # 入力を大文字化して検索
+        path = await self._find_stock_note(code.upper())
         if not path:
             await interaction.followup.send(f"❌ コード `{code}` のノートが見つかりませんでした。", ephemeral=True)
             return
@@ -230,11 +234,12 @@ class StockCog(commands.Cog):
         if message.author.bot or message.channel.id != self.channel_id: return
         if message.content.startswith('/'): return
 
-        # メッセージから銘柄コードを抽出 (例: "7203 決算よい" -> "7203")
+        # メッセージから銘柄コードを抽出 (例: "7203 決算よい" -> "7203", "$AAPL buy" -> "AAPL")
         match = STOCK_CODE_REGEX.search(message.content)
         if not match: return
 
-        code = match.group(1)
+        # 大文字に統一して処理
+        code = match.group(1).upper()
         path = await self._find_stock_note(code)
 
         if path:
@@ -257,7 +262,6 @@ class StockCog(commands.Cog):
                 await message.remove_reaction(PROCESS_START_EMOJI, self.bot.user)
                 await message.add_reaction(PROCESS_COMPLETE_EMOJI)
                 
-                # 書籍機能と同様に、確認用メッセージなどは省略し、シンプルにリアクション完了とする
             except Exception as e:
                 logging.error(f"StockCog memo add error: {e}")
                 await message.add_reaction(PROCESS_ERROR_EMOJI)
