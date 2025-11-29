@@ -48,17 +48,20 @@ class StockSelectView(discord.ui.View):
                 value=file.path_display
             ))
             
-        self.add_item(discord.ui.Select(
+        # Selectメニューの作成とコールバックの設定
+        select = discord.ui.Select(
             placeholder="Select a stock to add memo...",
             options=options,
             min_values=1,
             max_values=1
-        ))
+        )
+        select.callback = self.select_callback
+        self.add_item(select)
 
-    @discord.ui.select()
-    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+    async def select_callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        selected_path = select.values[0]
+        # 選択された値を取得
+        selected_path = interaction.data["values"][0]
         
         try:
             await self.original_message.remove_reaction(SELECT_EMOJI, self.cog.bot.user)

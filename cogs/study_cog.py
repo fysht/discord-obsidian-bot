@@ -42,7 +42,7 @@ class StudyCog(commands.Cog):
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         
-        # 問題マスタ (HTML版との同期のためUUIDを使用)
+        # 問題マスタ
         c.execute('''CREATE TABLE IF NOT EXISTS questions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             uuid TEXT UNIQUE,
@@ -55,7 +55,6 @@ class StudyCog(commands.Cog):
         )''')
         
         # ユーザー進捗
-        # Note: user_idごとに進捗を管理。question_uuidで紐づけ
         c.execute('''CREATE TABLE IF NOT EXISTS user_progress (
             user_id INTEGER,
             question_uuid TEXT,
@@ -76,6 +75,15 @@ class StudyCog(commands.Cog):
             current_combo INTEGER DEFAULT 0,
             title TEXT DEFAULT '受験生'
         )''')
+
+        # ★ 追加: ユーザー活動ログ (Habit Tracker用)
+        c.execute('''CREATE TABLE IF NOT EXISTS user_activity (
+            user_id INTEGER,
+            date_str TEXT,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (user_id, date_str)
+        )''')
+
         conn.commit()
         conn.close()
 
@@ -87,7 +95,6 @@ class StudyCog(commands.Cog):
             return "⚠️ APIキーが設定されていません。"
         try:
             model = genai.GenerativeModel("gemini-2.5-pro")
-            # ブロッキング防止のためexecutorで実行
             response = await asyncio.to_thread(model.generate_content, prompt)
             return response.text
         except Exception as e:
@@ -155,6 +162,7 @@ class StudyCog(commands.Cog):
         return {'gain': xp_gain, 'leveled_up': leveled_up, 'combo': new_combo, 'title': current_title, 'level': new_level}
 
     def update_progress(self, user_id, q_uuid, is_correct):
+        """問題ごとの進捗更新"""
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute('SELECT solved_count, correct_count FROM user_progress WHERE user_id=? AND question_uuid=?', (user_id, q_uuid))
@@ -174,15 +182,34 @@ class StudyCog(commands.Cog):
         conn.commit()
         conn.close()
 
-    def get_progress(self, user_id, q_uuid):
+    def update_activity(self, user_id):
+        """★ 追加: 今日の活動ログ(回答数)を+1する"""
+        today_str = datetime.now().strftime('%Y-%m-%d')
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
-        c.execute('SELECT solved_count, correct_count, needs_review, memo FROM user_progress WHERE user_id=? AND question_uuid=?', (user_id, q_uuid))
+        
+        # 既存のレコードがあるか確認
+        c.execute('SELECT count FROM user_activity WHERE user_id=? AND date_str=?', (user_id, today_str))
+        row = c.fetchone()
+        
+        if row:
+            new_count = row[0] + 1
+            c.execute('UPDATE user_activity SET count=? WHERE user_id=? AND date_str=?', (new_count, user_id, today_str))
+        else:
+            c.execute('INSERT INTO user_activity (user_id, date_str, count) VALUES (?, ?, 1)', (user_id, today_str))
+            
+        conn.commit()
+        conn.close()
+
+    def get_today_activity_count(self, user_id):
+        """★ 追加: 今日の回答数を取得"""
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        conn = sqlite3.connect(DB_NAME)
+        c = conn.cursor()
+        c.execute('SELECT count FROM user_activity WHERE user_id=? AND date_str=?', (user_id, today_str))
         row = c.fetchone()
         conn.close()
-        if row:
-            return {'solved': row[0], 'correct': row[1], 'review': bool(row[2]), 'memo': row[3]}
-        return {'solved': 0, 'correct': 0, 'review': False, 'memo': ''}
+        return row[0] if row else 0
 
     # ==========================================
     # コマンド
@@ -191,8 +218,7 @@ class StudyCog(commands.Cog):
     @commands.command(name='restore_from_json')
     async def restore_json_cmd(self, ctx):
         """HTML版のバックアップJSONファイルを読み込んで同期します"""
-        if ctx.channel.id != self.channel_id:
-            return
+        if ctx.channel.id != self.channel_id: return
 
         if not ctx.message.attachments:
             await ctx.send("❌ JSONファイルを添付してください。")
@@ -215,7 +241,7 @@ class StudyCog(commands.Cog):
             c = conn.cursor()
             user_id = ctx.author.id
 
-            # カテゴリマップ作成 (HTML版のID -> タイトル)
+            # カテゴリ同期
             cat_map = {cat['id']: cat['title'] for cat in data.get('categories', [])}
 
             # 問題同期
@@ -225,7 +251,7 @@ class StudyCog(commands.Cog):
                 cat_id = q.get('categoryId')
                 cat_name = cat_map.get(cat_id, '未分類')
                 
-                # 問題マスタ更新/挿入
+                # マスタ更新
                 c.execute("SELECT id FROM questions WHERE uuid=?", (q_uuid,))
                 if c.fetchone():
                     c.execute("""UPDATE questions SET category_name=?, question=?, answer=?, explanation=?, point=? 
@@ -236,7 +262,7 @@ class StudyCog(commands.Cog):
                                  VALUES (?, ?, ?, ?, ?, ?, ?)""",
                               (q_uuid, cat_id, cat_name, q['question'], q['answer'], q['explanation'], q['point']))
                 
-                # 進捗同期
+                # 進捗更新
                 if 'stats' in q:
                     stats = q['stats']
                     memo = q.get('memo', '')
@@ -252,14 +278,20 @@ class StudyCog(commands.Cog):
                 p = data['player']
                 c.execute("""UPDATE user_profile SET xp=?, level=?, max_combo=? WHERE user_id=?""",
                           (p.get('xp', 0), p.get('level', 1), p.get('maxCombo', 0), user_id))
-                # 新規ユーザーならINSERT
                 if c.rowcount == 0:
                     c.execute("""INSERT INTO user_profile (user_id, xp, level, max_combo) VALUES (?, ?, ?, ?)""",
                               (user_id, p.get('xp', 0), p.get('level', 1), p.get('maxCombo', 0)))
 
+            # ★ 追加: 活動ログ (Habit Tracker) 同期
+            if 'activityLog' in data:
+                activity_log = data['activityLog'] # {"2024-01-01": 5, ...}
+                for date_str, val in activity_log.items():
+                    c.execute("""INSERT OR REPLACE INTO user_activity (user_id, date_str, count)
+                                 VALUES (?, ?, ?)""", (user_id, date_str, val))
+
             conn.commit()
             conn.close()
-            await ctx.send(f"✅ 同期完了！ {count}問のデータを読み込みました。")
+            await ctx.send(f"✅ 同期完了！ {count}問のデータと学習記録を読み込みました。")
 
         except Exception as e:
             await ctx.send(f"❌ エラーが発生しました: {e}")
@@ -267,14 +299,14 @@ class StudyCog(commands.Cog):
     @commands.command(name='export_to_json')
     async def export_json_cmd(self, ctx):
         """現在の学習データをHTML版用JSONとして書き出します"""
-        if ctx.channel.id != self.channel_id:
-            return
+        if ctx.channel.id != self.channel_id: return
 
         user_id = ctx.author.id
         conn = sqlite3.connect(DB_NAME)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
 
+        # データ取得
         c.execute("SELECT * FROM questions")
         db_qs = [dict(r) for r in c.fetchall()]
         
@@ -283,9 +315,15 @@ class StudyCog(commands.Cog):
         
         c.execute("SELECT * FROM user_profile WHERE user_id=?", (user_id,))
         profile = c.fetchone()
+
+        # ★ 追加: 活動ログ取得
+        c.execute("SELECT date_str, count FROM user_activity WHERE user_id=?", (user_id,))
+        activity_rows = c.fetchall()
+        activity_log = {row['date_str']: row['count'] for row in activity_rows}
+        
         conn.close()
 
-        # 変換
+        # JSON構築
         cats_set = set()
         export_qs = []
         
@@ -296,7 +334,6 @@ class StudyCog(commands.Cog):
             
             prog = prog_map.get(q['uuid'], {})
             
-            # HTML版のID形式に合わせる（数値なら数値、文字列なら文字列）
             qid = q['uuid']
             try:
                 if float(qid).is_integer(): qid = int(float(qid))
@@ -333,6 +370,7 @@ class StudyCog(commands.Cog):
             "categories": export_cats,
             "questions": export_qs,
             "player": export_player,
+            "activityLog": activity_log, # ★ 追加
             "lastSaved": datetime.now().isoformat()
         }
 
@@ -340,13 +378,12 @@ class StudyCog(commands.Cog):
         f = io.BytesIO(json_str.encode('utf-8'))
         file = discord.File(f, filename=f"study_backup_{datetime.now().strftime('%Y%m%d')}.json")
         
-        await ctx.send("📦 HTML版用のバックアップファイルです。", file=file)
+        await ctx.send("📦 HTML版用のバックアップファイルです（学習記録含む）。", file=file)
 
     @commands.command(name='import')
     async def import_csv_cmd(self, ctx):
         """CSVファイルをインポート (互換性のため残存)"""
-        if ctx.channel.id != self.channel_id:
-            return
+        if ctx.channel.id != self.channel_id: return
 
         if not ctx.message.attachments: return await ctx.send("CSVを添付してください")
         att = ctx.message.attachments[0]
@@ -391,10 +428,13 @@ class StudyCog(commands.Cog):
             await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
             return
         prof = self.get_profile(interaction.user.id)
+        today_count = self.get_today_activity_count(interaction.user.id) # ★ 追加
+
         embed = discord.Embed(title=f"📊 {interaction.user.display_name}", color=discord.Color.purple())
         embed.add_field(name="称号", value=prof['title'], inline=False)
         embed.add_field(name="Lv", value=f"{prof['level']}", inline=True)
         embed.add_field(name="XP", value=f"{prof['xp']}", inline=True)
+        embed.add_field(name="今日の学習", value=f"{today_count}問", inline=True) # ★ 追加
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(name="reset_stats", description="履歴リセット")
@@ -405,6 +445,8 @@ class StudyCog(commands.Cog):
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("DELETE FROM user_progress WHERE user_id=?", (interaction.user.id,))
+        # activity_log は消さない方が良いかもしれないが、完全リセットなら消す
+        c.execute("DELETE FROM user_activity WHERE user_id=?", (interaction.user.id,))
         conn.commit()
         conn.close()
         await interaction.response.send_message("履歴をリセットしました", ephemeral=True)
@@ -553,6 +595,7 @@ class AnsBtn(discord.ui.Button):
         is_correct = user_ans in real_ans
         
         self.view.cog.update_progress(interaction.user.id, self.q['uuid'], is_correct)
+        self.view.cog.update_activity(interaction.user.id) # ★ 追加: 活動ログ更新
         res = self.view.cog.update_xp(interaction.user.id, is_correct)
         if is_correct: self.view.correct += 1
         
@@ -609,7 +652,6 @@ class ExpView(discord.ui.View):
     @discord.ui.button(label="🤖 AI解説", style=discord.ButtonStyle.primary)
     async def ai(self, interaction, button):
         await interaction.response.defer(thinking=True)
-        # プロンプトを端的に解説するよう変更
         prompt = f"問題:{self.q['question']}\n正解:{self.q['answer']}\n解説:{self.q['explanation']}\n\nこの問題について、文字数制限にかからないよう端的に解説してください。"
         resp = await self.parent.cog.ask_gemini(prompt)
         await interaction.followup.send(f"**🤖 AI解説**\n{resp[:1900]}", ephemeral=True, view=AIChatView(self.parent.cog, self.q))
@@ -655,4 +697,7 @@ class MemoModal(discord.ui.Modal, title="メモ"):
         await interaction.response.send_message("保存しました", ephemeral=True)
 
 async def setup(bot):
+    if int(os.getenv("STUDY_CHANNEL_ID", 0)) == 0:
+        logging.error("StudyCog: STUDY_CHANNEL_ID が設定されていません。Cogをロードしません。")
+        return
     await bot.add_cog(StudyCog(bot))

@@ -18,7 +18,7 @@ try:
     from utils.obsidian_utils import update_section
 except ImportError:
     logging.warning("LifeLogCog: utils/obsidian_utils.pyが見つかりません。")
-    def update_section(content, text, header): return f"{content}\n{header}\n{text}"
+    def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -44,17 +44,17 @@ class LifeLogMemoModal(discord.ui.Modal, title="作業メモの入力"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 処理に時間がかかる可能性があるためdefer
         await interaction.response.defer(ephemeral=False)
         await self.cog.add_memo_to_task(interaction, self.memo_text.value)
 
 # --- タスク開始確認用View ---
 class LifeLogConfirmTaskView(discord.ui.View):
     def __init__(self, cog, task_name: str, original_message: discord.Message):
-        super().__init__(timeout=60)
+        super().__init__(timeout=60) # 60秒後にタイムアウト（自動開始）
         self.cog = cog
         self.task_name = task_name
         self.original_message = original_message
+        self.bot_response_message: discord.Message = None # Botが送信した確認メッセージ
 
     @discord.ui.button(label="開始", style=discord.ButtonStyle.success)
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -63,10 +63,12 @@ class LifeLogConfirmTaskView(discord.ui.View):
             return
         
         await interaction.response.defer()
+        # メッセージを更新してボタンを消す
         try:
             await interaction.edit_original_response(content=f"✅ タスク「**{self.task_name}**」の計測を開始します。", view=None)
         except: pass
         
+        # タスク切り替え処理を実行
         await self.cog.switch_task(self.original_message, self.task_name)
         self.stop()
 
@@ -80,9 +82,14 @@ class LifeLogConfirmTaskView(discord.ui.View):
         self.stop()
 
     async def on_timeout(self):
+        # タイムアウト時は自動開始する
         try:
-            await self.original_message.edit(content=f"{self.original_message.content}\n(タイムアウトしました)", view=None)
+            if self.bot_response_message:
+                await self.bot_response_message.edit(content=f"✅ (自動開始) タスク「**{self.task_name}**」の計測を開始します。", view=None)
         except: pass
+        
+        # タスク切り替え処理を実行
+        await self.cog.switch_task(self.original_message, self.task_name)
 
 
 # --- 書籍選択用View ---
@@ -146,7 +153,7 @@ class LifeLogPlanSelectView(discord.ui.View):
 # --- タイムアウト確認用View ---
 class LifeLogTimeoutView(discord.ui.View):
     def __init__(self, cog, user_id: str):
-        super().__init__(timeout=300) 
+        super().__init__(timeout=300) # 5分間有効
         self.cog = cog
         self.user_id = user_id
 
@@ -190,7 +197,6 @@ class LifeLogView(discord.ui.View):
     
     @discord.ui.button(label="メモ入力", style=discord.ButtonStyle.primary, custom_id="lifelog_memo")
     async def memo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 修正: ここで直接モーダルを呼び出す（チェックはモーダル送信後に行う）
         await self.cog.prompt_memo_modal(interaction)
 
     @discord.ui.button(label="計画から選択", style=discord.ButtonStyle.secondary, custom_id="lifelog_from_plan", emoji="📅")
@@ -267,8 +273,6 @@ class LifeLogCog(commands.Cog):
 
     # --- メモ入力ロジック ---
     async def prompt_memo_modal(self, interaction: discord.Interaction):
-        # 修正: アクティブログの事前チェックを削除し、即座にモーダルを表示する
-        # これによりインタラクションのタイムアウトを防ぐ
         await interaction.response.send_modal(LifeLogMemoModal(self))
 
     async def add_memo_to_task(self, interaction: discord.Interaction, memo_content: str):
@@ -372,21 +376,24 @@ class LifeLogCog(commands.Cog):
             return
 
         view = LifeLogConfirmTaskView(self, content, message)
-        await message.reply(f"タスク「**{content}**」として計測を開始しますか？", view=view)
+        bot_reply = await message.reply(f"タスク「**{content}**」として計測を開始しますか？（60秒後に自動開始）", view=view)
+        view.bot_response_message = bot_reply
 
     async def prompt_book_selection(self, message: discord.Message):
         book_cog = self.bot.get_cog("BookCog")
         if not book_cog:
             await message.reply("⚠️ BookCogが見つからないため、書籍リストを取得できません。「読書」タスクとして開始します。")
             view = LifeLogConfirmTaskView(self, "読書", message)
-            await message.reply(f"タスク「**読書**」として計測を開始しますか？", view=view)
+            bot_reply = await message.reply(f"タスク「**読書**」として計測を開始しますか？（60秒後に自動開始）", view=view)
+            view.bot_response_message = bot_reply
             return
 
         book_files, error = await book_cog.get_book_list()
         if error or not book_files:
             await message.reply(f"⚠️ 書籍リストの取得に失敗したか、書籍がありません ({error})。「読書」タスクとして開始します。")
             view = LifeLogConfirmTaskView(self, "読書", message)
-            await message.reply(f"タスク「**読書**」として計測を開始しますか？", view=view)
+            bot_reply = await message.reply(f"タスク「**読書**」として計測を開始しますか？（60秒後に自動開始）", view=view)
+            view.bot_response_message = bot_reply
             return
 
         options = []
