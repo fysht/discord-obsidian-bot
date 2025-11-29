@@ -20,7 +20,8 @@ class SummaryCog(commands.Cog):
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
+        # 修正: 投稿先を JOURNAL_CHANNEL_ID に変更
+        self.summary_channel_id = int(os.getenv("JOURNAL_CHANNEL_ID", 0))
         self.worker_path = str(Path(__file__).resolve().parent.parent / "summary_worker.py")
         self.last_summary_date = None
 
@@ -54,11 +55,12 @@ class SummaryCog(commands.Cog):
         else:
             logging.warning(f"【{period.capitalize()}サマリー】SyncCogが見つからなかったため、同期をスキップします。")
         
-        channel = self.bot.get_channel(self.memo_channel_id)
+        # 修正: self.summary_channel_id を使用してチャンネルを取得
+        channel = self.bot.get_channel(self.summary_channel_id)
         if not channel:
             if interaction:
                 await interaction.followup.send("エラー: 対象のチャンネルが見つかりませんでした。")
-            logging.error(f"【{period.capitalize()}サマリー】エラー: 対象のチャンネルが見つかりませんでした。")
+            logging.error(f"【{period.capitalize()}サマリー】エラー: 対象のチャンネル（ID: {self.summary_channel_id}）が見つかりませんでした。")
             return
             
         logging.info(f"【{period.capitalize()}サマリー】{target_date} のサマリーを生成するため、外部ワーカーを呼び出します...")

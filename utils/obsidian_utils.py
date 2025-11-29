@@ -34,6 +34,7 @@ SECTION_ORDER = [
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
     """
     Obsidianのデイリーノート内で、定義された順序に基づいてセクションの内容を更新または新規追加する共通関数
+    空白行を極力排除する仕様に変更。
 
     Args:
         current_content (str): 現在のノートの全内容
@@ -63,9 +64,7 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
         while insert_index < len(lines) and not lines[insert_index].strip().startswith('## '):
             insert_index += 1
         
-        # ★ 修正: 不要な空行挿入ロジックを削除
-        # リストが連続するように、そのまま挿入します。
-        
+        # リストが連続するように、そのまま挿入（空行なし）
         lines.insert(insert_index, text_to_add)
         return "\n".join(lines)
 
@@ -85,9 +84,8 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
         try:
             new_section_order_index = SECTION_ORDER.index(section_header)
         except ValueError:
-             # 定義されていないヘッダーは警告を出して末尾に追加
              logging.warning(f"utils: '{section_header}' はSECTION_ORDERに未定義です。末尾に追加します。")
-             return current_content.strip() + f"\n\n{new_section_block}\n"
+             return current_content.strip() + f"\n{new_section_block}"
 
         # 挿入位置の決定ロジック
         
@@ -105,8 +103,8 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
                 break
         
         if insert_after_index != -1:
-            # 前のセクションの直後に挿入（空行を挟む）
-            original_lines.insert(insert_after_index, f"\n{new_section_block}")
+            # 前のセクションの直後に挿入（空行なし）
+            original_lines.insert(insert_after_index, new_section_block)
             return "\n".join(original_lines)
 
         # B-2. 自身の「後」にあるべきセクションのうち、ファイル内に存在する最初のものを探す
@@ -118,14 +116,12 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
                 break
         
         if insert_before_index != -1:
-            # 後のセクションの直前に挿入（空行を挟む）
-            original_lines.insert(insert_before_index, f"{new_section_block}\n")
+            # 後のセクションの直前に挿入（空行なし）
+            original_lines.insert(insert_before_index, new_section_block)
             return "\n".join(original_lines)
 
-        # B-3. 既存セクションが何もない場合（ファイルが空、あるいはタイトルのみの場合）
+        # B-3. 既存セクションが何もない場合
         if current_content.strip():
-             # タイトルなどの後に空行を入れて追加
-             return f"{current_content.strip()}\n\n{new_section_block}"
+             return f"{current_content.strip()}\n{new_section_block}"
         else:
-            # ファイルが完全に空の場合
             return new_section_block

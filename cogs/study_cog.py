@@ -84,7 +84,7 @@ class StudyCog(commands.Cog):
         if not GEMINI_API_KEY:
             return "⚠️ APIキーが設定されていません。"
         try:
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            model = genai.GenerativeModel("gemini-2.5-pro")
             # ブロッキング防止のためexecutorで実行
             response = await asyncio.to_thread(model.generate_content, prompt)
             return response.text
@@ -454,8 +454,8 @@ class QuizMenuView(discord.ui.View):
         if not targets:
             return await interaction.followup.send("問題がありません", ephemeral=True)
             
-        await interaction.followup.send(f"🚀 クイズ開始 ({len(targets[:20])}問)", ephemeral=True)
-        await QuizView(self.cog, targets[:20], interaction.user).send_question(interaction.channel)
+        await interaction.followup.send(f"🚀 クイズ開始 (全{len(targets)}問)", ephemeral=True)
+        await QuizView(self.cog, targets, interaction.user).send_question(interaction.channel)
 
 class CategorySelect(discord.ui.Select):
     def __init__(self, cats):
@@ -538,9 +538,15 @@ class AnsBtn(discord.ui.Button):
         
         embed = discord.Embed(
             title="⭕ 正解" if is_correct else "❌ 不正解",
-            description=f"**解説**\n{self.q['explanation']}",
             color=discord.Color.green() if is_correct else discord.Color.red()
         )
+        
+        embed.add_field(name="解答", value=self.q['answer'], inline=False)
+        embed.add_field(name="解説", value=self.q['explanation'], inline=False)
+        
+        if self.q.get('point'):
+            embed.add_field(name="ポイント", value=self.q['point'], inline=False)
+            
         embed.set_footer(text=f"+{res['gain']}XP | Lv.{res['level']}")
         
         await interaction.response.send_message(embed=embed, view=ExpView(self.view, self.q))
@@ -548,9 +554,13 @@ class AnsBtn(discord.ui.Button):
 
 class AbortBtn(discord.ui.Button):
     def __init__(self):
-        super().__init__(label="中断", style=discord.ButtonStyle.secondary)
+        super().__init__(label="終了", style=discord.ButtonStyle.secondary)
     async def callback(self, interaction):
-        await interaction.response.send_message("中断しました", ephemeral=True)
+        correct = self.view.correct
+        total = self.view.index
+        rate = f"{int(correct/total*100)}%" if total > 0 else "0%"
+        
+        await interaction.response.send_message(f"🏆 学習終了！ 正解数: {correct}/{total} ({rate})")
         self.view.stop()
 
 class ExpView(discord.ui.View):
