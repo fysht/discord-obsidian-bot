@@ -11,6 +11,7 @@ import asyncio
 import google.generativeai as genai
 from datetime import datetime
 import uuid
+import logging # 追加
 
 # ==========================================
 # 設定・定数
@@ -33,6 +34,7 @@ TITLES = [
 class StudyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        self.channel_id = int(os.getenv("STUDY_CHANNEL_ID", 0)) # 追加: チャンネルID読み込み
         self.init_db()
 
     def init_db(self):
@@ -189,6 +191,10 @@ class StudyCog(commands.Cog):
     @commands.command(name='restore_from_json')
     async def restore_json_cmd(self, ctx):
         """HTML版のバックアップJSONファイルを読み込んで同期します"""
+        # 追加: チャンネル制限
+        if ctx.channel.id != self.channel_id:
+            return
+
         if not ctx.message.attachments:
             await ctx.send("❌ JSONファイルを添付してください。")
             return
@@ -262,6 +268,10 @@ class StudyCog(commands.Cog):
     @commands.command(name='export_to_json')
     async def export_json_cmd(self, ctx):
         """現在の学習データをHTML版用JSONとして書き出します"""
+        # 追加: チャンネル制限
+        if ctx.channel.id != self.channel_id:
+            return
+
         user_id = ctx.author.id
         conn = sqlite3.connect(DB_NAME)
         conn.row_factory = sqlite3.Row
@@ -337,6 +347,10 @@ class StudyCog(commands.Cog):
     @commands.command(name='import')
     async def import_csv_cmd(self, ctx):
         """CSVファイルをインポート (互換性のため残存)"""
+        # 追加: チャンネル制限
+        if ctx.channel.id != self.channel_id:
+            return
+
         if not ctx.message.attachments: return await ctx.send("CSVを添付してください")
         att = ctx.message.attachments[0]
         if not att.filename.endswith('.csv'): return await ctx.send("CSVのみ")
@@ -369,10 +383,18 @@ class StudyCog(commands.Cog):
 
     @app_commands.command(name="quiz", description="学習メニュー")
     async def quiz_cmd(self, interaction: discord.Interaction):
+        # 追加: チャンネル制限
+        if interaction.channel_id != self.channel_id:
+            await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
+            return
         await interaction.response.send_message("📚 学習メニュー", view=QuizMenuView(self))
 
     @app_commands.command(name="stats", description="ステータス確認")
     async def stats_cmd(self, interaction: discord.Interaction):
+        # 追加: チャンネル制限
+        if interaction.channel_id != self.channel_id:
+            await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
+            return
         prof = self.get_profile(interaction.user.id)
         embed = discord.Embed(title=f"📊 {interaction.user.display_name}", color=discord.Color.purple())
         embed.add_field(name="称号", value=prof['title'], inline=False)
@@ -382,6 +404,10 @@ class StudyCog(commands.Cog):
 
     @app_commands.command(name="reset_stats", description="履歴リセット")
     async def reset_cmd(self, interaction: discord.Interaction):
+        # 追加: チャンネル制限
+        if interaction.channel_id != self.channel_id:
+            await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
+            return
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("DELETE FROM user_progress WHERE user_id=?", (interaction.user.id,))
@@ -633,4 +659,7 @@ class MemoModal(discord.ui.Modal, title="メモ"):
         await interaction.response.send_message("保存しました", ephemeral=True)
 
 async def setup(bot):
+    if int(os.getenv("STUDY_CHANNEL_ID", 0)) == 0:
+        logging.error("StudyCog: STUDY_CHANNEL_ID が設定されていません。Cogをロードしません。")
+        return
     await bot.add_cog(StudyCog(bot))
