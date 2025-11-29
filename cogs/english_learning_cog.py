@@ -405,17 +405,19 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         await message.add_reaction("🤔")
         japanese_question = original_msg.embeds[0].description.strip().replace("*","")
 
-        prompt = f"""You are a professional English teacher. Correct the student's translation.
-# Instructions
-1. **Evaluation**: Point out good points and areas for improvement.
-2. **Corrections**: Suggest natural/grammatically correct expressions.
-3. **Key Phrases**: Pick 3-5 key phrases. **Must be under `### Key Phrases` heading as bullet list.**
-4. **Model Answer**: Provide 2-3 model answers under `### Model Answer` heading.
-5. **Grammar Point**: Brief explanation.
-6. **Format**: Markdown.
-# Original
+        # 修正箇所: プロンプトを日本語で解説するように変更
+        prompt = f"""あなたはプロの英語教師です。生徒の翻訳（英作文）を添削してください。
+# 指示
+1. **評価**: 良かった点と改善点を日本語で指摘してください。
+2. **添削**: より自然で文法的に正しい表現を提案してください。
+3. **重要フレーズ**: 今回の表現で使える重要な語句を3〜5個選んでください。**必ず `### Key Phrases` という見出しの下に箇条書きで列挙してください。**
+4. **模範解答**: 2〜3パターンの模範解答を `### Model Answer` という見出しの下に提示してください。
+5. **文法ポイント**: 文法の解説を日本語で簡潔に行ってください。
+6. **フォーマット**: Markdown形式で見やすく整形してください。解説はすべて日本語で行ってください。
+
+# 元の文章（日本語）
 {japanese_question}
-# Student's Answer
+# 生徒の回答（英語）
 {user_answer}"""
 
         feedback_text = "Feedback generation failed."
