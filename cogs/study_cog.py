@@ -11,7 +11,7 @@ import asyncio
 import google.generativeai as genai
 from datetime import datetime
 import uuid
-import logging # 追加
+import logging
 
 # ==========================================
 # 設定・定数
@@ -34,7 +34,7 @@ TITLES = [
 class StudyCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.channel_id = int(os.getenv("STUDY_CHANNEL_ID", 0)) # 追加: チャンネルID読み込み
+        self.channel_id = int(os.getenv("STUDY_CHANNEL_ID", 0))
         self.init_db()
 
     def init_db(self):
@@ -191,7 +191,6 @@ class StudyCog(commands.Cog):
     @commands.command(name='restore_from_json')
     async def restore_json_cmd(self, ctx):
         """HTML版のバックアップJSONファイルを読み込んで同期します"""
-        # 追加: チャンネル制限
         if ctx.channel.id != self.channel_id:
             return
 
@@ -268,7 +267,6 @@ class StudyCog(commands.Cog):
     @commands.command(name='export_to_json')
     async def export_json_cmd(self, ctx):
         """現在の学習データをHTML版用JSONとして書き出します"""
-        # 追加: チャンネル制限
         if ctx.channel.id != self.channel_id:
             return
 
@@ -347,7 +345,6 @@ class StudyCog(commands.Cog):
     @commands.command(name='import')
     async def import_csv_cmd(self, ctx):
         """CSVファイルをインポート (互換性のため残存)"""
-        # 追加: チャンネル制限
         if ctx.channel.id != self.channel_id:
             return
 
@@ -383,7 +380,6 @@ class StudyCog(commands.Cog):
 
     @app_commands.command(name="quiz", description="学習メニュー")
     async def quiz_cmd(self, interaction: discord.Interaction):
-        # 追加: チャンネル制限
         if interaction.channel_id != self.channel_id:
             await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
             return
@@ -391,7 +387,6 @@ class StudyCog(commands.Cog):
 
     @app_commands.command(name="stats", description="ステータス確認")
     async def stats_cmd(self, interaction: discord.Interaction):
-        # 追加: チャンネル制限
         if interaction.channel_id != self.channel_id:
             await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
             return
@@ -404,7 +399,6 @@ class StudyCog(commands.Cog):
 
     @app_commands.command(name="reset_stats", description="履歴リセット")
     async def reset_cmd(self, interaction: discord.Interaction):
-        # 追加: チャンネル制限
         if interaction.channel_id != self.channel_id:
             await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
             return
@@ -568,11 +562,12 @@ class AnsBtn(discord.ui.Button):
         )
         
         embed.add_field(name="解答", value=self.q['answer'], inline=False)
-        embed.add_field(name="解説", value=self.q['explanation'], inline=False)
         
         if self.q.get('point'):
             embed.add_field(name="ポイント", value=self.q['point'], inline=False)
             
+        embed.add_field(name="解説", value=self.q['explanation'], inline=False)
+        
         embed.set_footer(text=f"+{res['gain']}XP | Lv.{res['level']}")
         
         await interaction.response.send_message(embed=embed, view=ExpView(self.view, self.q))
@@ -614,7 +609,8 @@ class ExpView(discord.ui.View):
     @discord.ui.button(label="🤖 AI解説", style=discord.ButtonStyle.primary)
     async def ai(self, interaction, button):
         await interaction.response.defer(thinking=True)
-        prompt = f"問題:{self.q['question']}\n正解:{self.q['answer']}\n解説:{self.q['explanation']}\n\nこの問題について、具体例を用いて初心者にもわかりやすく解説してください。"
+        # プロンプトを端的に解説するよう変更
+        prompt = f"問題:{self.q['question']}\n正解:{self.q['answer']}\n解説:{self.q['explanation']}\n\nこの問題について、文字数制限にかからないよう端的に解説してください。"
         resp = await self.parent.cog.ask_gemini(prompt)
         await interaction.followup.send(f"**🤖 AI解説**\n{resp[:1900]}", ephemeral=True, view=AIChatView(self.parent.cog, self.q))
 
@@ -659,7 +655,4 @@ class MemoModal(discord.ui.Modal, title="メモ"):
         await interaction.response.send_message("保存しました", ephemeral=True)
 
 async def setup(bot):
-    if int(os.getenv("STUDY_CHANNEL_ID", 0)) == 0:
-        logging.error("StudyCog: STUDY_CHANNEL_ID が設定されていません。Cogをロードしません。")
-        return
     await bot.add_cog(StudyCog(bot))

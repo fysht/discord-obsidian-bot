@@ -18,7 +18,7 @@ try:
     from utils.obsidian_utils import update_section
 except ImportError:
     logging.warning("LifeLogCog: utils/obsidian_utils.pyが見つかりません。")
-    def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
+    def update_section(content, text, header): return f"{content}\n{header}\n{text}"
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -44,6 +44,7 @@ class LifeLogMemoModal(discord.ui.Modal, title="作業メモの入力"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
+        # 処理に時間がかかる可能性があるためdefer
         await interaction.response.defer(ephemeral=False)
         await self.cog.add_memo_to_task(interaction, self.memo_text.value)
 
@@ -62,12 +63,10 @@ class LifeLogConfirmTaskView(discord.ui.View):
             return
         
         await interaction.response.defer()
-        # メッセージを更新してボタンを消す
         try:
             await interaction.edit_original_response(content=f"✅ タスク「**{self.task_name}**」の計測を開始します。", view=None)
         except: pass
         
-        # タスク切り替え処理を実行
         await self.cog.switch_task(self.original_message, self.task_name)
         self.stop()
 
@@ -147,7 +146,7 @@ class LifeLogPlanSelectView(discord.ui.View):
 # --- タイムアウト確認用View ---
 class LifeLogTimeoutView(discord.ui.View):
     def __init__(self, cog, user_id: str):
-        super().__init__(timeout=300) # 5分間有効
+        super().__init__(timeout=300) 
         self.cog = cog
         self.user_id = user_id
 
@@ -191,6 +190,7 @@ class LifeLogView(discord.ui.View):
     
     @discord.ui.button(label="メモ入力", style=discord.ButtonStyle.primary, custom_id="lifelog_memo")
     async def memo_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 修正: ここで直接モーダルを呼び出す（チェックはモーダル送信後に行う）
         await self.cog.prompt_memo_modal(interaction)
 
     @discord.ui.button(label="計画から選択", style=discord.ButtonStyle.secondary, custom_id="lifelog_from_plan", emoji="📅")
@@ -267,16 +267,13 @@ class LifeLogCog(commands.Cog):
 
     # --- メモ入力ロジック ---
     async def prompt_memo_modal(self, interaction: discord.Interaction):
-        user_id = str(interaction.user.id)
-        active_logs = await self._get_active_logs()
-        if user_id not in active_logs:
-            await interaction.response.send_message("⚠️ メモを追加する進行中のタスクがありません。", ephemeral=True)
-            return
-
+        # 修正: アクティブログの事前チェックを削除し、即座にモーダルを表示する
+        # これによりインタラクションのタイムアウトを防ぐ
         await interaction.response.send_modal(LifeLogMemoModal(self))
 
     async def add_memo_to_task(self, interaction: discord.Interaction, memo_content: str):
         user_id = str(interaction.user.id)
+        # ここでアクティブログをチェック
         active_logs = await self._get_active_logs()
         
         if user_id not in active_logs:
@@ -365,7 +362,6 @@ class LifeLogCog(commands.Cog):
         content = message.content.strip()
         if not content: return
 
-        # "m " で始まる場合はメモとして処理
         if content.lower().startswith("m ") or content.startswith("ｍ "):
             memo_text = content[2:].strip()
             await self._add_memo_from_message(message, memo_text)
@@ -375,7 +371,6 @@ class LifeLogCog(commands.Cog):
             await self.prompt_book_selection(message)
             return
 
-        # ★ 修正: いきなり開始せず、確認Viewを表示する
         view = LifeLogConfirmTaskView(self, content, message)
         await message.reply(f"タスク「**{content}**」として計測を開始しますか？", view=view)
 
@@ -383,7 +378,6 @@ class LifeLogCog(commands.Cog):
         book_cog = self.bot.get_cog("BookCog")
         if not book_cog:
             await message.reply("⚠️ BookCogが見つからないため、書籍リストを取得できません。「読書」タスクとして開始します。")
-            # 読書の場合も確認を入れる
             view = LifeLogConfirmTaskView(self, "読書", message)
             await message.reply(f"タスク「**読書**」として計測を開始しますか？", view=view)
             return
@@ -585,7 +579,7 @@ class LifeLogCog(commands.Cog):
         else:
             await interaction.followup.send("延長する進行中のタスクが見つかりませんでした。", ephemeral=True)
 
-    # --- タイムアウト監視ループ (★ 修正: ロジック見直し) ---
+    # --- タイムアウト監視ループ ---
     @tasks.loop(minutes=1)
     async def check_task_timeout(self):
         if not self.is_ready: return
@@ -599,7 +593,6 @@ class LifeLogCog(commands.Cog):
                     start_time = datetime.fromisoformat(log['start_time'])
                     elapsed_seconds = (now - start_time).total_seconds()
                     
-                    # カウントがなければ0で初期化
                     count = log.get('notification_count', 0)
                     last_warning_str = log.get('last_warning')
                     
@@ -633,7 +626,6 @@ class LifeLogCog(commands.Cog):
                         last_warning = datetime.fromisoformat(last_warning_str)
                         if (now - last_warning).total_seconds() >= 300: # 5分
                             user_obj = discord.Object(id=int(user_id))
-                            # 終了時刻は警告時刻とする
                             await self.finish_current_task(user_obj, context=None, end_time=last_warning)
                             
                             channel = self.bot.get_channel(log.get('channel_id'))
