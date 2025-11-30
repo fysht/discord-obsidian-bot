@@ -48,9 +48,8 @@ class StockSelectView(discord.ui.View):
                 value=file.path_display
             ))
             
-        # Selectメニューの作成とコールバックの設定
         select = discord.ui.Select(
-            placeholder="Select a stock to add memo...",
+            placeholder="メモを追加する銘柄を選択...",
             options=options,
             min_values=1,
             max_values=1
@@ -60,7 +59,6 @@ class StockSelectView(discord.ui.View):
 
     async def select_callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        # 選択された値を取得
         selected_path = interaction.data["values"][0]
         
         try:
@@ -71,13 +69,13 @@ class StockSelectView(discord.ui.View):
         success = await self.cog._append_memo_to_note(selected_path, self.memo_content)
         
         if success:
-            await interaction.followup.send(f"✅ Memo added to `{os.path.basename(selected_path)}`.", ephemeral=True)
+            await interaction.followup.send(f"✅ `{os.path.basename(selected_path)}` にメモを追加しました。", ephemeral=True)
             try:
                 await self.original_message.remove_reaction(PROCESS_START_EMOJI, self.cog.bot.user)
                 await self.original_message.add_reaction(PROCESS_COMPLETE_EMOJI)
             except: pass
         else:
-            await interaction.followup.send("❌ Failed to add memo.", ephemeral=True)
+            await interaction.followup.send("❌ メモの追加に失敗しました。", ephemeral=True)
             try:
                 await self.original_message.remove_reaction(PROCESS_START_EMOJI, self.cog.bot.user)
                 await self.original_message.add_reaction(PROCESS_ERROR_EMOJI)
@@ -85,35 +83,35 @@ class StockSelectView(discord.ui.View):
         
         self.stop()
         try:
-            await interaction.message.edit(view=None, content="✅ Selection Complete")
+            await interaction.message.edit(view=None, content="✅ 選択完了")
         except: pass
 
 
-class StockStrategyModal(discord.ui.Modal, title="New Stock Note"):
+class StockStrategyModal(discord.ui.Modal, title="新規銘柄ノート"):
     name = discord.ui.TextInput(
-        label="Stock Name",
-        placeholder="e.g., Toyota, Apple",
+        label="銘柄名",
+        placeholder="例: トヨタ自動車, Apple",
         style=discord.TextStyle.short,
         required=True
     )
     code = discord.ui.TextInput(
-        label="Stock Code / Ticker",
-        placeholder="e.g., 7203, AAPL",
+        label="銘柄コード / ティッカー",
+        placeholder="例: 7203, AAPL",
         style=discord.TextStyle.short,
         required=True,
         min_length=1, 
         max_length=10
     )
     thesis = discord.ui.TextInput(
-        label="Entry Thesis",
+        label="エントリーの根拠 (Thesis)",
         style=discord.TextStyle.paragraph,
-        placeholder="Why buy now? Catalysts, Technicals, Fundamentals",
+        placeholder="なぜ今買うのか？ カタリスト、テクニカル、ファンダメンタルズなど",
         required=True
     )
     strategy = discord.ui.TextInput(
-        label="Exit Strategy",
+        label="エグジット戦略",
         style=discord.TextStyle.paragraph,
-        placeholder="Target Price, Stop Loss",
+        placeholder="目標株価、損切りライン",
         required=True
     )
 
@@ -130,6 +128,7 @@ class StockStrategyModal(discord.ui.Modal, title="New Stock Note"):
         
         now = datetime.datetime.now(JST)
         filename = f"{code_val}_{name_val}.md"
+        # Obsidianの見出しは英語
         note_content = f"""---
 code: "{code_val}"
 name: "{name_val}"
@@ -138,28 +137,28 @@ created: {now.isoformat()}
 tags: [stock, investment]
 ---
 # {name_val} ({code_val})
-## 🎯 Entry Thesis
+## Entry Thesis
 {self.thesis.value}
-## 🚪 Exit Strategy
+## Exit Strategy
 {self.strategy.value}
-## 📓 Logs
+## Logs
 - {now.strftime('%Y-%m-%d %H:%M')} Created note
-## 📝 Review
+## Review
 """
         try:
             success = await self.cog._save_file(filename, note_content)
             if success == "EXISTS":
-                await interaction.followup.send(f"⚠️ `{filename}` already exists.")
+                await interaction.followup.send(f"⚠️ `{filename}` は既に存在します。", ephemeral=True)
             elif success:
-                await interaction.followup.send(f"✅ Created stock note: `{filename}`")
+                await interaction.followup.send(f"✅ 銘柄ノートを作成しました: `{filename}`", ephemeral=True)
             else:
-                await interaction.followup.send("❌ Failed to create note.")
+                await interaction.followup.send("❌ 作成に失敗しました。", ephemeral=True)
         except Exception as e:
             logging.error(f"StockCog: Create note error: {e}")
-            await interaction.followup.send(f"❌ Error: {e}")
+            await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
 
 class StockCog(commands.Cog):
-    """Cog for stock investment tracking"""
+    """株式投資の記録用Cog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -240,6 +239,7 @@ class StockCog(commands.Cog):
             now = datetime.datetime.now(JST)
             memo_line = f"- {now.strftime('%Y-%m-%d %H:%M')} {content_text}"
             
+            # Obsidianの見出しは英語 (## Logs)
             new_content = update_section(current_content, memo_line, "## Logs")
             
             await asyncio.to_thread(
@@ -253,22 +253,22 @@ class StockCog(commands.Cog):
             logging.error(f"StockCog append error: {e}")
             return False
 
-    @app_commands.command(name="stock_new", description="Create a new stock note.")
+    @app_commands.command(name="stock_new", description="新規の銘柄ノートを作成します。")
     async def stock_new(self, interaction: discord.Interaction):
         if interaction.channel_id != self.channel_id:
-            await interaction.response.send_message(f"This command can only be used in <#{self.channel_id}>.", ephemeral=True)
+            await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
             return
         await interaction.response.send_modal(StockStrategyModal(self, interaction))
 
-    @app_commands.command(name="stock_review", description="AI analyzes the stock note and provides a review.")
-    @app_commands.describe(code="Stock Code")
+    @app_commands.command(name="stock_review", description="AIが銘柄ノートを分析し、振り返りを行います。")
+    @app_commands.describe(code="銘柄コード")
     async def stock_review(self, interaction: discord.Interaction, code: str):
         if not self.is_ready: return
         await interaction.response.defer()
 
         path = await self._find_stock_note(code.upper())
         if not path:
-            await interaction.followup.send(f"❌ Note for code `{code}` not found.", ephemeral=True)
+            await interaction.followup.send(f"❌ コード `{code}` のノートが見つかりませんでした。", ephemeral=True)
             return
 
         try:
@@ -276,21 +276,22 @@ class StockCog(commands.Cog):
             content = res.content.decode('utf-8')
 
             prompt = f"""
-            You are a professional investment coach. Read the following investment note (my entry thesis, strategy, and logs),
-            and provide a review of this trade along with lessons for the future.
+            あなたはプロの投資コーチです。以下の投資ノート（エントリーの根拠、戦略、ログ）を読み、
+            今回のトレードの振り返りと今後のための教訓を提示してください。
             
-            # Evaluation Points
-            1. Was the initial strategy (thesis/exit) logical?
-            2. Based on the logs, did I follow the strategy? (Any emotional trading?)
-            3. What specific actions should I improve for the next trade?
+            # 評価ポイント
+            1. 当初の戦略（根拠・エグジット）は論理的だったか？
+            2. ログに基づき、戦略通りに行動できたか？（感情的なトレードはなかったか？）
+            3. 次回のトレードに向けて改善すべき具体的なアクションは何か？
 
-            # Note Content
+            # ノートの内容
             {content}
             """
             
             response = await self.gemini_model.generate_content_async(prompt)
             review_text = response.text.strip()
 
+            # Obsidianの見出しは英語 (## Review)
             new_content = update_section(content, f"\n{review_text}", "## Review")
             await asyncio.to_thread(
                 self.dbx.files_upload,
@@ -299,12 +300,13 @@ class StockCog(commands.Cog):
                 mode=WriteMode('overwrite')
             )
 
-            embed = discord.Embed(title=f"📊 Review: {code}", description=review_text[:4000], color=discord.Color.gold())
+            # Discordの表示は日本語
+            embed = discord.Embed(title=f"📊 振り返り: {code}", description=review_text[:4000], color=discord.Color.gold())
             await interaction.followup.send(embed=embed)
 
         except Exception as e:
             logging.error(f"StockCog review error: {e}")
-            await interaction.followup.send(f"❌ Error: {e}")
+            await interaction.followup.send(f"❌ エラー: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -339,12 +341,12 @@ class StockCog(commands.Cog):
                 stock_files = await self._get_stock_list()
                 
                 if not stock_files:
-                    await message.reply("⚠️ No stock notes found.", delete_after=10)
+                    await message.reply("⚠️ 銘柄ノートが見つかりません。", delete_after=10)
                     await message.remove_reaction(SELECT_EMOJI, self.bot.user)
                     return
 
                 view = StockSelectView(self, stock_files, message.content, message)
-                await message.reply("📝 Select a stock for this memo:", view=view)
+                await message.reply("📝 このメモを追加する銘柄を選択してください:", view=view)
                 
             except Exception as e:
                 logging.error(f"StockCog select flow error: {e}")

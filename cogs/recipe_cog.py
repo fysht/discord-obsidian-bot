@@ -239,21 +239,22 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
 
             await message.add_reaction(PROCESS_COMPLETE_EMOJI)
             
-            embed = discord.Embed(title="🍳 Recipe Saved", description=f"**[{recipe_data['title']}]({url})**", color=discord.Color.green())
+            # Discordの表示は日本語
+            embed = discord.Embed(title="🍳 レシピを保存しました", description=f"**[{recipe_data['title']}]({url})**", color=discord.Color.green())
             
             if recipe_data.get('is_simple'):
-                embed.set_footer(text=f"Saved to: Recipes/{filename} (Simple Mode)")
+                embed.set_footer(text=f"保存先: Recipes/{filename} (シンプルモード)")
             elif recipe_data.get('is_fallback'):
-                embed.set_footer(text=f"Saved to: Recipes/{filename} (Text Mode)")
+                embed.set_footer(text=f"保存先: Recipes/{filename} (テキストモード)")
             else:
                 tags = ", ".join(recipe_data.get('tags', []))
-                if tags: embed.add_field(name="🏷️ Tags", value=tags)
+                if tags: embed.add_field(name="🏷️ タグ", value=tags)
                 ingredients = recipe_data.get('ingredients', [])
                 if ingredients:
                     ing_preview = "\n".join([f"• {i}" for i in ingredients[:5]])
                     if len(ingredients) > 5: ing_preview += "\n..."
-                    embed.add_field(name="🛒 Ingredients", value=ing_preview)
-                embed.set_footer(text=f"Saved to: Recipes/{filename}")
+                    embed.add_field(name="🛒 材料", value=ing_preview)
+                embed.set_footer(text=f"保存先: Recipes/{filename}")
             
             if recipe_data.get('image_url'):
                 embed.set_thumbnail(url=recipe_data['image_url'])
@@ -347,6 +348,7 @@ class RecipeCog(commands.Cog, name="RecipeCog"):
         file_path = f"{self.dropbox_vault_path}/Recipes/{filename}"
         daily_note_date = now.strftime('%Y-%m-%d')
 
+        # Obsidianの見出しは英語
         if data.get('is_simple'):
             tags_str = json.dumps(data.get('tags', []), ensure_ascii=False)
             content = f"""---
@@ -426,7 +428,7 @@ cover: "{data.get('image_url', '')}"
     async def _delete_recipe(self, recipe_entry: dict, interaction: discord.Interaction):
         filename = recipe_entry.get('filename')
         if not filename:
-            await interaction.followup.send("❌ Filename missing.", ephemeral=True)
+            await interaction.followup.send("❌ ファイル名がありません。", ephemeral=True)
             return
             
         file_path = f"{self.dropbox_vault_path}/Recipes/{filename}"
@@ -448,17 +450,17 @@ cover: "{data.get('image_url', '')}"
             except Exception as e_idx:
                 logging.error(f"Index update error: {e_idx}")
             
-            await interaction.followup.send(f"🗑️ Deleted recipe: {recipe_entry.get('title')}", ephemeral=True)
+            await interaction.followup.send(f"🗑️ レシピを削除しました: {recipe_entry.get('title')}", ephemeral=True)
             
         except ApiError as e:
             if isinstance(e.error, dropbox.files.DeleteError) and e.error.is_path_lookup() and e.error.get_path_lookup().is_not_found():
-                 await interaction.followup.send("⚠️ File not found, but removed from index.", ephemeral=True)
+                 await interaction.followup.send("⚠️ ファイルは見つかりませんでしたが、インデックスからは削除されました。", ephemeral=True)
             else:
                 logging.error(f"Delete error: {e}")
-                await interaction.followup.send("❌ Error deleting recipe.", ephemeral=True)
+                await interaction.followup.send("❌ 削除中にエラーが発生しました。", ephemeral=True)
 
-    @app_commands.command(name="recipes", description="Show saved recipes.")
-    @app_commands.describe(query="Search keyword")
+    @app_commands.command(name="recipes", description="保存したレシピを表示します。")
+    @app_commands.describe(query="検索キーワード")
     async def recipes_command(self, interaction: discord.Interaction, query: str = None):
         await interaction.response.defer(ephemeral=True)
         try:
@@ -466,10 +468,10 @@ cover: "{data.get('image_url', '')}"
             all_recipes = json.loads(res.content.decode('utf-8'))
         except Exception as e:
             if isinstance(e, ApiError) and isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                 await interaction.followup.send("📂 No recipes saved yet.", ephemeral=True)
+                 await interaction.followup.send("📂 保存されたレシピはまだありません。", ephemeral=True)
             else:
                  logging.error(f"Recipe load error: {e}")
-                 await interaction.followup.send("❌ Failed to load recipes.", ephemeral=True)
+                 await interaction.followup.send("❌ レシピの読み込みに失敗しました。", ephemeral=True)
             return
 
         filtered_recipes = all_recipes
@@ -483,7 +485,7 @@ cover: "{data.get('image_url', '')}"
             ]
 
         if not filtered_recipes:
-            await interaction.followup.send(f"🍳 No matches for: `{query}`", ephemeral=True)
+            await interaction.followup.send(f"🍳 条件に一致するレシピはありません: `{query}`", ephemeral=True)
             return
 
         view = RecipeListView(self, filtered_recipes)
@@ -497,7 +499,7 @@ cover: "{data.get('image_url', '')}"
         current_items = recipes[start:end]
         total_pages = (len(recipes) - 1) // items_per_page + 1
 
-        embed = discord.Embed(title="🍳 Recipe List", color=discord.Color.orange())
+        embed = discord.Embed(title="🍳 レシピ一覧", color=discord.Color.orange())
         desc = ""
         for i, recipe in enumerate(current_items):
             global_index = start + i + 1
@@ -514,13 +516,13 @@ cover: "{data.get('image_url', '')}"
         if ingredients:
             ing_text = "\n".join([f"• {i}" for i in ingredients[:15]])
             if len(ingredients) > 15: ing_text += "\n..."
-            embed.add_field(name="🛒 Ingredients", value=ing_text, inline=False)
+            embed.add_field(name="🛒 材料", value=ing_text, inline=False)
         
         tags = recipe.get('tags', [])
         if tags:
-            embed.add_field(name="🏷️ Tags", value=", ".join(tags), inline=False)
+            embed.add_field(name="🏷️ タグ", value=", ".join(tags), inline=False)
         
-        embed.set_footer(text=f"Added: {recipe.get('added_at', '')[:10]}")
+        embed.set_footer(text=f"登録日: {recipe.get('added_at', '')[:10]}")
         return embed
 
 async def setup(bot: commands.Bot):

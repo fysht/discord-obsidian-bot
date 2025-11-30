@@ -37,23 +37,23 @@ TIME_SCHEDULE_REGEX = re.compile(r'^(\d{1,2}:\d{2}|\d{1,4})(?:[~-](\d{1,2}:\d{2}
 
 # --- UIコンポーネント ---
 
-class MorningPlanningModal(discord.ui.Modal, title="Daily Planning"):
+class MorningPlanningModal(discord.ui.Modal, title="朝のプランニング"):
     highlight = discord.ui.TextInput(
-        label="Daily Highlight",
+        label="今日のハイライト",
         style=discord.TextStyle.short,
-        placeholder="e.g. Finish Project A",
+        placeholder="例: プロジェクトAを完了させる",
         required=True
     )
     
     schedule = discord.ui.TextInput(
-        label="Today's Schedule",
+        label="今日のスケジュール",
         style=discord.TextStyle.paragraph,
         required=True,
         max_length=1500
     )
     
     log_summary_display = discord.ui.TextInput(
-        label="Yesterday's Summary (Reference)",
+        label="昨日のサマリー（参考）",
         style=discord.TextStyle.paragraph,
         required=False,
         max_length=1500
@@ -80,54 +80,54 @@ class MorningPlanningModal(discord.ui.Modal, title="Daily Planning"):
                 now = datetime.now(JST)
                 today = now.date()
                 if await self.cog._register_schedule_to_calendar(interaction, schedule_list, today):
-                    await interaction.followup.send("✅ Added to Google Calendar.", ephemeral=True)
+                    await interaction.followup.send("✅ Googleカレンダーに追加しました。", ephemeral=True)
                 else:
-                    await interaction.followup.send("⚠️ Failed to add to calendar.", ephemeral=True)
+                    await interaction.followup.send("⚠️ カレンダーへの追加に失敗しました。", ephemeral=True)
 
         except Exception as e:
              logging.error(f"Planning error: {e}", exc_info=True)
-             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+             await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
 
 class MorningPlanningView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Plan Your Day", style=discord.ButtonStyle.success, emoji="☀️", custom_id="journal_morning_plan")
+    @discord.ui.button(label="一日の計画を立てる", style=discord.ButtonStyle.success, emoji="☀️", custom_id="journal_morning_plan")
     async def plan_day(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             events = await self.cog._get_todays_events()
-            event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or 'All Day'} {e['summary']}" for e in events]) or "No events"
-            log_summary = "(Yesterday's summary placeholder)" 
+            event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or "予定なし"
+            log_summary = "(昨日のサマリー取得中...)" # 必要に応じて実装
 
             await interaction.response.send_modal(
                 MorningPlanningModal(self.cog, event_text, log_summary)
             )
         except Exception as e:
-             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+             await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
 
-class NightlyReviewModal(discord.ui.Modal, title="Nightly Review"):
+class NightlyReviewModal(discord.ui.Modal, title="夜の振り返り"):
     wins = discord.ui.TextInput(
-        label="Wins",
+        label="良かったこと (Wins)",
         style=discord.TextStyle.paragraph,
-        placeholder="What went well today?",
+        placeholder="今日うまくいったことは？",
         required=True
     )
     learnings = discord.ui.TextInput(
-        label="Learnings",
+        label="学んだこと (Learnings)",
         style=discord.TextStyle.paragraph,
-        placeholder="What did you learn?",
+        placeholder="今日学んだことや気付きは？",
         required=True
     )
     todays_events = discord.ui.TextInput(
-        label="Events / Highlight Result",
+        label="出来事 / ハイライトの結果",
         style=discord.TextStyle.paragraph,
         required=False
     )
     tomorrows_schedule = discord.ui.TextInput(
-        label="Tomorrow's Schedule",
+        label="明日の予定",
         style=discord.TextStyle.paragraph,
-        placeholder="10:00 Meeting",
+        placeholder="10:00 ミーティング",
         required=False,
         max_length=1000
     )
@@ -148,22 +148,22 @@ class NightlyReviewModal(discord.ui.Modal, title="Nightly Review"):
             )
         except Exception as e:
              logging.error(f"Journal error: {e}", exc_info=True)
-             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+             await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
 
 class NightlyJournalView(discord.ui.View):
     def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="Review Today", style=discord.ButtonStyle.primary, emoji="📝", custom_id="journal_nightly_review")
+    @discord.ui.button(label="今日を振り返る", style=discord.ButtonStyle.primary, emoji="📝", custom_id="journal_nightly_review")
     async def write_journal(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             await interaction.response.send_modal(NightlyReviewModal(self.cog))
         except Exception as e:
-            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
 
 class JournalCog(commands.Cog):
-    """Cog for Morning Planning and Nightly Review"""
+    """朝のプランニングと夜の振り返りを行うCog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -246,11 +246,11 @@ class JournalCog(commands.Cog):
             if match and match.group(1).strip():
                 return match.group(1).strip()
             else:
-                return "(No logs yet)"
+                return "(ログはまだありません)"
         except ApiError:
-            return "(Note not found)"
+            return "(ノートが見つかりません)"
         except Exception as e:
-            return "(Error retrieving logs)"
+            return "(ログの取得エラー)"
 
     @tasks.loop()
     async def daily_planning_task(self):
@@ -260,11 +260,11 @@ class JournalCog(commands.Cog):
 
         try:
             events = await self._get_todays_events()
-            event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or 'All Day'} {e['summary']}" for e in events]) or "No events"
+            event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or "予定なし"
             view = MorningPlanningView(self)
             
-            embed = discord.Embed(title="☀️ Morning Planning", description="Let's plan your day.", color=discord.Color.orange())
-            embed.add_field(name="📅 Calendar", value=f"```\n{event_text}\n```", inline=False)
+            embed = discord.Embed(title="☀️ 朝のプランニング", description="今日一日の計画を立てましょう。", color=discord.Color.orange())
+            embed.add_field(name="📅 カレンダー", value=f"```\n{event_text}\n```", inline=False)
             await channel.send(embed=embed, view=view)
         except Exception as e:
             logging.error(f"Planning task error: {e}")
@@ -277,9 +277,9 @@ class JournalCog(commands.Cog):
 
         try:
             todays_log = await self._get_todays_lifelog_content()
-            embed = discord.Embed(title="🌙 Nightly Review", description="Reflect on your day.", color=discord.Color.purple())
+            embed = discord.Embed(title="🌙 夜の振り返り", description="今日一日を振り返りましょう。", color=discord.Color.purple())
             display_log = todays_log[:1000] + "..." if len(todays_log) > 1000 else todays_log
-            embed.add_field(name="⏱️ Life Logs", value=f"```markdown\n{display_log}\n```", inline=False)
+            embed.add_field(name="⏱️ ライフログ", value=f"```markdown\n{display_log}\n```", inline=False)
             view = NightlyJournalView(self)
             await channel.send(embed=embed, view=view)
         except Exception as e:
@@ -303,15 +303,17 @@ class JournalCog(commands.Cog):
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
 
+        # Obsidianの見出しは英語 (## Planning)
         planning_content = f"- **Highlight:** {highlight}\n### Schedule\n{schedule}"
         success_obsidian = await self._save_to_obsidian(date_str, planning_content, "## Planning")
         
-        embed = discord.Embed(title=f"☀️ Planning ({date_str})", color=discord.Color.orange())
+        # Discordの表示は日本語
+        embed = discord.Embed(title=f"☀️ プランニング ({date_str})", color=discord.Color.orange())
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-        embed.add_field(name=f"{HIGHLIGHT_EMOJI} Highlight", value=highlight, inline=False)
-        embed.add_field(name="📅 Schedule", value=f"```{schedule}```", inline=False)
+        embed.add_field(name=f"{HIGHLIGHT_EMOJI} 今日のハイライト", value=highlight, inline=False)
+        embed.add_field(name="📅 スケジュール", value=f"```{schedule}```", inline=False)
         
-        footer_text = "Saved to Obsidian" if success_obsidian else "⚠️ Obsidian save failed"
+        footer_text = "Obsidianに保存しました" if success_obsidian else "⚠️ Obsidianへの保存に失敗"
         embed.set_footer(text=f"{footer_text} | {now.strftime('%H:%M')}")
 
         await interaction.followup.send(embed=embed)
@@ -327,15 +329,15 @@ class JournalCog(commands.Cog):
         obsidian_learnings = self._format_bullet_list(learnings, indent="\t\t")
         obsidian_events = self._format_bullet_list(todays_events, indent="\t\t")
 
-        ai_comment = "(AI generation failed)"
+        ai_comment = "(AIコメント生成失敗)"
         try:
-            prompt = f"""You are a coach. Provide positive and actionable feedback on the user's daily review (max 300 chars).
-# User Review
-## Wins
+            prompt = f"""あなたはコーチです。ユーザーの日報に対して、ポジティブで次につながるフィードバックを日本語で、300文字以内で記述してください。
+# ユーザーの振り返り
+## Wins (良かったこと)
 {formatted_wins}
-## Learnings
+## Learnings (学んだこと)
 {formatted_learnings}
-## Events
+## Events (出来事)
 {formatted_events}
 """
             response = await self.gemini_model.generate_content_async(prompt)
@@ -345,6 +347,7 @@ class JournalCog(commands.Cog):
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
         
+        # Obsidianの見出し・キーは英語 (## Journal, **Wins:**, etc.)
         journal_content = f"- {now.strftime('%H:%M')}\n\t- **Wins:**\n{obsidian_wins}\n\t- **Learnings:**\n{obsidian_learnings}\n"
         if obsidian_events: journal_content += f"\t- **Events:**\n{obsidian_events}"
 
@@ -357,17 +360,18 @@ class JournalCog(commands.Cog):
             if not await self._register_schedule_to_calendar(interaction, schedule_list, tomorrow):
                 success_calendar = False
 
-        embed = discord.Embed(title=f"🌙 Review ({date_str})", color=discord.Color.purple())
+        # Discordの表示は日本語
+        embed = discord.Embed(title=f"🌙 振り返り ({date_str})", color=discord.Color.purple())
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-        embed.add_field(name="🌟 Wins", value=formatted_wins or "None", inline=False)
-        embed.add_field(name="💡 Learnings", value=formatted_learnings or "None", inline=False)
-        if formatted_events: embed.add_field(name="📍 Events", value=formatted_events, inline=False)
-        embed.add_field(name="🤖 AI Coach", value=ai_comment, inline=False)
+        embed.add_field(name="🌟 良かったこと (Wins)", value=formatted_wins or "なし", inline=False)
+        embed.add_field(name="💡 学んだこと (Learnings)", value=formatted_learnings or "なし", inline=False)
+        if formatted_events: embed.add_field(name="📍 出来事 (Events)", value=formatted_events, inline=False)
+        embed.add_field(name="🤖 AIコーチ", value=ai_comment, inline=False)
         
         status_text = []
-        if not success_obsidian: status_text.append("⚠️ Obsidian save failed")
-        if not success_calendar: status_text.append("⚠️ Calendar update failed")
-        if not status_text: status_text.append("Saved to Obsidian")
+        if not success_obsidian: status_text.append("⚠️ Obsidian保存失敗")
+        if not success_calendar: status_text.append("⚠️ カレンダー更新失敗")
+        if not status_text: status_text.append("Obsidianに保存しました")
         
         embed.set_footer(text=f"{' | '.join(status_text)} | {now.strftime('%H:%M')}")
         await interaction.followup.send(embed=embed)
