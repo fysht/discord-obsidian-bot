@@ -98,7 +98,7 @@ class MorningPlanningView(discord.ui.View):
         try:
             events = await self.cog._get_todays_events()
             event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or "予定なし"
-            log_summary = "(昨日のサマリー取得中...)" # 必要に応じて実装
+            log_summary = "(昨日のサマリー取得中...)" 
 
             await interaction.response.send_modal(
                 MorningPlanningModal(self.cog, event_text, log_summary)
@@ -137,6 +137,7 @@ class NightlyReviewModal(discord.ui.Modal, title="夜の振り返り"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
+        # 処理に時間がかかるため、deferして待機状態にする
         await interaction.response.defer(ephemeral=False, thinking=True)
         try:
             await self.cog._save_journal_entry(
@@ -303,11 +304,9 @@ class JournalCog(commands.Cog):
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
 
-        # Obsidianの見出しは英語 (## Planning)
         planning_content = f"- **Highlight:** {highlight}\n### Schedule\n{schedule}"
         success_obsidian = await self._save_to_obsidian(date_str, planning_content, "## Planning")
         
-        # Discordの表示は日本語
         embed = discord.Embed(title=f"☀️ プランニング ({date_str})", color=discord.Color.orange())
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         embed.add_field(name=f"{HIGHLIGHT_EMOJI} 今日のハイライト", value=highlight, inline=False)
@@ -319,8 +318,10 @@ class JournalCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     async def _save_journal_entry(self, interaction: discord.Interaction, wins: str, learnings: str, todays_events: Optional[str], tomorrows_schedule: Optional[str]):
+        """ジャーナルを保存し、その内容とデイリーノート全体を統合してDailyサマリーを生成する"""
         if not self.is_ready: return
 
+        # 1. ジャーナル項目のフォーマット
         formatted_wins = self._format_bullet_list(wins)
         formatted_learnings = self._format_bullet_list(learnings)
         formatted_events = self._format_bullet_list(todays_events)
@@ -329,30 +330,48 @@ class JournalCog(commands.Cog):
         obsidian_learnings = self._format_bullet_list(learnings, indent="\t\t")
         obsidian_events = self._format_bullet_list(todays_events, indent="\t\t")
 
-        ai_comment = "(AIコメント生成失敗)"
-        try:
-            prompt = f"""あなたはコーチです。ユーザーの日報に対して、ポジティブで次につながるフィードバックを日本語で、300文字以内で記述してください。
-# ユーザーの振り返り
-## Wins (良かったこと)
-{formatted_wins}
-## Learnings (学んだこと)
-{formatted_learnings}
-## Events (出来事)
-{formatted_events}
-"""
-            response = await self.gemini_model.generate_content_async(prompt)
-            ai_comment = response.text.strip()
-        except Exception: pass
-
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
         
-        # Obsidianの見出し・キーは英語 (## Journal, **Wins:**, etc.)
+        # 2. ジャーナルをObsidianに保存 (## Journal セクション)
         journal_content = f"- {now.strftime('%H:%M')}\n\t- **Wins:**\n{obsidian_wins}\n\t- **Learnings:**\n{obsidian_learnings}\n"
         if obsidian_events: journal_content += f"\t- **Events:**\n{obsidian_events}"
 
-        success_obsidian = await self._save_to_obsidian(date_str, journal_content, "## Journal")
+        success_obsidian_journal = await self._save_to_obsidian(date_str, journal_content, "## Journal")
 
+        # 3. デイリーノート全文を取得し、AIサマリーを生成・保存
+        summary_content = "(サマリー生成失敗)"
+        success_obsidian_summary = False
+        
+        try:
+            path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+            _, res = await asyncio.to_thread(self.dbx.files_download, path)
+            full_note_content = res.content.decode('utf-8')
+
+            prompt = f"""
+            あなたはユーザーの秘書兼コーチです。
+            以下の今日のデイリーノートの内容（ジャーナル、タスク、ログ等）を元に、**今日の活動の要約（Daily Summary）**を作成してください。
+            
+            # 指示
+            - 今日の活動内容、達成できたこと（Wins）、学び（Learnings）を統合して、1日のハイライトとしてまとめてください。
+            - ユーザーに対する労いや、明日に向けたポジティブで具体的なフィードバックも含めてください。
+            - Markdown形式で記述してください（見出しは含めず、箇条書きや段落で構成）。
+            - 文字数は300〜500文字程度で簡潔に。
+
+            # 今日のデイリーノート内容
+            {full_note_content}
+            """
+            
+            response = await self.gemini_model.generate_content_async(prompt)
+            summary_content = response.text.strip()
+
+            success_obsidian_summary = await self._save_to_obsidian(date_str, summary_content, "## Daily Summary")
+
+        except Exception as e:
+            logging.error(f"Daily summary generation failed: {e}")
+            summary_content = f"⚠️ サマリー生成中にエラーが発生しました: {e}"
+
+        # 4. 翌日の予定をカレンダーに登録 (あれば)
         success_calendar = True
         if tomorrows_schedule:
             schedule_list = self._parse_schedule_text(tomorrows_schedule)
@@ -360,18 +379,21 @@ class JournalCog(commands.Cog):
             if not await self._register_schedule_to_calendar(interaction, schedule_list, tomorrow):
                 success_calendar = False
 
-        # Discordの表示は日本語
-        embed = discord.Embed(title=f"🌙 振り返り ({date_str})", color=discord.Color.purple())
+        # 5. DiscordにEmbed送信
+        embed = discord.Embed(title=f"🌙 振り返り & デイリーサマリー ({date_str})", color=discord.Color.purple())
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        
         embed.add_field(name="🌟 良かったこと (Wins)", value=formatted_wins or "なし", inline=False)
         embed.add_field(name="💡 学んだこと (Learnings)", value=formatted_learnings or "なし", inline=False)
         if formatted_events: embed.add_field(name="📍 出来事 (Events)", value=formatted_events, inline=False)
-        embed.add_field(name="🤖 AIコーチ", value=ai_comment, inline=False)
+        
+        embed.add_field(name="📝 Daily Summary & Feedback", value=summary_content, inline=False)
         
         status_text = []
-        if not success_obsidian: status_text.append("⚠️ Obsidian保存失敗")
-        if not success_calendar: status_text.append("⚠️ カレンダー更新失敗")
-        if not status_text: status_text.append("Obsidianに保存しました")
+        if not success_obsidian_journal: status_text.append("⚠️ Journal保存失敗")
+        if not success_obsidian_summary: status_text.append("⚠️ Summary保存失敗")
+        if not success_calendar: status_text.append("⚠️ Calendar更新失敗")
+        if not status_text: status_text.append("全て保存しました")
         
         embed.set_footer(text=f"{' | '.join(status_text)} | {now.strftime('%H:%M')}")
         await interaction.followup.send(embed=embed)
@@ -413,8 +435,35 @@ class JournalCog(commands.Cog):
         return events
 
     async def _register_schedule_to_calendar(self, interaction, schedule_list, target_date):
+        """指定されたスケジュールをGoogleカレンダーに登録する（重複チェック付き）"""
         if not self.calendar_service: return False
         try:
+            # --- 重複チェックの準備 ---
+            # 登録対象日の既存イベントを取得
+            start_check = datetime.combine(target_date, time.min).replace(tzinfo=JST).isoformat()
+            end_check = datetime.combine(target_date, time.max).replace(tzinfo=JST).isoformat()
+            
+            existing_events_result = await asyncio.to_thread(
+                self.calendar_service.events().list(
+                    calendarId=self.google_calendar_id, 
+                    timeMin=start_check, 
+                    timeMax=end_check, 
+                    singleEvents=True
+                ).execute
+            )
+            existing_items = existing_events_result.get('items', [])
+            
+            # 既存イベントのシグネチャ（件名, 開始時刻）のセットを作成
+            existing_signatures = set()
+            for e in existing_items:
+                start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date')
+                summary = e.get('summary', '')
+                if start and summary:
+                    # ISOフォーマットの文字列そのもので比較（Botが登録したものなら一致するはず）
+                    # 必要であればdatetimeオブジェクトに変換して比較する
+                    existing_signatures.add((summary, start))
+            # -----------------------
+
             for item in schedule_list:
                 start_str = item["start_time"]
                 end_str = item["end_time"]
@@ -441,7 +490,19 @@ class JournalCog(commands.Cog):
                     'start': {'dateTime': start_dt.isoformat()},
                     'end': {'dateTime': end_dt.isoformat()},
                 }
+
+                # --- 重複チェック ---
+                signature = (summary, start_dt.isoformat())
+                if signature in existing_signatures:
+                    logging.info(f"Skipping duplicate calendar event: {summary} at {start_dt.isoformat()}")
+                    continue
+                # --------------------
+
                 await asyncio.to_thread(self.calendar_service.events().insert(calendarId=self.google_calendar_id, body=event).execute)
+                
+                # 同一バッチ内での重複登録も防ぐためにセットに追加
+                existing_signatures.add(signature)
+
             return True
         except Exception as e:
             logging.error(f"Calendar error: {e}")

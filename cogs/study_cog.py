@@ -613,8 +613,13 @@ class AnsBtn(discord.ui.Button):
         
         embed.set_footer(text=f"+{res['gain']}XP | Lv.{res['level']}")
         
+        # 回答済みの問題のボタンを無効化してメッセージを更新
+        for item in self.view.children:
+            item.disabled = True
+        await interaction.message.edit(view=self.view)
+
         await interaction.response.send_message(embed=embed, view=ExpView(self.view, self.q))
-        self.view.stop()
+        # self.view.stop() を削除することで、Viewを継続させ、次の問題で再利用可能にする
 
 class AbortBtn(discord.ui.Button):
     def __init__(self):
