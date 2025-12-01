@@ -290,7 +290,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             try:
                 metadata, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 daily_note_content = res.content.decode('utf-8')
-            except ApiError: daily_note_content = f"# {date_str}\n"
+            except ApiError: daily_note_content = "" # ★ 修正: 初期値を空文字に変更
 
             note_filename_for_link = filename.replace('.md', ''); link_path_part = ENGLISH_LOG_PATH.lstrip('/')
             link_to_add = f"- [[{link_path_part}/{note_filename_for_link}|English Chat ({user.display_name})]]"
@@ -324,7 +324,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             try:
                 metadata, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 daily_note_content = res.content.decode('utf-8')
-            except ApiError: daily_note_content = f"# {date_str}\n"
+            except ApiError: daily_note_content = "" # ★ 修正: 初期値を空文字に変更
 
             note_filename_for_link = filename.replace('.md', ''); link_path_part = SAKUBUN_LOG_PATH.lstrip('/')
             link_to_add = f"- [[{link_path_part}/{note_filename_for_link}|{japanese_question[:30]}...]]"

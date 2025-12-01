@@ -1,4 +1,3 @@
-# sync_worker.py (修正版)
 import os
 import sys
 import json
@@ -192,7 +191,7 @@ def process_pending_memos():
                         logging.info(f"[DROPBOX] ダウンロード成功: {file_path}")
                     except ApiError as e:
                         if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                            current_content = f"# {date_str}\n" # Create new
+                            current_content = "" # ★ 修正: 初期値を空文字に変更
                             logging.info(f"[DROPBOX] 新規作成します: {file_path}")
                         else:
                             logging.error(f"[DROPBOX] ダウンロード失敗: {file_path}, Error: {e}", exc_info=True)

@@ -206,7 +206,7 @@ class TodoCog(commands.Cog):
                 _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
                 content = res.content.decode('utf-8')
             except ApiError:
-                content = f"# {date_str}\n"
+                content = "" # ★ 修正: 初期値を空文字に変更
 
             new_content = update_section(content, text_to_add, DAILY_NOTE_TODO_HEADER)
             await asyncio.to_thread(
@@ -241,7 +241,6 @@ class TodoCog(commands.Cog):
         """外部Cog（NewsCogなど）から呼び出すためのメソッド"""
         return await self.create_todo_embed()
 
-    # ★ 修正: メッセージ監視による自動登録（リアクションベースに変更）
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
         if payload.user_id == self.bot.user.id:
@@ -262,58 +261,19 @@ class TodoCog(commands.Cog):
         except (discord.NotFound, discord.Forbidden):
             return
 
-        # Botのメッセージや空のメッセージは除外
         if message.author.bot or not message.content.strip():
             return
         
         content = message.content.strip()
         
-        # ToDoに追加
         user = await self.bot.fetch_user(payload.user_id)
         await self.add_todo(user, content, category)
         logging.info(f"Message added to ToDo via reaction {emoji_str}: [{category}] {content}")
         
-        # 完了リアクション（Bot側）
         try:
             await message.add_reaction("✅")
         except:
             pass
-
-    # ★ 修正: 元のプレフィックス検知ロジックは無効化（コメントアウト）
-    # @commands.Cog.listener()
-    # async def on_message(self, message: discord.Message):
-    #     if message.author.bot or message.channel.id != self.target_channel_id:
-    #         return
-    #     
-    #     content = message.content.strip()
-    #     if not content: return
-    #
-    #     # プレフィックス判定
-    #     lower_content = content.lower()
-    #     detected_category = None
-    #     clean_content = ""
-    #
-    #     for category, prefixes in PREFIX_MAP.items():
-    #         for prefix in prefixes:
-    #             if lower_content.startswith(prefix):
-    #                 detected_category = category.capitalize() # "Task", "Buy", "Think"
-    #                 # プレフィックスを除去して本文を取得
-    #                 clean_content = content[len(prefix):].strip()
-    #                 break
-    #         if detected_category:
-    #             break
-    #     
-    #     if detected_category and clean_content:
-    #         # ToDoに追加
-    #         await self.add_todo(message.author, clean_content, detected_category)
-    #         logging.info(f"Message added to ToDo via prefix: [{detected_category}] {clean_content}")
-    #         
-    #         # リアクションで通知
-    #         emoji_map = {"Task": "📝", "Buy": "🛒", "Think": "🤔"}
-    #         try:
-    #             await message.add_reaction(emoji_map.get(detected_category, "✅"))
-    #         except:
-    #             pass
 
     @app_commands.command(name="todo", description="ToDoリストパネルを表示します。")
     async def show_todo(self, interaction: discord.Interaction):

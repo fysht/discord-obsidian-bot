@@ -137,7 +137,6 @@ class NightlyReviewModal(discord.ui.Modal, title="夜の振り返り"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        # 処理に時間がかかるため、deferして待機状態にする
         await interaction.response.defer(ephemeral=False, thinking=True)
         try:
             await self.cog._save_journal_entry(
@@ -318,10 +317,8 @@ class JournalCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     async def _save_journal_entry(self, interaction: discord.Interaction, wins: str, learnings: str, todays_events: Optional[str], tomorrows_schedule: Optional[str]):
-        """ジャーナルを保存し、その内容とデイリーノート全体を統合してDailyサマリーを生成する"""
         if not self.is_ready: return
 
-        # 1. ジャーナル項目のフォーマット
         formatted_wins = self._format_bullet_list(wins)
         formatted_learnings = self._format_bullet_list(learnings)
         formatted_events = self._format_bullet_list(todays_events)
@@ -333,16 +330,14 @@ class JournalCog(commands.Cog):
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
         
-        # 2. ジャーナルをObsidianに保存 (## Journal セクション)
         journal_content = f"- {now.strftime('%H:%M')}\n\t- **Wins:**\n{obsidian_wins}\n\t- **Learnings:**\n{obsidian_learnings}\n"
         if obsidian_events: journal_content += f"\t- **Events:**\n{obsidian_events}"
 
         success_obsidian_journal = await self._save_to_obsidian(date_str, journal_content, "## Journal")
 
-        # 3. デイリーノート全文を取得し、AIサマリーを生成・保存
+        # --- AIサマリー生成 ---
         summary_content = "(サマリー生成失敗)"
         success_obsidian_summary = False
-        
         try:
             path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
             _, res = await asyncio.to_thread(self.dbx.files_download, path)
@@ -371,7 +366,7 @@ class JournalCog(commands.Cog):
             logging.error(f"Daily summary generation failed: {e}")
             summary_content = f"⚠️ サマリー生成中にエラーが発生しました: {e}"
 
-        # 4. 翌日の予定をカレンダーに登録 (あれば)
+        # --- カレンダー登録 ---
         success_calendar = True
         if tomorrows_schedule:
             schedule_list = self._parse_schedule_text(tomorrows_schedule)
@@ -379,14 +374,11 @@ class JournalCog(commands.Cog):
             if not await self._register_schedule_to_calendar(interaction, schedule_list, tomorrow):
                 success_calendar = False
 
-        # 5. DiscordにEmbed送信
         embed = discord.Embed(title=f"🌙 振り返り & デイリーサマリー ({date_str})", color=discord.Color.purple())
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-        
         embed.add_field(name="🌟 良かったこと (Wins)", value=formatted_wins or "なし", inline=False)
         embed.add_field(name="💡 学んだこと (Learnings)", value=formatted_learnings or "なし", inline=False)
         if formatted_events: embed.add_field(name="📍 出来事 (Events)", value=formatted_events, inline=False)
-        
         embed.add_field(name="📝 Daily Summary & Feedback", value=summary_content, inline=False)
         
         status_text = []
@@ -404,7 +396,7 @@ class JournalCog(commands.Cog):
             try:
                 _, res = await asyncio.to_thread(self.dbx.files_download, path)
                 current = res.content.decode('utf-8')
-            except: current = f"# {date_str}\n"
+            except: current = "" # ★ 修正: 初期値を空文字に変更
             
             new_content = update_section(current, content_to_add, section)
             await asyncio.to_thread(self.dbx.files_upload, new_content.encode('utf-8'), path, mode=WriteMode('overwrite'))
@@ -435,14 +427,11 @@ class JournalCog(commands.Cog):
         return events
 
     async def _register_schedule_to_calendar(self, interaction, schedule_list, target_date):
-        """指定されたスケジュールをGoogleカレンダーに登録する（重複チェック付き）"""
         if not self.calendar_service: return False
         try:
-            # --- 重複チェックの準備 ---
-            # 登録対象日の既存イベントを取得
+            # 重複チェック用：既存の予定を取得
             start_check = datetime.combine(target_date, time.min).replace(tzinfo=JST).isoformat()
             end_check = datetime.combine(target_date, time.max).replace(tzinfo=JST).isoformat()
-            
             existing_events_result = await asyncio.to_thread(
                 self.calendar_service.events().list(
                     calendarId=self.google_calendar_id, 
@@ -452,17 +441,12 @@ class JournalCog(commands.Cog):
                 ).execute
             )
             existing_items = existing_events_result.get('items', [])
-            
-            # 既存イベントのシグネチャ（件名, 開始時刻）のセットを作成
             existing_signatures = set()
             for e in existing_items:
                 start = e.get('start', {}).get('dateTime') or e.get('start', {}).get('date')
                 summary = e.get('summary', '')
                 if start and summary:
-                    # ISOフォーマットの文字列そのもので比較（Botが登録したものなら一致するはず）
-                    # 必要であればdatetimeオブジェクトに変換して比較する
                     existing_signatures.add((summary, start))
-            # -----------------------
 
             for item in schedule_list:
                 start_str = item["start_time"]
@@ -485,24 +469,19 @@ class JournalCog(commands.Cog):
                 if end_dt < start_dt: end_dt += timedelta(days=1)
                 if end_dt == start_dt: end_dt += timedelta(hours=1)
 
+                # 重複チェック
+                signature = (summary, start_dt.isoformat())
+                if signature in existing_signatures:
+                    logging.info(f"Skipping duplicate calendar event: {summary}")
+                    continue
+
                 event = {
                     'summary': summary,
                     'start': {'dateTime': start_dt.isoformat()},
                     'end': {'dateTime': end_dt.isoformat()},
                 }
-
-                # --- 重複チェック ---
-                signature = (summary, start_dt.isoformat())
-                if signature in existing_signatures:
-                    logging.info(f"Skipping duplicate calendar event: {summary} at {start_dt.isoformat()}")
-                    continue
-                # --------------------
-
                 await asyncio.to_thread(self.calendar_service.events().insert(calendarId=self.google_calendar_id, body=event).execute)
-                
-                # 同一バッチ内での重複登録も防ぐためにセットに追加
                 existing_signatures.add(signature)
-
             return True
         except Exception as e:
             logging.error(f"Calendar error: {e}")
