@@ -47,7 +47,7 @@ class LifeLogMemoModal(discord.ui.Modal, title="作業メモの入力"):
         await interaction.response.defer(ephemeral=False)
         await self.cog.add_memo_to_task(interaction, self.memo_text.value)
 
-# --- タスク開始確認用View ---
+# --- タスク開始確認用View (チャット入力検知用) ---
 class LifeLogConfirmTaskView(discord.ui.View):
     def __init__(self, cog, task_name: str, original_message: discord.Message):
         super().__init__(timeout=60) # 60秒後にタイムアウト（自動開始）
@@ -63,12 +63,10 @@ class LifeLogConfirmTaskView(discord.ui.View):
             return
         
         await interaction.response.defer()
-        # メッセージを更新してボタンを消す
         try:
             await interaction.edit_original_response(content=f"✅ タスク「**{self.task_name}**」の計測を開始します。", view=None)
         except: pass
         
-        # タスク切り替え処理を実行
         await self.cog.switch_task(self.original_message, self.task_name)
         self.stop()
 
@@ -82,15 +80,38 @@ class LifeLogConfirmTaskView(discord.ui.View):
         self.stop()
 
     async def on_timeout(self):
-        # タイムアウト時は自動開始する
         try:
             if self.bot_response_message:
                 await self.bot_response_message.edit(content=f"✅ (自動開始) タスク「**{self.task_name}**」の計測を開始します。", view=None)
         except: pass
         
-        # タスク切り替え処理を実行
         await self.cog.switch_task(self.original_message, self.task_name)
 
+# --- ★新規: スケジュール通知からの開始確認用View ---
+class LifeLogScheduleStartView(discord.ui.View):
+    def __init__(self, cog, task_name):
+        super().__init__(timeout=300) # 5分間待機
+        self.cog = cog
+        self.task_name = task_name
+
+    @discord.ui.button(label="開始する", style=discord.ButtonStyle.success, emoji="▶️")
+    async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        # インタラクションからタスクを開始
+        await self.cog.switch_task_from_interaction(interaction, self.task_name)
+        # メッセージを更新してボタンを削除
+        try:
+            await interaction.edit_original_response(content=f"✅ 予定されていたタスク「**{self.task_name}**」を開始しました。", view=None)
+        except: pass
+        self.stop()
+
+    @discord.ui.button(label="見送る", style=discord.ButtonStyle.secondary, emoji="👋")
+    async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("予定を見送りました。", ephemeral=True)
+        try:
+            await interaction.message.delete()
+        except: pass
+        self.stop()
 
 # --- 書籍選択用View ---
 class LifeLogBookSelectView(discord.ui.View):
@@ -150,7 +171,7 @@ class LifeLogPlanSelectView(discord.ui.View):
         await self.cog.switch_task_from_interaction(interaction, selected_task)
         self.stop()
 
-# --- タイムアウト確認用View ---
+# --- タイムアウト/延長確認用View ---
 class LifeLogTimeoutView(discord.ui.View):
     def __init__(self, cog, user_id: str):
         super().__init__(timeout=300) # 5分間有効
@@ -167,7 +188,7 @@ class LifeLogTimeoutView(discord.ui.View):
         await self.cog.extend_task(interaction)
         for item in self.children: item.disabled = True
         
-        await interaction.message.edit(content="✅ タスクを延長しました。引き続き計測します。", view=self)
+        await interaction.message.edit(content="✅ タスクを延長しました。引き続き計測します。", view=None)
         self.stop()
 
     @discord.ui.button(label="終了する", style=discord.ButtonStyle.danger, emoji="⏹️")
@@ -180,7 +201,7 @@ class LifeLogTimeoutView(discord.ui.View):
         await self.cog.finish_current_task(interaction.user, interaction)
         for item in self.children: item.disabled = True
         
-        await interaction.message.edit(content="✅ タスクを終了しました。", view=self)
+        await interaction.message.edit(content="✅ タスクを終了しました。", view=None)
         self.stop()
 
 
@@ -219,6 +240,9 @@ class LifeLogCog(commands.Cog):
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         
+        # 既に通知済みのイベントIDを管理するセット (再起動でリセットされるが、短期間の重複防止には十分)
+        self.notified_event_ids = set()
+
         self.dbx = None
         if all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key]):
             try:
@@ -243,15 +267,17 @@ class LifeLogCog(commands.Cog):
         if self.is_ready:
             if not self.daily_lifelog_summary.is_running():
                 self.daily_lifelog_summary.start()
-                logging.info("LifeLogCog: 日次サマリータスクを開始しました。")
             if not self.check_task_timeout.is_running():
                 self.check_task_timeout.start()
-                logging.info("LifeLogCog: タイムアウト監視タスクを開始しました。")
+            if not self.check_schedule_loop.is_running():
+                self.check_schedule_loop.start()
+                logging.info("LifeLogCog: スケジュール監視タスクを開始しました。")
 
 
     def cog_unload(self):
         self.check_task_timeout.cancel()
         self.daily_lifelog_summary.cancel()
+        self.check_schedule_loop.cancel()
 
     # --- 状態管理 ---
     async def _get_active_logs(self) -> dict:
@@ -277,7 +303,6 @@ class LifeLogCog(commands.Cog):
 
     async def add_memo_to_task(self, interaction: discord.Interaction, memo_content: str):
         user_id = str(interaction.user.id)
-        # ここでアクティブログをチェック
         active_logs = await self._get_active_logs()
         
         if user_id not in active_logs:
@@ -586,7 +611,46 @@ class LifeLogCog(commands.Cog):
         else:
             await interaction.followup.send("延長する進行中のタスクが見つかりませんでした。", ephemeral=True)
 
-    # --- タイムアウト監視ループ ---
+    # --- ★新規: スケジュール監視ループ ---
+    @tasks.loop(minutes=1)
+    async def check_schedule_loop(self):
+        """JournalCogから今日の予定を取得し、現在時刻と一致するものがあれば通知する"""
+        if not self.is_ready: return
+        
+        journal_cog = self.bot.get_cog("JournalCog")
+        if not journal_cog: return
+
+        try:
+            # JournalCogのメソッドを利用して今日のイベントを取得
+            events = await journal_cog._get_todays_events()
+        except Exception as e:
+            logging.error(f"Schedule check error: {e}")
+            return
+
+        now = datetime.now(JST)
+        current_time_str = now.strftime('%H:%M')
+
+        for event in events:
+            start_str = event.get('start', {}).get('dateTime')
+            if not start_str: continue # 終日イベントなどはスキップ
+            
+            event_id = event['id']
+            summary = event.get('summary', '不明な予定')
+
+            # イベント開始時刻の取得
+            start_dt = datetime.fromisoformat(start_str).astimezone(JST)
+            event_time_str = start_dt.strftime('%H:%M')
+            
+            # 時刻が一致し、まだ通知していない場合に通知
+            if event_time_str == current_time_str:
+                if event_id not in self.notified_event_ids:
+                    channel = self.bot.get_channel(self.lifelog_channel_id)
+                    if channel:
+                        view = LifeLogScheduleStartView(self, summary)
+                        await channel.send(f"⏰ **予定の時間です**: {summary}\nこのタスクを開始しますか？", view=view)
+                        self.notified_event_ids.add(event_id)
+
+    # --- タイムアウト監視ループ (文言修正) ---
     @tasks.loop(minutes=1)
     async def check_task_timeout(self):
         if not self.is_ready: return
@@ -606,7 +670,7 @@ class LifeLogCog(commands.Cog):
                     # 60分(3600秒)ごとに通知
                     threshold_seconds = (count + 1) * 60 * 60
                     
-                    # 1. 1時間毎の経過警告
+                    # 1. 1時間毎の経過確認
                     if elapsed_seconds >= threshold_seconds:
                         if not last_warning_str:
                             channel = self.bot.get_channel(log.get('channel_id'))
@@ -618,9 +682,10 @@ class LifeLogCog(commands.Cog):
                                 mention = user.mention if user else f"User {user_id}"
                                 
                                 view = LifeLogTimeoutView(self, user_id)
+                                elapsed_hours = int(elapsed_seconds // 3600)
                                 await channel.send(
-                                    f"{mention} ⚠️ タスク「**{log['task']}**」開始から {int(elapsed_seconds//3600)} 時間が経過しました。\n"
-                                    "継続しますか？（反応がない場合、約5分後に自動終了します）", 
+                                    f"{mention} ⏰ タスク「**{log['task']}**」開始から {elapsed_hours} 時間が経過しました。\n"
+                                    "延長しますか？それとも終了しますか？（5分後に自動終了）", 
                                     view=view
                                 )
                             
