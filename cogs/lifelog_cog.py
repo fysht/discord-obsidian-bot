@@ -29,6 +29,10 @@ READING_NOTES_PATH = "/Reading Notes"
 # ライフログサマリータスクの時刻を早朝に設定
 DAILY_SUMMARY_TIME = time(hour=6, minute=0, tzinfo=JST) 
 
+# ==========================================
+# UI Components
+# ==========================================
+
 # --- メモ入力モーダル ---
 class LifeLogMemoModal(discord.ui.Modal, title="作業メモの入力"):
     memo_text = discord.ui.TextInput(
@@ -87,7 +91,7 @@ class LifeLogConfirmTaskView(discord.ui.View):
         
         await self.cog.switch_task(self.original_message, self.task_name)
 
-# --- ★新規: スケジュール通知からの開始確認用View ---
+# --- スケジュール通知からの開始確認用View ---
 class LifeLogScheduleStartView(discord.ui.View):
     def __init__(self, cog, task_name):
         super().__init__(timeout=300) # 5分間待機
@@ -99,7 +103,6 @@ class LifeLogScheduleStartView(discord.ui.View):
         await interaction.response.defer()
         # インタラクションからタスクを開始
         await self.cog.switch_task_from_interaction(interaction, self.task_name)
-        # メッセージを更新してボタンを削除
         try:
             await interaction.edit_original_response(content=f"✅ 予定されていたタスク「**{self.task_name}**」を開始しました。", view=None)
         except: pass
@@ -225,6 +228,10 @@ class LifeLogView(discord.ui.View):
         await self.cog.prompt_plan_selection(interaction)
 
 
+# ==========================================
+# Cog Class
+# ==========================================
+
 class LifeLogCog(commands.Cog):
     """
     チャットに書き込むだけで作業時間を計測し、Obsidianに記録するライフログ機能
@@ -240,7 +247,6 @@ class LifeLogCog(commands.Cog):
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         
-        # 既に通知済みのイベントIDを管理するセット (再起動でリセットされるが、短期間の重複防止には十分)
         self.notified_event_ids = set()
 
         self.dbx = None
@@ -265,10 +271,12 @@ class LifeLogCog(commands.Cog):
     async def on_ready(self):
         self.bot.add_view(LifeLogView(self))
         if self.is_ready:
+            await self.bot.wait_until_ready()
             if not self.daily_lifelog_summary.is_running():
                 self.daily_lifelog_summary.start()
             if not self.check_task_timeout.is_running():
                 self.check_task_timeout.start()
+                logging.info("LifeLogCog: タイムアウト監視タスクを開始しました。")
             if not self.check_schedule_loop.is_running():
                 self.check_schedule_loop.start()
                 logging.info("LifeLogCog: スケジュール監視タスクを開始しました。")
@@ -611,7 +619,7 @@ class LifeLogCog(commands.Cog):
         else:
             await interaction.followup.send("延長する進行中のタスクが見つかりませんでした。", ephemeral=True)
 
-    # --- ★新規: スケジュール監視ループ ---
+    # --- スケジュール監視ループ ---
     @tasks.loop(minutes=1)
     async def check_schedule_loop(self):
         """JournalCogから今日の予定を取得し、現在時刻と一致するものがあれば通知する"""
@@ -621,7 +629,6 @@ class LifeLogCog(commands.Cog):
         if not journal_cog: return
 
         try:
-            # JournalCogのメソッドを利用して今日のイベントを取得
             events = await journal_cog._get_todays_events()
         except Exception as e:
             logging.error(f"Schedule check error: {e}")
@@ -632,16 +639,14 @@ class LifeLogCog(commands.Cog):
 
         for event in events:
             start_str = event.get('start', {}).get('dateTime')
-            if not start_str: continue # 終日イベントなどはスキップ
+            if not start_str: continue 
             
             event_id = event['id']
             summary = event.get('summary', '不明な予定')
 
-            # イベント開始時刻の取得
             start_dt = datetime.fromisoformat(start_str).astimezone(JST)
             event_time_str = start_dt.strftime('%H:%M')
             
-            # 時刻が一致し、まだ通知していない場合に通知
             if event_time_str == current_time_str:
                 if event_id not in self.notified_event_ids:
                     channel = self.bot.get_channel(self.lifelog_channel_id)
@@ -650,7 +655,7 @@ class LifeLogCog(commands.Cog):
                         await channel.send(f"⏰ **予定の時間です**: {summary}\nこのタスクを開始しますか？", view=view)
                         self.notified_event_ids.add(event_id)
 
-    # --- タイムアウト監視ループ (文言修正) ---
+    # --- タイムアウト監視ループ (修正版) ---
     @tasks.loop(minutes=1)
     async def check_task_timeout(self):
         if not self.is_ready: return
@@ -664,46 +669,52 @@ class LifeLogCog(commands.Cog):
                     start_time = datetime.fromisoformat(log['start_time'])
                     elapsed_seconds = (now - start_time).total_seconds()
                     
-                    count = log.get('notification_count', 0)
+                    # 経過時間の（整数）時間
+                    current_duration_hours = int(elapsed_seconds // 3600)
+                    
+                    # 保存されている通知済み回数
+                    notified_count = log.get('notification_count', 0)
                     last_warning_str = log.get('last_warning')
-                    
-                    # 60分(3600秒)ごとに通知
-                    threshold_seconds = (count + 1) * 60 * 60
-                    
-                    # 1. 1時間毎の経過確認
-                    if elapsed_seconds >= threshold_seconds:
-                        if not last_warning_str:
-                            channel = self.bot.get_channel(log.get('channel_id'))
-                            if channel:
-                                user = self.bot.get_user(int(user_id))
-                                if not user:
-                                    try: user = await self.bot.fetch_user(int(user_id))
-                                    except: pass
-                                mention = user.mention if user else f"User {user_id}"
-                                
-                                view = LifeLogTimeoutView(self, user_id)
-                                elapsed_hours = int(elapsed_seconds // 3600)
-                                await channel.send(
-                                    f"{mention} ⏰ タスク「**{log['task']}**」開始から {elapsed_hours} 時間が経過しました。\n"
-                                    "延長しますか？それとも終了しますか？（5分後に自動終了）", 
-                                    view=view
-                                )
-                            
-                            log['last_warning'] = now.isoformat()
-                            log['notification_count'] = count + 1
-                            changed = True
-                    
-                    # 2. 警告から5分経過後の自動終了
+
+                    # --- 1. 自動終了チェック (警告から5分経過) ---
                     if last_warning_str:
-                        last_warning = datetime.fromisoformat(last_warning_str)
-                        if (now - last_warning).total_seconds() >= 300: # 5分
+                        last_warning_dt = datetime.fromisoformat(last_warning_str)
+                        time_since_warning = (now - last_warning_dt).total_seconds()
+                        
+                        if time_since_warning >= 300: # 5分経過
+                            # 自動終了処理
                             user_obj = discord.Object(id=int(user_id))
-                            await self.finish_current_task(user_obj, context=None, end_time=last_warning)
+                            # コンテキストなしで終了処理を呼ぶ
+                            await self.finish_current_task(user_obj, context=None, end_time=last_warning_dt)
                             
                             channel = self.bot.get_channel(log.get('channel_id'))
                             if channel:
                                 await channel.send(f"🛑 応答がなかったため、タスク「{log['task']}」を自動終了しました。")
+                            
+                            # active_logsからは finish_current_task 内で削除されるためループ内の処理はここまで
                             continue 
+
+                    # --- 2. 経過通知 (新しい時間帯に入り、かつ警告中でない場合) ---
+                    if current_duration_hours > notified_count and not last_warning_str:
+                        channel = self.bot.get_channel(log.get('channel_id'))
+                        if channel:
+                            user = self.bot.get_user(int(user_id))
+                            if not user:
+                                try: user = await self.bot.fetch_user(int(user_id))
+                                except: pass
+                            
+                            mention = user.mention if user else f"User {user_id}"
+                            
+                            view = LifeLogTimeoutView(self, user_id)
+                            await channel.send(
+                                f"{mention} ⏰ タスク「**{log['task']}**」開始から {current_duration_hours} 時間が経過しました。\n"
+                                "延長しますか？それとも終了しますか？（反応がない場合、5分後に自動終了します）", 
+                                view=view
+                            )
+                        
+                        log['last_warning'] = now.isoformat()
+                        log['notification_count'] = current_duration_hours
+                        changed = True
 
                 except Exception as e:
                     logging.error(f"LifeLogCog: Timeout check error for user {user_id}: {e}")
