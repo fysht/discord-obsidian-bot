@@ -69,8 +69,9 @@ class LifeLogConfirmTaskView(discord.ui.View):
         
         await interaction.response.defer()
         try:
-            # 確認メッセージを更新して「開始」状態にする
-            await interaction.edit_original_response(content=f"✅ タスク「**{self.task_name}**」の計測を開始します（予定: {self.duration}分）。", view=None)
+            # メッセージを更新せず、新しいタスク開始通知に任せる（古いのは消すか更新）
+            # ここではシンプルに「開始しました」にしてViewを消す
+            await interaction.delete_original_response() 
         except: pass
         
         await self.cog.switch_task(self.original_message, self.task_name, self.duration)
@@ -90,36 +91,43 @@ class LifeLogConfirmTaskView(discord.ui.View):
         self.stop()
 
     async def on_timeout(self):
+        # タイムアウト時はメッセージ削除
         try:
             if self.bot_response_message:
-                await self.bot_response_message.edit(content=f"✅ (自動開始) タスク「**{self.task_name}**」の計測を開始します（予定: {self.duration}分）。", view=None)
+                await self.bot_response_message.delete()
         except: pass
-        
-        await self.cog.switch_task(self.original_message, self.task_name, self.duration)
 
 class LifeLogScheduleStartView(discord.ui.View):
     def __init__(self, cog, task_name, duration=30):
-        super().__init__(timeout=300)
+        super().__init__(timeout=300) # 5分後にタイムアウト（自動削除）
         self.cog = cog
         self.task_name = task_name
         self.duration = duration
+        self.message: discord.Message = None
 
-    @discord.ui.button(label="開始する", style=discord.ButtonStyle.success, emoji="▶️")
+    @discord.ui.button(label="切り替えて開始", style=discord.ButtonStyle.success, emoji="▶️")
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await self.cog.switch_task_from_interaction(interaction, self.task_name, self.duration)
         try:
-            await interaction.edit_original_response(content=f"✅ 予定されていたタスク「**{self.task_name}**」を開始しました。", view=None)
+            await interaction.delete_original_response() # 押したら消す
         except: pass
+        await self.cog.switch_task_from_interaction(interaction, self.task_name, self.duration)
         self.stop()
 
-    @discord.ui.button(label="見送る", style=discord.ButtonStyle.secondary, emoji="👋")
+    @discord.ui.button(label="現在のタスクを継続", style=discord.ButtonStyle.secondary, emoji="👋")
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
-            await interaction.delete_original_response() # メッセージ削除
+            await interaction.delete_original_response() # 押したら消す
         except: pass
         self.stop()
+    
+    async def on_timeout(self):
+        # タイムアウト（5分経過）でメッセージ削除
+        try:
+            if self.message:
+                await self.message.delete()
+        except: pass
 
 class LifeLogBookSelectView(discord.ui.View):
     def __init__(self, cog, book_options: list[discord.SelectOption], original_author: discord.User, duration: int):
@@ -127,6 +135,7 @@ class LifeLogBookSelectView(discord.ui.View):
         self.cog = cog
         self.original_author = original_author
         self.duration = duration
+        self.message = None
         
         select = discord.ui.Select(
             placeholder="読む書籍を選択してください...",
@@ -144,15 +153,25 @@ class LifeLogBookSelectView(discord.ui.View):
         selected_book_name = interaction.data["values"][0]
         task_name = os.path.splitext(selected_book_name)[0]
         
-        await interaction.response.edit_message(content=f"📖 書籍を選択しました: **{task_name}**（予定: {self.duration}分）", view=None, embed=None)
+        await interaction.response.defer()
+        try:
+             await interaction.delete_original_response()
+        except: pass
+        
         await self.cog.switch_task_from_interaction(interaction, task_name, self.duration)
         self.stop()
+
+    async def on_timeout(self):
+        try:
+            if self.message: await self.message.delete()
+        except: pass
 
 class LifeLogPlanSelectView(discord.ui.View):
     def __init__(self, cog, task_options: list[str], original_author: discord.User):
         super().__init__(timeout=60)
         self.cog = cog
         self.original_author = original_author
+        self.message = None
         
         options = []
         for task in task_options[:25]:
@@ -175,23 +194,30 @@ class LifeLogPlanSelectView(discord.ui.View):
         selected_task = interaction.data["values"][0]
         task_name, duration = self.cog._parse_task_and_duration(selected_task)
         
-        await interaction.response.edit_message(content=f"📅 計画から開始: **{task_name}**（予定: {duration}分）", view=None, embed=None)
+        await interaction.response.defer()
+        try:
+            await interaction.delete_original_response()
+        except: pass
+
         await self.cog.switch_task_from_interaction(interaction, task_name, duration)
         self.stop()
 
+    async def on_timeout(self):
+        try:
+            if self.message: await self.message.delete()
+        except: pass
+
 class LifeLogTimeUpView(discord.ui.View):
     def __init__(self, cog, user_id: str, task_name: str, alert_message: discord.Message = None):
-        super().__init__(timeout=None) # タイムアウトはタスク側で管理
+        super().__init__(timeout=None)
         self.cog = cog
         self.user_id = user_id
         self.task_name = task_name
-        self.alert_message = alert_message # 自身（アラートメッセージ）への参照
+        self.alert_message = alert_message 
 
     async def _delete_alert(self):
-        """アラートメッセージを削除する"""
         if self.alert_message:
-            try:
-                await self.alert_message.delete()
+            try: await self.alert_message.delete()
             except: pass
 
     @discord.ui.button(label="延長する (+30分)", style=discord.ButtonStyle.primary, emoji="🔄")
@@ -201,7 +227,7 @@ class LifeLogTimeUpView(discord.ui.View):
             return
         
         await interaction.response.defer()
-        await self._delete_alert() # ボタンを押したらアラート削除
+        await self._delete_alert() 
         
         await self.cog.extend_task(interaction, minutes=30)
         await interaction.followup.send(f"✅ タスク「{self.task_name}」を30分延長しました。", ephemeral=True)
@@ -261,6 +287,8 @@ class LifeLogCog(commands.Cog):
         self.bot = bot
         self.lifelog_channel_id = int(os.getenv("LIFELOG_CHANNEL_ID", 0))
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        # ユーザー特定用ID (自動開始用)
+        self.owner_id = int(os.getenv("OWNER_ID", os.getenv("USER_ID", 0)))
         
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
@@ -305,53 +333,39 @@ class LifeLogCog(commands.Cog):
     def cog_unload(self):
         self.daily_lifelog_summary.cancel()
         self.check_schedule_loop.cancel()
-        # 監視タスクのキャンセル
         for task in self.monitor_tasks.values():
             task.cancel()
 
     # --- 監視タスク管理 (Timer) ---
     async def _resume_monitoring(self):
-        """起動時にDBから読み込んでタイマーを再セットする"""
         active_logs = await self._get_active_logs()
-        now = datetime.now(JST)
-        
         for user_id, log in active_logs.items():
             try:
                 start_time = datetime.fromisoformat(log['start_time'])
                 duration_minutes = log.get('planned_duration', 30)
                 end_time = start_time + timedelta(minutes=duration_minutes)
-                
-                # まだ終わっていなければタイマーをセット
                 self._start_monitor_task(user_id, log['task'], log['channel_id'], end_time)
-                logging.info(f"LifeLogCog: タスク監視を再開しました User:{user_id}, Task:{log['task']}")
             except Exception as e:
                 logging.error(f"LifeLogCog: 監視再開エラー User:{user_id}: {e}")
 
     def _start_monitor_task(self, user_id, task_name, channel_id, end_time):
-        """指定時刻にアラートを出すタスクを開始"""
-        # 既存タスクがあればキャンセル
         if user_id in self.monitor_tasks:
             self.monitor_tasks[user_id].cancel()
-        
         self.monitor_tasks[user_id] = self.bot.loop.create_task(
             self._monitor_logic(user_id, task_name, channel_id, end_time)
         )
 
     async def _monitor_logic(self, user_id, task_name, channel_id, end_time):
-        """監視ロジック本体: 待機 -> アラート -> 待機 -> 自動終了"""
         try:
-            # 1. 終了予定時刻まで待機
             now = datetime.now(JST)
             wait_seconds = (end_time - now).total_seconds()
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
             
-            # タスクがまだアクティブか確認
             active_logs = await self._get_active_logs()
             if user_id not in active_logs or active_logs[user_id]['task'] != task_name:
                 return
 
-            # 2. アラート送信
             alert_msg = None
             channel = self.bot.get_channel(channel_id)
             if channel:
@@ -368,34 +382,26 @@ class LifeLogCog(commands.Cog):
                     "延長しますか？それとも終了しますか？（反応がない場合、5分後に自動終了します）", 
                     view=view
                 )
-                view.alert_message = alert_msg # Viewにメッセージを渡して削除可能にする
+                view.alert_message = alert_msg 
 
-            # 3. 反応待ち (5分)
             await asyncio.sleep(300) 
 
-            # 4. 自動終了処理
-            # アラートメッセージを削除
             if alert_msg:
                 try: await alert_msg.delete()
                 except: pass
 
-            # 再度アクティブ確認
             active_logs = await self._get_active_logs()
             if user_id in active_logs and active_logs[user_id]['task'] == task_name:
-                # 強制終了
                 user_obj = discord.Object(id=int(user_id))
                 await self.finish_current_task(user_obj, context=None, end_time=datetime.now(JST))
-                
                 if channel:
                     await channel.send(f"🛑 応答がなかったため、タスク「{task_name}」を自動終了しました。")
 
         except asyncio.CancelledError:
-            # タスクがキャンセルされた（終了/延長された）場合
             pass
         except Exception as e:
             logging.error(f"LifeLogCog: Monitor logic error for {user_id}: {e}", exc_info=True)
         finally:
-            # タスクリストから削除（自身のIDと一致する場合のみ）
             current = asyncio.current_task()
             if user_id in self.monitor_tasks and self.monitor_tasks[user_id] == current:
                 del self.monitor_tasks[user_id]
@@ -480,7 +486,8 @@ class LifeLogCog(commands.Cog):
             await interaction.followup.send("⚠️ 今日の計画（## Planning > ### Schedule）が見つかりませんでした。", ephemeral=True)
             return
         view = LifeLogPlanSelectView(self, tasks, interaction.user)
-        await interaction.followup.send("開始する計画タスクを選択してください:", view=view, ephemeral=True)
+        msg = await interaction.followup.send("開始する計画タスクを選択してください:", view=view, ephemeral=True)
+        view.message = msg
 
     async def _fetch_todays_plan(self) -> list[str]:
         now = datetime.now(JST)
@@ -545,7 +552,8 @@ class LifeLogCog(commands.Cog):
             label = os.path.splitext(file_name)[0][:100]
             options.append(discord.SelectOption(label=label, value=file_name))
         view = LifeLogBookSelectView(self, options, message.author, duration)
-        await message.reply(f"読む書籍を選択してください（予定: {duration}分）:", view=view)
+        msg = await message.reply(f"読む書籍を選択してください（予定: {duration}分）:", view=view)
+        view.message = msg
 
     async def switch_task_from_interaction(self, interaction: discord.Interaction, new_task_name: str, duration: int):
         user = interaction.user
@@ -561,6 +569,7 @@ class LifeLogCog(commands.Cog):
         user_id = str(user.id)
         now = datetime.now(JST)
         start_time_str = now.strftime('%H:%M')
+        
         end_time_plan = now + timedelta(minutes=duration)
         end_time_str = end_time_plan.strftime('%H:%M')
 
@@ -573,7 +582,6 @@ class LifeLogCog(commands.Cog):
                 prev_task_display = f"{prev_log_text} ({duration_text}) {task_text}"
             except:
                 prev_task_display = prev_task_log
-                
             embed.description = f"✅ **前回の記録:** `{prev_task_display}`\n⬇️\n⏱️ **計測開始:** **{task_name}** ({start_time_str} ~ {end_time_str} 予定: {duration}分)"
         else:
             embed.description = f"⏱️ **計測開始:** **{task_name}** ({start_time_str} ~ {end_time_str} 予定: {duration}分)"
@@ -592,13 +600,11 @@ class LifeLogCog(commands.Cog):
         }
         await self._save_active_logs(active_logs)
         
-        # ★ 監視タスク開始
         self._start_monitor_task(user_id, task_name, reply_msg.channel.id, end_time_plan)
 
     async def finish_current_task(self, user: discord.User | discord.Object, context, next_task_name: str = None, end_time: datetime = None) -> str:
         user_id = str(user.id)
         
-        # ★ 監視タスクのキャンセル (自分自身の場合はキャンセルしない)
         if user_id in self.monitor_tasks:
             task = self.monitor_tasks[user_id]
             current_task = asyncio.current_task()
@@ -620,16 +626,12 @@ class LifeLogCog(commands.Cog):
         await self._save_active_logs(active_logs)
 
         start_time = datetime.fromisoformat(log_data['start_time'])
-        
         if end_time is None:
             end_time = datetime.now(JST)
-            
         duration = end_time - start_time
-        
         total_seconds = int(duration.total_seconds())
         hours, remainder = divmod(total_seconds, 3600)
         minutes, _ = divmod(remainder, 60)
-        
         duration_str = (f"{hours}h" if hours > 0 else "") + f"{minutes}m"
         if total_seconds < 60: duration_str = "0m"
 
@@ -645,18 +647,13 @@ class LifeLogCog(commands.Cog):
         if memos:
             for m in memos:
                 lines = m.strip().split('\n')
-                if lines:
-                    formatted_memos.append(f"\t- {lines[0]}")
+                if lines: formatted_memos.append(f"\t- {lines[0]}")
                 for line in lines[1:]:
-                    if line.strip():
-                        formatted_memos.append(f"\t- {line.strip()}")
-            
-            if formatted_memos:
-                obsidian_line += "\n" + "\n".join(formatted_memos)
+                    if line.strip(): formatted_memos.append(f"\t- {line.strip()}")
+            if formatted_memos: obsidian_line += "\n" + "\n".join(formatted_memos)
 
-        saved = await self._save_to_obsidian(date_str, obsidian_line)
+        await self._save_to_obsidian(date_str, obsidian_line)
 
-        # 読書ノートへの連携
         if self.dbx:
             safe_title = re.sub(r'[\\/*?:"<>|]', "_", task_name)
             book_path = f"{self.dropbox_vault_path}{READING_NOTES_PATH}/{safe_title}.md"
@@ -685,27 +682,21 @@ class LifeLogCog(commands.Cog):
                 embed.color = discord.Color.dark_grey() 
                 embed.description = f"✅ **完了:** {task_name} ({start_hm} - {end_hm}, {duration_str})"
                 await old_msg.edit(embed=embed, view=None)
-        except Exception:
-            pass
+        except Exception: pass
 
         if isinstance(context, discord.Interaction) and not next_task_name:
             embed = discord.Embed(title="✅ タスク完了", color=discord.Color.light_grey())
             embed.add_field(name="Task", value=task_name, inline=True)
             embed.add_field(name="Duration", value=duration_str, inline=True)
             embed.set_footer(text=f"{start_hm} - {end_hm}")
-            
-            if not context.response.is_done():
-                await context.response.send_message(embed=embed, ephemeral=True)
-            else:
-                await context.followup.send(embed=embed, ephemeral=True)
+            if not context.response.is_done(): await context.response.send_message(embed=embed, ephemeral=True)
+            else: await context.followup.send(embed=embed, ephemeral=True)
         
         return obsidian_line
 
     async def _save_to_obsidian(self, date_str: str, line_to_add: str) -> bool:
         if not self.dbx: return False
-        
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-        
         try:
             current_content = ""
             try:
@@ -714,49 +705,18 @@ class LifeLogCog(commands.Cog):
             except ApiError as e:
                 if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
                     current_content = ""
-                else:
-                    raise
-
+                else: raise
             new_content = update_section(current_content, line_to_add, DAILY_NOTE_HEADER)
-
-            await asyncio.to_thread(
-                self.dbx.files_upload,
-                new_content.encode('utf-8'),
-                daily_note_path,
-                mode=WriteMode('overwrite')
-            )
+            await asyncio.to_thread(self.dbx.files_upload, new_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
             return True
         except Exception as e:
             logging.error(f"LifeLogCog: Obsidian保存エラー: {e}", exc_info=True)
             return False
 
-    # --- タスク延長処理 ---
-    async def extend_task(self, interaction: discord.Interaction, minutes: int = 30):
-        user_id = str(interaction.user.id)
-        active_logs = await self._get_active_logs()
-        
-        if user_id in active_logs:
-            active_logs[user_id]['planned_duration'] += minutes
-            await self._save_active_logs(active_logs)
-            
-            # ★ 監視タスクの再設定
-            task_name = active_logs[user_id]['task']
-            channel_id = active_logs[user_id]['channel_id']
-            start_time = datetime.fromisoformat(active_logs[user_id]['start_time'])
-            new_duration = active_logs[user_id]['planned_duration']
-            new_end_time = start_time + timedelta(minutes=new_duration)
-            
-            self._start_monitor_task(user_id, task_name, channel_id, new_end_time)
-            
-        else:
-            await interaction.followup.send("延長する進行中のタスクが見つかりませんでした。", ephemeral=True)
-
     # --- スケジュール監視ループ ---
     @tasks.loop(minutes=1)
     async def check_schedule_loop(self):
-        """JournalCogから今日の予定を取得し、現在時刻と一致するものがあれば通知する"""
         if not self.is_ready: return
-        
         journal_cog = self.bot.get_cog("JournalCog")
         if not journal_cog: return
 
@@ -772,7 +732,6 @@ class LifeLogCog(commands.Cog):
         for event in events:
             start_str = event.get('start', {}).get('dateTime')
             if not start_str: continue 
-            
             event_id = event['id']
             summary = event.get('summary', '不明な予定')
 
@@ -783,16 +742,58 @@ class LifeLogCog(commands.Cog):
                 if event_id not in self.notified_event_ids:
                     channel = self.bot.get_channel(self.lifelog_channel_id)
                     if channel:
-                        # 予定の長さを取得してデフォルト値として設定
+                        # 予定の長さを取得
                         duration = 30
                         end_str = event.get('end', {}).get('dateTime')
                         if end_str:
                             end_dt = datetime.fromisoformat(end_str).astimezone(JST)
                             duration = int((end_dt - start_dt).total_seconds() / 60)
 
-                        view = LifeLogScheduleStartView(self, summary, duration)
-                        await channel.send(f"⏰ **予定の時間です**: {summary}\nこのタスクを開始しますか？（予定: {duration}分）", view=view)
+                        active_logs = await self._get_active_logs()
+                        
+                        # ★ ユーザー特定のロジック
+                        # アクティブなログがある場合はそのユーザーを優先
+                        # ない場合は OWNER_ID または USER_ID を使用
+                        target_user_id = self.owner_id
+                        if active_logs:
+                             # 誰かがアクティブならその人を対象とする（シングルユーザー想定）
+                             target_user_id = int(list(active_logs.keys())[0])
+
+                        # アクティブなタスクがあるか確認
+                        is_active = str(target_user_id) in active_logs
+                        
+                        target_user = self.bot.get_user(target_user_id)
+                        if not target_user and target_user_id:
+                            try: target_user = await self.bot.fetch_user(target_user_id)
+                            except: pass
+
+                        if not is_active and target_user:
+                             # 1. 記録中でなければ自動開始
+                             await self.start_new_task_context(channel, target_user, summary, duration)
+                             await channel.send(f"🤖 **自動開始**: 予定「{summary}」の時間になったため、タスクを開始しました。")
+                        else:
+                             # 2. 記録中、またはユーザー特定不可なら提案のみ
+                             view = LifeLogScheduleStartView(self, summary, duration)
+                             msg = await channel.send(f"⏰ **予定の時間です**: {summary}\nこのタスクに切り替えますか？（予定: {duration}分）", view=view)
+                             view.message = msg
+
                         self.notified_event_ids.add(event_id)
+
+    # --- その他のCogメソッド (省略なし) ---
+    async def extend_task(self, interaction: discord.Interaction, minutes: int = 30):
+        user_id = str(interaction.user.id)
+        active_logs = await self._get_active_logs()
+        if user_id in active_logs:
+            active_logs[user_id]['planned_duration'] += minutes
+            await self._save_active_logs(active_logs)
+            task_name = active_logs[user_id]['task']
+            channel_id = active_logs[user_id]['channel_id']
+            start_time = datetime.fromisoformat(active_logs[user_id]['start_time'])
+            new_duration = active_logs[user_id]['planned_duration']
+            new_end_time = start_time + timedelta(minutes=new_duration)
+            self._start_monitor_task(user_id, task_name, channel_id, new_end_time)
+        else:
+            await interaction.followup.send("延長する進行中のタスクが見つかりませんでした。", ephemeral=True)
 
     @tasks.loop(time=DAILY_SUMMARY_TIME)
     async def daily_lifelog_summary(self):
@@ -807,70 +808,34 @@ class LifeLogCog(commands.Cog):
 
     async def _generate_and_save_summary(self, target_date: date):
         if not self.dbx or not self.is_ready: return
-
         date_str = target_date.strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-        
         current_content = "" 
-
         try:
             _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
             current_content = res.content.decode('utf-8')
-
             log_section_match = re.search(r'##\s*Life\s*Logs\s*(.*?)(?=\n##|$)', current_content, re.DOTALL | re.IGNORECASE)
-            
             if not log_section_match or not log_section_match.group(1).strip():
-                logging.info(f"LifeLogCog: {date_str} のライフログが見つかりませんでした。サマリーをスキップします。")
                 return
-
             life_logs_text = log_section_match.group(1).strip()
-            
             prompt = f"""
             あなたは生産性向上のためのコーチです。以下の作業ログを分析し、
             **客観的な事実**（総時間、主な活動、傾向）と**次の日の計画に役立つ洞察**を、
             Markdown形式で簡潔にまとめてください。
-
             # 洞察のポイント
             1.  **事実**: 昨日の総活動時間と、最も長く費やしたタスク（カテゴリ）は何ですか？
             2.  **傾向**: どの時間帯が最も集中できた（タスクが長く続いた）傾向がありますか？
             3.  **提案**: このログから見て、今日の計画で避けるべきことや、実行すべきことを1つ提案してください。
-            
             # 昨日のライフログ（{date_str}）
             {life_logs_text}
             """
-            
             response = await asyncio.wait_for(self.gemini_model.generate_content_async(prompt), timeout=120)
             summary_text = response.text.strip()
-            
             new_content = update_section(current_content, summary_text, SUMMARY_NOTE_HEADER)
-
-            await asyncio.to_thread(
-                self.dbx.files_upload,
-                new_content.encode('utf-8'),
-                daily_note_path,
-                mode=WriteMode('overwrite')
-            )
-            logging.info(f"LifeLogCog: {date_str} のAIサマリーをObsidianに保存しました。")
-            
-        except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                 logging.warning(f"LifeLogCog: 昨日のデイリーノートが見つかりません。サマリーをスキップします。")
-            else:
-                 logging.error(f"LifeLogCog: サマリー生成/保存中にDropboxエラー: {e}")
+            await asyncio.to_thread(self.dbx.files_upload, new_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
         except Exception as e:
             logging.error(f"LifeLogCog: サマリー生成中に予期せぬエラー: {e}", exc_info=True)
-            summary_text = f"❌ AIサマリー生成中にエラーが発生しました: {type(e).__name__}"
-            try:
-                if current_content:
-                    await asyncio.to_thread(
-                        self.dbx.files_upload,
-                        update_section(current_content, summary_text, SUMMARY_NOTE_HEADER).encode('utf-8'),
-                        daily_note_path,
-                        mode=WriteMode('overwrite')
-                    )
-            except Exception as e_save:
-                 logging.error(f"エラー後のサマリー保存に失敗: {e_save}")
-            
+
 async def setup(bot: commands.Bot):
     if int(os.getenv("LIFELOG_CHANNEL_ID", 0)) == 0:
         logging.error("LifeLogCog: LIFELOG_CHANNEL_ID が設定されていません。Cogをロードしません。")
