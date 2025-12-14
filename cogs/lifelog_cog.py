@@ -11,7 +11,6 @@ import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
 import google.generativeai as genai
-# Google Calendar用
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import re
@@ -30,7 +29,8 @@ PLANNING_STATE_PATH = f"{os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')}/.bot
 DAILY_NOTE_HEADER = "## Life Logs"
 SUMMARY_NOTE_HEADER = "## Life Logs Summary"
 READING_NOTES_PATH = "/Reading Notes"
-DAILY_SUMMARY_TIME = time(hour=6, minute=0, tzinfo=JST) 
+DAILY_SUMMARY_TIME = time(hour=6, minute=0, tzinfo=JST)
+DEFAULT_PLANNING_TIME = time(hour=7, minute=0, tzinfo=JST) # デフォルトの通知時刻
 
 # --- 時間解析用の正規表現 ---
 DURATION_REGEX = re.compile(r'\s+(\d+(?:\.\d+)?)(h|m|min|hour|時間|分)?$', re.IGNORECASE)
@@ -301,12 +301,12 @@ class LifeLogCog(commands.Cog):
         self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
         
         self.notified_event_ids = set()
-        self.monitor_tasks = {} # user_id: asyncio.Task
+        self.monitor_tasks = {} 
+        self.current_planning_time = DEFAULT_PLANNING_TIME # 現在設定されている通知時刻
 
         self.dbx = None
         self.calendar_service = None
 
-        # Initialization
         if all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token, self.gemini_api_key]):
             try:
                 self.dbx = dropbox.Dropbox(
@@ -324,17 +324,14 @@ class LifeLogCog(commands.Cog):
             self.is_ready = False
             logging.warning("LifeLogCog: 環境変数が不足しています。")
 
-        # Calendar Init
         if self.google_service_account_json:
             try:
                 if os.path.exists(self.google_service_account_json):
-                     # ファイルパスの場合
                     creds = service_account.Credentials.from_service_account_file(
                         self.google_service_account_json, 
                         scopes=['https://www.googleapis.com/auth/calendar']
                     )
                 else:
-                    # JSON文字列の場合
                     info = json.loads(self.google_service_account_json)
                     creds = service_account.Credentials.from_service_account_info(
                         info,
@@ -348,18 +345,88 @@ class LifeLogCog(commands.Cog):
         self.bot.add_view(LifeLogView(self))
         if self.is_ready:
             await self.bot.wait_until_ready()
+            
+            # 保存された通知時刻の読み込み
+            state = await self._get_planning_state()
+            saved_time_str = state.get("planning_time")
+            if saved_time_str:
+                try:
+                    h, m = map(int, saved_time_str.split(":"))
+                    self.current_planning_time = time(hour=h, minute=m, tzinfo=JST)
+                    logging.info(f"LifeLogCog: 保存されたプランニング通知時刻 {saved_time_str} を適用します。")
+                except Exception as e:
+                    logging.error(f"LifeLogCog: 時刻読み込みエラー: {e}")
+
+            # ループタスクの設定と開始
             if not self.daily_lifelog_summary.is_running():
                 self.daily_lifelog_summary.start()
             if not self.check_schedule_loop.is_running():
                 self.check_schedule_loop.start()
+            
+            # 通知タスクの開始（時刻設定反映）
+            if not self.daily_planning_prompt.is_running():
+                self.daily_planning_prompt.change_interval(time=self.current_planning_time)
+                self.daily_planning_prompt.start()
+                logging.info(f"LifeLogCog: ✅ プランニング通知タスクを開始しました（{self.current_planning_time}）。")
             
             await self._resume_monitoring()
 
     def cog_unload(self):
         self.daily_lifelog_summary.cancel()
         self.check_schedule_loop.cancel()
+        self.daily_planning_prompt.cancel() 
         for task in self.monitor_tasks.values():
             task.cancel()
+
+    # --- 定時通知機能 ---
+    @tasks.loop(time=DEFAULT_PLANNING_TIME)
+    async def daily_planning_prompt(self):
+        """毎朝のプランニング促進通知"""
+        if not self.is_ready: return
+        channel = self.bot.get_channel(self.lifelog_channel_id)
+        if channel:
+            embed = discord.Embed(
+                title="☀️ Good Morning", 
+                description="新しい1日が始まります。今日の計画を立てましょう。\n下の「📝 プランニング作成」ボタンを押してスタートしてください。", 
+                color=discord.Color.orange()
+            )
+            await channel.send(embed=embed, view=LifeLogView(self))
+
+    # --- 時刻変更コマンド ---
+    @commands.command(name="set_plan_time")
+    async def set_planning_time_command(self, ctx, time_str: str):
+        """朝のプランニング通知時刻を変更します (例: !set_plan_time 08:00)"""
+        if not re.match(r'^\d{1,2}:\d{2}$', time_str):
+            await ctx.reply("⚠️ 時刻の形式が正しくありません。`HH:MM` 形式で入力してください (例: `08:00`)")
+            return
+
+        try:
+            h, m = map(int, time_str.split(":"))
+            new_time = time(hour=h, minute=m, tzinfo=JST)
+            
+            # 設定保存
+            state = await self._get_planning_state()
+            state["planning_time"] = time_str
+            await self._save_planning_state(state)
+            
+            # タスク更新
+            self.current_planning_time = new_time
+            self.daily_planning_prompt.change_interval(time=new_time)
+            
+            # ループが既に回っている場合は再起動して設定を適用
+            if self.daily_planning_prompt.is_running():
+                self.daily_planning_prompt.restart()
+            else:
+                self.daily_planning_prompt.start()
+
+            await ctx.reply(f"✅ プランニング通知時刻を **{time_str}** に変更しました。")
+            logging.info(f"LifeLogCog: プランニング通知時刻を {time_str} に変更しました。")
+
+        except ValueError:
+            await ctx.reply("⚠️ 無効な時刻です。")
+        except Exception as e:
+            await ctx.reply(f"⚠️ エラーが発生しました: {e}")
+            logging.error(f"LifeLogCog: 時刻変更エラー: {e}")
 
     # --- 状態管理: プランニング情報 ---
     async def _get_planning_state(self) -> dict:
@@ -380,7 +447,6 @@ class LifeLogCog(commands.Cog):
 
     # --- プランニング機能 ---
     async def send_planning_template(self, interaction: discord.Interaction):
-        # 以前のプランニングメッセージを削除
         state = await self._get_planning_state()
         last_msg_id = state.get("last_plan_msg_id")
         if last_msg_id:
@@ -389,11 +455,9 @@ class LifeLogCog(commands.Cog):
                 await old_msg.delete()
             except: pass
         
-        # テンプレート作成
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
         
-        # 06:00 から 23:30 までの30分刻みのリスト
         time_slots = []
         current_time = now.replace(hour=6, minute=0, second=0, microsecond=0)
         end_time = now.replace(hour=23, minute=30, second=0, microsecond=0)
@@ -413,12 +477,10 @@ class LifeLogCog(commands.Cog):
         content = message.content
         lines = content.split('\n')
         
-        # ハイライト抽出
         highlight = ""
         events = []
         today_date = datetime.now(JST).date()
 
-        # パース処理
         for line in lines:
             line = line.strip()
             if "ハイライト" in line or "Highlight" in line:
@@ -426,17 +488,13 @@ class LifeLogCog(commands.Cog):
                 if len(parts) > 1 and parts[1].strip():
                     highlight = parts[1].strip()
                 elif " " in line:
-                     # コロンがない場合、スペース区切りで試す
                      parts = line.split(" ", 1)
                      if len(parts) > 1: highlight = parts[1].strip()
 
-            # 時間 + 予定 の行をマッチング
-            # 例: "09:00 会議"
             time_match = re.match(r'^(\d{1,2}:\d{2})\s+(.+)$', line)
             if time_match:
                 time_str = time_match.group(1)
                 summary = time_match.group(2)
-                
                 try:
                     dt = datetime.strptime(time_str, '%H:%M').replace(
                         year=today_date.year, month=today_date.month, day=today_date.day,
@@ -445,22 +503,18 @@ class LifeLogCog(commands.Cog):
                     events.append({"start": dt, "summary": summary})
                 except ValueError: continue
 
-        if not events and not highlight:
-            return # 有効なプランニングデータなし
+        if not events and not highlight: return
 
-        # カレンダー登録
         if self.calendar_service:
-            # ハイライト（終日）
             if highlight:
                 self._add_calendar_event(
                     summary=f"★{highlight}",
                     start_dt=None, end_dt=None,
                     is_all_day=True,
                     date_obj=today_date,
-                    color_id="11" # トマト色 (赤)
+                    color_id="11" 
                 )
 
-            # 通常の予定（30分枠）
             for event in events:
                 start_dt = event["start"]
                 end_dt = start_dt + timedelta(minutes=30)
@@ -470,9 +524,8 @@ class LifeLogCog(commands.Cog):
                     end_dt=end_dt
                 )
             
-            await message.add_reaction("📅") # 完了リアクション
+            await message.add_reaction("📅")
 
-        # 投稿整理: 前回のプランニング結果投稿を削除
         state = await self._get_planning_state()
         last_result_msg_id = state.get("last_plan_result_msg_id")
         if last_result_msg_id:
@@ -481,8 +534,6 @@ class LifeLogCog(commands.Cog):
                 await old_res_msg.delete()
             except: pass
 
-        # 今回のメッセージIDを保存（次回削除用）
-        # ※ユーザーが送信したメッセージ自体を「プランニング結果」として扱う
         state["last_plan_result_msg_id"] = message.id
         await self._save_planning_state(state)
         
@@ -492,7 +543,6 @@ class LifeLogCog(commands.Cog):
         embed.add_field(name="登録件数", value=f"{len(events)}件", inline=False)
         
         reply = await message.reply(embed=embed)
-        # 通知メッセージも5秒後に消す
         await asyncio.sleep(5)
         try: await reply.delete()
         except: pass
@@ -504,9 +554,7 @@ class LifeLogCog(commands.Cog):
             'summary': summary,
             'description': 'Created via Discord LifeLog'
         }
-        
-        if color_id:
-            event_body['colorId'] = color_id
+        if color_id: event_body['colorId'] = color_id
 
         if is_all_day and date_obj:
             date_str = date_obj.strftime('%Y-%m-%d')
@@ -515,8 +563,7 @@ class LifeLogCog(commands.Cog):
         elif start_dt and end_dt:
             event_body['start'] = {'dateTime': start_dt.isoformat()}
             event_body['end'] = {'dateTime': end_dt.isoformat()}
-        else:
-            return
+        else: return
 
         try:
             self.calendar_service.events().insert(calendarId=self.calendar_id, body=event_body).execute()
@@ -707,7 +754,6 @@ class LifeLogCog(commands.Cog):
         content = message.content.strip()
         if not content: return
 
-        # プランニングテンプレートの提出かチェック
         if content.startswith(PLANNING_HEADER) or "★ハイライト:" in content:
             await self.process_planning_message(message)
             return
@@ -764,6 +810,7 @@ class LifeLogCog(commands.Cog):
         user_id = str(user.id)
         now = datetime.now(JST)
         start_time_str = now.strftime('%H:%M')
+        
         end_time_plan = now + timedelta(minutes=duration)
         end_time_str = end_time_plan.strftime('%H:%M')
 
@@ -907,7 +954,6 @@ class LifeLogCog(commands.Cog):
             logging.error(f"LifeLogCog: Obsidian保存エラー: {e}", exc_info=True)
             return False
 
-    # --- その他のCogメソッド (extend_task, schedule loop, summary) 省略なし ---
     async def extend_task(self, interaction: discord.Interaction, minutes: int = 30):
         user_id = str(interaction.user.id)
         active_logs = await self._get_active_logs()
