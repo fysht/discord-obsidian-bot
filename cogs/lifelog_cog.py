@@ -285,8 +285,10 @@ class LifeLogCog(commands.Cog):
             await self.bot.wait_until_ready()
             if not self.daily_lifelog_summary.is_running():
                 self.daily_lifelog_summary.start()
+            
             if not self.check_schedule_loop.is_running():
                 self.check_schedule_loop.start()
+                logging.info("LifeLogCog: ✅ スケジュール監視タスクを開始しました。")
             
             # 再起動時に既存のタスクの監視を再開
             await self._resume_monitoring()
@@ -298,7 +300,7 @@ class LifeLogCog(commands.Cog):
         for task in self.monitor_tasks.values():
             task.cancel()
 
-    # --- 監視タスク管理 ---
+    # --- 監視タスク管理 (Timer) ---
     async def _resume_monitoring(self):
         """起動時にDBから読み込んでタイマーを再セットする"""
         active_logs = await self._get_active_logs()
@@ -311,7 +313,6 @@ class LifeLogCog(commands.Cog):
                 end_time = start_time + timedelta(minutes=duration_minutes)
                 
                 # まだ終わっていなければタイマーをセット
-                # 既に過ぎている場合は即時アラート処理へ
                 self._start_monitor_task(user_id, log['task'], log['channel_id'], end_time)
                 logging.info(f"LifeLogCog: タスク監視を再開しました User:{user_id}, Task:{log['task']}")
             except Exception as e:
@@ -336,7 +337,7 @@ class LifeLogCog(commands.Cog):
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
             
-            # タスクがまだアクティブか確認 (待機中に終了/変更されている可能性があるため)
+            # タスクがまだアクティブか確認
             active_logs = await self._get_active_logs()
             if user_id not in active_logs or active_logs[user_id]['task'] != task_name:
                 return
@@ -345,12 +346,16 @@ class LifeLogCog(commands.Cog):
             channel = self.bot.get_channel(channel_id)
             if channel:
                 user = self.bot.get_user(int(user_id))
-                if not user: try: user = await self.bot.fetch_user(int(user_id))
-                except: pass
+                if not user:
+                    try:
+                        user = await self.bot.fetch_user(int(user_id))
+                    except:
+                        pass
+                
                 mention = user.mention if user else f"User {user_id}"
                 
                 view = LifeLogTimeUpView(self, user_id, task_name)
-                alert_msg = await channel.send(
+                await channel.send(
                     f"{mention} ⏰ タスク「**{task_name}**」の予定時間が経過しました。\n"
                     "延長しますか？それとも終了しますか？（反応がない場合、5分後に自動終了します）", 
                     view=view
@@ -360,7 +365,7 @@ class LifeLogCog(commands.Cog):
             await asyncio.sleep(300) 
 
             # 4. 自動終了処理
-            # 再度アクティブ確認 (延長されていたらこのタスクはキャンセルされているはずだが念のため)
+            # 再度アクティブ確認
             active_logs = await self._get_active_logs()
             if user_id in active_logs and active_logs[user_id]['task'] == task_name:
                 # 強制終了
@@ -721,8 +726,6 @@ class LifeLogCog(commands.Cog):
             # ★ 監視タスクの再設定
             task_name = active_logs[user_id]['task']
             channel_id = active_logs[user_id]['channel_id']
-            # 現在の時刻 + 追加分ではなく、元の終了予定時刻 + 追加分？
-            # 簡易的に、現在から延長分を追加した時刻を新たなターゲットにする（または元のstart_timeから計算）
             start_time = datetime.fromisoformat(active_logs[user_id]['start_time'])
             new_duration = active_logs[user_id]['planned_duration']
             new_end_time = start_time + timedelta(minutes=new_duration)
