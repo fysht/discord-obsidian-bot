@@ -10,7 +10,7 @@ import zoneinfo
 import dropbox
 from dropbox.files import WriteMode, DownloadError
 from dropbox.exceptions import ApiError
-import google.generativeai as genai
+# Google Calendar
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import re
@@ -54,6 +54,7 @@ class LifeLogMemoModal(discord.ui.Modal, title="作業メモの入力"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
+        # 削除せず、返信で完了を伝える
         await interaction.response.defer(ephemeral=False)
         await self.cog.add_memo_to_task(interaction, self.memo_text.value)
 
@@ -85,10 +86,9 @@ class LifeLogPlanningModal(discord.ui.Modal, title="朝のプランニング"):
         await interaction.response.defer(ephemeral=False)
         await self.cog.submit_planning(interaction, self.highlight.value, self.schedule.value)
 
-# --- タスク開始確認View (修正: 自動開始機能の復元) ---
 class LifeLogConfirmTaskView(discord.ui.View):
     def __init__(self, cog, task_name: str, duration: int, original_message: discord.Message):
-        super().__init__(timeout=60) # 60秒でタイムアウト
+        super().__init__(timeout=60)
         self.cog = cog
         self.task_name = task_name
         self.duration = duration
@@ -101,9 +101,13 @@ class LifeLogConfirmTaskView(discord.ui.View):
             await interaction.response.send_message("他のユーザーの操作です。", ephemeral=True)
             return
         
+        # 削除せず、インタラクションへの応答として処理を進める
         await interaction.response.defer()
+        
+        # ボタンを無効化して更新（削除はしない）
         try:
-            await interaction.delete_original_response() 
+            for item in self.children: item.disabled = True
+            await interaction.edit_original_response(content=f"✅ タスク「**{self.task_name}**」を開始します...", view=self)
         except: pass
         
         await self.cog.switch_task(self.original_message, self.task_name, self.duration)
@@ -117,18 +121,18 @@ class LifeLogConfirmTaskView(discord.ui.View):
         
         await interaction.response.defer()
         try:
-            await interaction.delete_original_response()
+            for item in self.children: item.disabled = True
+            await interaction.edit_original_response(content="❌ 開始をキャンセルしました。", view=self)
         except: pass
         self.stop()
 
     async def on_timeout(self):
-        # タイムアウト時は自動開始する
+        # タイムアウト時は自動開始（削除しない）
         try:
             if self.bot_response_message:
-                await self.bot_response_message.delete()
+                await self.bot_response_message.edit(content=f"✅ (自動開始) タスク「**{self.task_name}**」を開始します...", view=None)
         except: pass
         
-        # 自動開始ロジック
         await self.cog.switch_task(self.original_message, self.task_name, self.duration)
 
 class LifeLogScheduleStartView(discord.ui.View):
@@ -143,7 +147,8 @@ class LifeLogScheduleStartView(discord.ui.View):
     async def start_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
-            await interaction.delete_original_response()
+            # 削除せず更新
+            await interaction.edit_original_response(content=f"✅ 予定「**{self.task_name}**」を開始します。", view=None)
         except: pass
         await self.cog.switch_task_from_interaction(interaction, self.task_name, self.duration)
         self.stop()
@@ -152,15 +157,13 @@ class LifeLogScheduleStartView(discord.ui.View):
     async def skip_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
-            await interaction.delete_original_response()
+            await interaction.edit_original_response(content="⏩ 現在のタスクを継続します。", view=None)
         except: pass
         self.stop()
     
     async def on_timeout(self):
-        try:
-            if self.message:
-                await self.message.delete()
-        except: pass
+        # 自動削除しない
+        pass
 
 class LifeLogBookSelectView(discord.ui.View):
     def __init__(self, cog, book_options: list[discord.SelectOption], original_author: discord.User, duration: int):
@@ -188,16 +191,14 @@ class LifeLogBookSelectView(discord.ui.View):
         
         await interaction.response.defer()
         try:
-             await interaction.delete_original_response()
+             await interaction.edit_original_response(content=f"📖 書籍「**{task_name}**」を選択しました。", view=None)
         except: pass
         
         await self.cog.switch_task_from_interaction(interaction, task_name, self.duration)
         self.stop()
 
     async def on_timeout(self):
-        try:
-            if self.message: await self.message.delete()
-        except: pass
+        pass
 
 class LifeLogPlanSelectView(discord.ui.View):
     def __init__(self, cog, task_options: list[discord.SelectOption], original_author: discord.User):
@@ -232,16 +233,14 @@ class LifeLogPlanSelectView(discord.ui.View):
         
         await interaction.response.defer()
         try:
-            await interaction.delete_original_response()
+            await interaction.edit_original_response(content=f"📅 予定「**{task_name}**」を選択しました。", view=None)
         except: pass
 
         await self.cog.switch_task_from_interaction(interaction, task_name, duration)
         self.stop()
 
     async def on_timeout(self):
-        try:
-            if self.message: await self.message.delete()
-        except: pass
+        pass
 
 class LifeLogTimeUpView(discord.ui.View):
     def __init__(self, cog, user_id: str, task_name: str, alert_message: discord.Message = None):
@@ -251,11 +250,6 @@ class LifeLogTimeUpView(discord.ui.View):
         self.task_name = task_name
         self.alert_message = alert_message 
 
-    async def _delete_alert(self):
-        if self.alert_message:
-            try: await self.alert_message.delete()
-            except: pass
-
     @discord.ui.button(label="延長する (+30分)", style=discord.ButtonStyle.primary, emoji="🔄")
     async def extend_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.user_id:
@@ -263,10 +257,12 @@ class LifeLogTimeUpView(discord.ui.View):
             return
         
         await interaction.response.defer()
-        await self._delete_alert() 
+        # 削除せず更新
+        try:
+            await interaction.edit_original_response(content=f"✅ タスク「{self.task_name}」を30分延長しました。", view=None)
+        except: pass
         
         await self.cog.extend_task(interaction, minutes=30)
-        await interaction.followup.send(f"✅ タスク「{self.task_name}」を30分延長しました。", ephemeral=True)
         self.stop()
 
     @discord.ui.button(label="延長する (+10分)", style=discord.ButtonStyle.secondary, emoji="⏱️")
@@ -276,10 +272,11 @@ class LifeLogTimeUpView(discord.ui.View):
             return
         
         await interaction.response.defer()
-        await self._delete_alert()
+        try:
+            await interaction.edit_original_response(content=f"✅ タスク「{self.task_name}」を10分延長しました。", view=None)
+        except: pass
         
         await self.cog.extend_task(interaction, minutes=10)
-        await interaction.followup.send(f"✅ タスク「{self.task_name}」を10分延長しました。", ephemeral=True)
         self.stop()
 
     @discord.ui.button(label="終了する", style=discord.ButtonStyle.danger, emoji="⏹️")
@@ -289,10 +286,11 @@ class LifeLogTimeUpView(discord.ui.View):
             return
         
         await interaction.response.defer()
-        await self._delete_alert()
+        try:
+            await interaction.edit_original_response(content=f"✅ タスク「{self.task_name}」を終了します。", view=None)
+        except: pass
         
         await self.cog.finish_current_task(interaction.user, interaction)
-        await interaction.followup.send(f"✅ タスク「{self.task_name}」を終了しました。", ephemeral=True)
         self.stop()
 
 # --- タスク実行中用View ---
@@ -410,7 +408,7 @@ class LifeLogCog(commands.Cog):
         for task in self.monitor_tasks.values(): task.cancel()
         for task in self.scheduled_start_tasks.values(): task.cancel()
 
-    # --- カレンダー取得ヘルパー (JournalCog利用) ---
+    # --- カレンダー取得ヘルパー ---
     async def _get_events_from_journal_cog(self):
         journal_cog = self.bot.get_cog("JournalCog")
         if not journal_cog:
@@ -556,13 +554,8 @@ class LifeLogCog(commands.Cog):
         await self._save_to_obsidian_planning(plan_content)
 
         state = await self._get_planning_state()
-        last_result_msg_id = state.get("last_plan_result_msg_id")
-        if last_result_msg_id:
-            try:
-                old_res_msg = await interaction.channel.fetch_message(last_result_msg_id)
-                await old_res_msg.delete()
-            except: pass
-
+        # メッセージ削除は行わない (過去のログを残す)
+        
         embed = discord.Embed(title="📅 プランニング完了", description="Obsidianに計画を保存し、カレンダーにハイライトを登録しました。", color=discord.Color.blue())
         if highlight: embed.add_field(name="★Highlight", value=highlight, inline=False)
         
@@ -572,9 +565,7 @@ class LifeLogCog(commands.Cog):
         
         await self._refresh_schedule()
         
-        await asyncio.sleep(5)
-        try: await msg.delete()
-        except: pass
+        # 結果メッセージの削除もしない
 
     async def _save_to_obsidian_planning(self, plan_content):
         if not self.dbx: return
@@ -607,8 +598,8 @@ class LifeLogCog(commands.Cog):
                 options.append(discord.SelectOption(label=label[:100], value=ev['summary'][:100]))
         
         view = LifeLogPlanSelectView(self, options, interaction.user)
-        msg = await interaction.followup.send("開始するカレンダーの予定を選択してください:", view=view, ephemeral=True)
-        view.message = msg
+        # メッセージ削除しない
+        await interaction.followup.send("開始するカレンダーの予定を選択してください:", view=view, ephemeral=True)
 
     # --- カレンダー書き込みヘルパー ---
     def _add_calendar_event(self, summary, start_dt=None, end_dt=None, is_all_day=False, date_obj=None, color_id=None):
@@ -669,8 +660,8 @@ class LifeLogCog(commands.Cog):
             label = os.path.splitext(file_name)[0][:100]
             options.append(discord.SelectOption(label=label, value=file_name))
         view = LifeLogBookSelectView(self, options, message.author, duration)
-        msg = await message.reply(f"読む書籍を選択してください（予定: {duration}分）:", view=view)
-        view.message = msg
+        # メッセージ削除しない
+        await message.reply(f"読む書籍を選択してください（予定: {duration}分）:", view=view)
 
     async def switch_task_from_interaction(self, interaction: discord.Interaction, new_task_name: str, duration: int):
         user = interaction.user
@@ -725,6 +716,7 @@ class LifeLogCog(commands.Cog):
         active_logs = await self._get_active_logs()
         if user_id not in active_logs:
             if isinstance(context, discord.Interaction):
+                # メッセージ削除しない
                 if not context.response.is_done(): await context.response.send_message("⚠️ 進行中のタスクはありません。", ephemeral=True)
                 else: await context.followup.send("⚠️ 進行中のタスクはありません。", ephemeral=True)
             return None
@@ -856,7 +848,8 @@ class LifeLogCog(commands.Cog):
             if wait_seconds > 0: await asyncio.sleep(wait_seconds)
             active_logs = await self._get_active_logs()
             if user_id not in active_logs or active_logs[user_id]['task'] != task_name: return
-            alert_msg = None
+            
+            # メッセージ送信（アラート）
             channel = self.bot.get_channel(channel_id)
             if channel:
                 user = self.bot.get_user(int(user_id))
@@ -865,12 +858,11 @@ class LifeLogCog(commands.Cog):
                     except: pass
                 mention = user.mention if user else f"User {user_id}"
                 view = LifeLogTimeUpView(self, user_id, task_name)
-                alert_msg = await channel.send(f"{mention} ⏰ タスク「**{task_name}**」の予定時間が経過しました。\n延長しますか？それとも終了しますか？（反応がない場合、5分後に自動終了します）", view=view)
-                view.alert_message = alert_msg 
+                # アラートメッセージ送信 (viewに渡して削除可能にするが、今回は削除しない)
+                await channel.send(f"{mention} ⏰ タスク「**{task_name}**」の予定時間が経過しました。\n延長しますか？それとも終了しますか？（反応がない場合、5分後に自動終了します）", view=view)
+            
             await asyncio.sleep(300) 
-            if alert_msg:
-                try: await alert_msg.delete()
-                except: pass
+            
             active_logs = await self._get_active_logs()
             if user_id in active_logs and active_logs[user_id]['task'] == task_name:
                 user_obj = discord.Object(id=int(user_id))
