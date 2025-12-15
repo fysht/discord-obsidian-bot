@@ -370,6 +370,7 @@ class LifeLogCog(commands.Cog):
             if not self.daily_planning_prompt.is_running():
                 self.daily_planning_prompt.change_interval(time=self.current_planning_time)
                 self.daily_planning_prompt.start()
+                logging.info(f"LifeLogCog: プランニング通知を {self.current_planning_time} にスケジュールしました。")
             
             # ★ 起動時にスケジュール計算を行い、ディスパッチループを開始
             await self._update_dispatch_schedule()
@@ -437,17 +438,11 @@ class LifeLogCog(commands.Cog):
                     self.dispatch_map[t].append({'type': 'task_end', 'user_id': user_id, 'data': log})
                     times_set.add(t)
                 else:
-                    # 時間過ぎてるけど未通知 -> 即時実行のため近い未来(10秒後とか)に入れるか、即実行
-                    # ここではシンプルに無視せず、次のループ(直近)で拾わせる実装が理想だが、
-                    # 簡易的に start() 時に passed チェックはしないため、もし過ぎていたら
-                    # ループ外で即時処理するロジックが必要だが、今回は次回起動時に期待
                     pass
 
             # (B) 自動終了時刻 (通知から5分後)
             # 通知済みなら、通知時刻+5分をターゲットにする
-            # 通知時刻自体は保存していないが、end_timeを基準にする
             if log.get('end_notice_sent', False):
-                # 厳密には通知した時刻を保存すべきだが、end_time + 5分とする
                 auto_end_time = end_time + timedelta(minutes=5)
                 if auto_end_time > now:
                     t = auto_end_time.time().replace(tzinfo=JST)
@@ -455,8 +450,6 @@ class LifeLogCog(commands.Cog):
                     self.dispatch_map[t].append({'type': 'auto_end', 'user_id': user_id, 'data': log})
                     times_set.add(t)
                 else:
-                    # 時間過ぎてる -> 即時自動終了すべき
-                    # ここで実行してしまう
                     asyncio.create_task(self._execute_auto_end(user_id, log))
 
         # スケジュール設定
@@ -474,15 +467,6 @@ class LifeLogCog(commands.Cog):
     async def dispatch_loop(self):
         """指定時刻に起動し、該当する処理を実行する"""
         now = datetime.now(JST)
-        current_time_key = now.time().replace(second=0, microsecond=0, tzinfo=JST)
-        
-        # マッチするアクションを探す (秒以下のズレを許容するため、近いものを探すのがベターだが、
-        # tasks.loop(time=...) は正確にその時間に起きるので、ここでは単純に回す)
-        
-        # dispatch_map のキーと比較 (tasks.loopの仕様上、登録したtimeオブジェクトと一致するはず)
-        # しかし tasks.loop は リスト内の time を順に実行するので、
-        # self.dispatch_loop.current_loop などの情報はない。
-        # そこで、現在時刻と近いキーを全部実行する。
         
         executed_count = 0
         for t, actions in list(self.dispatch_map.items()):
@@ -545,13 +529,7 @@ class LifeLogCog(commands.Cog):
         await asyncio.sleep(60)
         
         # まだボタンが押されていなければ自動開始
-        # (viewオブジェクトの状態を確認)
-        # Note: Viewクラス側で押されたかどうかのフラグ管理が必要だが、
-        # ここでは簡易的に「現在のタスクがまだ切り替わっていない」かつ「メッセージが残っている」なら実行
-        
-        # シンプルに再取得して確認
         active_logs_now = await self._get_active_logs()
-        # もしユーザーが手動で切り替えていたら、task名が変わっているはず
         current_task = active_logs_now.get(str(target_user_id), {}).get('task')
         
         if current_task != summary:
@@ -613,10 +591,17 @@ class LifeLogCog(commands.Cog):
             await channel.send(embed=embed, view=LifeLogPlanningView(self))
         await self._update_dispatch_schedule()
 
-    @commands.command(name="set_plan_time")
-    async def set_planning_time_command(self, ctx, time_str: str):
+    @app_commands.command(name="set_planning_time", description="朝のプランニング（LifeLog）の通知時刻を設定します。")
+    @app_commands.describe(time_str="設定する時刻 (HH:MM形式, 24時間表記)。例: 08:00")
+    async def set_planning_time(self, interaction: discord.Interaction, time_str: str):
+        if interaction.channel_id != self.lifelog_channel_id:
+            await interaction.response.send_message(f"このコマンドは <#{self.lifelog_channel_id}> でのみ実行できます。", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
         if not re.match(r'^\d{1,2}:\d{2}$', time_str):
-            await ctx.reply("⚠️ `HH:MM` 形式で入力してください (例: `08:00`)")
+            await interaction.followup.send("⚠️ `HH:MM` 形式で入力してください (例: `08:00`)", ephemeral=True)
             return
         try:
             h, m = map(int, time_str.split(":"))
@@ -624,13 +609,18 @@ class LifeLogCog(commands.Cog):
             state = await self._get_planning_state()
             state["planning_time"] = time_str
             await self._save_planning_state(state)
+            
             self.current_planning_time = new_time
             self.daily_planning_prompt.change_interval(time=new_time)
-            if self.daily_planning_prompt.is_running(): self.daily_planning_prompt.restart()
-            else: self.daily_planning_prompt.start()
-            await ctx.reply(f"✅ プランニング通知時刻を **{time_str}** に変更しました。")
+            
+            if not self.daily_planning_prompt.is_running():
+                self.daily_planning_prompt.start()
+            else:
+                self.daily_planning_prompt.restart()
+                
+            await interaction.followup.send(f"✅ プランニング通知時刻を **{time_str}** に変更しました。", ephemeral=True)
         except Exception as e:
-            await ctx.reply(f"⚠️ エラー: {e}")
+            await interaction.followup.send(f"⚠️ エラー: {e}", ephemeral=True)
 
     # --- 状態管理 ---
     async def _get_planning_state(self) -> dict:
@@ -805,6 +795,24 @@ class LifeLogCog(commands.Cog):
         msg = await message.reply(f"読む書籍を選択してください（予定: {duration}分）:", view=view)
         view.message = msg
 
+    async def add_memo_to_task(self, interaction: discord.Interaction, memo_content: str):
+        user_id = str(interaction.user.id)
+        active_logs = await self._get_active_logs()
+        if user_id not in active_logs:
+            await interaction.followup.send("⚠️ メモを追加する進行中のタスクが見つかりませんでした。", ephemeral=True)
+            return
+        current_memos = active_logs[user_id].get("memos", [])
+        memo_with_time = f"{datetime.now(JST).strftime('%H:%M')} {memo_content}"
+        current_memos.append(memo_with_time)
+        active_logs[user_id]["memos"] = current_memos
+        await self._save_active_logs(active_logs)
+        embed = discord.Embed(title="✅ 作業メモを追加しました", description=memo_content, color=discord.Color.green())
+        embed.set_footer(text=f"Task: {active_logs[user_id]['task']}")
+        await interaction.followup.send(embed=embed, ephemeral=False)
+
+    async def prompt_memo_modal(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(LifeLogMemoModal(self))
+
     # --- 以下、タスク終了、状態保存、状態監視ロジック ---
     async def finish_current_task(self, user: discord.User | discord.Object, context, next_task_name: str = None, end_time: datetime = None) -> str:
         user_id = str(user.id)
@@ -921,24 +929,6 @@ class LifeLogCog(commands.Cog):
             content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
             await asyncio.to_thread(self.dbx.files_upload, content, ACTIVE_LOGS_PATH, mode=WriteMode('overwrite'))
         except Exception as e: logging.error(f"LifeLogCog: アクティブログ保存エラー: {e}")
-
-    async def add_memo_to_task(self, interaction: discord.Interaction, memo_content: str):
-        user_id = str(interaction.user.id)
-        active_logs = await self._get_active_logs()
-        if user_id not in active_logs:
-            await interaction.followup.send("⚠️ メモを追加する進行中のタスクが見つかりませんでした。", ephemeral=True)
-            return
-        current_memos = active_logs[user_id].get("memos", [])
-        memo_with_time = f"{datetime.now(JST).strftime('%H:%M')} {memo_content}"
-        current_memos.append(memo_with_time)
-        active_logs[user_id]["memos"] = current_memos
-        await self._save_active_logs(active_logs)
-        embed = discord.Embed(title="✅ 作業メモを追加しました", description=memo_content, color=discord.Color.green())
-        embed.set_footer(text=f"Task: {active_logs[user_id]['task']}")
-        await interaction.followup.send(embed=embed, ephemeral=False)
-
-    async def prompt_memo_modal(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(LifeLogMemoModal(self))
 
     async def _add_memo_from_message(self, message: discord.Message, memo_content: str):
         user_id = str(message.author.id)

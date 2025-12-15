@@ -3,6 +3,9 @@ import logging
 # --- 定数定義 ---
 # デイリーノートの見出しの順序をここで一元管理します
 SECTION_ORDER = [
+    # --- 0. 計画 ---
+    "## Planning",
+
     # --- 1. メディアクリップ ---
     "## WebClips",
     "## YouTube Summaries",
@@ -24,7 +27,8 @@ SECTION_ORDER = [
     # --- 4. 健康・ログ ---
     "## Health Metrics", 
     "## Location Logs", 
-    "## Life Logs", 
+    "## Life Logs",
+    "## Completed Tasks", 
     
     # --- 5. サマリー ---
     "## Life Logs Summary",

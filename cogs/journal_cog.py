@@ -639,5 +639,55 @@ class JournalCog(commands.Cog):
             return json.loads(res.content.decode('utf-8'))
         except: return None
 
+    async def _save_schedule_to_db(self, path, hour, minute):
+        if not self.dbx: return
+        try:
+            data = {"hour": hour, "minute": minute}
+            content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
+            await asyncio.to_thread(self.dbx.files_upload, content, path, mode=WriteMode('overwrite'))
+        except Exception as e:
+            logging.error(f"Schedule save error: {e}")
+            raise
+
+    @app_commands.command(name="set_journal_time", description="夜の振り返り（ジャーナル）の通知時刻を設定します。")
+    @app_commands.describe(schedule_time="設定する時刻 (HH:MM形式, 24時間表記)。例: 22:00")
+    async def set_journal_time(self, interaction: discord.Interaction, schedule_time: str):
+        if interaction.channel_id != self.channel_id:
+            await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ実行できます。", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        match = re.match(r'^([0-2]?[0-9]):([0-5]?[0-9])$', schedule_time.strip())
+        if not match:
+            await interaction.followup.send(f"❌ 時刻の形式が正しくありません。`HH:MM` (例: `22:30`) で入力してください。", ephemeral=True)
+            return
+
+        try:
+            hour = int(match.group(1))
+            minute = int(match.group(2))
+            
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                 raise ValueError("時刻の範囲が不正です")
+
+            # Dropboxに保存
+            await self._save_schedule_to_db(self.journal_schedule_path, hour, minute)
+
+            # タスクのスケジュール変更
+            new_time = time(hour=hour, minute=minute, tzinfo=JST)
+            self.prompt_daily_journal.change_interval(time=new_time)
+            
+            # タスクが停止していれば開始
+            if not self.prompt_daily_journal.is_running():
+                self.prompt_daily_journal.start()
+
+            await interaction.followup.send(f"✅ 夜の振り返り通知を毎日 **{hour:02d}:{minute:02d}** に設定しました。", ephemeral=True)
+
+        except ValueError:
+             await interaction.followup.send("❌ 正しい時刻を入力してください（例: 23:59）。", ephemeral=True)
+        except Exception as e:
+            logging.error(f"Set journal time error: {e}", exc_info=True)
+            await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(JournalCog(bot))
