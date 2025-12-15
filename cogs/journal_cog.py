@@ -152,12 +152,28 @@ class JournalSelectionView(discord.ui.View):
         await interaction.response.send_modal(JournalReflectionModal(self.cog, selected_text_list))
 
 class JournalReflectionModal(discord.ui.Modal, title="夜の振り返り"):
-    reflection = discord.ui.TextInput(
-        label="今日の振り返り",
+    feelings = discord.ui.TextInput(
+        label="感想・感じたこと",
         style=discord.TextStyle.paragraph,
-        placeholder="今日の出来事について感じたこと、うまくいったこと(Wins)、学んだこと(Learnings)などを自由に記述してください。",
+        placeholder="今日の出来事について感じたことを自由に記述してください。",
         required=True,
-        max_length=2000
+        max_length=1000
+    )
+    
+    wins = discord.ui.TextInput(
+        label="うまくいったこと (Wins)",
+        style=discord.TextStyle.paragraph,
+        placeholder="今日達成できたことや、良かった点を記述してください。",
+        required=False,
+        max_length=1000
+    )
+    
+    learnings = discord.ui.TextInput(
+        label="学んだこと (Learnings)",
+        style=discord.TextStyle.paragraph,
+        placeholder="今日得た気づきや学び、改善点を記述してください。",
+        required=False,
+        max_length=1000
     )
 
     def __init__(self, cog, selected_logs):
@@ -167,8 +183,14 @@ class JournalReflectionModal(discord.ui.Modal, title="夜の振り返り"):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False, thinking=True)
-        # 統合処理の呼び出し
-        await self.cog._process_unified_journal(interaction, self.selected_logs, self.reflection.value)
+        # 統合処理の呼び出し (3つの振り返り項目を渡す)
+        await self.cog._process_unified_journal(
+            interaction, 
+            self.selected_logs, 
+            self.feelings.value,
+            self.wins.value,
+            self.learnings.value
+        )
 
 class NightlyJournalView(discord.ui.View):
     def __init__(self, cog):
@@ -408,34 +430,47 @@ class JournalCog(commands.Cog):
 
         await interaction.followup.send(embed=embed)
 
-    async def _process_unified_journal(self, interaction: discord.Interaction, selected_logs: list[str], reflection: str):
+    async def _process_unified_journal(self, interaction: discord.Interaction, selected_logs: list[str], feelings: str, wins: str, learnings: str):
         """統合ジャーナルの生成と保存"""
         if not self.is_ready: return
 
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
         
+        # 1. 出来事リスト
         logs_text = "\n".join([f"- {log}" for log in selected_logs]) if selected_logs else "(特になし)"
+
+        # 2. ユーザーの振り返りテキスト
+        reflection_content = f"""
+**感想:**
+{feelings}
+
+**Wins (うまくいったこと):**
+{wins}
+
+**Learnings (学んだこと):**
+{learnings}
+"""
 
         # AI生成
         try:
             prompt = f"""
             あなたはユーザーの優秀なコーチです。
-            ユーザーが選択した「今日の主な出来事」と「振り返りコメント」を元に、**一日のまとめ（Journal）**と**アドバイス**を作成してください。
+            ユーザーが選択した「今日の主な出来事」と「ユーザーの振り返り（感想、Wins、Learnings）」を元に、**一日のまとめ（Journal）**と**アドバイス**を作成してください。
 
             # 入力情報
             ## 今日の出来事
             {logs_text}
 
             ## ユーザーの振り返り
-            {reflection}
+            {reflection_content}
 
             # 指示
             以下の2つのセクションを含むMarkdownテキストを出力してください。
 
             1. **Daily Summary**
                - 今日の活動と振り返りを統合し、客観的かつストーリー性のある要約を作成してください。
-               - うまくいったこと(Wins)や学び(Learnings)の要素を含めてください。
+               - ユーザーが挙げたWinsやLearningsを強調し、ポジティブな締めくくりにしてください。
 
             2. **Feedback & Advice**
                - ユーザーの振り返りに対するフィードバックや労いの言葉を述べてください。
@@ -449,18 +484,36 @@ class JournalCog(commands.Cog):
             (本文)
             """
             response = await self.gemini_model.generate_content_async(prompt)
-            journal_content = response.text.strip()
+            ai_content = response.text.strip()
         except Exception as e:
             logging.error(f"AI Journal Generation Error: {e}")
-            journal_content = f"⚠️ AI生成に失敗しました。\n\n**振り返り:**\n{reflection}\n\n**出来事:**\n{logs_text}"
+            ai_content = f"⚠️ AI生成に失敗しました。\n\n{reflection_content}"
+
+        # 3. Obsidianに保存する完全なコンテンツを作成 (①, ②, ③を統合)
+        full_journal_content = f"""
+{ai_content}
+
+### User Reflections
+#### Feelings
+{feelings}
+#### Wins
+{wins}
+#### Learnings
+{learnings}
+
+### Key Events (Source)
+{logs_text}
+"""
 
         # Obsidianに保存
-        success = await self._save_to_obsidian(date_str, journal_content, "## Journal")
+        success = await self._save_to_obsidian(date_str, full_journal_content, "## Journal")
 
-        # 結果送信
+        # 結果送信 (Discordには要約とアドバイスを表示)
         embed = discord.Embed(title=f"📓 統合ジャーナル ({date_str})", color=discord.Color.purple())
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-        embed.description = journal_content[:4000]
+        
+        # 表示文字数制限への対策 (AI要約部分を表示)
+        embed.description = ai_content[:4000]
         
         footer_text = "Obsidianに保存しました" if success else "⚠️ 保存に失敗しました"
         embed.set_footer(text=f"{footer_text} | {now.strftime('%H:%M')}")

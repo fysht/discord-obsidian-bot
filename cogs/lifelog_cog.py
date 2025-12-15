@@ -937,6 +937,9 @@ class LifeLogCog(commands.Cog):
         embed.set_footer(text=f"Task: {active_logs[user_id]['task']}")
         await interaction.followup.send(embed=embed, ephemeral=False)
 
+    async def prompt_memo_modal(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(LifeLogMemoModal(self))
+
     async def _add_memo_from_message(self, message: discord.Message, memo_content: str):
         user_id = str(message.author.id)
         active_logs = await self._get_active_logs()
