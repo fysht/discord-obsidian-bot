@@ -29,91 +29,15 @@ except ImportError:
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-HIGHLIGHT_EMOJI = "✨"
 BASE_PATH = os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')
-PLANNING_SCHEDULE_PATH = f"{BASE_PATH}/.bot/planning_schedule.json"
 JOURNAL_SCHEDULE_PATH = f"{BASE_PATH}/.bot/journal_schedule.json"
-TIME_SCHEDULE_REGEX = re.compile(r'^(\d{1,2}:\d{2}|\d{1,4})(?:[~-](\d{1,2}:\d{2}|\d{1,4}))?\s+(.+)$')
+# TIME_SCHEDULE_REGEX は削除（プランニングで使用していたため）
 
 # ==========================================
 # UI Components
 # ==========================================
 
-# --- 朝のプランニング用 ---
-class MorningPlanningModal(discord.ui.Modal, title="朝のプランニング"):
-    highlight = discord.ui.TextInput(
-        label="今日のハイライト",
-        style=discord.TextStyle.short,
-        placeholder="例: プロジェクトAを完了させる",
-        required=True
-    )
-    
-    schedule = discord.ui.TextInput(
-        label="今日のスケジュール",
-        style=discord.TextStyle.paragraph,
-        required=True,
-        max_length=1500
-    )
-    
-    log_summary_display = discord.ui.TextInput(
-        label="昨日のサマリー（参考）",
-        style=discord.TextStyle.paragraph,
-        required=False,
-        max_length=1500
-    )
-
-    def __init__(self, cog, existing_schedule_text: str, log_summary: str):
-        super().__init__(timeout=1800)
-        self.cog = cog
-        self.schedule.default = existing_schedule_text
-        self.log_summary_display.default = log_summary
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=False, thinking=True)
-        try:
-            # Obsidianへの保存
-            await self.cog._save_planning_entry(
-                interaction,
-                self.highlight.value,
-                self.schedule.value
-            )
-
-            # カレンダーへの同期
-            schedule_text = self.schedule.value
-            if schedule_text:
-                schedule_list = self.cog._parse_schedule_text(schedule_text)
-                now = datetime.now(JST)
-                today = now.date()
-                if await self.cog._register_schedule_to_calendar(interaction, schedule_list, today):
-                    await interaction.followup.send("✅ Googleカレンダーを同期（更新）しました。", ephemeral=True)
-                else:
-                    await interaction.followup.send("⚠️ カレンダーの同期に失敗しました。", ephemeral=True)
-        except Exception as e:
-             logging.error(f"Planning error: {e}", exc_info=True)
-             await interaction.followup.send(f"❌ エラーが発生しました: {e}", ephemeral=True)
-
-class MorningPlanningView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    @discord.ui.button(label="一日の計画を立てる", style=discord.ButtonStyle.success, emoji="☀️", custom_id="journal_morning_plan")
-    async def plan_day(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            # 今日の予定を取得（編集用デフォルト値）
-            events = await self.cog._get_todays_events()
-            event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or ""
-            
-            # 昨日のサマリーを取得（参考情報）
-            yesterday = datetime.now(JST).date() - timedelta(days=1)
-            log_summary = await self.cog._get_daily_summary_content(yesterday)
-
-            await interaction.response.send_modal(
-                MorningPlanningModal(self.cog, event_text, log_summary)
-            )
-        except Exception as e:
-             logging.error(f"Plan day error: {e}")
-             await interaction.followup.send(f"❌ エラー: {e}", ephemeral=True)
+# --- 朝のプランニング用 UI (削除) ---
 
 # --- 夜の振り返り用 (Unified Flow) ---
 
@@ -212,7 +136,7 @@ class NightlyJournalView(discord.ui.View):
 # ==========================================
 
 class JournalCog(commands.Cog):
-    """朝のプランニングと夜の振り返りを行うCog"""
+    """夜の振り返りを行うCog (朝のプランニングはLifeLogCogへ移行済み)"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -228,9 +152,12 @@ class JournalCog(commands.Cog):
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") 
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
 
-            self.planning_schedule_path = PLANNING_SCHEDULE_PATH
+            # PLANNING_SCHEDULE_PATH は削除
             self.journal_schedule_path = JOURNAL_SCHEDULE_PATH
 
+            # カレンダー連携はプランニングで使用していたため不要だが、念のため残すか削除可能
+            # ここではプランニング機能削除に伴い、カレンダー予定取得も不要になるため、もし振り返りで使わないなら削除可能
+            # ただし _get_todays_events が残っているため、認証情報は保持する
             self.google_creds = self._get_google_creds()
             self.calendar_service = build('calendar', 'v3', credentials=self.google_creds) if self.google_creds else None
             
@@ -267,11 +194,12 @@ class JournalCog(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
-            self.bot.add_view(MorningPlanningView(self))
+            # MorningPlanningView は削除
             self.bot.add_view(NightlyJournalView(self))
             await self.bot.wait_until_ready()
             
-            for path, task in [(self.planning_schedule_path, self.daily_planning_task), (self.journal_schedule_path, self.prompt_daily_journal)]:
+            # プランニングタスクの登録を削除し、ジャーナルのみ登録
+            for path, task in [(self.journal_schedule_path, self.prompt_daily_journal)]:
                 sched = await self._load_schedule_from_db(path)
                 if sched:
                     task.change_interval(time=time(hour=sched['hour'], minute=sched['minute'], tzinfo=JST))
@@ -279,29 +207,12 @@ class JournalCog(commands.Cog):
 
     async def cog_unload(self):
         if self.session: await self.session.close()
-        self.daily_planning_task.cancel()
+        # daily_planning_task.cancel() は削除
         self.prompt_daily_journal.cancel()
 
     # --- Helper Methods ---
 
-    async def _get_daily_summary_content(self, target_date: date) -> str:
-        """指定日のJournalセクションを取得する"""
-        if not self.dbx: return "(Dropbox接続エラー)"
-        
-        date_str = target_date.strftime('%Y-%m-%d')
-        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-        try:
-            _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
-            content = res.content.decode('utf-8')
-            match = re.search(r'##\s*Journal\s*(.*?)(?=\n##|$)', content, re.DOTALL | re.IGNORECASE)
-            if match and match.group(1).strip():
-                return match.group(1).strip()
-            return "(昨日のジャーナルはありません)"
-        except ApiError:
-            return "(昨日のノートが見つかりません)"
-        except Exception as e:
-            logging.error(f"Summary fetch error: {e}")
-            return "(取得エラー)"
+    # _get_daily_summary_content (プランニング用) は不要なら削除可能だが、ヘルパーとして残しておく
 
     async def _get_todays_all_logs(self) -> list[str]:
         """今日のすべてのログ（Memo, Life Logs, Todo）を取得する"""
@@ -379,22 +290,7 @@ class JournalCog(commands.Cog):
 
     # --- Task Loops ---
 
-    @tasks.loop()
-    async def daily_planning_task(self):
-        if not self.is_ready: return
-        channel = self.bot.get_channel(self.channel_id)
-        if not channel: return
-
-        try:
-            events = await self._get_todays_events()
-            event_text = "\n".join([f"{e['start'].get('dateTime','')[11:16] or '終日'} {e['summary']}" for e in events]) or "予定なし"
-            view = MorningPlanningView(self)
-            
-            embed = discord.Embed(title="☀️ 朝のプランニング", description="今日一日の計画を立てましょう。", color=discord.Color.orange())
-            embed.add_field(name="📅 カレンダー", value=f"```\n{event_text}\n```", inline=False)
-            await channel.send(embed=embed, view=view)
-        except Exception as e:
-            logging.error(f"Planning task error: {e}")
+    # daily_planning_task は削除
 
     @tasks.loop()
     async def prompt_daily_journal(self):
@@ -411,24 +307,7 @@ class JournalCog(commands.Cog):
 
     # --- Core Logic ---
 
-    async def _save_planning_entry(self, interaction: discord.Interaction, highlight: str, schedule: str):
-        if not self.is_ready: return
-
-        now = datetime.now(JST)
-        date_str = now.strftime('%Y-%m-%d')
-
-        planning_content = f"- **Highlight:** {highlight}\n### Schedule\n{schedule}"
-        success_obsidian = await self._save_to_obsidian(date_str, planning_content, "## Planning")
-        
-        embed = discord.Embed(title=f"☀️ プランニング ({date_str})", color=discord.Color.orange())
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-        embed.add_field(name=f"{HIGHLIGHT_EMOJI} 今日のハイライト", value=highlight, inline=False)
-        embed.add_field(name="📅 スケジュール", value=f"```{schedule}```", inline=False)
-        
-        footer_text = "Obsidianに保存しました" if success_obsidian else "⚠️ Obsidianへの保存に失敗"
-        embed.set_footer(text=f"{footer_text} | {now.strftime('%H:%M')}")
-
-        await interaction.followup.send(embed=embed)
+    # _save_planning_entry は削除
 
     async def _process_unified_journal(self, interaction: discord.Interaction, selected_logs: list[str], feelings: str, wins: str, learnings: str):
         """統合ジャーナルの生成と保存"""
@@ -545,93 +424,9 @@ class JournalCog(commands.Cog):
             return res.get('items', [])
         except: return []
 
-    def _parse_schedule_text(self, text):
-        events = []
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line: continue
-            m = TIME_SCHEDULE_REGEX.match(line)
-            if m:
-                start, end, summary = m.groups()
-                events.append({"start_time": start, "end_time": end or start, "summary": summary})
-        return events
-
-    async def _register_schedule_to_calendar(self, interaction, schedule_list, target_date):
-        if not self.calendar_service: return False
-        try:
-            start_check = datetime.combine(target_date, time.min).replace(tzinfo=JST).isoformat()
-            end_check = datetime.combine(target_date, time.max).replace(tzinfo=JST).isoformat()
-            
-            existing_events_result = await asyncio.to_thread(
-                self.calendar_service.events().list(
-                    calendarId=self.google_calendar_id, 
-                    timeMin=start_check, 
-                    timeMax=end_check, 
-                    singleEvents=True
-                ).execute
-            )
-            existing_items = existing_events_result.get('items', [])
-
-            new_events_payloads = []
-            new_event_signatures = set()
-
-            for item in schedule_list:
-                start_str = item["start_time"]
-                end_str = item["end_time"]
-                summary = item["summary"]
-
-                def parse_time_str(t_str):
-                    if ':' in t_str: return datetime.strptime(t_str, "%H:%M").time()
-                    elif len(t_str) == 3: return datetime.strptime(t_str, "%H%M").time()
-                    elif len(t_str) == 4: return datetime.strptime(t_str, "%H%M").time()
-                    return None
-
-                start_time = parse_time_str(start_str)
-                end_time = parse_time_str(end_str)
-                if not start_time: continue
-                if not end_time: end_time = start_time
-
-                start_dt = datetime.combine(target_date, start_time).replace(tzinfo=JST)
-                end_dt = datetime.combine(target_date, end_time).replace(tzinfo=JST)
-                if end_dt < start_dt: end_dt += timedelta(days=1)
-                if end_dt == start_dt: end_dt += timedelta(hours=1)
-
-                event_body = {
-                    'summary': summary,
-                    'start': {'dateTime': start_dt.isoformat()},
-                    'end': {'dateTime': end_dt.isoformat()},
-                }
-                new_events_payloads.append(event_body)
-                sig = f"{start_dt.strftime('%H:%M')} {summary}"
-                new_event_signatures.add(sig)
-
-            # Delete
-            for e in existing_items:
-                start_val = e.get('start', {}).get('dateTime')
-                if not start_val: continue
-                dt_obj = datetime.fromisoformat(start_val)
-                sig = f"{dt_obj.strftime('%H:%M')} {e.get('summary', '')}"
-                if sig not in new_event_signatures:
-                    await asyncio.to_thread(self.calendar_service.events().delete(calendarId=self.google_calendar_id, eventId=e['id']).execute)
-
-            # Add
-            existing_signatures_now = set()
-            for e in existing_items:
-                start_val = e.get('start', {}).get('dateTime')
-                if start_val:
-                    dt_obj = datetime.fromisoformat(start_val)
-                    sig = f"{dt_obj.strftime('%H:%M')} {e.get('summary', '')}"
-                    existing_signatures_now.add(sig)
-
-            for payload in new_events_payloads:
-                dt_obj = datetime.fromisoformat(payload['start']['dateTime'])
-                sig = f"{dt_obj.strftime('%H:%M')} {payload['summary']}"
-                if sig in existing_signatures_now: continue
-                await asyncio.to_thread(self.calendar_service.events().insert(calendarId=self.google_calendar_id, body=payload).execute)
-            return True
-        except Exception as e:
-            logging.error(f"Calendar sync error: {e}")
-            return False
+    # _parse_schedule_text は削除
+    
+    # _register_schedule_to_calendar は削除（LifeLogCogへ移行）
 
     async def _load_schedule_from_db(self, path):
         try:

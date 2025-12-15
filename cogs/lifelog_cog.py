@@ -370,7 +370,6 @@ class LifeLogCog(commands.Cog):
             if not self.daily_planning_prompt.is_running():
                 self.daily_planning_prompt.change_interval(time=self.current_planning_time)
                 self.daily_planning_prompt.start()
-                logging.info(f"LifeLogCog: プランニング通知を {self.current_planning_time} にスケジュールしました。")
             
             # ★ 起動時にスケジュール計算を行い、ディスパッチループを開始
             await self._update_dispatch_schedule()
@@ -430,7 +429,6 @@ class LifeLogCog(commands.Cog):
             end_time = start_time + timedelta(minutes=duration)
             
             # (A) 終了予定時刻 (Time Up通知)
-            # 通知済みフラグが立っていなければスケジュール
             if not log.get('end_notice_sent', False):
                 if end_time > now:
                     t = end_time.time().replace(tzinfo=JST)
@@ -441,7 +439,6 @@ class LifeLogCog(commands.Cog):
                     pass
 
             # (B) 自動終了時刻 (通知から5分後)
-            # 通知済みなら、通知時刻+5分をターゲットにする
             if log.get('end_notice_sent', False):
                 auto_end_time = end_time + timedelta(minutes=5)
                 if auto_end_time > now:
@@ -470,7 +467,6 @@ class LifeLogCog(commands.Cog):
         
         executed_count = 0
         for t, actions in list(self.dispatch_map.items()):
-            # 時刻差分が1分以内なら実行とみなす
             dt_target = now.replace(hour=t.hour, minute=t.minute, second=t.second, microsecond=0)
             diff = abs((now - dt_target).total_seconds())
             
@@ -478,12 +474,9 @@ class LifeLogCog(commands.Cog):
                 for action in actions:
                     asyncio.create_task(self._execute_action(action))
                     executed_count += 1
-                
-                # 実行したら削除 (同日中の重複実行防止)
                 del self.dispatch_map[t]
 
         if executed_count > 0:
-            # 状態が変わった可能性があるのでスケジュール再計算 (少し待ってから)
             await asyncio.sleep(5)
             await self._update_dispatch_schedule()
 
@@ -514,21 +507,18 @@ class LifeLogCog(commands.Cog):
 
         active_logs = await self._get_active_logs()
         target_user_id = self.owner_id
-        if active_logs: target_user_id = int(list(active_logs.keys())[0]) # シングルユーザー想定
+        if active_logs: target_user_id = int(list(active_logs.keys())[0])
 
         target_user = self.bot.get_user(target_user_id)
         if not target_user and target_user_id:
             try: target_user = await self.bot.fetch_user(target_user_id)
             except: pass
 
-        # 常に提案し、60秒後に自動開始
         view = LifeLogScheduleStartView(self, summary, duration)
         msg = await channel.send(f"⏰ **予定の時間です**: {summary}\nこのタスクに切り替えますか？（予定: {duration}分 / 60秒後に自動開始）", view=view)
         
-        # 待機タスク
         await asyncio.sleep(60)
         
-        # まだボタンが押されていなければ自動開始
         active_logs_now = await self._get_active_logs()
         current_task = active_logs_now.get(str(target_user_id), {}).get('task')
         
@@ -549,27 +539,23 @@ class LifeLogCog(commands.Cog):
         view = LifeLogTimeUpView(self, user_id, task_name)
         await channel.send(f"{mention} ⏰ タスク「**{task_name}**」の予定時間が経過しました。\n延長しますか？それとも終了しますか？（反応がない場合、5分後に自動終了します）", view=view)
         
-        # フラグ更新
         active_logs = await self._get_active_logs()
         if user_id in active_logs:
             active_logs[user_id]['end_notice_sent'] = True
             await self._save_active_logs(active_logs)
             
-        # スケジュール更新（これにより5分後の自動終了が予約される）
         await self._update_dispatch_schedule()
 
-    async def _execute_auto_end(self, user_id, log_data): # alias
+    async def _execute_auto_end(self, user_id, log_data): 
         await self._handle_auto_end(user_id, log_data)
 
     async def _handle_auto_end(self, user_id, log_data):
-        # 最新状態を確認
         active_logs = await self._get_active_logs()
-        if user_id not in active_logs: return # 既に終了済み
+        if user_id not in active_logs: return 
         
         current_log = active_logs[user_id]
-        if not current_log.get('end_notice_sent', False): return # 延長された等でフラグが折れている
+        if not current_log.get('end_notice_sent', False): return
         
-        # 終了処理
         user_obj = discord.Object(id=int(user_id))
         await self.finish_current_task(user_obj, context=None)
         
@@ -674,33 +660,75 @@ class LifeLogCog(commands.Cog):
 
     async def submit_planning(self, interaction, highlight, schedule_text):
         today_date = datetime.now(JST).date()
+        
+        # 1. ハイライト（終日イベント）の登録
         if self.calendar_service and highlight:
-            self._add_calendar_event(summary=f"★{highlight}", is_all_day=True, date_obj=today_date, color_id="11")
+            # 終日イベントの場合、endは翌日に設定する必要がある
+            next_day = today_date + timedelta(days=1)
+            self._add_calendar_event(
+                summary=f"★{highlight}", 
+                is_all_day=True, 
+                date_obj=today_date, # start date
+                end_date_obj=next_day, # end date
+                color_id="11"
+            )
 
+        # 2. スケジュールの解析と登録
         plan_content = ""
         if highlight: plan_content += f"### Highlight\n- {highlight}\n\n"
         plan_content += "### Schedule\n"
         
+        # 既存イベントの取得（重複登録防止用）
         existing_events = await self._get_events_from_journal_cog()
-        existing_start_times = [e['start'].strftime('%H:%M') for e in existing_events if e.get('start')]
+        # (時刻文字列, サマリ) のセットを作成
+        existing_entries = set()
+        for e in existing_events:
+            if e.get('start'):
+                t_str = e['start'].strftime('%H:%M')
+                s_val = e['summary']
+                existing_entries.add((t_str, s_val))
+
+        # 柔軟な正規表現: 全角半角コロン、スペース有無に対応
+        # Group 1: Hour, Group 2: Minute, Group 3: Content (Optional)
+        line_regex = re.compile(r'^\s*(\d{1,2})[:：](\d{2})\s*(.*)$')
 
         for line in schedule_text.split('\n'):
             line = line.strip()
             if not line: continue
-            if re.match(r'^\d{1,2}:\d{2}$', line): continue
-            plan_content += f"- {line}\n"
+            
+            match = line_regex.match(line)
+            if match:
+                hour = match.group(1)
+                minute = match.group(2)
+                content = match.group(3).strip() if match.group(3) else ""
+                
+                time_str = f"{int(hour):02d}:{int(minute):02d}" # 正規化
+                
+                # 予定がある場合のみリスト形式にする
+                if content:
+                    plan_content += f"- {time_str} {content}\n"
+                    
+                    # カレンダー登録処理
+                    if self.calendar_service:
+                        # 既存と完全一致しなければ登録（時刻重複だけなら登録する＝追加予定とみなす）
+                        if (time_str, content) not in existing_entries:
+                            try:
+                                start_dt = datetime.strptime(time_str, '%H:%M').replace(
+                                    year=today_date.year, month=today_date.month, day=today_date.day, tzinfo=JST
+                                )
+                                end_dt = start_dt + timedelta(minutes=30)
+                                self._add_calendar_event(content, start_dt=start_dt, end_dt=end_dt)
+                                
+                                # 重複防止リストに追加（同じ内容を2回書いた場合などの防止）
+                                existing_entries.add((time_str, content))
+                            except ValueError: pass
+                else:
+                    # 予定がない時刻行。Obsidianには残すが、カレンダーには何もしない。
+                    plan_content += f"- {time_str}\n"
 
-            match = re.match(r'^(\d{1,2}:\d{2})\s+(.+)$', line)
-            if match and self.calendar_service:
-                time_str = match.group(1)
-                summary = match.group(2)
-                if time_str not in existing_start_times:
-                    try:
-                        start_dt = datetime.strptime(time_str, '%H:%M').replace(year=today_date.year, month=today_date.month, day=today_date.day, tzinfo=JST)
-                        end_dt = start_dt + timedelta(minutes=30)
-                        self._add_calendar_event(summary, start_dt=start_dt, end_dt=end_dt)
-                        existing_start_times.append(time_str) 
-                    except ValueError: pass
+            else:
+                # 時刻フォーマットでない行はそのままメモとして残す
+                plan_content += f"- {line}\n"
 
         await self._save_to_obsidian_planning(plan_content)
         state = await self._get_planning_state()
@@ -738,14 +766,16 @@ class LifeLogCog(commands.Cog):
         view = LifeLogPlanSelectView(self, options, interaction.user)
         await interaction.followup.send("開始するカレンダーの予定を選択してください:", view=view, ephemeral=True)
 
-    def _add_calendar_event(self, summary, start_dt=None, end_dt=None, is_all_day=False, date_obj=None, color_id=None):
+    def _add_calendar_event(self, summary, start_dt=None, end_dt=None, is_all_day=False, date_obj=None, end_date_obj=None, color_id=None):
         if not self.calendar_service: return
         event_body = {'summary': summary, 'description': 'Created via Discord LifeLog'}
         if color_id: event_body['colorId'] = color_id
         if is_all_day and date_obj:
             date_str = date_obj.strftime('%Y-%m-%d')
+            # 終日イベントの場合、終了日は開始日の翌日（または指定日）にする必要がある
+            end_str = (end_date_obj or (date_obj + timedelta(days=1))).strftime('%Y-%m-%d')
             event_body['start'] = {'date': date_str}
-            event_body['end'] = {'date': date_str}
+            event_body['end'] = {'date': end_str}
         elif start_dt and end_dt:
             event_body['start'] = {'dateTime': start_dt.isoformat()}
             event_body['end'] = {'dateTime': end_dt.isoformat()}
@@ -812,6 +842,21 @@ class LifeLogCog(commands.Cog):
 
     async def prompt_memo_modal(self, interaction: discord.Interaction):
         await interaction.response.send_modal(LifeLogMemoModal(self))
+
+    async def _add_memo_from_message(self, message: discord.Message, memo_content: str):
+        user_id = str(message.author.id)
+        active_logs = await self._get_active_logs()
+        if user_id not in active_logs:
+            await message.reply("⚠️ メモを追加する進行中のタスクが見つかりませんでした。")
+            return
+        current_memos = active_logs[user_id].get("memos", [])
+        memo_with_time = f"{datetime.now(JST).strftime('%H:%M')} {memo_content}"
+        current_memos.append(memo_with_time)
+        active_logs[user_id]["memos"] = current_memos
+        await self._save_active_logs(active_logs)
+        embed = discord.Embed(title="✅ 作業メモを追加しました", description=memo_content, color=discord.Color.green())
+        embed.set_footer(text=f"Task: {active_logs[user_id]['task']}")
+        await message.reply(embed=embed)
 
     # --- 以下、タスク終了、状態保存、状態監視ロジック ---
     async def finish_current_task(self, user: discord.User | discord.Object, context, next_task_name: str = None, end_time: datetime = None) -> str:
@@ -929,21 +974,6 @@ class LifeLogCog(commands.Cog):
             content = json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')
             await asyncio.to_thread(self.dbx.files_upload, content, ACTIVE_LOGS_PATH, mode=WriteMode('overwrite'))
         except Exception as e: logging.error(f"LifeLogCog: アクティブログ保存エラー: {e}")
-
-    async def _add_memo_from_message(self, message: discord.Message, memo_content: str):
-        user_id = str(message.author.id)
-        active_logs = await self._get_active_logs()
-        if user_id not in active_logs:
-            await message.reply("⚠️ メモを追加する進行中のタスクが見つかりませんでした。")
-            return
-        current_memos = active_logs[user_id].get("memos", [])
-        memo_with_time = f"{datetime.now(JST).strftime('%H:%M')} {memo_content}"
-        current_memos.append(memo_with_time)
-        active_logs[user_id]["memos"] = current_memos
-        await self._save_active_logs(active_logs)
-        embed = discord.Embed(title="✅ 作業メモを追加しました", description=memo_content, color=discord.Color.green())
-        embed.set_footer(text=f"Task: {active_logs[user_id]['task']}")
-        await message.reply(embed=embed)
 
     async def extend_task(self, interaction: discord.Interaction, minutes: int = 30):
         user_id = str(interaction.user.id)
