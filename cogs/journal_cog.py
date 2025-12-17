@@ -31,15 +31,10 @@ except ImportError:
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 BASE_PATH = os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')
 JOURNAL_SCHEDULE_PATH = f"{BASE_PATH}/.bot/journal_schedule.json"
-# TIME_SCHEDULE_REGEX は削除（プランニングで使用していたため）
 
 # ==========================================
 # UI Components
 # ==========================================
-
-# --- 朝のプランニング用 UI (削除) ---
-
-# --- 夜の振り返り用 (Unified Flow) ---
 
 class JournalSelectionView(discord.ui.View):
     """AIが整理した一日の出来事リストから、ジャーナルに記載する項目を選択するView"""
@@ -136,7 +131,7 @@ class NightlyJournalView(discord.ui.View):
 # ==========================================
 
 class JournalCog(commands.Cog):
-    """夜の振り返りを行うCog (朝のプランニングはLifeLogCogへ移行済み)"""
+    """夜の振り返りを行うCog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -151,16 +146,7 @@ class JournalCog(commands.Cog):
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro") 
             self.dbx = dropbox.Dropbox(oauth2_refresh_token=self.dropbox_refresh_token, app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret)
-
-            # PLANNING_SCHEDULE_PATH は削除
             self.journal_schedule_path = JOURNAL_SCHEDULE_PATH
-
-            # カレンダー連携はプランニングで使用していたため不要だが、念のため残すか削除可能
-            # ここではプランニング機能削除に伴い、カレンダー予定取得も不要になるため、もし振り返りで使わないなら削除可能
-            # ただし _get_todays_events が残っているため、認証情報は保持する
-            self.google_creds = self._get_google_creds()
-            self.calendar_service = build('calendar', 'v3', credentials=self.google_creds) if self.google_creds else None
-            
             self.is_ready = True
             logging.info("JournalCog initialized.")
         except Exception as e:
@@ -168,7 +154,6 @@ class JournalCog(commands.Cog):
 
     def _load_env_vars(self):
         self.channel_id = int(os.getenv("JOURNAL_CHANNEL_ID", 0))
-        self.google_calendar_id = os.getenv("GOOGLE_CALENDAR_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
@@ -176,29 +161,18 @@ class JournalCog(commands.Cog):
         self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
 
     def _validate_env_vars(self) -> bool:
-        required = ["JOURNAL_CHANNEL_ID", "GOOGLE_CALENDAR_ID", "GEMINI_API_KEY", "DROPBOX_APP_KEY", "DROPBOX_APP_SECRET", "DROPBOX_REFRESH_TOKEN"]
+        required = ["JOURNAL_CHANNEL_ID", "GEMINI_API_KEY", "DROPBOX_APP_KEY", "DROPBOX_APP_SECRET", "DROPBOX_REFRESH_TOKEN"]
         if not all(getattr(self, name.lower(), None) or (name == "JOURNAL_CHANNEL_ID" and self.channel_id) for name in required):
             return False
         return True
 
-    def _get_google_creds(self):
-        if not os.path.exists('token.json'): return None
-        try:
-            creds = Credentials.from_authorized_user_file('token.json', ['https://www.googleapis.com/auth/calendar'])
-            if not creds.valid:
-                if creds.expired and creds.refresh_token: creds.refresh(Request())
-                else: return None
-            return creds
-        except: return None
-
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
-            # MorningPlanningView は削除
             self.bot.add_view(NightlyJournalView(self))
             await self.bot.wait_until_ready()
             
-            # プランニングタスクの登録を削除し、ジャーナルのみ登録
+            # ジャーナルタスク登録
             for path, task in [(self.journal_schedule_path, self.prompt_daily_journal)]:
                 sched = await self._load_schedule_from_db(path)
                 if sched:
@@ -207,12 +181,24 @@ class JournalCog(commands.Cog):
 
     async def cog_unload(self):
         if self.session: await self.session.close()
-        # daily_planning_task.cancel() は削除
         self.prompt_daily_journal.cancel()
 
     # --- Helper Methods ---
 
-    # _get_daily_summary_content (プランニング用) は不要なら削除可能だが、ヘルパーとして残しておく
+    async def _get_todays_life_logs_content(self) -> str:
+        """今日のLifeLogsセクションの中身（時間記録）をそのまま取得する"""
+        if not self.dbx: return ""
+        now = datetime.now(JST)
+        date_str = now.strftime('%Y-%m-%d')
+        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
+        try:
+            _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
+            content = res.content.decode('utf-8')
+            match = re.search(r'##\s*Life\s*Logs\s*(.*?)(?=\n##|$)', content, re.DOTALL | re.IGNORECASE)
+            if match:
+                return match.group(1).strip()
+            return ""
+        except: return ""
 
     async def _get_todays_all_logs(self) -> list[str]:
         """今日のすべてのログ（Memo, Life Logs, Todo）を取得する"""
@@ -290,8 +276,6 @@ class JournalCog(commands.Cog):
 
     # --- Task Loops ---
 
-    # daily_planning_task は削除
-
     @tasks.loop()
     async def prompt_daily_journal(self):
         if not self.is_ready: return
@@ -307,19 +291,20 @@ class JournalCog(commands.Cog):
 
     # --- Core Logic ---
 
-    # _save_planning_entry は削除
-
     async def _process_unified_journal(self, interaction: discord.Interaction, selected_logs: list[str], feelings: str, wins: str, learnings: str):
-        """統合ジャーナルの生成と保存"""
+        """統合ジャーナルの生成と保存（ライフログ分析を含む）"""
         if not self.is_ready: return
 
         now = datetime.now(JST)
         date_str = now.strftime('%Y-%m-%d')
         
-        # 1. 出来事リスト
-        logs_text = "\n".join([f"- {log}" for log in selected_logs]) if selected_logs else "(特になし)"
+        # 1. 出来事リスト (ユーザー選択)
+        events_text = "\n".join([f"- {log}" for log in selected_logs]) if selected_logs else "(特になし)"
 
-        # 2. ユーザーの振り返りテキスト
+        # 2. ライフログ (時間記録) の取得
+        life_logs_content = await self._get_todays_life_logs_content()
+
+        # 3. ユーザーの振り返りテキスト
         reflection_content = f"""
 **感想:**
 {feelings}
@@ -334,41 +319,48 @@ class JournalCog(commands.Cog):
         # AI生成
         try:
             prompt = f"""
-            あなたはユーザーの優秀なコーチです。
-            ユーザーが選択した「今日の主な出来事」と「ユーザーの振り返り（感想、Wins、Learnings）」を元に、**一日のまとめ（Journal）**と**アドバイス**を作成してください。
+            あなたはユーザーの優秀なコーチかつアナリストです。
+            以下の情報を元に、**今日一日の包括的なジャーナル（日誌）**を作成してください。
+            これまでの「ライフログ分析（客観的事実・時間の使い方の傾向）」と「ユーザーの主観的な振り返り」を統合し、シンプルで洞察に富んだ内容にしてください。
 
             # 入力情報
-            ## 今日の出来事
-            {logs_text}
 
-            ## ユーザーの振り返り
+            ## 【A】ライフログ（作業時間の記録）
+            {life_logs_content if life_logs_content else "(記録なし)"}
+
+            ## 【B】今日の主な出来事（ユーザー選択）
+            {events_text}
+
+            ## 【C】ユーザーの振り返り
             {reflection_content}
 
             # 指示
-            以下の2つのセクションを含むMarkdownテキストを出力してください。
+            以下の2つのセクションで構成されるMarkdownテキストを出力してください。
 
-            1. **Daily Summary**
-               - 今日の活動と振り返りを統合し、客観的かつストーリー性のある要約を作成してください。
-               - ユーザーが挙げたWinsやLearningsを強調し、ポジティブな締めくくりにしてください。
+            ### 1. Daily Journal
+            - 今日の活動の要約と、ユーザーの振り返りを統合して記述してください。
+            - ライフログから読み取れる客観的な事実（総作業時間や、集中できた時間帯、時間の使い方の傾向など）を織り交ぜてください。
+            - ユーザーが挙げたWinsやLearningsを強調し、ポジティブに締めくくってください。
 
-            2. **Feedback & Advice**
-               - ユーザーの振り返りに対するフィードバックや労いの言葉を述べてください。
-               - 明日に向けて改善できる点や、具体的なアクションプランをアドバイスしてください。
+            ### 2. Feedback & Insights
+            - ユーザーへのフィードバックや、明日への具体的なアドバイスを記述してください。
+            - 時間の使い方に関する改善点があれば指摘してください。
 
-            # 出力フォーマット
-            ### Daily Summary
-            (本文)
+            # 出力例
+            ### Daily Journal
+            今日は合計約8時間の作業を行い、特に午前中の「企画書作成」に集中できていました。午後は会議が続きましたが...（振り返り内容を統合）...という気付きも得られました。
 
-            ### Feedback & Advice
-            (本文)
+            ### Feedback & Insights
+            お疲れ様でした。午前中の集中力は素晴らしいです。午後の...について、明日は...を試してみると良いでしょう。
             """
+            
             response = await self.gemini_model.generate_content_async(prompt)
             ai_content = response.text.strip()
         except Exception as e:
             logging.error(f"AI Journal Generation Error: {e}")
             ai_content = f"⚠️ AI生成に失敗しました。\n\n{reflection_content}"
 
-        # 3. Obsidianに保存する完全なコンテンツを作成 (①, ②, ③を統合)
+        # 3. Obsidianに保存する完全なコンテンツを作成
         full_journal_content = f"""
 {ai_content}
 
@@ -381,17 +373,16 @@ class JournalCog(commands.Cog):
 {learnings}
 
 ### Key Events (Source)
-{logs_text}
+{events_text}
 """
 
         # Obsidianに保存
         success = await self._save_to_obsidian(date_str, full_journal_content, "## Journal")
 
-        # 結果送信 (Discordには要約とアドバイスを表示)
+        # 結果送信 (DiscordにはAI生成部分を表示)
         embed = discord.Embed(title=f"📓 統合ジャーナル ({date_str})", color=discord.Color.purple())
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
         
-        # 表示文字数制限への対策 (AI要約部分を表示)
         embed.description = ai_content[:4000]
         
         footer_text = "Obsidianに保存しました" if success else "⚠️ 保存に失敗しました"
@@ -413,20 +404,6 @@ class JournalCog(commands.Cog):
         except Exception as e:
             logging.error(f"Obsidian save error: {e}")
             return False
-
-    async def _get_todays_events(self):
-        if not self.calendar_service: return []
-        try:
-            now = datetime.now(JST)
-            start = now.replace(hour=0, minute=0, second=0).isoformat()
-            end = now.replace(hour=23, minute=59, second=59).isoformat()
-            res = await asyncio.to_thread(self.calendar_service.events().list(calendarId=self.google_calendar_id, timeMin=start, timeMax=end, singleEvents=True, orderBy='startTime').execute)
-            return res.get('items', [])
-        except: return []
-
-    # _parse_schedule_text は削除
-    
-    # _register_schedule_to_calendar は削除（LifeLogCogへ移行）
 
     async def _load_schedule_from_db(self, path):
         try:
@@ -472,7 +449,6 @@ class JournalCog(commands.Cog):
             new_time = time(hour=hour, minute=minute, tzinfo=JST)
             self.prompt_daily_journal.change_interval(time=new_time)
             
-            # タスクが停止していれば開始
             if not self.prompt_daily_journal.is_running():
                 self.prompt_daily_journal.start()
 
