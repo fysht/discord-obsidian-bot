@@ -17,6 +17,7 @@ import re
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
@@ -388,6 +389,14 @@ class LifeLogCog(commands.Cog):
                         self.calendar_error_detail = "token.json expired and cannot refresh"
                 else:
                     method = "User OAuth"
+            except RefreshError as e:
+                logging.error(f"LifeLogCog: Token refresh error: {e}")
+                self.calendar_error_detail = f"token.json expired/revoked: {e}"
+                try:
+                    os.rename('token.json', 'token.json.bak')
+                    logging.info("Renamed invalid token.json to token.json.bak")
+                except: pass
+                creds = None
             except Exception as e:
                 logging.error(f"LifeLogCog: Token load error: {e}")
                 self.calendar_error_detail = f"token.json load error: {e}"
@@ -557,7 +566,11 @@ class LifeLogCog(commands.Cog):
         cal_id = self.calendar_id
         
         if not self.calendar_service:
-            await interaction.followup.send(f"❌ カレンダーサービスは初期化されていません。\nStatus: {status}\nDetail: {detail}", ephemeral=True)
+            msg = f"❌ カレンダーサービスは初期化されていません。\nStatus: {status}\nDetail: {detail}"
+            # 解決策の提示
+            if "expired" in str(detail) or "revoked" in str(detail):
+                msg += "\n\n💡 **解決策**: `token.json` の有効期限が切れています。ファイルを削除し、`generate_token.py` を再実行して再認証してください。"
+            await interaction.followup.send(msg, ephemeral=True)
             return
 
         try:
@@ -604,57 +617,48 @@ class LifeLogCog(commands.Cog):
 
     # --- プランニング機能 (Modal & Calendar) ---
     async def open_planning_modal(self, interaction: discord.Interaction):
-        # 内部メソッドで取得
         events = await self._fetch_todays_events()
         
-        default_schedule = ""
+        # 1. 取得したイベントを整理 (マップ化)
+        schedule_map = {} # "HH:MM" -> list[summary]
+        for ev in events:
+            if ev.get('all_day'): continue # 終日はスキップ
+            t_str = ev['start'].strftime('%H:%M')
+            if t_str not in schedule_map: schedule_map[t_str] = []
+            schedule_map[t_str].append(ev['summary'])
+        
+        # 2. 6:00 - 23:30 の枠を作成し、イベントがあれば埋める
+        default_schedule_lines = []
+        
         now = datetime.now(JST)
         current = now.replace(hour=6, minute=0, second=0, microsecond=0)
         end = now.replace(hour=23, minute=30, second=0, microsecond=0)
         
-        events.sort(key=lambda x: x['start'])
-        event_idx = 0
+        # 30分刻みの枠と、それ以外の時刻にあるイベントをマージしてソート
+        all_times = set()
         
-        while current <= end:
-            slot_start = current
-            slot_end = current + timedelta(minutes=30)
-            slot_str = slot_start.strftime('%H:%M')
+        # 定形枠を追加
+        temp_curr = current
+        while temp_curr <= end:
+            all_times.add(temp_curr.strftime('%H:%M'))
+            temp_curr += timedelta(minutes=30)
             
-            matched_events = []
+        # イベントがある時刻も追加 (例: 10:15)
+        for t_str in schedule_map.keys():
+            all_times.add(t_str)
             
-            # 時間枠内のイベントを探す
-            current_idx_temp = event_idx
-            while current_idx_temp < len(events):
-                ev = events[current_idx_temp]
-                # 終日イベントは無視してスキップ
-                if ev.get('all_day'):
-                    current_idx_temp += 1
-                    continue
-
-                if ev['start'] < slot_end:
-                    if ev['start'] >= slot_start:
-                        matched_events.append(ev)
-                    current_idx_temp += 1
-                else:
-                    break
-            
-            if matched_events:
-                for ev in matched_events:
-                    time_str = ev['start'].strftime('%H:%M')
-                    default_schedule += f"{time_str} {ev['summary']}\n"
+        # ソート
+        sorted_times = sorted(list(all_times))
+        
+        # 行生成
+        for t_str in sorted_times:
+            if t_str in schedule_map:
+                for summary in schedule_map[t_str]:
+                    default_schedule_lines.append(f"{t_str} {summary}")
             else:
-                default_schedule += f"{slot_str} \n"
-            
-            # event_idxを進める
-            while event_idx < len(events):
-                if events[event_idx].get('all_day'): 
-                     event_idx += 1
-                     continue
-                if events[event_idx]['start'] < slot_end:
-                    event_idx += 1
-                else: break
+                default_schedule_lines.append(f"{t_str} ")
 
-            current += timedelta(minutes=30)
+        default_schedule = "\n".join(default_schedule_lines)
 
         if len(default_schedule) > 2800:
             default_schedule = default_schedule[:2800] + "\n..."
@@ -1127,8 +1131,6 @@ class LifeLogCog(commands.Cog):
             except ValueError: return content, 30
         return content, 30
 
-    # daily_lifelog_summary はこのコードバージョンでは自動実行登録されていないようですが、
-    # 必要に応じて以前のバージョンから復元するか、on_readyでstart()してください。
     @tasks.loop(time=DAILY_SUMMARY_TIME)
     async def daily_lifelog_summary(self):
         # 簡易実装: 必要であれば中身を記述
