@@ -1,144 +1,146 @@
 import os
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import logging
-import json
 import asyncio
-from datetime import datetime
-import zoneinfo
 import dropbox
-from dropbox.files import WriteMode, DownloadError
+from dropbox.files import WriteMode
 from dropbox.exceptions import ApiError
 import re
-
-# 共通関数をインポート
-try:
-    from utils.obsidian_utils import update_section
-except ImportError:
-    def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
+from datetime import time, datetime
+import zoneinfo
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-TODO_JSON_PATH = f"{os.getenv('DROPBOX_VAULT_PATH', '/ObsidianVault')}/.bot/todo_list.json"
-DAILY_NOTE_TODO_HEADER = "## Completed Tasks"
+TASK_FILE_PATH = "/Tasks/TaskLog.md" # タスクファイルのパス
+TASK_ADD_REACTION = "☑️" # メモをタスク化するリアクション
 
-# --- リアクションとカテゴリのマッピング ---
-REACTION_MAP = {
-    "🛒": "Buy",   # 買い物
-    "📝": "Task",  # タスク
-    "🤔": "Think"  # 検討
-}
+# ==========================================
+# UI Components
+# ==========================================
 
-# --- タスク追加用モーダル ---
-class TodoAddModal(discord.ui.Modal):
-    def __init__(self, cog, view, category):
-        super().__init__(title=f"{category}の追加")
+class TaskAddModal(discord.ui.Modal, title="タスクの追加"):
+    task_content = discord.ui.TextInput(
+        label="タスク内容",
+        placeholder="例: プレゼン資料作成",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=200
+    )
+
+    def __init__(self, cog, view_to_refresh=None):
+        super().__init__()
         self.cog = cog
-        self.view = view
-        self.category = category
-        
-        self.item_input = discord.ui.TextInput(
-            label="内容",
-            placeholder="例: 洗剤を買う、夏休みの旅行計画",
-            style=discord.TextStyle.short,
-            required=True
-        )
-        self.add_item(self.item_input)
+        self.view_to_refresh = view_to_refresh
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        content = self.item_input.value
-        await self.cog.add_todo(interaction.user, content, self.category)
-        await self.view.update_message(interaction)
-        await interaction.followup.send(f"✅ 追加しました: {content}", ephemeral=True)
+        await self.cog.add_task_logic(self.task_content.value)
+        await interaction.followup.send(f"✅ タスクを追加しました: {self.task_content.value}", ephemeral=True)
+        if self.view_to_refresh:
+            await self.view_to_refresh.refresh_embed(interaction)
 
-# --- メインView ---
-class TodoListView(discord.ui.View):
-    def __init__(self, cog):
-        super().__init__(timeout=None)
-        self.cog = cog
-
-    async def update_message(self, interaction: discord.Interaction):
-        """メッセージの内容（Embed）を最新のJSONに基づいて更新する"""
-        embed = await self.cog.create_todo_embed()
-        try:
-            if isinstance(interaction, discord.Interaction):
-                if interaction.message:
-                    await interaction.message.edit(embed=embed, view=self)
-        except Exception as e:
-            logging.error(f"TodoListView update error: {e}")
-
-    @discord.ui.button(label="タスク追加", style=discord.ButtonStyle.primary, emoji="📝", custom_id="todo_add_task")
-    async def add_task(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TodoAddModal(self.cog, self, "Task"))
-
-    @discord.ui.button(label="買い物追加", style=discord.ButtonStyle.success, emoji="🛒", custom_id="todo_add_buy")
-    async def add_buy(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TodoAddModal(self.cog, self, "Buy"))
-        
-    @discord.ui.button(label="検討事項追加", style=discord.ButtonStyle.secondary, emoji="🤔", custom_id="todo_add_think")
-    async def add_think(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(TodoAddModal(self.cog, self, "Think"))
-
-    @discord.ui.button(label="完了/削除", style=discord.ButtonStyle.danger, emoji="✅", custom_id="todo_complete")
-    async def complete_task(self, interaction: discord.Interaction, button: discord.ui.Button):
-        todos = await self.cog._load_todos()
-        if not todos:
-            await interaction.response.send_message("完了するタスクがありません。", ephemeral=True)
-            return
-            
-        view = TodoCompleteSelectView(self.cog, self, todos)
-        await interaction.response.send_message("完了・削除するタスクを選択してください:", view=view, ephemeral=True)
-
-
-# --- 完了選択用View ---
-class TodoCompleteSelectView(discord.ui.View):
-    def __init__(self, cog, parent_view, todos):
+class TaskSelectView(discord.ui.View):
+    """完了または削除するタスクを選択するView"""
+    def __init__(self, cog, tasks: list[str], mode: str, parent_view=None):
         super().__init__(timeout=60)
         self.cog = cog
+        self.mode = mode # "complete" or "delete"
         self.parent_view = parent_view
         
         options = []
-        for i, todo in enumerate(todos[:25]):
-            label = f"[{todo['category']}] {todo['content']}"
-            if len(label) > 100: label = label[:97] + "..."
-            options.append(discord.SelectOption(label=label, value=str(i)))
+        for t in tasks[:25]: # Selectの上限は25
+            # Markdownのチェックボックスを除去して表示
+            clean_text = re.sub(r'^\s*-\s*\[.\]\s*', '', t).strip()
+            label = clean_text[:95] + "..." if len(clean_text) > 95 else clean_text
+            options.append(discord.SelectOption(label=label, value=t))
+
+        if not options:
+            options.append(discord.SelectOption(label="タスクがありません", value="none"))
 
         select = discord.ui.Select(
-            placeholder="完了したタスクを選択...",
+            placeholder="タスクを選択してください...",
             min_values=1,
-            max_values=min(len(todos), 25),
+            max_values=min(len(options), 25),
             options=options
         )
-        select.callback = self.callback
+        select.callback = self.select_callback
         self.add_item(select)
 
-    async def callback(self, interaction: discord.Interaction):
+    async def select_callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        selected_indices = [int(v) for v in interaction.data["values"]]
-        selected_indices.sort(reverse=True)
+        selected_tasks = interaction.data["values"]
         
-        completed_items = await self.cog.complete_todos(selected_indices)
-        await self.parent_view.update_message(interaction)
-        
-        msg_lines = [f"✅ {item['content']}" for item in completed_items]
-        await interaction.followup.send(f"以下のタスクを完了し、Obsidianに記録しました:\n" + "\n".join(msg_lines), ephemeral=True)
+        if "none" in selected_tasks:
+            return
 
+        if self.mode == "complete":
+            await self.cog.complete_tasks_logic(selected_tasks)
+            msg = f"✅ {len(selected_tasks)}件のタスクを完了にしました。"
+        else:
+            await self.cog.delete_tasks_logic(selected_tasks)
+            msg = f"🗑️ {len(selected_tasks)}件のタスクを削除しました。"
+
+        await interaction.followup.send(msg, ephemeral=True)
+        if self.parent_view:
+            await self.parent_view.refresh_embed(interaction)
+        self.stop()
+
+class TaskDashboardView(discord.ui.View):
+    """タスク一覧の下に表示する操作ボタン"""
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+        self.message = None
+
+    async def refresh_embed(self, interaction: discord.Interaction = None):
+        """一覧を最新化して更新する"""
+        content, embed = await self.cog.create_task_list_embed()
+        if self.message:
+            try:
+                await self.message.edit(content=content, embed=embed, view=self)
+            except: pass
+        elif interaction:
+             # ボタン押下時などでメッセージが見つからない場合（あまりないが念のため）
+             pass
+
+    @discord.ui.button(label="追加", style=discord.ButtonStyle.success, emoji="➕", custom_id="task_add_btn")
+    async def add_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TaskAddModal(self.cog, self))
+
+    @discord.ui.button(label="完了", style=discord.ButtonStyle.primary, emoji="✅", custom_id="task_complete_btn")
+    async def complete_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        tasks = await self.cog.get_active_tasks()
+        if not tasks:
+            await interaction.response.send_message("未完了のタスクはありません。", ephemeral=True)
+            return
+        await interaction.response.send_message("完了にするタスクを選択してください:", view=TaskSelectView(self.cog, tasks, "complete", self), ephemeral=True)
+
+    @discord.ui.button(label="削除", style=discord.ButtonStyle.danger, emoji="🗑️", custom_id="task_delete_btn")
+    async def delete_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        tasks = await self.cog.get_active_tasks()
+        if not tasks:
+            await interaction.response.send_message("削除可能なタスクはありません。", ephemeral=True)
+            return
+        await interaction.response.send_message("削除するタスクを選択してください:", view=TaskSelectView(self.cog, tasks, "delete", self), ephemeral=True)
+
+    @discord.ui.button(label="更新", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="task_refresh_btn")
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await self.refresh_embed()
+
+# ==========================================
+# Cog Class
+# ==========================================
 
 class TodoCog(commands.Cog):
-    """簡易ToDoリスト管理Cog"""
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # MEMO_CHANNEL_ID を流用して監視する
-        self.target_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        
-        self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
-        self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
-        self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
-        self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-        
+        self._load_env_vars()
         self.dbx = None
+        
+        # Dropbox Init
         if all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token]):
             try:
                 self.dbx = dropbox.Dropbox(
@@ -147,143 +149,212 @@ class TodoCog(commands.Cog):
                     app_secret=self.dropbox_app_secret
                 )
             except Exception as e:
-                logging.error(f"TodoCog Init Error: {e}")
+                logging.error(f"TodoCog: Dropbox Init Error: {e}")
 
-    async def _load_todos(self) -> list:
-        if not self.dbx: return []
+        # Start Loop
+        self.daily_task_notification.start()
+
+    def _load_env_vars(self):
+        self.news_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
+        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
+        self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
+        self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
+        self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
+        self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
+        self.task_file_full_path = f"{self.dropbox_vault_path}{TASK_FILE_PATH}"
+
+    def cog_unload(self):
+        self.daily_task_notification.cancel()
+
+    # --- Dropbox Helpers ---
+
+    async def _download_task_file(self) -> str:
+        if not self.dbx: return ""
         try:
-            _, res = await asyncio.to_thread(self.dbx.files_download, TODO_JSON_PATH)
-            return json.loads(res.content.decode('utf-8'))
-        except (ApiError, json.JSONDecodeError):
-            return []
+            _, res = await asyncio.to_thread(self.dbx.files_download, self.task_file_full_path)
+            return res.content.decode('utf-8')
+        except ApiError: return "" # ファイルがない場合は空
 
-    async def _save_todos(self, todos: list):
+    async def _upload_task_file(self, content: str):
         if not self.dbx: return
         try:
-            data = json.dumps(todos, ensure_ascii=False, indent=2).encode('utf-8')
-            await asyncio.to_thread(self.dbx.files_upload, data, TODO_JSON_PATH, mode=WriteMode('overwrite'))
-        except Exception as e:
-            logging.error(f"TodoCog Save Error: {e}")
-
-    async def add_todo(self, user: discord.User, content: str, category: str):
-        """ToDoを追加する共通メソッド"""
-        todos = await self._load_todos()
-        new_todo = {
-            "content": content,
-            "category": category,
-            "created_at": datetime.now(JST).isoformat(),
-            "user": user.display_name
-        }
-        todos.append(new_todo)
-        await self._save_todos(todos)
-
-    async def complete_todos(self, indices: list[int]) -> list:
-        todos = await self._load_todos()
-        completed = []
-        for i in indices:
-            if 0 <= i < len(todos):
-                item = todos.pop(i)
-                completed.append(item)
-        await self._save_todos(todos)
-        
-        if completed:
-            await self._archive_to_obsidian(completed)
-        return completed
-
-    async def _archive_to_obsidian(self, items: list):
-        if not self.dbx: return
-        now = datetime.now(JST)
-        date_str = now.strftime('%Y-%m-%d')
-        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
-        
-        lines = []
-        for item in items:
-            lines.append(f"- [x] {now.strftime('%H:%M')} [{item['category']}] {item['content']}")
-        text_to_add = "\n".join(lines)
-
-        try:
-            try:
-                _, res = await asyncio.to_thread(self.dbx.files_download, daily_note_path)
-                content = res.content.decode('utf-8')
-            except ApiError:
-                content = "" # ★ 修正: 初期値を空文字に変更
-
-            new_content = update_section(content, text_to_add, DAILY_NOTE_TODO_HEADER)
             await asyncio.to_thread(
-                self.dbx.files_upload, 
-                new_content.encode('utf-8'), 
-                daily_note_path, 
+                self.dbx.files_upload,
+                content.encode('utf-8'),
+                self.task_file_full_path,
                 mode=WriteMode('overwrite')
             )
         except Exception as e:
-            logging.error(f"TodoArchive Error: {e}")
+            logging.error(f"TodoCog Upload Error: {e}")
 
-    async def create_todo_embed(self) -> discord.Embed:
-        """ToDoリストのEmbedを作成する（汎用）"""
-        todos = await self._load_todos()
-        embed = discord.Embed(title="📝 やることリスト (ToDo)", color=discord.Color.teal())
+    async def get_active_tasks(self) -> list[str]:
+        """未完了タスクのリストを取得（行そのまま）"""
+        content = await self._download_task_file()
+        tasks = []
+        for line in content.split('\n'):
+            # "- [ ]" で始まる行
+            if re.match(r'^\s*-\s*\[ \]', line):
+                tasks.append(line.strip())
+        return tasks
+
+    async def create_task_list_embed(self):
+        """タスク一覧のEmbedを作成"""
+        tasks = await self.get_active_tasks()
         
-        tasks = [t for t in todos if t['category'] == 'Task']
-        buys = [t for t in todos if t['category'] == 'Buy']
-        thinks = [t for t in todos if t['category'] == 'Think']
+        if not tasks:
+            desc = "現在、未完了のタスクはありません。今日も一日頑張りましょう！"
+            color = discord.Color.green()
+        else:
+            # 表示用に整形
+            formatted_tasks = []
+            for t in tasks:
+                clean = re.sub(r'^\s*-\s*\[ \]\s*', '', t)
+                formatted_tasks.append(f"• {clean}")
+            
+            desc = "\n".join(formatted_tasks)
+            if len(desc) > 4000: desc = desc[:3900] + "\n... (他多数)"
+            color = discord.Color.blue()
+
+        embed = discord.Embed(
+            title="📋 Master Task List",
+            description=desc,
+            color=color,
+            timestamp=datetime.now(JST)
+        )
+        embed.set_footer(text=f"Sync: {TASK_FILE_PATH}")
+        return "☀️ **Good Morning!** 今日のタスク一覧です。", embed
+
+    # --- Task Logic ---
+
+    async def add_task_logic(self, content: str):
+        """タスクを追加する"""
+        current = await self._download_task_file()
+        new_line = f"- [ ] {content}"
+        # 末尾に追加（空行調整）
+        if current and not current.endswith('\n'):
+            new_content = current + f"\n{new_line}"
+        else:
+            new_content = current + f"{new_line}\n"
+        await self._upload_task_file(new_content)
+
+    async def complete_tasks_logic(self, target_lines: list[str]):
+        """指定されたタスク（行全体が一致）を完了にする"""
+        current = await self._download_task_file()
+        lines = current.split('\n')
+        new_lines = []
+        for line in lines:
+            if line.strip() in target_lines:
+                # [ ] -> [x]
+                new_line = re.sub(r'\[ \]', '[x]', line, count=1)
+                new_lines.append(new_line)
+            else:
+                new_lines.append(line)
+        await self._upload_task_file("\n".join(new_lines))
+
+    async def delete_tasks_logic(self, target_lines: list[str]):
+        """指定されたタスク（行全体が一致）を削除する"""
+        current = await self._download_task_file()
+        lines = current.split('\n')
+        new_lines = [line for line in lines if line.strip() not in target_lines]
+        await self._upload_task_file("\n".join(new_lines))
+
+    # --- External Logic for OCR (Handwritten) ---
+
+    async def process_ocr_tasks(self, tasks_data: list[dict]) -> dict:
+        """
+        手書きOCRから渡されたタスクデータを処理する。
+        tasks_data format: [{"status": "x" or ">" or "-", "text": "内容"}, ...]
         
-        def format_list(items):
-            if not items: return "なし"
-            return "\n".join([f"▫️ {item['content']}" for item in items])
+        Returns:
+            dict: 処理結果のサマリー {"completed": [], "migrated": [], "notes": []}
+        """
+        current_content = await self._download_task_file()
+        lines = current_content.split('\n')
+        new_lines = list(lines) # 変更用
+        
+        results = {"completed": [], "migrated": [], "notes": []}
 
-        embed.add_field(name="🛒 買い物 (Buy)", value=format_list(buys), inline=False)
-        embed.add_field(name="📝 タスク (Task)", value=format_list(tasks), inline=False)
-        embed.add_field(name="🤔 検討 (Think)", value=format_list(thinks), inline=False)
-        embed.set_footer(text=f"合計: {len(todos)} 件")
-        return embed
+        for item in tasks_data:
+            symbol = item.get("status")
+            text = item.get("text", "").strip()
+            if not text: continue
 
-    async def get_todos_formatted(self) -> discord.Embed:
-        """外部Cog（NewsCogなど）から呼び出すためのメソッド"""
-        return await self.create_todo_embed()
+            if symbol == "x": # 完了
+                # 部分一致で完了にする（手書きはデジタルと完全に一致しないことがあるため）
+                found = False
+                for i, line in enumerate(new_lines):
+                    if re.match(r'^\s*-\s*\[ \]', line) and text in line:
+                        new_lines[i] = re.sub(r'\[ \]', '[x]', line, count=1)
+                        results["completed"].append(text)
+                        found = True
+                        break
+                # 見つからない場合はログだけ残すか、無視する
+
+            elif symbol == ">": # 引き継ぎ (Master Listにあるべき)
+                # 既存リストになければ追加
+                found = False
+                for line in new_lines:
+                    if re.match(r'^\s*-\s*\[ \]', line) and text in line:
+                        found = True
+                        break
+                if not found:
+                    new_lines.append(f"- [ ] {text}")
+                    results["migrated"].append(f"{text} (Added)")
+                else:
+                    results["migrated"].append(f"{text} (Kept)")
+
+            elif symbol == "-": # メモ
+                # これはタスクリストには反映せず、JournalCog側でログとして扱うため、ここでは返り値に含めるだけ
+                results["notes"].append(text)
+
+        await self._upload_task_file("\n".join(new_lines))
+        return results
+
+    # --- Scheduled Loop ---
+
+    @tasks.loop(time=time(hour=6, minute=0, tzinfo=JST))
+    async def daily_task_notification(self):
+        """毎朝6時にNewsチャンネルにタスク一覧を投稿"""
+        if not self.news_channel_id: return
+        channel = self.bot.get_channel(self.news_channel_id)
+        if not channel: return
+
+        content, embed = await self.create_task_list_embed()
+        view = TaskDashboardView(self)
+        msg = await channel.send(content=content, embed=embed, view=view)
+        view.message = msg # Viewにメッセージを持たせて更新可能にする
+
+    # --- Events ---
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
-        if payload.user_id == self.bot.user.id:
-            return
-        if payload.channel_id != self.target_channel_id:
-            return
+        """メモチャンネルでリアクションがついたらタスク追加"""
+        if payload.channel_id != self.memo_channel_id: return
+        if payload.member.bot: return
+        if str(payload.emoji) != TASK_ADD_REACTION: return
 
-        emoji_str = str(payload.emoji)
-        if emoji_str not in REACTION_MAP:
-            return
-
-        category = REACTION_MAP[emoji_str]
         channel = self.bot.get_channel(payload.channel_id)
-        if not channel: return
-
         try:
             message = await channel.fetch_message(payload.message_id)
-        except (discord.NotFound, discord.Forbidden):
-            return
+            task_content = message.content.strip()
+            
+            if task_content:
+                await self.add_task_logic(task_content)
+                await message.add_reaction("🆗") # 完了リアクション
+                # ユーザーに通知（任意）
+                # await channel.send(f"✅ 「{task_content[:20]}...」をタスクに追加しました。", delete_after=5)
+        except Exception as e:
+            logging.error(f"Reaction Task Add Error: {e}")
 
-        if message.author.bot or not message.content.strip():
-            return
-        
-        content = message.content.strip()
-        
-        user = await self.bot.fetch_user(payload.user_id)
-        await self.add_todo(user, content, category)
-        logging.info(f"Message added to ToDo via reaction {emoji_str}: [{category}] {content}")
-        
-        try:
-            await message.add_reaction("✅")
-        except:
-            pass
+    # --- Slash Commands (Manual) ---
 
-    @app_commands.command(name="todo", description="ToDoリストパネルを表示します。")
-    async def show_todo(self, interaction: discord.Interaction):
-        if interaction.channel_id != self.target_channel_id:
-            await interaction.response.send_message(f"このコマンドは <#{self.target_channel_id}> でのみ実行できます。", ephemeral=True)
-            return
+    @app_commands.command(name="todo", description="タスク一覧を表示・操作します。")
+    async def show_todo_dashboard(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        embed = await self.create_todo_embed()
-        view = TodoListView(self)
-        await interaction.followup.send(embed=embed, view=view)
+        content, embed = await self.create_task_list_embed()
+        view = TaskDashboardView(self)
+        msg = await interaction.followup.send(content=content, embed=embed, view=view)
+        view.message = msg
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(TodoCog(bot))

@@ -1,279 +1,137 @@
-import os
 import discord
-from discord.ext import commands, tasks
-import logging
+from discord.ext import commands
+import os
 import aiohttp
-import google.generativeai as genai
 from datetime import datetime
-import zoneinfo
-from pathlib import Path
-import dropbox
-from dropbox.files import WriteMode, FileMetadata
-from dropbox.exceptions import ApiError
-import json
-import re
-import io
-import asyncio
+import google.generativeai as genai
 
-# 共通関数をインポート
-from utils.obsidian_utils import update_section
+# Gemini APIの設定（手書き文字認識用）
+# 環境変数または直接APIキーを設定してください
+GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
+genai.configure(api_key=GEMINI_API_KEY)
 
-# --- 定数定義 ---
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-SUPPORTED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
-SCAN_FOLDER = "/Inbox/Scans" # 監視するDropboxフォルダ
-PROCESSED_LIST_PATH = "/ObsidianVault/.bot/processed_scans.json" # 処理済みファイルのIDリスト
-
-class HandwrittenMemoCog(commands.Cog):
-    """
-    手書きメモ画像をテキスト化するCog。
-    - Memo Sheet -> そのままObsidianに保存
-    - Daily Log Board -> JournalCogに渡してアドバイス生成・保存
-    """
-
-    def __init__(self, bot: commands.Bot):
+class HandwrittenMemo(commands.Cog):
+    def __init__(self, bot):
         self.bot = bot
-        # --- 環境変数からの設定読み込み ---
-        self.channel_id = int(os.getenv("HANDWRITTEN_MEMO_CHANNEL_ID", 0))
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        # --- 設定エリア ---
+        self.OBSIDIAN_VAULT_PATH = r"C:\Path\To\Your\Obsidian\Vault"
         
-        # Dropbox設定
-        self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
-        self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
-        self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
-        self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
+        # 保存先フォルダ設定
+        self.ZT_FOLDER = "00_ZeroSecondThinking"    # ZTあり：ゼロ秒思考用
+        self.INBOX_FOLDER = "99_Inbox"              # ZTなし：通常メモ用
         
-        # 監視設定
-        self.scan_folder = os.getenv("DROPBOX_SCAN_FOLDER", f"{self.dropbox_vault_path}{SCAN_FOLDER}")
-        self.processed_list_path = os.getenv("DROPBOX_PROCESSED_LIST_PATH", PROCESSED_LIST_PATH)
+        # 判定用マーカー
+        self.MARKER_KEYWORD = "ZT"
 
-        # --- 初期チェックとクライアント初期化 ---
-        self.is_ready = False
-        if not self.channel_id:
-            logging.warning("HandwrittenMemoCog: HANDWRITTEN_MEMO_CHANNEL_IDが設定されていません。")
-            return
-        if not self.gemini_api_key:
-            logging.warning("HandwrittenMemoCog: GEMINI_API_KEYが設定されていません。")
-            return
-        if not all([self.dropbox_app_key, self.dropbox_app_secret, self.dropbox_refresh_token]):
-            logging.warning("HandwrittenMemoCog: Dropboxの認証情報が不足しています。")
-            return
-
-        self.session = aiohttp.ClientSession()
-        genai.configure(api_key=self.gemini_api_key)
-        self.gemini_model = genai.GenerativeModel("gemini-2.5-pro", generation_config={"response_mime_type": "application/json"})
-        self.is_ready = True
-        logging.info("✅ HandwrittenMemoCogが正常に初期化されました。")
-
-    async def cog_unload(self):
-        await self.session.close()
-        self.check_dropbox_folder.cancel()
-
-    @commands.Cog.listener()
-    async def on_ready(self):
-        if self.is_ready and not self.check_dropbox_folder.is_running():
-            self.check_dropbox_folder.start()
-            logging.info(f"📂 Dropbox Watcher Started: {self.scan_folder}")
-
-    # =========================================================================
-    # Helper: Processed List Management
-    # =========================================================================
-    async def _load_processed_ids(self, dbx) -> list:
+    async def check_for_zt_marker(self, image_bytes):
+        """
+        Gemini APIを使用して、画像内に「ZT」という手書き文字があるか判定する
+        """
         try:
-            _, res = dbx.files_download(self.processed_list_path)
-            return json.loads(res.content.decode('utf-8'))
-        except (ApiError, json.JSONDecodeError):
-            return []
+            model = genai.GenerativeModel('gemini-2.5-pro')
+            
+            # 画像データをAPIに渡せる形式に変換
+            image_parts = [
+                {
+                    "mime_type": "image/jpeg", # またはimage/pngなど
+                    "data": image_bytes
+                }
+            ]
+            
+            prompt = (
+                f"この画像の手書きメモの中に「{self.MARKER_KEYWORD}」または「zt」という"
+                "アルファベットの識別子が書かれていますか？"
+                "書かれている場合は 'YES'、書かれていない場合は 'NO' とだけ答えてください。"
+            )
 
-    async def _save_processed_id(self, dbx, file_id: str):
-        ids = await self._load_processed_ids(dbx)
-        if file_id not in ids:
-            ids.append(file_id)
-            if len(ids) > 1000: ids = ids[-1000:]
-            data = json.dumps(ids, ensure_ascii=False).encode('utf-8')
-            dbx.files_upload(data, self.processed_list_path, mode=WriteMode('overwrite'))
+            response = await model.generate_content_async([prompt, image_parts[0]])
+            result_text = response.text.strip().upper()
+            
+            print(f"AI Recognition Result: {result_text}") # デバッグ用ログ
+            
+            return "YES" in result_text
 
-    # =========================================================================
-    # 1. Discord Message Handler
-    # =========================================================================
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if not self.is_ready or message.author.bot or message.channel.id != self.channel_id:
-            return
+        except Exception as e:
+            print(f"OCR Error: {e}")
+            # エラー時は安全側に倒してFalse（通常メモ扱い）にするか、通知するか選択
+            return False
+
+    def get_save_path(self, folder_name, filename):
+        """保存先のフルパス生成＆フォルダ作成"""
+        folder_path = os.path.join(self.OBSIDIAN_VAULT_PATH, folder_name)
+        os.makedirs(folder_path, exist_ok=True)
+        return os.path.join(folder_path, filename)
+
+    async def save_to_obsidian_daily(self, filename, mode, folder_name):
+        """Obsidianの日次ノート（Daily Note）にリンクを追記する"""
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        daily_note_path = os.path.join(self.OBSIDIAN_VAULT_PATH, "01_Daily", f"{today_str}.md") # 日次ノートのパスは環境に合わせて修正してください
         
+        # 日次ノートフォルダがない場合は作成（念のため）
+        os.makedirs(os.path.dirname(daily_note_path), exist_ok=True)
+
+        timestamp = datetime.now().strftime('%H:%M')
+        # Obsidianのリンク形式 ![[filename]]
+        link_text = f"\n\n## {timestamp} スキャンメモ ({mode})\n![[{folder_name}/{filename}]]\n"
+
+        with open(daily_note_path, 'a', encoding='utf-8') as f:
+            f.write(link_text)
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+
+        # 画像が添付されているか確認
         if message.attachments:
-            valid_attachments = [att for att in message.attachments if att.content_type in SUPPORTED_TYPES]
-            if valid_attachments:
-                await message.add_reaction("⏳")
-                for attachment in valid_attachments:
-                    async with self.session.get(attachment.url) as resp:
-                        if resp.status != 200: continue
-                        file_bytes = await resp.read()
-                    
-                    result_embed = await self._process_file_logic(
-                        filename=attachment.filename,
-                        mime_type=attachment.content_type,
-                        file_bytes=file_bytes,
-                        source_type="Discord"
-                    )
-                    await message.reply(embed=result_embed)
-                
-                await message.remove_reaction("⏳", self.bot.user)
-                await message.add_reaction("✅")
+            for attachment in message.attachments:
+                if attachment.content_type and attachment.content_type.startswith('image'):
+                    await self.process_scanned_image(message, attachment)
 
-    # =========================================================================
-    # 2. Dropbox Folder Watcher
-    # =========================================================================
-    @tasks.loop(minutes=1.0)
-    async def check_dropbox_folder(self):
-        if not self.is_ready: return
+    async def process_scanned_image(self, message, attachment):
+        """スキャン画像をダウンロードし、振り分け処理を行う"""
         
-        try:
-            with dropbox.Dropbox(
-                oauth2_refresh_token=self.dropbox_refresh_token,
-                app_key=self.dropbox_app_key,
-                app_secret=self.dropbox_app_secret
-            ) as dbx:
-                processed_ids = await self._load_processed_ids(dbx)
-                try:
-                    result = dbx.files_list_folder(self.scan_folder)
-                except ApiError:
+        # 1. 画像をメモリ上にダウンロード
+        async with aiohttp.ClientSession() as session:
+            async with session.get(attachment.url) as resp:
+                if resp.status != 200:
                     return
+                image_bytes = await resp.read()
 
-                for entry in result.entries:
-                    if isinstance(entry, FileMetadata):
-                        if entry.id in processed_ids: continue
-
-                        ext = os.path.splitext(entry.name)[1].lower()
-                        mime_type = self._get_mime_from_ext(ext)
-                        if not mime_type: continue
-
-                        logging.info(f"📂 New scan detected: {entry.name}")
-                        _, res = dbx.files_download(entry.path_lower)
-                        file_bytes = res.content
-                        
-                        result_embed = await self._process_file_logic(
-                            filename=entry.name,
-                            mime_type=mime_type,
-                            file_bytes=file_bytes,
-                            source_type="Dropbox Watcher"
-                        )
-
-                        channel = self.bot.get_channel(self.channel_id)
-                        if channel:
-                            await channel.send(embed=result_embed)
-
-                        await self._save_processed_id(dbx, entry.id)
-                        logging.info(f"Marked as processed: {entry.name}")
-
-        except Exception as e:
-            logging.error(f"Dropbox Watcher Error: {e}", exc_info=True)
-
-    def _get_mime_from_ext(self, ext):
-        if ext in ['.jpg', '.jpeg']: return 'image/jpeg'
-        if ext == '.png': return 'image/png'
-        if ext == '.webp': return 'image/webp'
-        if ext == '.pdf': return 'application/pdf'
-        return None
-
-    # =========================================================================
-    # 3. Core Logic
-    # =========================================================================
-    async def _process_file_logic(self, filename: str, mime_type: str, file_bytes: bytes, source_type: str) -> discord.Embed:
+        # 2. AIによる「ZT」判定
+        # ユーザーへのフィードバック（処理中であることを伝える）
+        processing_msg = await message.channel.send("🔍 スキャン画像を解析中...")
         
-        file_data = {"mime_type": mime_type, "data": file_bytes}
+        is_zt = await self.check_for_zt_marker(image_bytes)
         
-        # OCR + 分類用プロンプト
-        prompt = [
-            """
-            このファイルは手書きの「デイリーノート (Daily Log Board)」または「メモノート (Memo Sheet)」をスキャンしたものです。
-            内容を解析し、以下の情報を抽出してJSON形式で出力してください。
+        # 3. ファイル名と保存先の決定
+        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+        original_name, ext = os.path.splitext(attachment.filename)
+        
+        if is_zt:
+            # ゼロ秒思考メモの場合
+            folder = self.ZT_FOLDER
+            mode_label = "ゼロ秒思考"
+            filename = f"ZT_{timestamp_str}{ext}"
+            response_text = f"✅ **ゼロ秒思考(ZT)** として認識しました。\n保存先: `{folder}`"
+        else:
+            # 通常メモの場合
+            folder = self.INBOX_FOLDER
+            mode_label = "手書きメモ"
+            filename = f"Memo_{timestamp_str}{ext}"
+            response_text = f"📁 **通常メモ** として保存しました。\n保存先: `{folder}`"
 
-            # ノートの形式定義
-            - **Daily Log Board**: 左上に「DATE」欄、中央に「TASKS」「NOTES」欄、右下に「REVIEW」欄があるレイアウト。
-            - **Memo Sheet**: 上部に「DATE」欄があり、全体がグリッドの方眼紙レイアウト。
-            - **PDFの場合**: 複数ページある場合は、全てのページの内容を統合して1つのcontentとしてまとめてください。
+        # 4. ファイル保存
+        save_path = self.get_save_path(folder, filename)
+        with open(save_path, 'wb') as f:
+            f.write(image_bytes)
 
-            # 出力フォーマット (JSON)
-            {
-                "date": "YYYY-MM-DD",
-                "type": "daily_log" または "memo",
-                "content": "string"
-            }
-            # content作成ルール
-            - Daily Log: TASKS欄はMarkdownタスクリスト(- [ ])、NOTES/REVIEWは箇条書き。
-            - Memo: Markdown箇条書き。
-            """,
-            file_data,
-        ]
+        # 5. Obsidianの日次ノートへリンク追記
+        await self.save_to_obsidian_daily(filename, mode_label, folder)
 
-        try:
-            response = await self.gemini_model.generate_content_async(prompt)
-            result = json.loads(response.text)
-        except Exception as e:
-            logging.error(f"AI Parse Error: {e}")
-            return discord.Embed(title="❌ Error", description=f"AI解析に失敗しました: {e}", color=discord.Color.red())
+        # 6. 完了通知
+        await processing_msg.delete()
+        await message.channel.send(response_text)
 
-        extracted_date_str = result.get("date")
-        note_type = result.get("type", "memo")
-        transcribed_content = result.get("content", "")
-
-        # 日付決定
-        target_date = datetime.now(JST)
-        if extracted_date_str:
-            try:
-                dt = datetime.strptime(extracted_date_str, '%Y-%m-%d')
-                target_date = dt.replace(tzinfo=JST)
-            except ValueError:
-                pass
-        target_date_str = target_date.strftime('%Y-%m-%d')
-        display_time = datetime.now(JST).strftime('%H:%M')
-
-        # --- 分岐処理: JournalCog連携か、通常保存か ---
-
-        # Case A: デイリーログの場合 -> JournalCogに丸投げしてアドバイスをもらう
-        if note_type == "daily_log":
-            journal_cog = self.bot.get_cog("JournalCog")
-            if journal_cog:
-                # JournalCog側で保存もアドバイス生成も行う
-                logging.info(f"Delegating daily_log to JournalCog: {target_date_str}")
-                advice_embed = await journal_cog.process_handwritten_journal(transcribed_content, target_date_str)
-                # Embedのフッターなどを少し調整
-                advice_embed.set_footer(text=f"Filename: {filename} | {advice_embed.footer.text}")
-                return advice_embed
-            else:
-                logging.error("JournalCog not found! Fallback to normal save.")
-                # JournalCogがない場合のフォールバック（以下へ進む）
-
-        # Case B: メモノートの場合（またはJournalCogがない場合） -> 自分で保存
-        section_header = "## Handwritten Memos"
-        content_to_add = f"- {display_time} (Memo Sheet)\n{transcribed_content}"
-
-        with dropbox.Dropbox(
-            oauth2_refresh_token=self.dropbox_refresh_token,
-            app_key=self.dropbox_app_key,
-            app_secret=self.dropbox_app_secret
-        ) as dbx:
-            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{target_date_str}.md"
-            try:
-                _, res = dbx.files_download(daily_note_path)
-                daily_note_content = res.content.decode('utf-8')
-            except ApiError as e:
-                if isinstance(e.error, dropbox.files.DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                    daily_note_content = f"# Daily Note {target_date_str}\n"
-                else:
-                    raise e
-
-            new_content = update_section(daily_note_content, content_to_add, section_header)
-            dbx.files_upload(new_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
-
-        embed = discord.Embed(
-            title=f"📝 {target_date_str} のメモを取り込みました",
-            description=f"**Source:** {source_type}\n**Type:** {note_type}\n\n{transcribed_content[:300]}...", 
-            color=discord.Color.blue()
-        )
-        embed.set_footer(text=f"Filename: {filename} (Kept in folder)")
-        return embed
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(HandwrittenMemoCog(bot))
+async def setup(bot):
+    await bot.add_cog(HandwrittenMemo(bot))
