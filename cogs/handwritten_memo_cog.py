@@ -57,7 +57,7 @@ class HandwrittenMemoCog(commands.Cog):
 
         self.session = aiohttp.ClientSession()
         genai.configure(api_key=self.gemini_api_key)
-        self.gemini_model = genai.GenerativeModel("gemini-1.5-pro-latest", generation_config={"response_mime_type": "application/json"})
+        self.gemini_model = genai.GenerativeModel("gemini-2.5-pro", generation_config={"response_mime_type": "application/json"})
         self.is_ready = True
         logging.info("✅ HandwrittenMemoCogが正常に初期化されました。")
 
