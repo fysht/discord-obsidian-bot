@@ -5,37 +5,29 @@ import re
 # デイリーノートの見出し順序定義
 # Botは項目を新規作成する際、この順序に従って適切な位置に挿入します。
 SECTION_ORDER = [
-    # --- 1. 朝・計画 ---
-    "## Planning",
-    
-    # --- 2. インプット・情報 ---
-    "## WebClips",
-    "## YouTube Summaries",
-    "## Reading Notes",
-    "## Recipes", 
-    "## News",
-    
-    # --- 3. メモ・思考 (アナログ含む) ---
-    "## Memo",              # Discordからのテキストメモ
-    "## Handwritten Memos", # 手書きメモノート (Memo Sheet)
-    "## Zero-Second Thinking", 
-    
-    # --- 4. 振り返り・日誌 ---
-    "## Journal",           # 手書き振り返り (Daily Log Board) + AIアドバイス
-    "## English Learning Logs", 
-    "## Sakubun Logs", 
-    
-    # --- 5. ログ・記録 (デジタル) ---
-    "## Task Log", 
-    "## Make Time Note", 
-    "## Health Metrics", 
-    "## Location Logs", 
-    "## Life Logs",         # 時間計測ログ
-    "## Completed Tasks", 
-    
-    # --- 6. サマリー ---
-    "## Life Logs Summary",
-    "## Daily Summary"
+    # --- 1. Daily Context (朝・コンテキスト) ---
+    "## Weather",           # 天気予報 (NewsCog)
+    "## Habits",            # 習慣トラッカー (HabitCog)
+
+    # --- 2. Input & Information (インプット・情報収集) ---
+    "## WebClips",          # Web記事クリップ (WebClipCog)
+    "## YouTube Summaries", # 動画要約 (YouTubeCog)
+    "## Reading Notes",     # 読書メモ (BookCog)
+    "## Recipes",           # レシピ (RecipeCog)
+
+    # --- 3. Output & Thoughts (アウトプット・思考・学習) ---
+    "## Memo",              # テキストメモ (MemoCog)
+    "## Handwritten Memos", # 手書きメモ画像 (HandwrittenMemoCog)
+    "## Zero-Second Thinking", # 0秒思考 (ZeroSecondThinkingCog)
+    "## Journal",           # 日記・ジャーナル (JournalCog)
+    "## English Learning Logs", # 英語学習ログ (EnglishLearningCog)
+
+    # --- 4. Logs & Records (ログ・記録・活動データ) ---
+    "## Task Log",          # タスクログ (TodoCog)
+    "## Completed Tasks",   # 完了タスク (TodoCog)
+    "## Health Metrics",    # 健康データ (FitbitCog)
+    "## Location Logs",     # 位置情報ログ (LocationLogCog)
+    "## Life Logs"          # 生活ログ (LifeLogCog)
 ]
 
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
@@ -122,12 +114,10 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
                  lines.insert(insert_before_line_index, "")
             
             # 挿入したブロックの後ろにも空行が必要なら追加（次の見出しとの間）
-            # (insertによるズレを考慮して調整)
             return "\n".join(lines)
         
         else:
             # 後ろにあるべきセクションがファイル内に一つもない場合 -> 
             # 「自分の本来の位置より『前』にあるべきセクション」を探すまでもなく、
             # ファイルの末尾に追加すれば順序は守られる。
-            
             return current_content.strip() + f"\n\n{section_header}\n{text_to_add}"
