@@ -14,13 +14,13 @@ import aiohttp
 import re
 from typing import Optional, List
 
-# Try importing update_section for Obsidian Sync
+# Try importing update_frontmatter for Obsidian Sync
 try:
-    from utils.obsidian_utils import update_section
+    from utils.obsidian_utils import update_frontmatter
 except ImportError:
-    # Fallback if utils not available
-    def update_section(content, text, header):
-        return f"{content}\n\n{header}\n{text}"
+    # Fallback
+    logging.warning("NewsCog: utils.obsidian_utils not found. update_frontmatter disabled.")
+    def update_frontmatter(content, updates): return content
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -130,8 +130,8 @@ class NewsCog(commands.Cog):
             if key in weather_text: return emoji
         return "❓"
 
-    async def _get_jma_weather_forecast(self) -> tuple[discord.Embed, str]:
-        """天気を取得し、Discord用EmbedとObsidian保存用テキストを返す"""
+    async def _get_jma_weather_forecast(self) -> tuple[discord.Embed, dict]:
+        """天気を取得し、Discord用EmbedとObsidianプロパティ更新用辞書を返す"""
         url = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{JMA_AREA_CODE}.json"
         
         embed = discord.Embed(
@@ -139,8 +139,7 @@ class NewsCog(commands.Cog):
             color=discord.Color.blue()
         )
         
-        # Obsidian用のテキスト構築用
-        obsidian_lines = []
+        property_updates = {} # フロントマター更新用
         
         async with aiohttp.ClientSession() as session:
             try:
@@ -148,55 +147,66 @@ class NewsCog(commands.Cog):
                     response.raise_for_status()
                     data = await response.json()
 
+                # 1. 天気概況
                 area_weather = next((a for a in data[0]["timeSeries"][0]["areas"] if a["area"]["name"] == self.jma_area_name), None)
-                area_temp = next((a for a in data[0]["timeSeries"][2]["areas"] if a["area"]["name"] == self.location_name), None)
-
-                if area_weather and area_temp:
-                    weather_summary = area_weather["weathers"][0]
+                if area_weather:
+                    weather_summary = area_weather["weathers"][0].replace('\u3000', ' ')
                     weather_emoji = self._get_emoji_for_weather(weather_summary)
-                    max_temp = area_temp.get("temps", ["--"])[1]
-                    min_temp = area_temp.get("temps", ["--"])[0]
-                    
-                    val = f"{weather_emoji} {weather_summary}\n🌡️ 最高: {max_temp}℃ / 最低: {min_temp}℃"
-                    embed.add_field(name=f"今日の天気 ({self.location_name})", value=val, inline=False)
-                    
-                    # Obsidian用テキスト
-                    obsidian_lines.append(f"- **Forecast**: {weather_emoji} {weather_summary}")
-                    obsidian_lines.append(f"- **Temp**: H:{max_temp}℃ / L:{min_temp}℃")
+                    property_updates['weather'] = f"{weather_emoji} {weather_summary}"
                 else:
-                    embed.add_field(name="天気", value="⚠️ 取得失敗", inline=False)
-                    obsidian_lines.append("- **Weather**: Retrieval Failed")
+                    weather_summary = "不明"
+                    weather_emoji = "❓"
 
-                # 時間別降水確率・気温（Discord表示のみ維持）
+                # 2. 気温 (リストからMin/Maxを計算)
+                area_temps = next((a for a in data[0]["timeSeries"][2]["areas"] if a["area"]["name"] == self.location_name), None)
+                
+                max_temp_str = "--"
+                min_temp_str = "--"
+
+                if area_temps and "temps" in area_temps:
+                    temps = area_temps["temps"]
+                    # 有効な数値を抽出
+                    valid_temps = []
+                    for t in temps:
+                        try:
+                            if t and t != "--": valid_temps.append(float(t))
+                        except ValueError: pass
+                    
+                    if valid_temps:
+                        max_val = max(valid_temps)
+                        min_val = min(valid_temps)
+                        max_temp_str = str(int(max_val))
+                        min_temp_str = str(int(min_val))
+                        
+                        property_updates['max_temp'] = int(max_val)
+                        property_updates['min_temp'] = int(min_val)
+
+                val = f"{weather_emoji} {weather_summary}\n🌡️ 最高: {max_temp_str}℃ / 最低: {min_temp_str}℃"
+                embed.add_field(name=f"今日の天気 ({self.location_name})", value=val, inline=False)
+                
+                # 3. 降水確率 (Discord表示用のみ)
                 time_defines_pop = data[0]["timeSeries"][1]["timeDefines"]
                 area_pops = next((a["pops"] for a in data[0]["timeSeries"][1]["areas"] if a["area"]["name"] == self.jma_area_name), None)
-                time_defines_temp = data[0]["timeSeries"][2]["timeDefines"]
-                area_temps = next((a["temps"] for a in data[0]["timeSeries"][2]["areas"] if a["area"]["name"] == self.location_name), None)
-
-                if area_pops and area_temps:
-                    pop_text, temp_text = "", ""
+                
+                if area_pops:
+                    pop_text = ""
                     for i, time_str in enumerate(time_defines_pop):
                         dt = datetime.fromisoformat(time_str)
                         if dt.date() == datetime.now(JST).date():
                             pop_text += f"**{dt.strftime('%H時')}**: {area_pops[i]}% "
-                    for i, time_str in enumerate(time_defines_temp):
-                        dt = datetime.fromisoformat(time_str)
-                        if dt.date() == datetime.now(JST).date():
-                            temp_text += f"**{dt.strftime('%H時')}**: {area_temps[i]}℃ "
                     
                     if pop_text: embed.add_field(name="☂️ 降水確率", value=pop_text.strip(), inline=False)
-                    if temp_text: embed.add_field(name="🕒 時間別気温", value=temp_text.strip(), inline=False)
 
-                return embed, "\n".join(obsidian_lines)
+                return embed, property_updates
 
             except Exception as e:
                 logging.error(f"天気取得エラー: {e}")
                 embed.add_field(name="エラー", value="⚠️ 天気情報の取得に失敗しました。", inline=False)
-                return embed, ""
+                return embed, {}
 
-    async def _save_weather_to_obsidian(self, text: str):
-        """Obsidianのデイリーノートに天気を保存"""
-        if not text: return
+    async def _save_weather_to_obsidian(self, updates: dict):
+        """Obsidianのデイリーノートのプロパティを更新"""
+        if not updates: return
         today_str = datetime.now(JST).strftime('%Y-%m-%d')
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{today_str}.md"
         
@@ -207,8 +217,8 @@ class NewsCog(commands.Cog):
             except ApiError:
                 content = f"# Daily Note {today_str}\n"
 
-            # '## Weather' セクションに追記または作成
-            new_content = update_section(content, text, "## Weather")
+            # プロパティ更新
+            new_content = update_frontmatter(content, updates)
             
             await asyncio.to_thread(
                 self.dbx.files_upload,
@@ -216,7 +226,7 @@ class NewsCog(commands.Cog):
                 daily_note_path,
                 mode=WriteMode('overwrite')
             )
-            logging.info(f"Obsidianに天気情報を保存しました: {daily_note_path}")
+            logging.info(f"Obsidianに天気情報を保存(Property): {daily_note_path}")
         except Exception as e:
             logging.error(f"Obsidian天気保存エラー: {e}")
 
@@ -250,9 +260,9 @@ class NewsCog(commands.Cog):
             
             # 1. Weather (Discord Notification + Obsidian Sync)
             try:
-                weather_embed, weather_text = await self._get_jma_weather_forecast()
+                weather_embed, weather_updates = await self._get_jma_weather_forecast()
                 await channel.send(embed=weather_embed)
-                await self._save_weather_to_obsidian(weather_text)
+                await self._save_weather_to_obsidian(weather_updates)
             except Exception as e:
                  logging.error(f"Weather Error: {e}")
                  await channel.send(f"⚠️ 天気予報エラー: `{e}`")

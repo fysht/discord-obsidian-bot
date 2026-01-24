@@ -11,15 +11,17 @@ from dropbox.files import WriteMode
 from dropbox.exceptions import ApiError
 
 # 共通ユーティリティのインポート
+# update_frontmatter を使用するように変更
 try:
-    from utils.obsidian_utils import update_section
+    from utils.obsidian_utils import update_frontmatter
 except ImportError:
-    def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
+    # フォールバック (プロパティ更新不可)
+    def update_frontmatter(content, updates): return content
 
 # --- 定数設定 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 HABIT_DATA_PATH = "/.bot/habit_data.json"
-DAILY_NOTE_SECTION = "## Habits"
+# DAILY_NOTE_SECTION = "## Habits" # チェックリスト追記は廃止するため不要
 
 # 自動投稿する時間 (JST) - ライフログチャンネルへのボタン表示用
 SCHEDULED_TIME = datetime.time(hour=7, minute=0, tzinfo=JST)
@@ -227,6 +229,7 @@ class HabitCog(commands.Cog):
         await self._sync_to_obsidian_daily(data, today_str)
 
     async def _sync_to_obsidian_daily(self, data, date_str):
+        """ObsidianのDaily NoteのPropertiesに完了した習慣を同期する"""
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
         try:
             try:
@@ -235,31 +238,22 @@ class HabitCog(commands.Cog):
             except ApiError:
                 content = f"# Daily Note {date_str}\n"
 
-            checklist_lines = []
-            active_habits = [h for h in data['habits'] if h.get('active', True)]
+            # 完了した習慣の名前リストを作成
             daily_log = data['logs'].get(date_str, [])
+            completed_habits = []
             
-            for habit in active_habits:
-                check_mark = "x" if habit['id'] in daily_log else " "
-                checklist_lines.append(f"- [{check_mark}] {habit['name']}")
+            for habit in data['habits']:
+                # アクティブでない習慣も、ログに残っていれば記録対象にする
+                if habit['id'] in daily_log:
+                    completed_habits.append(habit['name'])
             
-            new_section_text = "\n".join(checklist_lines)
+            # プロパティ更新用の辞書
+            updates = {
+                "habits": completed_habits
+            }
 
-            lines = content.split('\n')
-            new_lines = []
-            in_habit_section = False
-            for line in lines:
-                if line.strip().startswith(DAILY_NOTE_SECTION):
-                    in_habit_section = True
-                    continue
-                if in_habit_section and line.strip().startswith("##"):
-                    in_habit_section = False
-                
-                if not in_habit_section:
-                    new_lines.append(line)
-            
-            clean_content = "\n".join(new_lines).strip()
-            final_content = update_section(clean_content, new_section_text, DAILY_NOTE_SECTION)
+            # フロントマター更新
+            final_content = update_frontmatter(content, updates)
             
             await asyncio.to_thread(
                 self.dbx.files_upload,
@@ -303,7 +297,7 @@ class HabitCog(commands.Cog):
         
         embed = discord.Embed(
             title="🔥 Habit Streak (Last 7 Days)",
-            description=description,
+            description="Good Morning! ☀️\n今日も一日、良い習慣を積み重ねましょう。",
             color=discord.Color.orange()
         )
         return embed

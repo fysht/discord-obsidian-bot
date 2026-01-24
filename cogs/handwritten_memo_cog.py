@@ -2,269 +2,192 @@ import discord
 from discord.ext import commands
 import os
 import aiohttp
+import asyncio
+import json
+import logging
+import re
 from datetime import datetime
 import google.generativeai as genai
-import asyncio
+from dropbox.files import WriteMode
+from dropbox.exceptions import ApiError
+
+# 共通関数をインポート
+from utils.obsidian_utils import update_section
 
 # Gemini APIの設定
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY")
-genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
 
-# カテゴリ定義（短縮版マーカー）
-CATEGORY_MAP = {
-    "ZT": {"file": "ZeroSecondThinking.md", "name": "ゼロ秒思考"},
-    "ST": {"file": "Study.md", "name": "勉強メモ"},
-    "EN": {"file": "English.md", "name": "英語学習"},
-    "IV": {"file": "Investment.md", "name": "投資メモ(全般)"},
-    "BK": {"file": None, "name": "読書メモ"},       # BookCogへ委譲
-    "KB": {"file": None, "name": "個別銘柄メモ"},   # StockCogへ委譲
+# 対応するMIMEタイプ
+SUPPORTED_MIME_TYPES = {
+    'application/pdf': 'application/pdf',
+    'image/png': 'image/png',
+    'image/jpeg': 'image/jpeg',
+    'image/webp': 'image/webp',
+    'image/heic': 'image/heic',
 }
 
-class CategorySelectView(discord.ui.View):
-    """AIが判定に迷った場合や、書籍・銘柄選択のためのView"""
-    def __init__(self, cog, image_filename, image_path, category, user_id):
-        super().__init__(timeout=180)
-        self.cog = cog
-        self.image_filename = image_filename
-        self.image_path = image_path 
-        self.category = category
-        self.user_id = user_id
-        self.message = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return interaction.user.id == self.user_id
-
-    @discord.ui.select(
-        placeholder="追加先を選択...",
-        min_values=1, max_values=1,
-        options=[discord.SelectOption(label="読み込み中...", value="loading")]
-    )
-    async def select_item(self, interaction: discord.Interaction, select: discord.ui.Select):
-        selected_val = select.values[0]
-        await interaction.response.defer()
-        
-        target_name = "読書メモ" if self.category == "BK" else "銘柄メモ"
-        
-        # 選択されたノートに画像を追記
-        success = await self.cog.append_image_to_target_note(
-            selected_val,
-            self.image_filename,
-            target_name
-        )
-        
-        if success:
-            await interaction.followup.send(f"✅ `{os.path.basename(selected_val)}` にメモを追加しました。")
-        else:
-            await interaction.followup.send("❌ 保存に失敗しました。")
-
-        self.stop()
-        if self.message:
-            await self.message.edit(view=None)
-
 class HandwrittenMemo(commands.Cog):
+    """手書きメモ(PDF/画像)を解析し、日付特定・内容整理を行ってObsidianに保存するCog"""
+
     def __init__(self, bot):
         self.bot = bot
-        # --- 設定エリア ---
-        self.OBSIDIAN_VAULT_PATH = os.getenv("OBSIDIAN_VAULT_PATH", r"C:\Path\To\Your\Obsidian\Vault")
+        self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
+        self.attachment_folder = "99_Attachments"
         
-        # 画像保存先フォルダ
-        self.ATTACHMENT_FOLDER = "99_Attachments"
-        
-        # 各専用ノートの保存先親フォルダ（Vault直下なら空文字 "" にしてください）
-        self.NOTE_PARENT_FOLDER = "00_Log" 
-
-    def get_full_path(self, folder, filename):
-        path = os.path.join(self.OBSIDIAN_VAULT_PATH, folder)
-        os.makedirs(path, exist_ok=True)
-        return os.path.join(path, filename)
-
-    async def detect_marker(self, image_bytes):
+    async def analyze_memo_content(self, file_bytes, mime_type):
         """
-        Gemini APIを使用して、画像内の短い識別マーカーを特定する
+        Geminiを使用して、手書きメモから「日付」と「整理された内容」を抽出する
         """
         try:
-            model = genai.GenerativeModel('gemini-2.5-pro')
-            image_parts = [{"mime_type": "image/jpeg", "data": image_bytes}]
+            model = genai.GenerativeModel('gemini-2.5-pro') 
             
-            # 短いマーカーを正確に拾うためのプロンプト
             prompt = (
-                "この手書きメモの画像を分析し、分類用の「識別マーカー（2文字のアルファベット）」を探してください。\n\n"
-                "**対象マーカーと意味:**\n"
-                "- ZT : ゼロ秒思考\n"
-                "- ST : 勉強 (Study)\n"
-                "- EN : 英語 (English)\n"
-                "- IV : 投資 (Invest)\n"
-                "- BK : 本・読書 (Book)\n"
-                "- KB : 株・銘柄 (Kabu)\n\n"
-                "**判定ルール:**\n"
-                "1. これらのマーカーは、通常、ページの隅やタイトルの横に**独立して**書かれています（丸で囲まれていることもあります）。\n"
-                "2. 文章の中にある単語の一部（例: 'Best'の中の'st'）は無視してください。「分類ラベル」として意図的に書かれたものだけを抽出してください。\n"
-                "3. 見つかった場合、そのコード（'ZT'など）のみを返してください。\n"
-                "4. 見つからない場合は 'NONE' と返してください。"
+                "あなたは優秀な秘書です。添付された手書きメモ（またはスキャンPDF）を読み取り、以下の処理を行ってください。\n\n"
+                "1. **日付の特定**: メモ内に記載されている日付を探し、`YYYY-MM-DD` 形式（例: 2026-01-24）で抽出してください。\n"
+                "   - 日付が見つからない場合は、今日の日付を使用してください。\n"
+                "2. **内容の整理**: メモの内容を読み取り、単なる文字起こしではなく、文脈を理解して**重要なポイントを箇条書き（Markdown）**でまとめてください。\n"
+                "   - 雑なメモ書きであっても、意味が通るように補完・整理してください。\n"
+                "   - 音声メモの要約のように、簡潔かつ明確なリスト形式にしてください。\n\n"
+                "**出力形式 (JSONのみ):**\n"
+                "```json\n"
+                "{\n"
+                "  \"date\": \"YYYY-MM-DD\",\n"
+                "  \"content\": \"- 要点1\\n- 要点2...\"\n"
+                "}\n"
+                "```"
             )
 
-            response = await model.generate_content_async([prompt, image_parts[0]])
-            result_text = response.text.strip().upper()
+            file_part = {"mime_type": mime_type, "data": file_bytes}
             
-            # クリーニングとマッチング
-            # AIが余計な解説をつけてきた場合に対応するため、キーワードが含まれているか確認
-            for key in CATEGORY_MAP.keys():
-                # 「ZTです」のような回答や「Marker: ZT」のような回答にも対応
-                if key == result_text or f" {key} " in f" {result_text} " or result_text.startswith(key):
-                    return key
-            return "NONE"
-
-        except Exception as e:
-            print(f"OCR Error: {e}")
-            return "NONE"
-
-    async def append_image_to_target_note(self, target_file_path, image_filename, header_label):
-        """指定されたMarkdownファイルに画像のリンクを追記する"""
-        try:
-            # Dropbox使用環境判定
-            use_dropbox = False
-            dbx = None
-            stock_cog = self.bot.get_cog("StockCog")
-            if stock_cog and hasattr(stock_cog, "dbx") and stock_cog.dbx:
-                dbx = stock_cog.dbx
-                use_dropbox = True
-
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M')
-            link_text = f"\n\n## {timestamp} {header_label}\n![[{self.ATTACHMENT_FOLDER}/{image_filename}]]\n"
-
-            if use_dropbox:
-                # Dropbox操作
-                from dropbox.files import WriteMode
-                try:
-                    _, res = await asyncio.to_thread(dbx.files_download, target_file_path)
-                    content = res.content.decode('utf-8')
-                except:
-                    # 新規作成
-                    content = f"# {os.path.basename(target_file_path).replace('.md', '')}\n"
-                
-                content += link_text
-                await asyncio.to_thread(dbx.files_upload, content.encode('utf-8'), target_file_path, mode=WriteMode('overwrite'))
+            response = await model.generate_content_async([prompt, file_part])
+            response_text = response.text.strip()
+            
+            # JSONブロックの抽出
+            json_match = re.search(r'```json\s*({.*?})\s*```', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
             else:
-                # ローカル操作
-                if not os.path.exists(target_file_path):
-                     with open(target_file_path, 'w', encoding='utf-8') as f:
-                        f.write(f"# {os.path.basename(target_file_path).replace('.md', '')}\n")
-                
-                with open(target_file_path, 'a', encoding='utf-8') as f:
-                    f.write(link_text)
-            
-            return True
+                json_str = response_text
+
+            result = json.loads(json_str)
+            return result.get("date"), result.get("content")
+
         except Exception as e:
-            print(f"Append Error: {e}")
-            return False
+            logging.error(f"Gemini Analysis Error: {e}")
+            return None, None
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot: return
+        
+        # 添付ファイルがあるかチェック
         if message.attachments:
             for attachment in message.attachments:
-                if attachment.content_type and attachment.content_type.startswith('image'):
-                    await self.process_scanned_image(message, attachment)
+                # PDFまたは画像ファイルのみ処理
+                if any(attachment.content_type.startswith(t) for t in ['image/', 'application/pdf']):
+                    await self.process_scanned_file(message, attachment)
+                    return # 1メッセージにつき1ファイル処理（またはループで複数処理も可）
 
-    async def process_scanned_image(self, message, attachment):
-        """スキャン画像をダウンロードし、マーカー判定に基づいて処理を行う"""
+    async def process_scanned_file(self, message, attachment):
+        """ファイルをダウンロードし、解析・保存を行う"""
+        processing_msg = await message.channel.send("🔄 手書きメモを解析中...")
         
-        async with aiohttp.ClientSession() as session:
-            async with session.get(attachment.url) as resp:
-                if resp.status != 200: return
-                image_bytes = await resp.read()
+        try:
+            # 1. ファイルのダウンロード
+            async with aiohttp.ClientSession() as session:
+                async with session.get(attachment.url) as resp:
+                    if resp.status != 200:
+                        raise Exception("ダウンロードに失敗しました")
+                    file_bytes = await resp.read()
+                    mime_type = attachment.content_type
 
-        processing_msg = await message.channel.send("🔍 画像を解析中...")
-        
-        # 1. マーカー判定
-        marker = await self.detect_marker(image_bytes)
-        
-        # 2. 画像の保存
-        timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
-        original_name, ext = os.path.splitext(attachment.filename)
-        # ファイル名にマーカーを含める
-        prefix = marker if marker != "NONE" else "Memo"
-        image_filename = f"{prefix}_{timestamp_str}{ext}"
-        
-        # Dropboxかローカルかで保存先を切り替え
-        use_dropbox = False
-        dbx = None
-        stock_cog = self.bot.get_cog("StockCog")
-        
-        if stock_cog and hasattr(stock_cog, "dbx") and stock_cog.dbx:
-            dbx = stock_cog.dbx
-            dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-            save_folder = f"{dropbox_vault_path}/{self.ATTACHMENT_FOLDER}"
-            save_path_full = f"{save_folder}/{image_filename}"
-            use_dropbox = True
+            # 2. Geminiによる解析 (日付と内容の抽出)
+            extracted_date_str, organized_content = await self.analyze_memo_content(file_bytes, mime_type)
+            
+            if not extracted_date_str or not organized_content:
+                await processing_msg.edit(content="❌ メモの解析に失敗しました。")
+                return
+
+            # 日付フォーマットの再確認
             try:
-                from dropbox.files import WriteMode
-                await asyncio.to_thread(dbx.files_upload, image_bytes, save_path_full, mode=WriteMode('add'))
+                target_date = datetime.strptime(extracted_date_str, '%Y-%m-%d')
+                date_str = target_date.strftime('%Y-%m-%d')
+            except ValueError:
+                # 抽出日付が不正な場合は投稿日を採用
+                target_date = datetime.now()
+                date_str = target_date.strftime('%Y-%m-%d')
+                organized_content = f"(⚠️ 日付不明のため今日の日付に保存)\n{organized_content}"
+
+            # 3. Dropboxへの保存処理
+            stock_cog = self.bot.get_cog("StockCog") # StockCogからDropboxインスタンスを借りる(既存コード踏襲)
+            dbx = getattr(stock_cog, "dbx", None)
+
+            if not dbx:
+                await processing_msg.edit(content="❌ Dropboxクライアントが利用できません。")
+                return
+
+            # A. 元ファイルの保存 (Attachmentsフォルダ)
+            original_filename = attachment.filename
+            file_ext = os.path.splitext(original_filename)[1]
+            saved_filename = f"Scan_{date_str}_{datetime.now().strftime('%H%M%S')}{file_ext}"
+            save_path = f"{self.dropbox_vault_path}/{self.attachment_folder}/{saved_filename}"
+
+            try:
+                await asyncio.to_thread(
+                    dbx.files_upload, 
+                    file_bytes, 
+                    save_path, 
+                    mode=WriteMode('add')
+                )
             except Exception as e:
-                await processing_msg.edit(content=f"❌ 画像保存エラー(Dropbox): {e}")
-                return
-        else:
-            save_path_full = self.get_full_path(self.ATTACHMENT_FOLDER, image_filename)
-            with open(save_path_full, 'wb') as f:
-                f.write(image_bytes)
+                logging.error(f"File Save Error: {e}")
+                # ファイル保存に失敗してもテキスト保存は続行
 
-        # 3. 振り分け処理
-        info = CATEGORY_MAP.get(marker)
-        
-        if marker == "NONE":
-            # Inboxノートなどへの追記が必要であればここに記述
-            # 現在は保存通知のみ
-            await processing_msg.edit(content=f"📁 **通常メモ** として保存しました (`{image_filename}`)。\n(マーカーなし)")
-            return
-
-        if marker in ["BK", "KB"]: # BK:本, KB:株
-            # 選択メニューを表示
-            view = CategorySelectView(self, image_filename, save_path_full, marker, message.author.id)
+            # B. Obsidianノートへのテキスト追記
+            daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{date_str}.md"
             
-            options = []
-            if marker == "BK":
-                book_cog = self.bot.get_cog("BookCog")
-                if book_cog:
-                    # BookCogの実装に合わせてリスト取得
-                    books, _ = await book_cog.get_book_list()
-                    options = [discord.SelectOption(label=b.name[:90], value=b.path_display) for b in books[:25]]
-            
-            elif marker == "KB":
-                if stock_cog:
-                    # StockCogの実装に合わせてリスト取得
-                    stocks = await stock_cog._get_stock_list()
-                    options = [discord.SelectOption(label=s.name[:90], value=s.path_display) for s in stocks[:25]]
+            # ノートのダウンロード (なければ空)
+            try:
+                _, res = await asyncio.to_thread(dbx.files_download, daily_note_path)
+                current_content = res.content.decode('utf-8')
+            except ApiError as e:
+                 # ファイルがない場合は新規作成扱い
+                current_content = ""
 
-            if not options:
-                await processing_msg.edit(content=f"⚠️ {info['name']}のリストが見つかりません。画像は保存されました。")
-                return
+            # 追記内容の作成
+            # 画像リンク + 整理されたテキスト
+            timestamp_header = datetime.now().strftime('%H:%M')
+            content_to_add = (
+                f"- {timestamp_header} (Handwritten)\n"
+                f"\t- ![[{self.attachment_folder}/{saved_filename}]]\n" # 元ファイルへのリンク
+            )
+            # AIが生成したテキストをインデントして追加
+            for line in organized_content.split('\n'):
+                content_to_add += f"\t- {line}\n"
 
-            view.children[0].options = options
-            view.message = await message.channel.send(f"🤔 **{info['name']}** (Marker: {marker}) を検出。\n保存先のノートを選択してください:", view=view)
-            await processing_msg.delete()
+            # update_sectionを使って追記
+            section_header = "## Handwritten Memos" # または "## Memo"
+            new_note_content = update_section(current_content, content_to_add, section_header)
 
-        else:
-            # 専用ノートへの自動追記 (ZT, ST, EN, IV)
-            target_filename = info['file']
-            
-            if use_dropbox:
-                dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-                # フォルダ結合時のスラッシュ重複回避
-                base = dropbox_vault_path.rstrip('/')
-                parent = self.NOTE_PARENT_FOLDER.strip('/')
-                if parent:
-                    target_path = f"{base}/{parent}/{target_filename}"
-                else:
-                    target_path = f"{base}/{target_filename}"
-            else:
-                target_path = self.get_full_path(self.NOTE_PARENT_FOLDER, target_filename)
+            # アップロード (上書き)
+            await asyncio.to_thread(
+                dbx.files_upload, 
+                new_note_content.encode('utf-8'), 
+                daily_note_path, 
+                mode=WriteMode('overwrite')
+            )
 
-            success = await self.append_image_to_target_note(target_path, image_filename, info['name'])
-            
-            if success:
-                await processing_msg.edit(content=f"✅ **{info['name']}** (Marker: {marker}) として `{target_filename}` に保存しました。")
-            else:
-                await processing_msg.edit(content=f"❌ メモの追加に失敗しました。画像は保存されています。")
+            # 4. 完了通知
+            embed = discord.Embed(title=f"📝 メモを保存しました ({date_str})", description=organized_content, color=discord.Color.green())
+            embed.set_footer(text=f"Saved to {daily_note_path}")
+            await processing_msg.edit(content="", embed=embed)
+            await message.add_reaction("✅")
+
+        except Exception as e:
+            logging.error(f"Process Error: {e}", exc_info=True)
+            await processing_msg.edit(content=f"❌ エラーが発生しました: {e}")
 
 async def setup(bot):
     await bot.add_cog(HandwrittenMemo(bot))

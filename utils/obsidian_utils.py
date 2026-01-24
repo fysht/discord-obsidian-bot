@@ -6,8 +6,8 @@ import re
 # Botは項目を新規作成する際、この順序に従って適切な位置に挿入します。
 SECTION_ORDER = [
     # --- 1. Daily Context (朝・コンテキスト) ---
-    "## Weather",           # 天気予報 (NewsCog)
-    "## Habits",            # 習慣トラッカー (HabitCog)
+    "## Weather",           # 天気予報 (NewsCog) - 旧テキスト形式用(互換性のため維持)
+    "## Habits",            # 習慣トラッカー (HabitCog) - 旧テキスト形式用
 
     # --- 2. Input & Information (インプット・情報収集) ---
     "## WebClips",          # Web記事クリップ (WebClipCog)
@@ -121,3 +121,77 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
             # 「自分の本来の位置より『前』にあるべきセクション」を探すまでもなく、
             # ファイルの末尾に追加すれば順序は守られる。
             return current_content.strip() + f"\n\n{section_header}\n{text_to_add}"
+
+def update_frontmatter(content: str, updates: dict) -> str:
+    """
+    ObsidianのYAMLフロントマター(Properties)を更新または新規作成する関数。
+    
+    Args:
+        content (str): ノートの全文
+        updates (dict): 更新したいキーと値の辞書。
+                        値がリストの場合はYAMLのリスト形式で出力します。
+                        値がNoneの場合はキーを削除しません(上書き動作)。
+    Returns:
+        str: 更新後のノート全文
+    """
+    # フロントマターの検出 (^--- ... ---)
+    match = re.search(r'^---\n(.*?)\n---', content, re.DOTALL)
+    
+    new_lines = []
+    
+    if match:
+        # 既存フロントマターがある場合
+        frontmatter_raw = match.group(1)
+        body = content[match.end():] # ---の後ろ全て
+        
+        # 既存行を解析して更新対象は除外、それ以外は保持
+        current_lines = frontmatter_raw.split('\n')
+        
+        # リストのパース状態管理
+        skip_mode = False
+        
+        for line in current_lines:
+            # 前の行で処理済みキーのリスト項目だった場合はスキップ
+            if skip_mode:
+                # リスト項目(インデント付きorハイフン)ならスキップ
+                if line.strip().startswith('-') or (line.startswith(' ') and ':' not in line):
+                    continue
+                else:
+                    skip_mode = False
+            
+            # キーの検出 (例: "weather: ...")
+            # 行頭から始まり、コロンを含むものをキーとみなす
+            key_match = re.match(r'^([^:\s]+):', line)
+            if key_match:
+                key = key_match.group(1).strip()
+                if key in updates:
+                    # 更新対象のキーなので、ここには出力せず、あとで新しい値を出力する
+                    skip_mode = True # リストなどの場合、後続行をスキップさせる
+                    continue
+            
+            new_lines.append(line)
+        
+        # 更新・新規キーの追加
+        for k, v in updates.items():
+            if isinstance(v, list):
+                new_lines.append(f"{k}:")
+                for item in v:
+                    new_lines.append(f"  - {item}")
+            else:
+                new_lines.append(f"{k}: {v}")
+        
+        # 再構築
+        return f"---\n" + "\n".join(new_lines) + "\n---" + body
+
+    else:
+        # フロントマターがない場合、新規作成
+        new_lines.append("---")
+        for k, v in updates.items():
+            if isinstance(v, list):
+                new_lines.append(f"{k}:")
+                for item in v:
+                    new_lines.append(f"  - {item}")
+            else:
+                new_lines.append(f"{k}: {v}")
+        new_lines.append("---\n")
+        return "\n".join(new_lines) + content
