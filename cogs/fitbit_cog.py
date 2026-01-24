@@ -16,7 +16,12 @@ from typing import Optional, Dict, Any
 import statistics
 
 from fitbit_client import FitbitClient
-from utils.obsidian_utils import update_section
+# utilsが読み込めない場合のフォールバックは入れていませんが、
+# 既存構成に合わせて適宜 import utils.obsidian_utils などを調整してください
+try:
+    from utils.obsidian_utils import update_section
+except ImportError:
+    def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -33,7 +38,9 @@ class FitbitCog(commands.Cog):
         self.fitbit_client_secret = os.getenv("FITBIT_CLIENT_SECRET")
         self.fitbit_refresh_token = os.getenv("FITBIT_REFRESH_TOKEN")
         self.fitbit_user_id = os.getenv("FITBIT_USER_ID", "-")
-        self.health_log_channel_id = int(os.getenv("HEALTH_LOG_CHANNEL_ID", 0))
+        
+        # 変更: 出力先をニュースチャンネルに変更
+        self.report_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
 
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
         self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
@@ -46,8 +53,9 @@ class FitbitCog(commands.Cog):
         else: logging.error("FitbitCog: 環境変数が不足しているため、初期化に失敗しました。")
 
     def _validate_and_init_clients(self) -> bool:
+        # report_channel_id (旧 health_log_channel_id) のチェック
         if not all([self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token,
-                    self.health_log_channel_id, self.dropbox_refresh_token, self.gemini_api_key]):
+                    self.report_channel_id, self.dropbox_refresh_token, self.gemini_api_key]):
             return False
         try:
             self.dbx = dropbox.Dropbox(
@@ -166,7 +174,8 @@ class FitbitCog(commands.Cog):
         if not self.is_ready: return
         
         logging.info(f"FitbitCog: 睡眠レポートタスクを実行します。")
-        channel = self.bot.get_channel(self.health_log_channel_id)
+        # 変更: report_channel_idを使用
+        channel = self.bot.get_channel(self.report_channel_id)
         
         try:
             target_date = datetime.datetime.now(JST).date()
@@ -201,7 +210,8 @@ class FitbitCog(commands.Cog):
         if not self.is_ready: return
 
         logging.info(f"FitbitCog: 統合ヘルスレポートタスクを実行します。")
-        channel = self.bot.get_channel(self.health_log_channel_id)
+        # 変更: report_channel_idを使用
+        channel = self.bot.get_channel(self.report_channel_id)
 
         try:
             target_date = datetime.datetime.now(JST).date()
@@ -238,7 +248,8 @@ class FitbitCog(commands.Cog):
             return
 
         logging.info("FitbitCog: 週間ヘルスレポートタスクを実行します。")
-        channel = self.bot.get_channel(self.health_log_channel_id)
+        # 変更: report_channel_idを使用
+        channel = self.bot.get_channel(self.report_channel_id)
         today = datetime.datetime.now(JST).date()
         
         weekly_sleep_data = []
@@ -296,7 +307,8 @@ class FitbitCog(commands.Cog):
             await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
             return
 
-        channel = self.bot.get_channel(self.health_log_channel_id)
+        # 変更: report_channel_idを使用
+        channel = self.bot.get_channel(self.report_channel_id)
         raw_sleep_data = await self.fitbit_client.get_sleep_data(target_date)
         sleep_summary = self._process_sleep_data(raw_sleep_data)
 
@@ -334,7 +346,8 @@ class FitbitCog(commands.Cog):
             await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
             return
         
-        channel = self.bot.get_channel(self.health_log_channel_id)
+        # 変更: report_channel_idを使用
+        channel = self.bot.get_channel(self.report_channel_id)
         
         raw_sleep_data, activity_data = await asyncio.gather(
             self.fitbit_client.get_sleep_data(target_date),

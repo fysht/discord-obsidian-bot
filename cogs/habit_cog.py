@@ -11,19 +11,19 @@ from dropbox.files import WriteMode
 from dropbox.exceptions import ApiError
 
 # 共通ユーティリティのインポート
-# update_frontmatter を使用するように変更
+# プロパティ更新用関数のインポート (前のステップで修正したutilsがある想定)
 try:
     from utils.obsidian_utils import update_frontmatter
 except ImportError:
-    # フォールバック (プロパティ更新不可)
+    # フォールバック
     def update_frontmatter(content, updates): return content
 
 # --- 定数設定 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 HABIT_DATA_PATH = "/.bot/habit_data.json"
-# DAILY_NOTE_SECTION = "## Habits" # チェックリスト追記は廃止するため不要
+# DAILY_NOTE_SECTION = "## Habits" # プロパティ移行に伴い廃止
 
-# 自動投稿する時間 (JST) - ライフログチャンネルへのボタン表示用
+# 自動投稿する時間 (JST) - ニュースチャンネルへのボタン表示用
 SCHEDULED_TIME = datetime.time(hour=7, minute=0, tzinfo=JST)
 
 class HabitAddModal(discord.ui.Modal, title="新しい習慣を追加"):
@@ -162,7 +162,8 @@ class HabitManagerView(discord.ui.View):
 class HabitCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.channel_id = int(os.getenv("LIFELOG_CHANNEL_ID", 0))
+        # 変更: 習慣トラッカーもニュースチャンネル(ダッシュボード)に表示するように変更
+        self.channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
         
         self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
@@ -302,10 +303,10 @@ class HabitCog(commands.Cog):
         )
         return embed
 
-    # --- 定期実行タスク (ライフログチャンネルへボタン送信) ---
+    # --- 定期実行タスク (ニュースチャンネルへボタン送信) ---
     @tasks.loop(time=SCHEDULED_TIME)
     async def daily_task(self):
-        """毎朝自動でハビットトラッカーを送信 (LifeLogチャンネル)"""
+        """毎朝自動でハビットトラッカーを送信"""
         if not self.channel_id: return
         channel = self.bot.get_channel(self.channel_id)
         if not channel: return
@@ -351,6 +352,7 @@ class HabitCog(commands.Cog):
     # --- 手動コマンド ---
     @app_commands.command(name="habit", description="習慣トラッカーを手動で表示します")
     async def habit(self, interaction: discord.Interaction):
+        # チャンネル制限（ニュースチャンネルでのみ実行可能）
         if self.channel_id and interaction.channel_id != self.channel_id:
              await interaction.response.send_message(f"このコマンドは <#{self.channel_id}> でのみ使用できます。", ephemeral=True)
              return
