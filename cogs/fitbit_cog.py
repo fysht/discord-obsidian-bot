@@ -16,8 +16,6 @@ from typing import Optional, Dict, Any
 import statistics
 
 from fitbit_client import FitbitClient
-# utilsが読み込めない場合のフォールバックは入れていませんが、
-# 既存構成に合わせて適宜 import utils.obsidian_utils などを調整してください
 try:
     from utils.obsidian_utils import update_section
 except ImportError:
@@ -39,7 +37,7 @@ class FitbitCog(commands.Cog):
         self.fitbit_refresh_token = os.getenv("FITBIT_REFRESH_TOKEN")
         self.fitbit_user_id = os.getenv("FITBIT_USER_ID", "-")
         
-        # 変更: 出力先をニュースチャンネルに変更
+        # 出力先: ニュースチャンネル
         self.report_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
 
         self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
@@ -53,7 +51,6 @@ class FitbitCog(commands.Cog):
         else: logging.error("FitbitCog: 環境変数が不足しているため、初期化に失敗しました。")
 
     def _validate_and_init_clients(self) -> bool:
-        # report_channel_id (旧 health_log_channel_id) のチェック
         if not all([self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token,
                     self.report_channel_id, self.dropbox_refresh_token, self.gemini_api_key]):
             return False
@@ -112,7 +109,7 @@ class FitbitCog(commands.Cog):
         else: restoration_score = 10
 
         total_score = round(duration_score + quality_score + restoration_score)
-        return min(100, total_score) # 100点を超えないように
+        return min(100, total_score)
 
     def _process_sleep_data(self, sleep_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """複数の睡眠ログを統合し、サマリーデータと新しいスコアを作成する"""
@@ -138,7 +135,6 @@ class FitbitCog(commands.Cog):
             'levels': {'summary': stage_summary}
         }
         
-        # 新しいスコア計算ロジックを呼び出す
         summary['sleep_score'] = self._calculate_sleep_score(summary)
 
         return summary
@@ -156,12 +152,10 @@ class FitbitCog(commands.Cog):
                 self.weekly_health_report.start()
                 logging.info(f"FitbitCog: 週間ヘルスレポートタスクを {WEEKLY_HEALTH_REPORT_TIME} (日曜)にスケジュールしました。")
 
-
     def cog_unload(self):
         self.sleep_report.cancel()
         self.full_health_report.cancel()
         self.weekly_health_report.cancel()
-
 
     def _format_minutes(self, minutes: int) -> str:
         if minutes is None: return "N/A"
@@ -174,7 +168,6 @@ class FitbitCog(commands.Cog):
         if not self.is_ready: return
         
         logging.info(f"FitbitCog: 睡眠レポートタスクを実行します。")
-        # 変更: report_channel_idを使用
         channel = self.bot.get_channel(self.report_channel_id)
         
         try:
@@ -210,7 +203,6 @@ class FitbitCog(commands.Cog):
         if not self.is_ready: return
 
         logging.info(f"FitbitCog: 統合ヘルスレポートタスクを実行します。")
-        # 変更: report_channel_idを使用
         channel = self.bot.get_channel(self.report_channel_id)
 
         try:
@@ -227,11 +219,14 @@ class FitbitCog(commands.Cog):
                 logging.warning(f"FitbitCog: {target_date} の全データが取得できませんでした。")
                 return
             
+            # Discord表示用のアドバイスは生成する
             advice_text = await self._generate_ai_advice(target_date, sleep_summary, activity_data)
             
-            await self._save_data_to_obsidian(target_date, sleep_summary, activity_data, advice_text)
+            # Obsidian保存時はアドバイスを含めない
+            await self._save_data_to_obsidian(target_date, sleep_summary, activity_data)
             
             if channel:
+                # Discordにはアドバイスを表示
                 embed = await self._create_discord_embed(target_date, sleep_summary, activity_data, advice_text)
                 await channel.send(embed=embed)
                 logging.info(f"FitbitCog: {target_date} の統合ヘルスレポートをDiscordに投稿しました。")
@@ -248,7 +243,6 @@ class FitbitCog(commands.Cog):
             return
 
         logging.info("FitbitCog: 週間ヘルスレポートタスクを実行します。")
-        # 変更: report_channel_idを使用
         channel = self.bot.get_channel(self.report_channel_id)
         today = datetime.datetime.now(JST).date()
         
@@ -266,7 +260,6 @@ class FitbitCog(commands.Cog):
             if activity_data:
                 weekly_activity_data.append(activity_data)
         
-        # 週間データの集計
         avg_sleep_score = statistics.mean([s['sleep_score'] for s in weekly_sleep_data if s and 'sleep_score' in s])
         avg_sleep_duration = statistics.mean([s['minutesAsleep'] for s in weekly_sleep_data if s and 'minutesAsleep' in s])
         total_steps = sum([a['summary']['steps'] for a in weekly_activity_data if a and 'summary' in a and 'steps' in a['summary']])
@@ -279,7 +272,6 @@ class FitbitCog(commands.Cog):
         
         advice_text = await self._generate_weekly_ai_advice(summary_text)
 
-        # Discordに投稿
         if channel:
             embed = discord.Embed(
                 title=f"📅 週間ヘルスレポート ({today - datetime.timedelta(days=6)} ~ {today})",
@@ -288,9 +280,6 @@ class FitbitCog(commands.Cog):
             )
             embed.add_field(name="📈 週間サマリー", value=summary_text, inline=False)
             await channel.send(embed=embed)
-        
-        # Obsidianに保存
-        # (実装は省略。デイリーと同様にWeeklyNoteに保存する処理を追加)
 
     @app_commands.command(name="get_morning_report", description="指定日の睡眠レポートを手動で取得します。")
     @app_commands.describe(date="取得したい日付 (YYYY-MM-DD形式、省略で今日)")
@@ -307,7 +296,6 @@ class FitbitCog(commands.Cog):
             await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
             return
 
-        # 変更: report_channel_idを使用
         channel = self.bot.get_channel(self.report_channel_id)
         raw_sleep_data = await self.fitbit_client.get_sleep_data(target_date)
         sleep_summary = self._process_sleep_data(raw_sleep_data)
@@ -346,7 +334,6 @@ class FitbitCog(commands.Cog):
             await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
             return
         
-        # 変更: report_channel_idを使用
         channel = self.bot.get_channel(self.report_channel_id)
         
         raw_sleep_data, activity_data = await asyncio.gather(
@@ -363,9 +350,11 @@ class FitbitCog(commands.Cog):
         
         advice_text = await self._generate_ai_advice(target_date, sleep_summary, activity_data)
         
-        await self._save_data_to_obsidian(target_date, sleep_summary, activity_data, advice_text)
+        # Obsidian保存時はアドバイスを含めない
+        await self._save_data_to_obsidian(target_date, sleep_summary, activity_data)
         
         if channel:
+            # Discordにはアドバイスを表示
             embed = await self._create_discord_embed(target_date, sleep_summary, activity_data, advice_text, is_manual=True)
             await channel.send(embed=embed)
             await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の総合ヘルスレポートを送信・保存しました。")
@@ -381,7 +370,11 @@ class FitbitCog(commands.Cog):
         except yaml.YAMLError: pass
         return {}, content
 
-    async def _save_data_to_obsidian(self, target_date: datetime.date, sleep_data: dict, activity_data: dict, advice_text: str):
+    async def _save_data_to_obsidian(self, target_date: datetime.date, sleep_data: dict, activity_data: dict):
+        """
+        Obsidianに健康データを保存する。
+        AIアドバイスの保存機能は削除されました。
+        """
         daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{target_date.strftime('%Y-%m-%d')}.md"
         
         try:
@@ -394,6 +387,7 @@ class FitbitCog(commands.Cog):
 
         frontmatter, body = self._parse_note_content(current_content)
         
+        # フロントマターの更新 (数値データ)
         if sleep_data:
             levels = sleep_data.get('levels', {}).get('summary', {})
             frontmatter.update({
@@ -450,12 +444,7 @@ class FitbitCog(commands.Cog):
             )
             metrics_sections.append(heart_rate_text)
 
-        if advice_text:
-            ai_coach_text = (
-                f"#### AI Health Coach\n"
-                f"{advice_text}"
-            )
-            metrics_sections.append(ai_coach_text)
+        # AI Health Coachセクションの追加処理を削除しました
         
         new_body = update_section(body, "\n\n".join(metrics_sections), "## Health Metrics")
         
