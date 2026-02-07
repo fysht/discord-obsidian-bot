@@ -5,7 +5,10 @@ import logging
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import google.generativeai as genai
+# --- 新しいライブラリ ---
+from google import genai
+from google.genai import types
+# ----------------------
 import re
 from datetime import time, datetime
 import zoneinfo
@@ -40,11 +43,14 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
+        # --- Client初期化 ---
         if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        else:
+            self.gemini_client = None
+        # ------------------
         
-        self.chat_sessions = {}
+        self.chat_sessions = {} # {user_id: [Content objects...]}
         self.sakubun_questions = []
         self.is_ready = bool(self.drive_folder_id and self.channel_id)
 
@@ -101,17 +107,13 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return
         
-        # "Study" フォルダを探す（なければルート直下を探すフォールバックも検討可）
         study_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, "Study")
-        
-        # Studyフォルダがなければルートを探す
         target_folder = study_folder if study_folder else self.drive_folder_id
         
         file_id = await loop.run_in_executor(None, self._find_file, service, target_folder, SAKUBUN_FILE_NAME)
         if file_id:
             try:
                 content = await loop.run_in_executor(None, self._read_text, service, file_id)
-                # 箇条書きから質問を抽出 (形式: "- 日本語 :: 英語" または "- 日本語")
                 questions = []
                 for line in content.split('\n'):
                     line = line.strip()
@@ -157,7 +159,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             return
         
         user_id = interaction.user.id
-        self.chat_sessions[user_id] = [] # 履歴初期化
+        self.chat_sessions[user_id] = [] # 履歴初期化 (list of Content dicts)
         
         await interaction.response.send_message("Let's start English conversation! 🇺🇸\n(Type `end` or `finish` to stop and save the log.)")
 
@@ -176,15 +178,27 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 return
 
             # AI応答
-            self.chat_sessions[user_id].append({"role": "user", "parts": [content]})
+            # 新しい履歴形式: {'role': 'user', 'parts': [{'text': '...'}]}
+            self.chat_sessions[user_id].append(
+                types.Content(role="user", parts=[types.Part.from_text(text=content)])
+            )
+            
             async with message.channel.typing():
                 try:
-                    chat = self.gemini_model.start_chat(history=self.chat_sessions[user_id][:-1])
-                    response = await chat.send_message_async(content)
-                    ai_text = response.text
-                    
-                    self.chat_sessions[user_id].append({"role": "model", "parts": [ai_text]})
-                    await message.channel.send(ai_text)
+                    if self.gemini_client:
+                        # --- チャット生成 ---
+                        response = await self.gemini_client.aio.models.generate_content(
+                            model='gemini-2.0-flash',
+                            contents=self.chat_sessions[user_id]
+                        )
+                        ai_text = response.text
+                        
+                        self.chat_sessions[user_id].append(
+                            types.Content(role="model", parts=[types.Part.from_text(text=ai_text)])
+                        )
+                        await message.channel.send(ai_text)
+                    else:
+                        await message.channel.send("AI Client not initialized.")
                 except Exception as e:
                     await message.channel.send(f"⚠️ Error: {e}")
 
@@ -195,8 +209,13 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             del self.chat_sessions[user_id]
             return
 
-        # 要約とアドバイス生成
-        full_text = "\n".join([f"{h['role']}: {h['parts'][0]}" for h in history])
+        # 履歴をテキスト化
+        full_text = ""
+        for h in history:
+            role = h.role
+            text = h.parts[0].text if h.parts else ""
+            full_text += f"{role}: {text}\n"
+
         prompt = f"""
         以下の英会話ログを分析し、以下の項目を出力してください。
         1. **Summary**: 会話の内容の要約 (日本語)
@@ -207,11 +226,16 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         {full_text}
         """
         try:
-            res = await self.gemini_model.generate_content_async(prompt)
-            review = res.text
+            if self.gemini_client:
+                res = await self.gemini_client.aio.models.generate_content(
+                    model='gemini-2.5-pro',
+                    contents=prompt
+                )
+                review = res.text
+            else:
+                review = "AI Error"
         except: review = "Review generation failed."
 
-        # Google Drive (Obsidian) に保存
         await self._save_chat_log_to_obsidian(user, history, review)
         
         del self.chat_sessions[user_id]
@@ -231,38 +255,33 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         
         log_parts = []
         for h in history:
-            role = "You" if h['role'] == "user" else "AI"
-            text = h['parts'][0]
+            role = "You" if h.role == "user" else "AI"
+            text = h.parts[0].text if h.parts else ""
             log_parts.append(f"- **{role}:** {text}")
         
         content = f"# English Chat Log\n\n[[{date_str}]]\n\n## Review\n{review}\n\n## Transcript\n" + "\n".join(log_parts)
         
-        # フォルダ確認・作成
         log_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
         if not log_folder:
             log_folder = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
         
-        # ファイル作成
         await loop.run_in_executor(None, self._create_text, service, log_folder, filename, content)
 
-        # Daily Note更新
         daily_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, "DailyNotes")
         if daily_folder:
             d_file = await loop.run_in_executor(None, self._find_file, service, daily_folder, f"{date_str}.md")
             cur = ""
             if d_file:
-                try:
-                    cur = await loop.run_in_executor(None, self._read_text, service, d_file)
+                try: cur = await loop.run_in_executor(None, self._read_text, service, d_file)
                 except: pass
             else:
-                cur = f"# Daily Note {date_str}\n" # ファイルがない場合は新規作成用のヘッダ
+                cur = f"# Daily Note {date_str}\n"
 
             new = update_section(cur, f"- [[{ENGLISH_LOG_FOLDER}/{filename}|English Chat]]", "## English Logs")
             
             if d_file:
                 await loop.run_in_executor(None, self._update_text, service, d_file, new)
             else:
-                # デイリーノート自体がない場合は作成
                 await loop.run_in_executor(None, self._create_text, service, daily_folder, f"{date_str}.md", new)
 
 async def setup(bot):

@@ -4,7 +4,9 @@ from discord.ext import commands
 import logging
 import aiohttp
 import openai
-import google.generativeai as genai
+# --- 新しいライブラリ ---
+from google import genai
+# ----------------------
 from datetime import datetime
 import zoneinfo
 from pathlib import Path
@@ -43,8 +45,13 @@ class VoiceMemoCog(commands.Cog):
         self.session = aiohttp.ClientSession()
         if self.openai_api_key:
             self.openai_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
+        
+        # --- Client初期化 ---
         if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        else:
+            self.gemini_client = None
+        # ------------------
 
     async def cog_unload(self):
         await self.session.close()
@@ -89,18 +96,23 @@ class VoiceMemoCog(commands.Cog):
             transcribed_text = transcription.text
 
             # 3. Geminiで要約・整形
-            model = genai.GenerativeModel("gemini-2.5-pro")
-            prompt = (
-                "以下の文章は音声メモを文字起こししたものです。内容を理解し、重要なポイントを抽出して、箇条書きのMarkdown形式でまとめてください。\n"
-                "箇条書きの本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
-                f"---\n\n{transcribed_text}"
-            )
-            response = await model.generate_content_async(prompt)
-            formatted_text = response.text.strip()
+            if self.gemini_client:
+                prompt = (
+                    "以下の文章は音声メモを文字起こししたものです。内容を理解し、重要なポイントを抽出して、箇条書きのMarkdown形式でまとめてください。\n"
+                    "箇条書きの本文のみを生成し、前置きや返答は一切含めないでください。\n\n"
+                    f"---\n\n{transcribed_text}"
+                )
+                # --- 生成メソッド変更 ---
+                response = await self.gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-pro",
+                    contents=prompt
+                )
+                formatted_text = response.text.strip()
+                # ----------------------
+            else:
+                formatted_text = transcribed_text # Geminiがない場合はそのまま
 
             # 4. 保存処理 (obsidian_handler経由)
-            # 見出し(日時など)は sync_worker が付与するため、ここでは内容のみを渡す
-            # ただし、音声メモであることを明示したい場合は content に含める
             content_to_save = f"(Voice Memo)\n{formatted_text}"
 
             if add_memo_async:

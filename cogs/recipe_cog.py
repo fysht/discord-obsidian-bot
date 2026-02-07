@@ -8,9 +8,12 @@ import asyncio
 import datetime
 import zoneinfo
 import json
-import google.generativeai as genai
 
-# Google API
+# --- 変更点 1: 新しいライブラリのインポート ---
+from google import genai
+# ---------------------------------------------
+
+# Google Drive API
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -35,9 +38,13 @@ class RecipeCog(commands.Cog):
         self.channel_id = int(os.getenv("RECIPE_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        
+        # --- 変更点 2: クライアントの初期化 ---
         if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        else:
+            self.gemini_client = None
+        # ------------------------------------
 
     def _get_drive_service(self):
         creds = None
@@ -91,10 +98,46 @@ class RecipeCog(commands.Cog):
 
     async def _process_recipe(self, message):
         url = message.content.strip()
-        # ... (Fetch & Extract Logic same as original) ...
-        # Assume data extracted
-        data = {"title": "Test Recipe", "source": url, "tags": [], "ingredients": [], "instructions": []}
-        filename = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-Test.md"
+        
+        # 1. Webコンテンツの取得 (web_parser使用)
+        title = "Unknown Recipe"
+        content_text = ""
+        if parse_url_with_readability:
+            title, content_text = await asyncio.to_thread(parse_url_with_readability, url)
+        
+        # 2. Geminiによるレシピ整形
+        if self.gemini_client and content_text:
+            prompt = f"""
+            以下のWeb記事の内容から、料理のレシピ情報を抽出してMarkdown形式で整理してください。
+            記事タイトル: {title}
+            
+            以下のフォーマットで出力してください：
+            # {{料理名}}
+            ## 材料
+            - ...
+            ## 手順
+            1. ...
+            
+            --- 記事本文 ---
+            {content_text[:10000]}
+            """
+            try:
+                # --- 変更点 3: 生成メソッドの呼び出し変更 ---
+                response = await self.gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-pro",
+                    contents=prompt
+                )
+                formatted_content = response.text
+                # -----------------------------------------
+            except Exception as e:
+                logging.error(f"Gemini Error: {e}")
+                formatted_content = f"# {title}\n(AI整形失敗: {e})\n\n{content_text[:2000]}..."
+        else:
+            formatted_content = f"# {title}\n\n{content_text[:2000]}..."
+
+        # 3. Google Driveへの保存
+        data = {"title": title, "source": url}
+        filename = f"{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}-{re.sub(r'[/:*?<>|]', '_', title[:30])}.md"
 
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
@@ -103,8 +146,8 @@ class RecipeCog(commands.Cog):
         r_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, RECIPES_FOLDER)
         if not r_folder: r_folder = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, RECIPES_FOLDER)
         
-        content = f"# {data['title']}\nSource: {url}"
-        await loop.run_in_executor(None, self._upload_text, service, r_folder, filename, content)
+        full_content = f"{formatted_content}\n\n---\nSource: {url}"
+        await loop.run_in_executor(None, self._upload_text, service, r_folder, filename, full_content)
 
         # Update Index
         b_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, BOT_FOLDER)
@@ -117,6 +160,6 @@ class RecipeCog(commands.Cog):
         index.insert(0, {"title": data['title'], "filename": filename})
         await loop.run_in_executor(None, self._write_json, service, b_folder, RECIPE_INDEX_FILE, index, idx_file)
 
-        await message.reply("✅ Saved!")
+        await message.reply(f"✅ レシピを保存しました: {title}")
 
 async def setup(bot): await bot.add_cog(RecipeCog(bot))

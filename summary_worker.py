@@ -4,7 +4,9 @@ import logging
 from datetime import datetime, timedelta
 import zoneinfo
 from dotenv import load_dotenv
-import google.generativeai as genai
+# --- 新しいライブラリ ---
+from google import genai
+# ----------------------
 
 # Google Drive API Imports
 from google.oauth2.credentials import Credentials
@@ -153,8 +155,8 @@ def generate_summary():
 
     # 4. Geminiで要約生成
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        # --- Client初期化と実行 ---
+        client = genai.Client(api_key=GEMINI_API_KEY)
         
         prompt = f"""
 以下のObsidianのデイリーノートの内容を要約してください。
@@ -166,9 +168,13 @@ Markdown形式で出力してください。
 {content}
 ---
 """
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=prompt
+        )
         summary_text = response.text
         logging.info("要約生成完了")
+        # ------------------------
 
     except Exception as e:
         logging.error(f"Gemini APIエラー: {e}")

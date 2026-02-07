@@ -4,7 +4,9 @@ from discord.ext import commands
 import logging
 from datetime import datetime
 import zoneinfo
-import google.generativeai as genai
+# --- 新しいライブラリ ---
+from google import genai
+# ----------------------
 import aiohttp
 import re
 import asyncio
@@ -31,9 +33,14 @@ class JournalCog(commands.Cog):
         self.bot = bot
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        
+        # --- Client初期化 ---
         if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        else:
+            self.gemini_client = None
+        # ------------------
+        
         self.is_ready = bool(self.drive_folder_id)
 
     def _get_drive_service(self):
@@ -53,12 +60,10 @@ class JournalCog(commands.Cog):
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return ""
 
-        # DailyNotesフォルダ検索
         daily_folder_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{self.drive_folder_id}' in parents and name = 'DailyNotes' and trashed = false", fields="files(id)").execute())
         d_id = daily_folder_res['files'][0]['id'] if daily_folder_res.get('files') else None
         if not d_id: return ""
 
-        # ファイル検索
         f_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{d_id}' in parents and name = '{date_str}.md' and trashed = false", fields="files(id)").execute())
         f_id = f_res['files'][0]['id'] if f_res.get('files') else None
         if not f_id: return ""
@@ -105,15 +110,21 @@ class JournalCog(commands.Cog):
         """
 
         try:
-            response = await self.gemini_model.generate_content_async(prompt)
-            ai_output = response.text.strip()
+            if self.gemini_client:
+                # --- 生成メソッド変更 ---
+                response = await self.gemini_client.aio.models.generate_content(
+                    model='gemini-2.5-pro',
+                    contents=prompt
+                )
+                ai_output = response.text.strip()
+            else:
+                ai_output = "API Key not set."
         except Exception as e:
             ai_output = f"AI Error: {e}"
 
         full_content = f"{ai_output}\n\n### Source (Handwritten OCR)\n{handwritten_content}"
         await self._save_to_obsidian(date_str, full_content, "## Journal")
         
-        # Embed作成
         advice_part = ai_output
         if "### 1. 🤖 AI Analysis & Advice" in ai_output:
             parts = ai_output.split("### 2. 📝 Daily Summary")
@@ -126,11 +137,9 @@ class JournalCog(commands.Cog):
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return False
         
-        # フォルダ検索
         daily_folder_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{self.drive_folder_id}' in parents and name = 'DailyNotes' and trashed = false", fields="files(id)").execute())
         d_id = daily_folder_res['files'][0]['id'] if daily_folder_res.get('files') else None
         
-        # なければ作成 (省略、他で作成済み前提)
         if not d_id: return False
 
         f_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{d_id}' in parents and name = '{date_str}.md' and trashed = false", fields="files(id)").execute())

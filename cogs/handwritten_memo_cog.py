@@ -7,7 +7,10 @@ import json
 import logging
 import re
 from datetime import datetime
-import google.generativeai as genai
+# --- 新しいライブラリ ---
+from google import genai
+from google.genai import types
+# ----------------------
 import io
 
 # Google Drive API
@@ -17,10 +20,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 from utils.obsidian_utils import update_section
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
 
 # Google Drive 設定
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -33,6 +32,14 @@ class HandwrittenMemo(commands.Cog):
         self.bot = bot
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.attachment_folder_name = "99_Attachments"
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        
+        # --- Client初期化 ---
+        if self.gemini_api_key:
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        else:
+            self.gemini_client = None
+        # ------------------
 
     def _get_drive_service(self):
         creds = None
@@ -41,9 +48,7 @@ class HandwrittenMemo(commands.Cog):
             except: pass
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                    with open(TOKEN_FILE, 'w') as token: token.write(creds.to_json())
+                try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
                 except: return None
             else: return None
         return build('drive', 'v3', credentials=creds)
@@ -84,11 +89,21 @@ class HandwrittenMemo(commands.Cog):
         service.files().create(body=meta, media_body=media).execute()
 
     async def analyze_memo_content(self, file_bytes, mime_type):
+        if not self.gemini_client: return None, "API Key Error"
         try:
-            model = genai.GenerativeModel('gemini-2.5-pro') 
             prompt = "画像の手書きメモから日付(YYYY-MM-DD)と内容のMarkdown箇条書きを抽出してJSONで返して。{'date':..., 'content':...}"
-            file_part = {"mime_type": mime_type, "data": file_bytes}
-            response = await model.generate_content_async([prompt, file_part])
+            
+            # --- 画像を含む生成メソッド変更 ---
+            # types.Part.from_bytes を使用するか、辞書形式で渡す
+            response = await self.gemini_client.aio.models.generate_content(
+                model='gemini-2.5-pro',
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                ]
+            )
+            # ------------------------------
+            
             text = response.text.strip()
             match = re.search(r'\{.*\}', text, re.DOTALL)
             if match:

@@ -2,7 +2,9 @@ import discord
 from discord.ext import commands
 import os
 from datetime import datetime
-import google.generativeai as genai
+# --- 新しいライブラリ ---
+from google import genai
+# ----------------------
 import asyncio
 
 # Google Drive API
@@ -23,8 +25,12 @@ class ZeroSecondThinking(commands.Cog):
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
+        # --- Client初期化 ---
         if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        else:
+            self.gemini_client = None
+        # ------------------
 
     def _get_drive_service(self):
         creds = None
@@ -57,20 +63,9 @@ class ZeroSecondThinking(commands.Cog):
         zt_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, ZT_FOLDER_NAME)
         if not zt_folder: zt_folder = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, ZT_FOLDER_NAME)
         
-        # 既存ファイルがあれば追記、なければ作成
         file_id = await loop.run_in_executor(None, self._find_file, service, zt_folder, filename)
         
-        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
-        
         if file_id:
-            # 追記（Google Drive APIで直接追記はできないため、一度読み込んで結合して更新するか、別ファイルにするが、
-            # ここではシンプルに「既存取得→結合→更新」を行う）
-            # ※ 頻繁な追記には向かないが、この用途なら許容範囲
-            pass 
-            # 実装簡略化のため、今回は「ファイル名に時刻を含めて毎回新規作成」または「ダウンロードして追記アップロード」
-            # ここでは「ダウンロードして追記」を実装
-            
-            # ダウンロード
             fh = io.BytesIO()
             from googleapiclient.http import MediaIoBaseDownload
             downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
@@ -83,13 +78,14 @@ class ZeroSecondThinking(commands.Cog):
             await loop.run_in_executor(None, lambda: service.files().update(fileId=file_id, media_body=media_update).execute())
             
         else:
+            media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
             await loop.run_in_executor(None, lambda: service.files().create(body={'name': filename, 'parents': [zt_folder], 'mimeType': 'text/markdown'}, media_body=media).execute())
             
         return True
 
     async def generate_zt_themes(self, keyword=None):
+        if not self.gemini_client: return "API Key Error"
         try:
-            model = genai.GenerativeModel('gemini-2.5-pro')
             user_intent = f"「{keyword}」というキーワードに関連して" if keyword else "今、何を書くべきか迷っている状態に対して、頭の中を整理するために"
             prompt = (
                 f"あなたは『ゼロ秒思考（赤羽雄二氏提唱）』のメモ書きファシリテーターです。\n"
@@ -101,8 +97,13 @@ class ZeroSecondThinking(commands.Cog):
                 "3. 箇条書きで出力する。\n"
                 "4. 余計な挨拶は省略し、テーマ案だけを出力する。"
             )
-            response = await model.generate_content_async(prompt)
+            # --- 生成メソッド変更 ---
+            response = await self.gemini_client.aio.models.generate_content(
+                model='gemini-2.5-pro',
+                contents=prompt
+            )
             return response.text.strip()
+            # ----------------------
         except Exception as e:
             print(f"Gemini API Error: {e}")
             return "（AI生成エラー）申し訳ありません。現在テーマを生成できません。"

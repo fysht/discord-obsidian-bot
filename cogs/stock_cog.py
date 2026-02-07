@@ -7,7 +7,9 @@ import re
 import asyncio
 import datetime
 import zoneinfo
-import google.generativeai as genai
+# --- 新しいライブラリ ---
+from google import genai
+# ----------------------
 
 # Google Drive API
 from google.oauth2.credentials import Credentials
@@ -139,9 +141,12 @@ class StockCog(commands.Cog):
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
+        # --- Client初期化 ---
         if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+        else:
+            self.gemini_client = None
+        # ------------------
         self.is_ready = bool(self.drive_folder_id)
 
     def _get_drive_service(self):
@@ -161,17 +166,12 @@ class StockCog(commands.Cog):
         files = res.get('files', [])
         return files[0] if files else None
 
-    def _find_file_recursive(self, service, parent_id, name):
-        # 簡易的に直下検索
-        return self._find_file(service, parent_id, name)
-
     async def _get_stocks_folder(self, service):
         loop = asyncio.get_running_loop()
         inv_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, INVESTMENT_FOLDER)
         if not inv_folder: inv_folder = await loop.run_in_executor(None, lambda: service.files().create(body={'name': INVESTMENT_FOLDER, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}, fields='id').execute())
-        else: inv_folder = inv_folder['id'] # _find_file returns dict or None if modified above
+        else: inv_folder = inv_folder['id'] 
         
-        # fix: _find_file returns dict with id, name
         if isinstance(inv_folder, dict): inv_folder = inv_folder['id']
 
         stocks_folder = await loop.run_in_executor(None, self._find_file, service, inv_folder, STOCKS_FOLDER)
@@ -200,7 +200,6 @@ class StockCog(commands.Cog):
         service = await loop.run_in_executor(None, self._get_drive_service)
         stocks_folder_id = await self._get_stocks_folder(service)
         
-        # コードで始まるファイルを検索
         q = f"'{stocks_folder_id}' in parents and name contains '{code}_' and mimeType = 'text/markdown' and trashed = false"
         res = await loop.run_in_executor(None, lambda: service.files().list(q=q, fields="files(id, name)").execute())
         files = res.get('files', [])
@@ -268,8 +267,17 @@ class StockCog(commands.Cog):
             {content}
             """
             
-            response = await self.gemini_model.generate_content_async(prompt)
-            review_text = response.text.strip()
+            # --- 生成メソッド変更 ---
+            if self.gemini_client:
+                response = await self.gemini_client.aio.models.generate_content(
+                    model='gemini-2.5-pro',
+                    contents=prompt
+                )
+                review_text = response.text.strip()
+            else:
+                review_text = "API Key error."
+            # ----------------------
+
             new_content = update_section(content, f"\n{review_text}", "## Review")
             
             media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown')
