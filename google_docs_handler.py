@@ -6,24 +6,29 @@ from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, timedelta
 import zoneinfo
 
 # .env読み込み
 load_dotenv()
 
 # --- 定数定義 ---
-JST = zoneinfo.ZoneInfo("Asia/Tokyo") # JSTタイムゾーン
+try:
+    JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+except Exception:
+    JST = datetime.timezone(timedelta(hours=9))
 
 # --- 設定 ---
-SCOPES = ['https://www.googleapis.com/auth/documents'] # Docs APIのスコープのみ
 TOKEN_FILE = 'token.json'
-CREDENTIALS_FILE = 'credentials.json' # generate_token.pyで使用
+# ★修正: Drive APIのスコープを追加して統一
+SCOPES = [
+    'https://www.googleapis.com/auth/documents',
+    'https://www.googleapis.com/auth/drive'
+]
 TARGET_DOCUMENT_ID = os.getenv("NOTEBOOKLM_GOOGLE_DOC_ID")
 
 # --- ロギング設定 ---
-# logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s') # main.pyで設定するため不要な場合が多い
-logger = logging.getLogger(__name__) # 個別のロガーを取得
+logger = logging.getLogger(__name__)
 
 google_creds = None
 service = None
@@ -34,7 +39,6 @@ def _get_google_creds():
     creds = None
     if os.path.exists(TOKEN_FILE):
         try:
-            # SCOPESを指定して読み込む
             creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
             logger.debug("Google Docs API: token.jsonを読み込みました。")
         except Exception as e:
@@ -53,7 +57,8 @@ def _get_google_creds():
                 logger.error(f"Google Docs API: トークンのリフレッシュに失敗: {e}")
                 creds = None
         else:
-            logger.error(f"Google Docs API: 有効な認証情報が見つかりません。{TOKEN_FILE}が存在しないか無効、またはスコープが不足している可能性があります。")
+            # ここでは自動生成せず、環境変数からの復元やエラーログのみとする（main.pyで復元される前提）
+            logger.error(f"Google Docs API: 有効な認証情報が見つかりません。token.jsonを確認してください。")
             creds = None
 
     google_creds = creds
@@ -72,56 +77,48 @@ def _append_text_to_doc_sync(text_to_append: str, source_type: str = "Memo", url
     if not service:
         logger.error("Google Docs APIサービスが利用できません。追記をスキップします。")
         _get_google_creds() # 再初期化を試みる
-        if not service: return # 再初期化してもダメなら諦める
+        if not service: return
 
     if not TARGET_DOCUMENT_ID:
         logger.error("環境変数 NOTEBOOKLM_GOOGLE_DOC_ID が設定されていません。")
         return
 
     try:
-        # ドキュメントの末尾のインデックスを取得（より確実に末尾に挿入するため）
-        # fieldsを指定して取得する情報を限定する（パフォーマンス改善）
+        # ドキュメントの末尾のインデックスを取得
         document = service.documents().get(documentId=TARGET_DOCUMENT_ID, fields='body(content(endIndex))').execute()
-        # ドキュメントが空の場合も考慮
         content = document.get('body', {}).get('content', [])
-        # 最後のセグメントの endIndex を取得し、その直前に挿入する
-        # ドキュメントが空(contentが空リスト)の場合や endIndex が取得できない場合は 1 を使う
-        end_index = 1 # デフォルトは先頭 (空ドキュメント用)
+        
+        end_index = 1
         if content:
-             # 最後の要素（通常は段落）の endIndex を使う
-             # endIndexは次の挿入ポイントを示すが、確実にセグメント内に挿入するために -1 する
              last_segment_end_index = content[-1].get('endIndex')
              if last_segment_end_index:
-                  # endIndexが1より大きい場合のみ-1する（ドキュメント先頭への挿入を考慮）
                   end_index = max(1, last_segment_end_index -1)
 
         # --- NotebookLM向けのフォーマット作成 ---
         now_jst = datetime.now(JST)
         date_str = now_jst.strftime('%Y-%m-%d %H:%M:%S JST')
-        header = f"\n--- Date: {date_str} (Source: {source_type}) ---" # 先頭に改行を追加
+        header = f"\n--- Date: {date_str} (Source: {source_type}) ---"
         footer = "--- End ---"
         content_lines = [header]
         if title:
             content_lines.append(f"Title: {title}")
         if url:
             content_lines.append(f"URL: {url}")
-        # 本文が空でない場合のみ追記
+        
         main_content = text_to_append.strip()
         if main_content:
-             content_lines.append("\n" + main_content) # 本文の前に改行
-        content_lines.append("\n" + footer) # フッターの前に改行
+             content_lines.append("\n" + main_content)
+        content_lines.append("\n" + footer)
 
-        formatted_text = "\n".join(content_lines) + "\n" # 全体の後に改行を追加
-        # --- ここまで ---
-
+        formatted_text = "\n".join(content_lines) + "\n"
 
         requests = [
             {
                 'insertText': {
                     'location': {
-                        'index': end_index, # ★修正したend_indexを使用
+                        'index': end_index,
                     },
-                    'text': formatted_text # フォーマット済みテキストを使用
+                    'text': formatted_text
                 }
             }
         ]
@@ -131,15 +128,15 @@ def _append_text_to_doc_sync(text_to_append: str, source_type: str = "Memo", url
         logger.info(f"Googleドキュメント (ID: ...{TARGET_DOCUMENT_ID[-6:]}) に追記しました ({source_type})。")
 
     except HttpError as e:
-        logger.error(f"Googleドキュメントへの追記中にHttpErrorが発生: Status {e.resp.status}, Reason: {e.reason}, Content: {e.content}")
+        logger.error(f"Googleドキュメントへの追記中にHttpErrorが発生: Status {e.resp.status}")
         if e.resp.status == 401 or e.resp.status == 403:
-            logger.error("認証エラーが発生しました。token.jsonのスコープや有効期限を確認し、必要であれば再生成してください。")
-            _get_google_creds() # 認証情報をリフレッシュ試行
+            logger.error("認証エラーが発生しました。token.jsonのスコープを確認してください。")
+            _get_google_creds()
     except Exception as e:
         logger.error(f"Googleドキュメントへの追記中に予期せぬエラーが発生しました: {e}", exc_info=True)
 
 async def append_text_to_doc_async(text_to_append: str, source_type: str = "Memo", url: str = None, title: str = None):
-    """Googleドキュメント追記の同期処理を非同期で呼び出す (引数追加)"""
+    """Googleドキュメント追記の同期処理を非同期で呼び出す"""
     await asyncio.to_thread(_append_text_to_doc_sync, text_to_append, source_type, url, title)
 
 # モジュールロード時に認証を試みる

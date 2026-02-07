@@ -7,27 +7,45 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import re
+import json # 環境変数からの復元用にjsonを追加
+
 try:
     from obsidian_handler import add_memo_async
 except ImportError:
     logging.error("obsidian_handler.pyが見つからないため、起動時メモ処理が無効になります。")
     add_memo_async = None
-import dropbox
 
 # --- 1. 設定読み込み ---
 log_format = '%(asctime)s [%(levelname)s] [%(name)s] %(message)s'
 logging.basicConfig(level=logging.INFO, format=log_format)
 load_dotenv()
 
+# --- トークン復元処理 (Render対応) ---
+def restore_token_from_env():
+    """
+    Renderの環境変数 GOOGLE_TOKEN_JSON から token.json を復元します。
+    """
+    token_json = os.getenv("GOOGLE_TOKEN_JSON")
+    token_path = "token.json"
+    
+    # ファイルがまだなく、環境変数がある場合のみ作成
+    if not os.path.exists(token_path) and token_json:
+        try:
+            logging.info("環境変数 GOOGLE_TOKEN_JSON から token.json を復元します...")
+            with open(token_path, "w", encoding="utf-8") as f:
+                f.write(token_json)
+        except Exception as e:
+            logging.error(f"token.json の復元に失敗しました: {e}")
+
+# Bot起動前にトークンを復元
+restore_token_from_env()
+
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0")) 
 
-# --- Dropbox関連設定 ---
-DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_VAULT_PATH = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-LAST_PROCESSED_ID_FILE_PATH = f"{DROPBOX_VAULT_PATH}/.bot/last_processed_id.txt"
+# --- Google Drive関連設定 ---
+# .env (またはRender環境変数) に GOOGLE_DRIVE_FOLDER_ID を設定してください
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 
 # --- 2. Bot本体のクラス定義 ---
@@ -51,8 +69,7 @@ class MyBot(commands.Bot):
             if filename == "__pycache__":
                 continue
             
-            # ★ 修正: youtube_cog.py はローカルワーカー(重い処理)用なのでRenderではスキップ
-            # ★ 修正: reception_cog.py はRender(受付)用なので読み込む！
+            # youtube_cog.py はローカルワーカー(重い処理)用なのでRenderではスキップ
             if filename == 'youtube_cog.py':
                 logging.info(f" -> cogs/{filename} はローカルワーカーが担当するためスキップします。")
                 continue
@@ -82,12 +99,12 @@ class MyBot(commands.Bot):
         logging.info(f"{self.user} としてログインしました (Render - Main Bot)")
         logging.info("--- Bot is ready and listening for events ---")
         
-        # オフラインメモ処理などは必要に応じて維持
-        if add_memo_async and all([DROPBOX_REFRESH_TOKEN, DROPBOX_APP_KEY, DROPBOX_APP_SECRET]):
+        # Dropboxトークンではなく、Google DriveフォルダIDが設定されているか確認
+        if add_memo_async and GOOGLE_DRIVE_FOLDER_ID:
              await self.process_offline_memos()
 
     async def process_offline_memos(self):
-        # (既存の処理をそのまま維持してください)
+        # (既存の処理をそのまま維持)
         pass
 
 # --- 3. 起動処理 ---

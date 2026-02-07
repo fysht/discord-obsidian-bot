@@ -5,52 +5,165 @@ from datetime import date
 from typing import Optional, Dict, Any
 import aiohttp
 import base64
-import dropbox
-from dropbox.exceptions import ApiError
-from dropbox.files import WriteMode
+import io
+
+# Google Drive API
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+
+# --- 定数定義 ---
+SCOPES = ['https://www.googleapis.com/auth/drive']
+TOKEN_FILE = 'token.json'
 
 class FitbitClient:
     """
     Fitbit APIとの通信を管理し、アクセストークンの更新を自動的に行うクライアント
+    (Google Drive版)
     """
-    def __init__(self, client_id: str, client_secret: str, dbx: dropbox.Dropbox, user_id: str = "-"):
+    def __init__(self, client_id: str, client_secret: str, dbx=None, user_id: str = "-"):
         self.client_id = client_id
         self.client_secret = client_secret
         self.user_id = user_id
         self.session = aiohttp.ClientSession()
         self.lock = asyncio.Lock()
         
-        self.dbx = dbx
+        # Dropboxオブジェクト(dbx)は使用しませんが、互換性のため引数は残しています
+        self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        self.bot_folder_name = ".bot"
+        self.token_file_name = "fitbit_refresh_token.txt"
+
+    def _get_drive_service(self):
+        """Google Drive Serviceを取得"""
+        creds = None
+        if os.path.exists(TOKEN_FILE):
+            try:
+                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            except Exception:
+                pass
+
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    with open(TOKEN_FILE, 'w') as token:
+                        token.write(creds.to_json())
+                except Exception:
+                    return None
+            else:
+                return None
+
+        return build('drive', 'v3', credentials=creds)
+
+    def _find_file(self, service, parent_id, name, mime_type=None):
+        """ファイルIDを検索"""
+        query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
+        if mime_type:
+            query += f" and mimeType = '{mime_type}'"
         
-        self.vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-        self.token_path = f"{self.vault_path}/.bot/fitbit_refresh_token.txt"
+        try:
+            results = service.files().list(q=query, fields="files(id)").execute()
+            files = results.get('files', [])
+            return files[0]['id'] if files else None
+        except Exception as e:
+            logging.error(f"Drive検索エラー: {e}")
+            return None
+
+    def _create_folder(self, service, parent_id, name):
+        """フォルダを作成"""
+        file_metadata = {
+            'name': name,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [parent_id]
+        }
+        file = service.files().create(body=file_metadata, fields='id').execute()
+        return file.get('id')
+
+    def _read_file_content(self, service, file_id) -> str:
+        """ファイルの内容をテキストとして読み込む"""
+        try:
+            request = service.files().get_media(fileId=file_id)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+            return fh.getvalue().decode('utf-8')
+        except Exception as e:
+            logging.error(f"Drive読み込みエラー: {e}")
+            return ""
+
+    def _write_file_content(self, service, parent_id, name, content, file_id=None):
+        """ファイルの内容を書き込む（新規作成または更新）"""
+        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/plain', resumable=True)
+        try:
+            if file_id:
+                service.files().update(fileId=file_id, media_body=media).execute()
+            else:
+                file_metadata = {'name': name, 'parents': [parent_id]}
+                service.files().create(body=file_metadata, media_body=media).execute()
+        except Exception as e:
+            logging.error(f"Drive書き込みエラー: {e}")
 
     async def _get_latest_refresh_token(self) -> str:
-        """Dropboxから最新のリフレッシュトークンを読み込む。なければ環境変数の初期値を使う"""
-        try:
-            _, res = self.dbx.files_download(self.token_path)
-            token = res.content.decode('utf-8').strip()
-            logging.info("Dropboxから最新のFitbitリフレッシュトークンを読み込みました。")
-            return token
-        except ApiError as e:
-            if e.error.is_path() and e.error.get_path().is_not_found():
-                logging.warning("Dropboxにトークンファイルが見つかりません。環境変数の初期トークンを使用します。")
-                return os.getenv("FITBIT_REFRESH_TOKEN")
-            else:
-                logging.error(f"Dropboxからのトークン読み込みに失敗: {e}")
-                return os.getenv("FITBIT_REFRESH_TOKEN")
+        """Google Driveから最新のリフレッシュトークンを読み込む"""
+        if not self.drive_folder_id:
+            logging.warning("GOOGLE_DRIVE_FOLDER_IDが設定されていません。環境変数の初期トークンを使用します。")
+            return os.getenv("FITBIT_REFRESH_TOKEN")
+
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self._get_drive_service)
+        if not service:
+            return os.getenv("FITBIT_REFRESH_TOKEN")
+
+        # .botフォルダを探す
+        bot_folder_id = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, self.bot_folder_name)
+        if not bot_folder_id:
+            return os.getenv("FITBIT_REFRESH_TOKEN")
+
+        # トークンファイルを探す
+        token_file_id = await loop.run_in_executor(None, self._find_file, service, bot_folder_id, self.token_file_name)
+        if not token_file_id:
+            return os.getenv("FITBIT_REFRESH_TOKEN")
+
+        # 読み込み
+        token = await loop.run_in_executor(None, self._read_file_content, service, token_file_id)
+        if token:
+            logging.info("Google Driveから最新のFitbitリフレッシュトークンを読み込みました。")
+            return token.strip()
+        
+        return os.getenv("FITBIT_REFRESH_TOKEN")
 
     def _save_new_refresh_token(self, new_token: str):
-        """新しいリフレッシュトークンをDropboxに保存して永続化する"""
+        """新しいリフレッシュトークンをGoogle Driveに保存する"""
+        if not self.drive_folder_id: return
+
+        # 非同期コンテキスト外から呼ばれる可能性があるため、簡易的に同期実行するか、呼び出し元でawaitする必要がありますが、
+        # ここではコード構造を維持するため、内部でイベントループを取得して実行を試みます。
+        # ただし、aiohttpのコールバック内で呼ばれる場合を考慮し、例外処理を含めます。
+        
+        async def _async_save():
+            loop = asyncio.get_running_loop()
+            service = await loop.run_in_executor(None, self._get_drive_service)
+            if not service: return
+
+            bot_folder_id = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, self.bot_folder_name)
+            if not bot_folder_id:
+                bot_folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, self.bot_folder_name)
+
+            token_file_id = await loop.run_in_executor(None, self._find_file, service, bot_folder_id, self.token_file_name)
+            
+            await loop.run_in_executor(None, self._write_file_content, service, bot_folder_id, self.token_file_name, new_token, token_file_id)
+            logging.info(f"新しいFitbitリフレッシュトークンをGoogle Driveに保存しました: {self.token_file_name}")
+
         try:
-            self.dbx.files_upload(
-                new_token.encode('utf-8'),
-                self.token_path,
-                mode=WriteMode('overwrite')
-            )
-            logging.info(f"新しいFitbitリフレッシュトークンをDropboxに保存しました: {self.token_path}")
-        except Exception as e:
-            logging.error(f"Dropboxへのトークン保存に失敗しました: {e}", exc_info=True)
+            # 既にループが走っている場合（通常はこちら）
+            loop = asyncio.get_running_loop()
+            loop.create_task(_async_save())
+        except RuntimeError:
+            # ループがない場合（初期化時など）
+            asyncio.run(_async_save())
 
     async def _get_access_token(self) -> Optional[str]:
         """リフレッシュトークンを使って新しいアクセストークンを取得する"""

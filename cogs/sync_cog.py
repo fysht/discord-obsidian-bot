@@ -1,17 +1,10 @@
 import os
 import sys
-import json
 import logging
 from pathlib import Path
-from datetime import datetime
-import zoneinfo
-from filelock import FileLock
-from dotenv import load_dotenv
-import dropbox
-from dropbox.exceptions import ApiError
-from dropbox.files import WriteMode
 import asyncio
 from discord.ext import commands, tasks
+from dotenv import load_dotenv
 
 # --- .env 読み込み ---
 load_dotenv()
@@ -32,6 +25,7 @@ class SyncCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        # 親ディレクトリの sync_worker.py を指すパス
         self.worker_path = str(Path(__file__).resolve().parent.parent / "sync_worker.py")
         self.sync_lock = asyncio.Lock()
         self.logger = logging.getLogger(__name__)
@@ -65,12 +59,18 @@ class SyncCog(commands.Cog):
 
             self.logger.info("【強制同期】未同期のメモを検出しました。同期ワーカーを呼び出します...")
             try:
+                # タイムアウト付きでサブプロセスを実行 (最大120秒)
                 proc = await asyncio.create_subprocess_exec(
                     sys.executable, self.worker_path,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                stdout, stderr = await proc.communicate()
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    self.logger.error("【強制同期】ワーカーがタイムアウトしました。")
+                    return
 
                 if proc.returncode == 0:
                     log_output = stdout.decode('utf-8', 'ignore').strip()

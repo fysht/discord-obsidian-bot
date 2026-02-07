@@ -1,162 +1,188 @@
 import os
 import sys
-import asyncio
 import logging
-import dropbox
-from dropbox.exceptions import ApiError
-from dropbox.files import DownloadError # ★修正: ここからインポートする
-import google.generativeai as genai
-from dotenv import load_dotenv
-import datetime
+from datetime import datetime, timedelta
 import zoneinfo
+from dotenv import load_dotenv
+import google.generativeai as genai
 
-# --- 設定 ---
-# 標準出力の文字コードをUTF-8に強制（Windows等での文字化け防止）
-sys.stdout.reconfigure(encoding='utf-8')
+# Google Drive API Imports
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.errors import HttpError
+import io
 
-# ログ設定 (標準エラー出力に出すことで、Bot側が受け取る標準出力(要約結果)と混ざらないようにする)
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s][%(levelname)s][summary_worker] %(message)s",
-    stream=sys.stderr
-)
-
+# --- .env 読み込み ---
 load_dotenv()
 
-# --- 定数 ---
-DROPBOX_APP_KEY = os.getenv("DROPBOX_APP_KEY")
-DROPBOX_APP_SECRET = os.getenv("DROPBOX_APP_SECRET")
-DROPBOX_REFRESH_TOKEN = os.getenv("DROPBOX_REFRESH_TOKEN")
-DROPBOX_VAULT_PATH = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# --- ロギング設定 ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout
+)
+sys.stdout.reconfigure(encoding='utf-8')
 
+# --- 定数・設定 ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") # VaultのルートID
+TOKEN_FILE = 'token.json'
+SCOPES = ['https://www.googleapis.com/auth/drive']
+
+# タイムゾーン設定
 try:
     JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 except Exception:
-    # tzdataがない環境へのフォールバック（基本はインストール推奨）
-    JST = datetime.timezone(datetime.timedelta(hours=9))
+    JST = datetime.timezone(timedelta(hours=9))
 
-async def generate_summary(period: str, target_date_str: str):
-    """
-    指定された期間・日付のデイリーノートを読み込み、AIで要約して標準出力する
-    """
-    
-    # 1. クライアント初期化
-    if not all([DROPBOX_REFRESH_TOKEN, GEMINI_API_KEY]):
-        logging.error("環境変数が不足しています (DROPBOX_REFRESH_TOKEN, GEMINI_API_KEY)")
-        print("ERROR: 環境変数が不足しています。")
-        return
-
-    try:
-        dbx = dropbox.Dropbox(
-            oauth2_refresh_token=DROPBOX_REFRESH_TOKEN,
-            app_key=DROPBOX_APP_KEY,
-            app_secret=DROPBOX_APP_SECRET
-        )
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel("gemini-2.5-pro")
-    except Exception as e:
-        logging.error(f"クライアント初期化エラー: {e}")
-        print(f"ERROR: 初期化エラー: {e}")
-        return
-
-    # 2. 対象期間のファイルを収集
-    try:
-        target_date = datetime.datetime.strptime(target_date_str, '%Y-%m-%d').date()
-    except ValueError:
-        logging.error(f"日付形式エラー: {target_date_str}")
-        print("ERROR: 日付形式が不正です。")
-        return
-
-    files_to_read = []
-
-    if period == "daily":
-        files_to_read.append(f"{DROPBOX_VAULT_PATH}/DailyNotes/{target_date_str}.md")
-    
-    elif period == "weekly":
-        # target_date (日曜日) から過去7日分
-        for i in range(7):
-            d = target_date - datetime.timedelta(days=i)
-            files_to_read.append(f"{DROPBOX_VAULT_PATH}/DailyNotes/{d.strftime('%Y-%m-%d')}.md")
-            
-    elif period == "monthly":
-        # target_date (月末) の月の全ファイル
-        # 簡易的に1日から月末まで回す
-        first_day = target_date.replace(day=1)
-        for i in range((target_date - first_day).days + 1):
-            d = first_day + datetime.timedelta(days=i)
-            files_to_read.append(f"{DROPBOX_VAULT_PATH}/DailyNotes/{d.strftime('%Y-%m-%d')}.md")
-
-    # 3. コンテンツ読み込み
-    full_text = ""
-    
-    for file_path in files_to_read:
+# --- Drive API Helper Functions (sync_worker.pyと同様) ---
+def get_drive_service():
+    """Google Drive APIサービスを取得する"""
+    creds = None
+    if os.path.exists(TOKEN_FILE):
         try:
-            _, res = dbx.files_download(file_path)
-            content = res.content.decode('utf-8')
-            
-            full_text += f"\n--- Date: {file_path.split('/')[-1]} ---\n{content}\n"
-            
-        except ApiError as e:
-            # ファイルがない日はスキップ
-            # ★ 修正箇所: DownloadError は dropbox.files からインポートしたものを使用
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                continue
-            else:
-                logging.warning(f"ファイル読み込みエラー ({file_path}): {e}")
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        except Exception as e:
+            logging.error(f"トークンファイルの読み込みエラー: {e}")
 
-    if not full_text.strip():
-        # メモが全くなかった場合
-        print("NO_MEMO_TODAY") # Cog側でこれを検知してメッセージを変える
-        return
-
-    # 4. AI要約の実行
-    logging.info(f"AI要約を開始します。文字数: {len(full_text)}")
-    
-    prompt = ""
-    if period == "daily":
-        prompt = f"""
-        あなたは優秀な秘書です。以下の今日のメモやログを分析し、1日の活動を要約してください。
-        
-        # 指示
-        - **やったこと**: 主要なタスクや活動を箇条書きで。
-        - **インサイト**: メモから読み取れる気付きやアイデア、感情の変化などがあれば。
-        - **ネクストアクション**: 明日やるべきことや、残っている課題があれば。
-        - 全体をMarkdown形式で、簡潔かつ読みやすくまとめてください。
-        
-        # 今日のメモ
-        {full_text[:20000]}
-        """
-    else:
-        prompt = f"""
-        あなたは優秀な秘書です。以下の期間（{period}）のログを分析し、活動のハイライトを要約してください。
-        全体的な傾向、達成した大きな成果、積み残している課題を中心にまとめてください。
-        
-        # 期間中のログ
-        {full_text[:30000]}
-        """
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+                with open(TOKEN_FILE, 'w') as token:
+                    token.write(creds.to_json())
+                logging.info("トークンをリフレッシュしました。")
+            except Exception as e:
+                logging.error(f"トークンのリフレッシュ失敗: {e}")
+                return None
+        else:
+            logging.error("有効なトークンがありません。")
+            return None
 
     try:
-        response = await model.generate_content_async(prompt)
-        summary = response.text.strip()
-        
-        # 5. 結果を標準出力する (これがDiscordに投稿される)
-        print(summary)
-        logging.info("要約が完了し、出力しました。")
-        
+        service = build('drive', 'v3', credentials=creds)
+        return service
     except Exception as e:
-        logging.error(f"AI生成エラー: {e}")
-        print(f"ERROR: AI生成中にエラーが発生しました: {e}")
+        logging.error(f"Driveサービスの構築失敗: {e}")
+        return None
 
-def main():
-    if len(sys.argv) < 3:
-        print("ERROR: 引数が不足しています (period, target_date)")
+def find_file_in_folder(service, folder_id, file_name, mime_type=None):
+    """フォルダ内のファイルを検索"""
+    query = f"'{folder_id}' in parents and name = '{file_name}' and trashed = false"
+    if mime_type:
+        query += f" and mimeType = '{mime_type}'"
+    
+    try:
+        results = service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get('files', [])
+        if files:
+            return files[0]['id']
+        return None
+    except HttpError as e:
+        logging.error(f"ファイル検索エラー ({file_name}): {e}")
+        return None
+
+def read_text_file(service, file_id):
+    """ファイルの内容を読み込む"""
+    try:
+        request = service.files().get_media(fileId=file_id)
+        file_io = io.BytesIO()
+        downloader = MediaIoBaseDownload(file_io, request)
+        done = False
+        while done is False:
+            status, done = downloader.next_chunk()
+        return file_io.getvalue().decode('utf-8')
+    except HttpError as e:
+        logging.error(f"ファイル読み込みエラー (ID: {file_id}): {e}")
+        return ""
+
+def update_text_file(service, file_id, content):
+    """ファイルを更新（上書き）する"""
+    try:
+        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown', resumable=True)
+        service.files().update(fileId=file_id, media_body=media).execute()
+        return True
+    except HttpError as e:
+        logging.error(f"ファイル更新エラー (ID: {file_id}): {e}")
+        return False
+
+# --- Main Logic ---
+def generate_summary():
+    """本日のデイリーノートを読み込み、Geminiで要約して追記する"""
+    if not GEMINI_API_KEY:
+        logging.error("GEMINI_API_KEY が設定されていません。")
         return
 
-    period = sys.argv[1] # daily, weekly, monthly
-    target_date_str = sys.argv[2] # YYYY-MM-DD
+    if not GOOGLE_DRIVE_FOLDER_ID:
+        logging.error("GOOGLE_DRIVE_FOLDER_ID が設定されていません。")
+        return
 
-    asyncio.run(generate_summary(period, target_date_str))
+    # 1. Drive接続
+    service = get_drive_service()
+    if not service:
+        return
+
+    # 2. ファイル特定 (DailyNotes/YYYY-MM-DD.md)
+    today = datetime.now(JST).date()
+    date_str = today.strftime('%Y-%m-%d')
+    file_name = f"{date_str}.md"
+
+    # DailyNotesフォルダを探す
+    daily_notes_folder_id = find_file_in_folder(service, GOOGLE_DRIVE_FOLDER_ID, "DailyNotes", "application/vnd.google-apps.folder")
+    if not daily_notes_folder_id:
+        logging.error("DailyNotesフォルダが見つかりません。")
+        return
+
+    # ファイルを探す
+    file_id = find_file_in_folder(service, daily_notes_folder_id, file_name)
+    if not file_id:
+        logging.info(f"本日のノート ({file_name}) が見つかりません。")
+        print("NO_MEMO_TODAY") # Cog側への通知
+        return
+
+    # 3. 内容読み込み
+    content = read_text_file(service, file_id)
+    if not content.strip():
+        logging.info("ノートが空です。")
+        print("NO_MEMO_TODAY")
+        return
+
+    logging.info(f"ノート読み込み完了: {len(content)} 文字")
+
+    # 4. Geminiで要約生成
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        model = genai.GenerativeModel('gemini-2.5-pro')
+        
+        prompt = f"""
+以下のObsidianのデイリーノートの内容を要約してください。
+箇条書きで、重要なポイントを抽出してください。
+「今日の出来事」「学んだこと」「ネクストアクション」などのセクションに分けても構いません。
+Markdown形式で出力してください。
+
+---
+{content}
+---
+"""
+        response = model.generate_content(prompt)
+        summary_text = response.text
+        logging.info("要約生成完了")
+
+    except Exception as e:
+        logging.error(f"Gemini APIエラー: {e}")
+        return
+
+    # 5. 追記と更新
+    header = "\n\n## 🌙 本日のふりかえり (AI Summary)\n"
+    new_content = content + header + summary_text
+    
+    if update_text_file(service, file_id, new_content):
+        logging.info("デイリーノートに要約を追記しました。")
+        print(summary_text) # Cog側への出力
+    else:
+        logging.error("ファイルの更新に失敗しました。")
 
 if __name__ == "__main__":
-    main()
+    generate_summary()

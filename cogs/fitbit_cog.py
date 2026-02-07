@@ -1,21 +1,26 @@
 import os
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import logging
 import datetime
 import zoneinfo
-import dropbox
-from dropbox.files import WriteMode, DownloadError
-from dropbox.exceptions import ApiError
-import google.generativeai as genai
 import yaml
 from io import StringIO
 import asyncio
-from discord import app_commands
 from typing import Optional, Dict, Any
 import statistics
 
+# Google Drive API
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+import io
+
+import google.generativeai as genai
 from fitbit_client import FitbitClient
+
 try:
     from utils.obsidian_utils import update_section
 except ImportError:
@@ -25,10 +30,14 @@ except ImportError:
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SLEEP_REPORT_TIME = datetime.time(hour=8, minute=0, tzinfo=JST)
 FULL_HEALTH_REPORT_TIME = datetime.time(hour=22, minute=0, tzinfo=JST)
-WEEKLY_HEALTH_REPORT_TIME = datetime.time(hour=22, minute=0, tzinfo=JST) # 日曜の22時
+WEEKLY_HEALTH_REPORT_TIME = datetime.time(hour=22, minute=0, tzinfo=JST)
+
+# Google Drive 設定
+SCOPES = ['https://www.googleapis.com/auth/drive']
+TOKEN_FILE = 'token.json'
 
 class FitbitCog(commands.Cog):
-    """Fitbitのデータを取得し、Obsidianへの記録とAIによる健康アドバイスを行うCog"""
+    """Fitbitのデータを取得し、Obsidian(Google Drive)への記録とAIによる健康アドバイスを行うCog"""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -37,14 +46,9 @@ class FitbitCog(commands.Cog):
         self.fitbit_refresh_token = os.getenv("FITBIT_REFRESH_TOKEN")
         self.fitbit_user_id = os.getenv("FITBIT_USER_ID", "-")
         
-        # 出力先: ニュースチャンネル
         self.report_channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
-
-        self.dropbox_app_key = os.getenv("DROPBOX_APP_KEY")
-        self.dropbox_app_secret = os.getenv("DROPBOX_APP_SECRET")
-        self.dropbox_refresh_token = os.getenv("DROPBOX_REFRESH_TOKEN")
-        self.dropbox_vault_path = os.getenv("DROPBOX_VAULT_PATH", "/ObsidianVault")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
         self.is_ready = self._validate_and_init_clients()
         if self.is_ready: logging.info("FitbitCog: 正常に初期化されました。")
@@ -52,15 +56,13 @@ class FitbitCog(commands.Cog):
 
     def _validate_and_init_clients(self) -> bool:
         if not all([self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token,
-                    self.report_channel_id, self.dropbox_refresh_token, self.gemini_api_key]):
+                    self.report_channel_id, self.gemini_api_key, self.drive_folder_id]):
             return False
         try:
-            self.dbx = dropbox.Dropbox(
-                oauth2_refresh_token=self.dropbox_refresh_token,
-                app_key=self.dropbox_app_key, app_secret=self.dropbox_app_secret
-            )
+            # FitbitClientの初期化 (Dropbox依存を削除した前提のダミーまたはNoneを渡す必要があるが、
+            # FitbitClientの実装次第。ここではDropbox引数にNoneを渡してみる)
             self.fitbit_client = FitbitClient(
-                self.fitbit_client_id, self.fitbit_client_secret, self.dbx, self.fitbit_user_id
+                self.fitbit_client_id, self.fitbit_client_secret, None, self.fitbit_user_id
             )
             genai.configure(api_key=self.gemini_api_key)
             self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
@@ -69,18 +71,58 @@ class FitbitCog(commands.Cog):
             logging.error(f"FitbitCogのクライアント初期化中にエラー: {e}", exc_info=True)
             return False
 
+    # --- Google Drive Helpers ---
+    def _get_drive_service(self):
+        creds = None
+        if os.path.exists(TOKEN_FILE):
+            try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            except: pass
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    with open(TOKEN_FILE, 'w') as token: token.write(creds.to_json())
+                except: return None
+            else: return None
+        return build('drive', 'v3', credentials=creds)
+
+    def _find_file(self, service, parent_id, name):
+        q = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
+        res = service.files().list(q=q, fields="files(id)").execute()
+        files = res.get('files', [])
+        return files[0]['id'] if files else None
+
+    def _create_folder(self, service, parent_id, name):
+        meta = {'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}
+        file = service.files().create(body=meta, fields='id').execute()
+        return file.get('id')
+
+    def _read_text(self, service, file_id):
+        req = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, req)
+        done = False
+        while done is False: _, done = downloader.next_chunk()
+        return fh.getvalue().decode('utf-8')
+
+    def _update_text(self, service, file_id, content):
+        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown', resumable=True)
+        service.files().update(fileId=file_id, media_body=media).execute()
+
+    def _create_text(self, service, parent_id, name, content):
+        meta = {'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}
+        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown', resumable=True)
+        service.files().create(body=meta, media_body=media).execute()
+
+    # --- Logic ---
     def _calculate_sleep_score(self, summary: Dict[str, Any]) -> int:
-        """Fitbitアプリのスコアを模倣した総合睡眠スコアを計算する"""
         total_asleep_min = summary['minutesAsleep']
         total_in_bed_min = summary['timeInBed']
         deep_min = summary['levels']['summary'].get('deep', 0)
         rem_min = summary['levels']['summary'].get('rem', 0)
         wake_min = summary['levels']['summary'].get('wake', 0)
 
-        # 1. 睡眠時間スコア (最大50点)
         duration_score = min(50, (total_asleep_min / 480) * 50)
-
-        # 2. 睡眠の質スコア (最大25点)
         deep_percentage = (deep_min / total_asleep_min) * 100 if total_asleep_min > 0 else 0
         rem_percentage = (rem_min / total_asleep_min) * 100 if total_asleep_min > 0 else 0
         
@@ -97,8 +139,6 @@ class FitbitCog(commands.Cog):
         else: rem_score = 5
         
         quality_score = deep_score + rem_score
-
-        # 3. 回復度スコア (最大25点) - 落ち着きのなさで代用
         restlessness_percentage = (wake_min / total_in_bed_min) * 100 if total_in_bed_min > 0 else 100
         
         restoration_score = 0
@@ -112,7 +152,6 @@ class FitbitCog(commands.Cog):
         return min(100, total_score)
 
     def _process_sleep_data(self, sleep_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """複数の睡眠ログを統合し、サマリーデータと新しいスコアを作成する"""
         if not sleep_data or 'sleep' not in sleep_data or not sleep_data['sleep']:
             return None
 
@@ -123,7 +162,6 @@ class FitbitCog(commands.Cog):
         for log in sleep_data['sleep']:
             total_minutes_asleep += log.get('minutesAsleep', 0)
             total_time_in_bed += log.get('timeInBed', 0)
-            
             if 'levels' in log and 'summary' in log['levels']:
                 for stage, data in log['levels']['summary'].items():
                     if stage in stage_summary:
@@ -134,23 +172,15 @@ class FitbitCog(commands.Cog):
             'timeInBed': total_time_in_bed,
             'levels': {'summary': stage_summary}
         }
-        
         summary['sleep_score'] = self._calculate_sleep_score(summary)
-
         return summary
 
     @commands.Cog.listener()
     async def on_ready(self):
         if self.is_ready:
-            if not self.sleep_report.is_running():
-                self.sleep_report.start()
-                logging.info(f"FitbitCog: 睡眠レポートタスクを {SLEEP_REPORT_TIME} にスケジュールしました。")
-            if not self.full_health_report.is_running():
-                self.full_health_report.start()
-                logging.info(f"FitbitCog: 統合ヘルスレポートタスクを {FULL_HEALTH_REPORT_TIME} にスケジュールしました。")
-            if not self.weekly_health_report.is_running():
-                self.weekly_health_report.start()
-                logging.info(f"FitbitCog: 週間ヘルスレポートタスクを {WEEKLY_HEALTH_REPORT_TIME} (日曜)にスケジュールしました。")
+            if not self.sleep_report.is_running(): self.sleep_report.start()
+            if not self.full_health_report.is_running(): self.full_health_report.start()
+            if not self.weekly_health_report.is_running(): self.weekly_health_report.start()
 
     def cog_unload(self):
         self.sleep_report.cancel()
@@ -164,408 +194,168 @@ class FitbitCog(commands.Cog):
 
     @tasks.loop(time=SLEEP_REPORT_TIME)
     async def sleep_report(self):
-        """朝にその日の睡眠データだけを速報として通知する"""
         if not self.is_ready: return
-        
-        logging.info(f"FitbitCog: 睡眠レポートタスクを実行します。")
         channel = self.bot.get_channel(self.report_channel_id)
-        
         try:
             target_date = datetime.datetime.now(JST).date()
             raw_sleep_data = await self.fitbit_client.get_sleep_data(target_date)
             sleep_summary = self._process_sleep_data(raw_sleep_data)
 
             if not sleep_summary:
-                logging.warning(f"FitbitCog: {target_date} の睡眠データが取得できませんでした。")
-                if channel:
-                    await channel.send(f" FitbitCog: {target_date.strftime('%Y-%m-%d')} の睡眠データがまだ同期されていないようです。")
+                if channel: await channel.send(f" FitbitCog: {target_date} の睡眠データなし")
                 return
 
             if channel:
-                embed = discord.Embed(
-                    title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (速報)",
-                    color=discord.Color.purple()
-                )
-                embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('sleep_score', 0)}** 点", inline=True)
-                embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_summary.get('minutesAsleep', 0))}**", inline=True)
-                embed.set_footer(text="活動データを含む1日のまとめは夜に通知されます。")
+                embed = discord.Embed(title=f"🌙 {target_date} 睡眠速報", color=discord.Color.purple())
+                embed.add_field(name="スコア", value=f"**{sleep_summary.get('sleep_score')}**", inline=True)
+                embed.add_field(name="時間", value=f"**{self._format_minutes(sleep_summary.get('minutesAsleep'))}**", inline=True)
                 await channel.send(embed=embed)
-                logging.info(f"FitbitCog: {target_date} の睡眠レポートをDiscordに投稿しました。")
-
         except Exception as e:
-            logging.error(f"FitbitCog: 睡眠レポートタスクの実行中にエラーが発生しました: {e}", exc_info=True)
-            if channel:
-                await channel.send(f"FitbitCog: 睡眠レポートタスクの実行中にエラーが発生しました。\n```\n{e}\n```")
+            logging.error(f"Sleep report error: {e}")
 
     @tasks.loop(time=FULL_HEALTH_REPORT_TIME)
     async def full_health_report(self):
-        """夜に1日の健康データをまとめて通知・保存する"""
         if not self.is_ready: return
-
-        logging.info(f"FitbitCog: 統合ヘルスレポートタスクを実行します。")
         channel = self.bot.get_channel(self.report_channel_id)
-
         try:
             target_date = datetime.datetime.now(JST).date()
-            
-            raw_sleep_data, activity_data = await asyncio.gather(
+            raw_sleep, activity = await asyncio.gather(
                 self.fitbit_client.get_sleep_data(target_date),
                 self.fitbit_client.get_activity_summary(target_date)
             )
+            sleep_summary = self._process_sleep_data(raw_sleep)
+            if not sleep_summary and not activity: return
             
-            sleep_summary = self._process_sleep_data(raw_sleep_data)
-
-            if not sleep_summary and not activity_data:
-                logging.warning(f"FitbitCog: {target_date} の全データが取得できませんでした。")
-                return
-            
-            # Discord表示用のアドバイスは生成する
-            advice_text = await self._generate_ai_advice(target_date, sleep_summary, activity_data)
-            
-            # Obsidian保存時はアドバイスを含めない
-            await self._save_data_to_obsidian(target_date, sleep_summary, activity_data)
+            advice = await self._generate_ai_advice(target_date, sleep_summary, activity)
+            await self._save_data_to_obsidian(target_date, sleep_summary, activity)
             
             if channel:
-                # Discordにはアドバイスを表示
-                embed = await self._create_discord_embed(target_date, sleep_summary, activity_data, advice_text)
+                embed = await self._create_discord_embed(target_date, sleep_summary, activity, advice)
                 await channel.send(embed=embed)
-                logging.info(f"FitbitCog: {target_date} の統合ヘルスレポートをDiscordに投稿しました。")
-
         except Exception as e:
-            logging.error(f"FitbitCog: 統合ヘルスレポートタスクの実行中にエラーが発生しました: {e}", exc_info=True)
-            if channel:
-                await channel.send(f"FitbitCog: 統合ヘルスレポートタスクの実行中にエラーが発生しました。\n```\n{e}\n```")
+            logging.error(f"Full report error: {e}")
 
     @tasks.loop(time=WEEKLY_HEALTH_REPORT_TIME)
     async def weekly_health_report(self):
-        """日曜の夜に週間の健康データをまとめて通知・保存する"""
-        if not self.is_ready or datetime.datetime.now(JST).weekday() != 6:  # 6は日曜日
-            return
-
-        logging.info("FitbitCog: 週間ヘルスレポートタスクを実行します。")
+        if not self.is_ready or datetime.datetime.now(JST).weekday() != 6: return
         channel = self.bot.get_channel(self.report_channel_id)
         today = datetime.datetime.now(JST).date()
         
-        weekly_sleep_data = []
-        weekly_activity_data = []
-
+        w_sleep, w_activity = [], []
         for i in range(7):
-            target_date = today - datetime.timedelta(days=i)
-            sleep_data, activity_data = await asyncio.gather(
-                self.fitbit_client.get_sleep_data(target_date),
-                self.fitbit_client.get_activity_summary(target_date)
-            )
-            if sleep_data:
-                weekly_sleep_data.append(self._process_sleep_data(sleep_data))
-            if activity_data:
-                weekly_activity_data.append(activity_data)
+            d = today - datetime.timedelta(days=i)
+            s, a = await asyncio.gather(self.fitbit_client.get_sleep_data(d), self.fitbit_client.get_activity_summary(d))
+            if s: w_sleep.append(self._process_sleep_data(s))
+            if a: w_activity.append(a)
         
-        avg_sleep_score = statistics.mean([s['sleep_score'] for s in weekly_sleep_data if s and 'sleep_score' in s])
-        avg_sleep_duration = statistics.mean([s['minutesAsleep'] for s in weekly_sleep_data if s and 'minutesAsleep' in s])
-        total_steps = sum([a['summary']['steps'] for a in weekly_activity_data if a and 'summary' in a and 'steps' in a['summary']])
-        avg_resting_hr = statistics.mean([a['summary']['restingHeartRate'] for a in weekly_activity_data if a and 'summary' in a and 'restingHeartRate' in a['summary']])
-
-        summary_text = (f"週間平均睡眠スコア: {avg_sleep_score:.1f}点\n"
-                        f"週間平均睡眠時間: {self._format_minutes(avg_sleep_duration)}\n"
-                        f"週間合計歩数: {total_steps}歩\n"
-                        f"週間平均安静時心拍数: {avg_resting_hr:.1f} bpm")
+        scores = [s['sleep_score'] for s in w_sleep if s and 'sleep_score' in s]
+        avg_score = statistics.mean(scores) if scores else 0
         
-        advice_text = await self._generate_weekly_ai_advice(summary_text)
+        summary = f"週間平均睡眠スコア: {avg_score:.1f}点"
+        advice = await self._generate_weekly_ai_advice(summary)
 
         if channel:
-            embed = discord.Embed(
-                title=f"📅 週間ヘルスレポート ({today - datetime.timedelta(days=6)} ~ {today})",
-                description=f"**🤖 AI Health Coach**\n{advice_text}",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="📈 週間サマリー", value=summary_text, inline=False)
+            embed = discord.Embed(title="📅 週間レポート", description=f"**AI Coach**\n{advice}", color=discord.Color.green())
+            embed.add_field(name="サマリー", value=summary)
             await channel.send(embed=embed)
 
-    @app_commands.command(name="get_morning_report", description="指定日の睡眠レポートを手動で取得します。")
-    @app_commands.describe(date="取得したい日付 (YYYY-MM-DD形式、省略で今日)")
-    async def get_morning_report(self, interaction: discord.Interaction, date: str = None):
-        """朝の睡眠レポートを手動で取得するスラッシュコマンド"""
-        await interaction.response.defer(ephemeral=True)
-        if not self.is_ready:
-            await interaction.followup.send("Fitbit Cogが初期化されていません。")
-            return
-        
-        try:
-            target_date = datetime.datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.datetime.now(JST).date()
-        except ValueError:
-            await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
-            return
-
-        channel = self.bot.get_channel(self.report_channel_id)
-        raw_sleep_data = await self.fitbit_client.get_sleep_data(target_date)
-        sleep_summary = self._process_sleep_data(raw_sleep_data)
-
-        if not sleep_summary:
-            msg = f"FitbitCog: {target_date.strftime('%Y-%m-%d')} の睡眠データがまだ同期されていないようです。"
-            if channel: await channel.send(msg)
-            await interaction.followup.send(msg)
-            return
-
-        if channel:
-            embed = discord.Embed(
-                title=f"🌙 {target_date.strftime('%Y年%m月%d日')}の睡眠レポート (手動取得)",
-                color=discord.Color.purple()
-            )
-            embed.add_field(name="睡眠スコア", value=f"**{sleep_summary.get('sleep_score', 0)}** 点", inline=True)
-            embed.add_field(name="合計睡眠時間", value=f"**{self._format_minutes(sleep_summary.get('minutesAsleep', 0))}**", inline=True)
-            await channel.send(embed=embed)
-            await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の睡眠レポートを送信しました。")
-        else:
-            await interaction.followup.send("レポートを送信するチャンネルが見つかりません。")
-
-
-    @app_commands.command(name="get_evening_report", description="指定日の総合ヘルスレポートを手動で取得します。")
-    @app_commands.describe(date="取得したい日付 (YYYY-MM-DD形式、省略で今日)")
+    @app_commands.command(name="get_evening_report")
     async def get_evening_report(self, interaction: discord.Interaction, date: str = None):
-        """夜の総合レポートを手動で取得するスラッシュコマンド"""
-        await interaction.response.defer(ephemeral=True)
-        if not self.is_ready:
-            await interaction.followup.send("Fitbit Cogが初期化されていません。")
-            return
-
-        try:
-            target_date = datetime.datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.datetime.now(JST).date()
-        except ValueError:
-            await interaction.followup.send("日付の形式が正しくありません。YYYY-MM-DD形式で入力してください。")
-            return
+        await interaction.response.defer()
+        if not self.is_ready: return
+        try: target_date = datetime.datetime.strptime(date, "%Y-%m-%d").date() if date else datetime.datetime.now(JST).date()
+        except: return
         
-        channel = self.bot.get_channel(self.report_channel_id)
-        
-        raw_sleep_data, activity_data = await asyncio.gather(
-            self.fitbit_client.get_sleep_data(target_date),
-            self.fitbit_client.get_activity_summary(target_date)
+        raw_sleep, activity = await asyncio.gather(
+            self.fitbit_client.get_sleep_data(target_date), self.fitbit_client.get_activity_summary(target_date)
         )
-        sleep_summary = self._process_sleep_data(raw_sleep_data)
-
-        if not sleep_summary and not activity_data:
-            msg = f"FitbitCog: {target_date} の全データが取得できませんでした。"
-            if channel: await channel.send(msg)
-            await interaction.followup.send(msg)
-            return
+        sleep_summary = self._process_sleep_data(raw_sleep)
+        advice = await self._generate_ai_advice(target_date, sleep_summary, activity)
+        await self._save_data_to_obsidian(target_date, sleep_summary, activity)
         
-        advice_text = await self._generate_ai_advice(target_date, sleep_summary, activity_data)
-        
-        # Obsidian保存時はアドバイスを含めない
-        await self._save_data_to_obsidian(target_date, sleep_summary, activity_data)
-        
-        if channel:
-            # Discordにはアドバイスを表示
-            embed = await self._create_discord_embed(target_date, sleep_summary, activity_data, advice_text, is_manual=True)
-            await channel.send(embed=embed)
-            await interaction.followup.send(f"{target_date.strftime('%Y-%m-%d')}の総合ヘルスレポートを送信・保存しました。")
-        else:
-            await interaction.followup.send("レポートを送信するチャンネルが見つかりません。")
+        embed = await self._create_discord_embed(target_date, sleep_summary, activity, advice, True)
+        await interaction.followup.send(embed=embed)
 
     def _parse_note_content(self, content: str) -> (dict, str):
         try:
             if content.startswith('---'):
                 parts = content.split('---', 2)
-                if len(parts) >= 3:
-                    return yaml.safe_load(StringIO(parts[1])) or {}, parts[2].lstrip()
-        except yaml.YAMLError: pass
+                if len(parts) >= 3: return yaml.safe_load(StringIO(parts[1])) or {}, parts[2].lstrip()
+        except: pass
         return {}, content
 
     async def _save_data_to_obsidian(self, target_date: datetime.date, sleep_data: dict, activity_data: dict):
-        """
-        Obsidianに健康データを保存する。
-        AIアドバイスの保存機能は削除されました。
-        """
-        daily_note_path = f"{self.dropbox_vault_path}/DailyNotes/{target_date.strftime('%Y-%m-%d')}.md"
+        date_str = target_date.strftime('%Y-%m-%d')
+        file_name = f"{date_str}.md"
         
-        try:
-            _, res = self.dbx.files_download(daily_note_path)
-            current_content = res.content.decode('utf-8')
-        except ApiError as e:
-            if isinstance(e.error, DownloadError) and e.error.is_path() and e.error.get_path().is_not_found():
-                current_content = ""
-            else: raise
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self._get_drive_service)
+        if not service: return
+
+        # DailyNotesフォルダ検索
+        daily_folder_id = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, "DailyNotes")
+        if not daily_folder_id:
+            daily_folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "DailyNotes")
+
+        # ファイル検索・読み込み
+        file_id = await loop.run_in_executor(None, self._find_file, service, daily_folder_id, file_name)
+        current_content = ""
+        if file_id:
+            current_content = await loop.run_in_executor(None, self._read_text, service, file_id)
 
         frontmatter, body = self._parse_note_content(current_content)
         
-        # フロントマターの更新 (数値データ)
+        # Frontmatter更新
         if sleep_data:
-            levels = sleep_data.get('levels', {}).get('summary', {})
             frontmatter.update({
                 'sleep_score': sleep_data.get('sleep_score'),
                 'total_sleep_minutes': sleep_data.get('minutesAsleep'),
-                'time_in_bed_minutes': sleep_data.get('timeInBed'),
-                'deep_sleep_minutes': levels.get('deep'),
-                'rem_sleep_minutes': levels.get('rem'),
-                'light_sleep_minutes': levels.get('light')
             })
         if activity_data:
             summary = activity_data.get('summary', {})
             frontmatter.update({
                 'steps': summary.get('steps'),
-                'distance_km': next((d['distance'] for d in summary.get('distances', []) if d['activity'] == 'total'), None),
                 'calories_out': summary.get('caloriesOut'),
                 'resting_heart_rate': summary.get('restingHeartRate'),
-                'active_minutes_fairly': summary.get('fairlyActiveMinutes'),
-                'active_minutes_very': summary.get('veryActiveMinutes'),
             })
 
-        metrics_sections = []
+        # Body更新
+        metrics = []
         if sleep_data:
-            levels = sleep_data.get('levels', {}).get('summary', {})
-            sleep_text = (
-                f"#### Sleep\n"
-                f"- **Score:** {sleep_data.get('sleep_score', 'N/A')} / 100\n"
-                f"- **Total Sleep:** {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
-                f"- **Time in Bed:** {self._format_minutes(sleep_data.get('timeInBed'))}\n"
-                f"- **Stages:** Deep {self._format_minutes(levels.get('deep'))}, "
-                f"REM {self._format_minutes(levels.get('rem'))}, "
-                f"Light {self._format_minutes(levels.get('light'))}"
-            )
-            metrics_sections.append(sleep_text)
-        
+            metrics.append(f"#### Sleep\n- Score: {sleep_data.get('sleep_score')}\n- Time: {self._format_minutes(sleep_data.get('minutesAsleep'))}")
         if activity_data:
-            summary = activity_data.get('summary', {})
-            activity_text = (
-                f"#### Activity\n"
-                f"- **Steps:** {summary.get('steps', 'N/A')} steps\n"
-                f"- **Distance:** {next((d['distance'] for d in summary.get('distances', []) if d['activity'] == 'total'), 'N/A')} km\n"
-                f"- **Calories Out:** {summary.get('caloriesOut', 'N/A')} kcal\n"
-                f"- **Active Minutes:** {self._format_minutes(summary.get('fairlyActiveMinutes', 0) + summary.get('veryActiveMinutes', 0))}"
-            )
-            metrics_sections.append(activity_text)
-
-            hr_zones = summary.get('heartRateZones', {})
-            heart_rate_text = (
-                f"#### Heart Rate\n"
-                f"- **Resting Heart Rate:** {summary.get('restingHeartRate', 'N/A')} bpm\n"
-                f"- **Fat Burn:** {self._format_minutes(hr_zones.get('Fat Burn', {}).get('minutes'))}\n"
-                f"- **Cardio:** {self._format_minutes(hr_zones.get('Cardio', {}).get('minutes'))}\n"
-                f"- **Peak:** {self._format_minutes(hr_zones.get('Peak', {}).get('minutes'))}"
-            )
-            metrics_sections.append(heart_rate_text)
-
-        # AI Health Coachセクションの追加処理を削除しました
-        
-        new_body = update_section(body, "\n\n".join(metrics_sections), "## Health Metrics")
-        
-        new_daily_content = f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False)}---\n\n{new_body}"
-        
-        self.dbx.files_upload(new_daily_content.encode('utf-8'), daily_note_path, mode=WriteMode('overwrite'))
-        logging.info(f"FitbitCog: {daily_note_path} を更新しました。")
-
-    async def _generate_ai_advice(self, target_date: datetime.date, sleep_data: dict, activity_data: dict) -> str:
-        today_sleep_text = ""
-        if sleep_data:
-            today_sleep_text = (f"今日の睡眠: スコア {sleep_data.get('sleep_score', 'N/A')}, "
-                              f"合計睡眠時間 {self._format_minutes(sleep_data.get('minutesAsleep', 0))}")
-        today_activity_text = ""
-        if activity_data:
-            summary = activity_data.get('summary', {})
-            today_activity_text = (f"今日の活動: 歩数 {summary.get('steps', 'N/A')}歩, "
-                                   f"安静時心拍数 {summary.get('restingHeartRate', 'N/A')}bpm")
-
-        prompt = f"""
-        あなたは私の成長をサポートするヘルスコーチです。
-        以下のデータを元に、私の健康状態を分析し、改善のためのアドバイスをしてください。
-
-        # 今日のデータ
-        - {today_sleep_text}
-        - {today_activity_text}
-
-        # 指示
-        - **挨拶や前置きは一切含めないでください。**
-        - **最も重要なポイントに絞って簡潔に記述してください。**
-        - 良い点を1つ、改善できる点を1つ、具体的なアクションと共に提案してください。
-        - アドバイスの本文のみを生成してください。
-        """
-        try:
-            response = await self.gemini_model.generate_content_async(prompt)
-            return response.text.strip()
-        except Exception as e:
-            logging.error(f"FitbitCog: Gemini APIからのアドバイス生成中にエラー: {e}")
-            return "AIによるアドバイスの生成中にエラーが発生しました。"
-
-    async def _generate_weekly_ai_advice(self, weekly_summary: str) -> str:
-        prompt = f"""
-        あなたは私の成長をサポートするヘルスコーチです。
-        以下は私の一週間の健康データのサマリーです。この内容を分析し、
-        来週に向けたポジティブで具体的なアドバイスを生成してください。
-
-        # 指示
-        - **挨拶や前置きは一切含めないでください。**
-        - **まず、この一週間で特に良かった点を一つ褒めてください。**
-        - **次に、来週さらに改善できる点を一つ挙げ、具体的なアクションを提案してください。**
-        - 全体として、ポジティブでやる気の出るようなトーンで記述してください。
-
-        # 今週のサマリー
-        {weekly_summary}
-        """
-        try:
-            response = await self.gemini_model.generate_content_async(prompt)
-            return response.text.strip()
-        except Exception as e:
-            logging.error(f"FitbitCog: 週間のAIアドバイス生成中にエラー: {e}")
-            return "AIによる週間アドバイスの生成中にエラーが発生しました。"
-    
-    async def _summarize_text(self, text: str, max_length: int = 1000) -> str:
-        """テキストが長すぎる場合にAIで要約する"""
-        try:
-            prompt = f"以下のテキストを、Discordで表示するために{max_length}文字以内で簡潔に要約してください:\n\n---\n{text}"
-            response = await self.gemini_model.generate_content_async(prompt)
-            return response.text.strip()
-        except Exception as e:
-            logging.error(f"テキストの要約に失敗: {e}")
-            return text[:max_length] + "..."
-
-    async def _create_discord_embed(self, target_date: datetime.date, sleep_data: dict, activity_data: dict, advice: str, is_manual: bool = False) -> discord.Embed:
-        title = f"📅 {target_date.strftime('%Y年%m月%d日')}のヘルスレポート"
-        if is_manual:
-            title += " (手動取得)"
-
-        embed = discord.Embed(title=title, color=discord.Color.blue())
-
-        # Sleep
-        if sleep_data:
-            levels = sleep_data.get('levels', {}).get('summary', {})
-            sleep_text = (
-                f"**スコア**: **{sleep_data.get('sleep_score', 'N/A')}** / 100\n"
-                f"**合計睡眠時間**: {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
-                f"**ベッドにいた時間**: {self._format_minutes(sleep_data.get('timeInBed'))}\n"
-                f"**ステージ**: 深い {self._format_minutes(levels.get('deep'))}, "
-                f"レム {self._format_minutes(levels.get('rem'))}, "
-                f"浅い {self._format_minutes(levels.get('light'))}"
-            )
-            embed.add_field(name="🌙 睡眠", value=sleep_text, inline=False)
-        
-        # Activity & Heart Rate
-        if activity_data:
-            summary = activity_data.get('summary', {})
-            activity_text = (
-                f"**歩数**: {summary.get('steps', 'N/A')}歩\n"
-                f"**距離**: {next((d['distance'] for d in summary.get('distances', []) if d['activity'] == 'total'), 'N/A')} km\n"
-                f"**消費カロリー**: {summary.get('caloriesOut', 'N/A')} kcal\n"
-                f"**アクティブな時間**: {self._format_minutes(summary.get('fairlyActiveMinutes', 0) + summary.get('veryActiveMinutes', 0))}"
-            )
-            embed.add_field(name="🏃 アクティビティ", value=activity_text, inline=True)
-
-            hr_zones = summary.get('heartRateZones', {})
-            heart_rate_text = (
-                f"**安静時心拍数**: {summary.get('restingHeartRate', 'N/A')} bpm\n"
-                f"**脂肪燃焼**: {self._format_minutes(hr_zones.get('Fat Burn', {}).get('minutes'))}\n"
-                f"**有酸素運動**: {self._format_minutes(hr_zones.get('Cardio', {}).get('minutes'))}\n"
-                f"**ピーク**: {self._format_minutes(hr_zones.get('Peak', {}).get('minutes'))}"
-            )
-            embed.add_field(name="❤️ 心拍数", value=heart_rate_text, inline=True)
-
-        # AI Coach
-        advice_text = advice
-        if len(advice_text) > 1024:
-            advice_text = await self._summarize_text(advice, 1024)
+            s = activity_data.get('summary', {})
+            metrics.append(f"#### Activity\n- Steps: {s.get('steps')}\n- RHR: {s.get('restingHeartRate')}")
             
-        embed.add_field(name="🤖 AI Health Coach", value=advice_text, inline=False)
-        
-        embed.set_footer(text="Powered by Fitbit & Gemini")
-        embed.timestamp = datetime.datetime.now(JST)
+        new_body = update_section(body, "\n\n".join(metrics), "## Health Metrics")
+        new_content = f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False)}---\n\n{new_body}"
+
+        if file_id:
+            await loop.run_in_executor(None, self._update_text, service, file_id, new_content)
+        else:
+            await loop.run_in_executor(None, self._create_text, service, daily_folder_id, file_name, new_content)
+
+    async def _generate_ai_advice(self, target_date, sleep, activity) -> str:
+        prompt = f"今日の健康データ: 睡眠{sleep.get('sleep_score') if sleep else 'なし'}, 歩数{activity.get('summary',{}).get('steps') if activity else 'なし'}。一言アドバイスをください。"
+        try:
+            res = await self.gemini_model.generate_content_async(prompt)
+            return res.text.strip()
+        except: return "アドバイス生成失敗"
+
+    async def _generate_weekly_ai_advice(self, summary) -> str:
+        try:
+            res = await self.gemini_model.generate_content_async(f"週間健康データ: {summary}。来週のアドバイスを一言。")
+            return res.text.strip()
+        except: return "アドバイス生成失敗"
+
+    async def _create_discord_embed(self, target_date, sleep, activity, advice, is_manual=False):
+        embed = discord.Embed(title=f"📅 {target_date} レポート", color=discord.Color.blue())
+        if sleep:
+            embed.add_field(name="睡眠", value=f"スコア: {sleep.get('sleep_score')}\n時間: {self._format_minutes(sleep.get('minutesAsleep'))}")
+        if activity:
+            s = activity.get('summary', {})
+            embed.add_field(name="活動", value=f"歩数: {s.get('steps')}\n心拍: {s.get('restingHeartRate')}")
+        embed.add_field(name="AI Coach", value=advice, inline=False)
         return embed
 
 async def setup(bot: commands.Bot):
