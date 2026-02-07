@@ -17,8 +17,10 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 import io
 
-try: from utils.obsidian_utils import update_section
-except ImportError: def update_section(content, text, header): return f"{content}\n{header}\n{text}"
+try: 
+    from utils.obsidian_utils import update_section
+except ImportError: 
+    def update_section(content, text, header): return f"{content}\n{header}\n{text}"
 
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SCOPES = ['https://www.googleapis.com/auth/drive']
@@ -51,52 +53,98 @@ class JournalCog(commands.Cog):
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return ""
 
-        daily_folder = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{self.drive_folder_id}' in parents and name = 'DailyNotes'", fields="files(id)").execute())
-        d_id = daily_folder['files'][0]['id'] if daily_folder['files'] else None
+        # DailyNotesフォルダ検索
+        daily_folder_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{self.drive_folder_id}' in parents and name = 'DailyNotes' and trashed = false", fields="files(id)").execute())
+        d_id = daily_folder_res['files'][0]['id'] if daily_folder_res.get('files') else None
         if not d_id: return ""
 
-        f_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{d_id}' in parents and name = '{date_str}.md'", fields="files(id)").execute())
-        f_id = f_res['files'][0]['id'] if f_res['files'] else None
+        # ファイル検索
+        f_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{d_id}' in parents and name = '{date_str}.md' and trashed = false", fields="files(id)").execute())
+        f_id = f_res['files'][0]['id'] if f_res.get('files') else None
         if not f_id: return ""
 
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=f_id))
-        done=False
-        while not done: _, done = downloader.next_chunk()
-        content = fh.getvalue().decode('utf-8')
-        
-        match = re.search(r'##\s*Life\s*Logs\s*(.*?)(?=\n##|$)', content, re.DOTALL | re.IGNORECASE)
-        return match.group(1).strip() if match else ""
+        try:
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=f_id))
+            done=False
+            while not done: _, done = downloader.next_chunk()
+            content = fh.getvalue().decode('utf-8')
+            
+            match = re.search(r'##\s*Life\s*Logs\s*(.*?)(?=\n##|$)', content, re.DOTALL | re.IGNORECASE)
+            return match.group(1).strip() if match else ""
+        except: return ""
 
     async def process_handwritten_journal(self, handwritten_content, date_str):
         if not self.is_ready: return discord.Embed(title="Error", description="Not ready")
         
         life_logs = await self._get_life_logs_content(date_str)
-        # ... (Prompt and AI generation same as original) ...
-        ai_output = "AI Analysis..." # Placeholder for brevity
+        
+        prompt = f"""
+        あなたはユーザーの専属コーチです。
+        ユーザーが書いた「手書きの振り返り（OCR）」と、システムが記録した「ライフログ（時間記録）」を統合し、
+        **今日一日の分析と、明日への具体的なアドバイス**を行ってください。
 
-        full_content = f"{ai_output}\n### Source\n{handwritten_content}"
+        # 情報ソース
+        ## 【A】ライフログ（客観的な時間の使い方）
+        {life_logs if life_logs else "(記録なし)"}
+        
+        ## 【B】手書きの振り返り（ユーザーの主観・思考）
+        {handwritten_content}
+
+        # 指示
+        以下のフォーマットでMarkdownテキストを出力してください。
+        ユーザーへの語りかけ口調（「〜ですね」「〜しましょう」）で書いてください。
+
+        ### 1. 🤖 AI Analysis & Advice
+        - **時間の使い方**: ライフログと振り返りを照らし合わせ、時間の使い方の傾向や、集中できていた点、改善できる点を指摘してください。
+        - **メンタルケア**: ユーザーの感情に寄り添い、ポジティブなフィードバックや励ましを行ってください。
+        - **明日への提案**: 明日具体的に意識すべきアクションを1〜2点提案してください。
+
+        ### 2. 📝 Daily Summary
+        - 今日の出来事を簡潔に（3〜5行程度で）要約してください。これは後で見返すための記録です。
+        """
+
+        try:
+            response = await self.gemini_model.generate_content_async(prompt)
+            ai_output = response.text.strip()
+        except Exception as e:
+            ai_output = f"AI Error: {e}"
+
+        full_content = f"{ai_output}\n\n### Source (Handwritten OCR)\n{handwritten_content}"
         await self._save_to_obsidian(date_str, full_content, "## Journal")
         
-        return discord.Embed(title=f"AI Advice {date_str}", description=ai_output[:4000])
+        # Embed作成
+        advice_part = ai_output
+        if "### 1. 🤖 AI Analysis & Advice" in ai_output:
+            parts = ai_output.split("### 2. 📝 Daily Summary")
+            advice_part = parts[0].replace("### 1. 🤖 AI Analysis & Advice", "").strip()
+
+        return discord.Embed(title=f"🤖 AI Advice for {date_str}", description=advice_part[:4000], color=discord.Color.gold())
 
     async def _save_to_obsidian(self, date_str, content, section):
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
+        if not service: return False
         
-        daily_folder_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{self.drive_folder_id}' in parents and name = 'DailyNotes'", fields="files(id)").execute())
-        d_id = daily_folder_res['files'][0]['id'] if daily_folder_res['files'] else None
+        # フォルダ検索
+        daily_folder_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{self.drive_folder_id}' in parents and name = 'DailyNotes' and trashed = false", fields="files(id)").execute())
+        d_id = daily_folder_res['files'][0]['id'] if daily_folder_res.get('files') else None
         
-        f_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{d_id}' in parents and name = '{date_str}.md'", fields="files(id)").execute())
-        f_id = f_res['files'][0]['id'] if f_res['files'] else None
+        # なければ作成 (省略、他で作成済み前提)
+        if not d_id: return False
+
+        f_res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{d_id}' in parents and name = '{date_str}.md' and trashed = false", fields="files(id)").execute())
+        f_id = f_res['files'][0]['id'] if f_res.get('files') else None
         
         cur = ""
         if f_id:
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=f_id))
-            done=False
-            while not done: _, done = downloader.next_chunk()
-            cur = fh.getvalue().decode('utf-8')
+            try:
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=f_id))
+                done=False
+                while not done: _, done = downloader.next_chunk()
+                cur = fh.getvalue().decode('utf-8')
+            except: pass
         else:
             cur = f"# Daily Note {date_str}\n"
 
