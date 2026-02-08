@@ -20,14 +20,22 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 # 外部ライブラリ
-try: from web_parser import parse_url_with_readability
-except ImportError: parse_url_with_readability = None
-try: from utils.obsidian_utils import update_section
-except ImportError: def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
+try: 
+    from web_parser import parse_url_with_readability
+except ImportError: 
+    parse_url_with_readability = None
+
+try: 
+    from utils.obsidian_utils import update_section
+except ImportError: 
+    # フォールバック関数定義
+    def update_section(content, text, header):
+        return f"{content}\n\n{header}\n{text}"
 
 # --- 定数 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 DATA_FILE_NAME = "partner_data.json"
+HISTORY_FILE_NAME = "partner_chat_history.json" # バックアップ用
 BOT_FOLDER = ".bot"
 TOKEN_FILE = 'token.json'
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/calendar.readonly']
@@ -164,25 +172,20 @@ class PartnerCog(commands.Cog):
 
     # --- Tool: Search Past Diaries ---
     async def _search_drive_notes(self, keywords: str):
-        """Google Drive内のMarkdownファイルを全文検索する"""
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return "検索エラー: Driveに接続できません"
 
-        # Drive APIの全文検索クエリ
-        # ゴミ箱になく、Markdownファイルで、キーワードを含むものを検索
         query = f"fullText contains '{keywords}' and mimeType = 'text/markdown' and trashed = false"
         
         try:
-            # 検索実行 (上位3件まで取得)
             results = await loop.run_in_executor(None, lambda: service.files().list(
-                q=query, pageSize=3, fields="files(id, name, createdTime)").execute())
+                q=query, pageSize=3, fields="files(id, name)").execute())
             files = results.get('files', [])
             
             if not files:
                 return f"「{keywords}」に関する記録は見つからなかったよ。"
 
-            # ファイルの中身を読み込む
             search_results = []
             for file in files:
                 try:
@@ -193,8 +196,6 @@ class PartnerCog(commands.Cog):
                     done = False
                     while not done: _, done = downloader.next_chunk()
                     content = fh.getvalue().decode('utf-8')
-                    
-                    # 長すぎる場合は抜粋
                     snippet = content[:1000] 
                     search_results.append(f"【ファイル名: {file['name']}】\n{snippet}\n")
                 except: continue
@@ -279,7 +280,7 @@ class PartnerCog(commands.Cog):
             logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    # --- Chat Generation (with Tool Use) ---
+    # --- Chat Generation ---
     async def _generate_reply(self, channel, inputs: list, trigger_type="reply", extra_context=""):
         if not self.gemini_client: return None
         
@@ -291,15 +292,14 @@ class PartnerCog(commands.Cog):
             elapsed = int((datetime.datetime.now(JST) - self.current_task['start']).total_seconds() / 60)
             task_info = f"「{self.current_task['name']}」を実行中（{elapsed}分経過）"
 
-        # ツールの定義
         search_tool = types.Tool(function_declarations=[
             types.FunctionDeclaration(
                 name="search_memory",
-                description="過去の日記やメモをGoogle Driveから検索する。ユーザーが過去の出来事（「先週何した？」「〇〇っていつだっけ？」など）を聞いた時に使用する。",
+                description="過去の日記やメモをGoogle Driveから検索する。",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
                     properties={
-                        "keywords": types.Schema(type=types.Type.STRING, description="検索するキーワード（例: '読書', '映画', '2024-02-01'）")
+                        "keywords": types.Schema(type=types.Type.STRING, description="検索キーワード")
                     },
                     required=["keywords"]
                 )
@@ -318,21 +318,19 @@ class PartnerCog(commands.Cog):
 
         **行動指針:**
         1. **自然な会話:** 短く（1〜3文）、共感やリアクションを入れる。
-        2. **記憶の活用:** ユーザーが過去のことを聞いたら、**迷わず `search_memory` ツールを使って**調べてから答えて。
-        3. **リマインダー:** セットされたら「了解！〇〇時に教えるね👍」と返す。
-        4. **アドバイス禁止:** 「日記に書こう」などは言わない。
+        2. **記憶:** 過去のことを聞かれたら `search_memory` で調べて。
+        3. **リマインダー:** セットされたら快諾して。
+        4. **アドバイス禁止。**
 
         **トリガー:** {trigger_type}
         """
 
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
         
-        # 会話履歴
         recent_msgs = await self._build_conversation_context(channel, limit=30)
         for msg in recent_msgs:
             contents.append(types.Content(role=msg['role'], parts=[types.Part.from_text(text=msg['text'])]))
         
-        # 今回の入力
         user_parts = []
         for inp in inputs:
             if isinstance(inp, str): user_parts.append(types.Part.from_text(text=inp))
@@ -341,33 +339,25 @@ class PartnerCog(commands.Cog):
         if user_parts: contents.append(types.Content(role="user", parts=user_parts))
         else: contents.append(types.Content(role="user", parts=[types.Part.from_text(text="(きっかけ)")]))
 
-        # 生成設定（ツール有効化）
         config = types.GenerateContentConfig(
             tools=[search_tool],
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True) # 手動で制御するため
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
         )
 
         try:
-            # 1回目の生成（ツールを呼ぶかどうか判断）
             response = await self.gemini_client.aio.models.generate_content(
-                model='gemini-2.0-flash',
+                model='gemini-2.5-pro',
                 contents=contents,
                 config=config
             )
 
-            # ツール呼び出しがあるかチェック
             if response.function_calls:
                 function_call = response.function_calls[0]
                 if function_call.name == "search_memory":
-                    # 検索中リアクション（オプション）
-                    # await channel.typing() 
-                    
                     keywords = function_call.args["keywords"]
-                    # 検索実行
                     search_result = await self._search_drive_notes(keywords)
                     
-                    # 結果をAIに渡す
-                    contents.append(response.candidates[0].content) # AIのツール呼び出し履歴
+                    contents.append(response.candidates[0].content)
                     contents.append(types.Content(
                         role="user",
                         parts=[types.Part.from_function_response(
@@ -376,9 +366,8 @@ class PartnerCog(commands.Cog):
                         )]
                     ))
                     
-                    # 2回目の生成（検索結果を踏まえた回答）
                     response_final = await self.gemini_client.aio.models.generate_content(
-                        model='gemini-2.0-flash',
+                        model='gemini-2.5-pro',
                         contents=contents
                     )
                     return response_final.text
@@ -405,13 +394,11 @@ class PartnerCog(commands.Cog):
         input_parts = []
         extra_ctx = ""
 
-        # リマインダー
         reminder_time = self._parse_reminder(text, message.author.id)
         if reminder_time:
-            extra_ctx += f"\n【システム通知】リマインダーセット完了（時間: {reminder_time}）。「了解！その時間に教えるね」と返して。"
+            extra_ctx += f"\n【システム通知】リマインダーセット完了（時間: {reminder_time}）。「了解！」と返して。"
             await self._save_data_to_drive()
 
-        # URL解析
         url_match = URL_REGEX.search(text)
         if url_match:
             async with message.channel.typing():
@@ -427,7 +414,6 @@ class PartnerCog(commands.Cog):
 
         if not input_parts: return
 
-        # タスク管理
         if any(w in text for w in ["開始", "やる", "読む", "作業"]):
             if not self.current_task: 
                 self.current_task = {'name': text, 'start': datetime.datetime.now(JST)}
@@ -470,7 +456,7 @@ class PartnerCog(commands.Cog):
             """
             try:
                 response = await self.gemini_client.aio.models.generate_content(
-                    model='gemini-2.0-flash',
+                    model='gemini-2.5-pro',
                     contents=prompt
                 )
                 await message.reply(f"今のところ、こんな感じでまとまってるよ！👇\n\n{response.text}")
@@ -598,7 +584,6 @@ class PartnerCog(commands.Cog):
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return
 
-        # WebClips
         if data.get('webclips'):
             folder_id = await self._find_file(service, self.drive_folder_id, "WebClips")
             if not folder_id: folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "WebClips")
@@ -606,7 +591,6 @@ class PartnerCog(commands.Cog):
                 t = item.get('title','Clip'); safe_t = re.sub(r'[\\/*?:"<>|]', "", t)[:30]
                 await self._upload_text(service, folder_id, f"{date_str}-{safe_t}.md", f"# {t}\nURL: {item.get('url')}\n\n## Note\n{item.get('note','')}")
 
-        # YouTube
         if data.get('youtube'):
             folder_id = await self._find_file(service, self.drive_folder_id, "YouTube")
             if not folder_id: folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "YouTube")
@@ -614,7 +598,6 @@ class PartnerCog(commands.Cog):
                 t = item.get('title','Video'); safe_t = re.sub(r'[\\/*?:"<>|]', "", t)[:30]
                 await self._upload_text(service, folder_id, f"{date_str}-{safe_t}.md", f"# {t}\nURL: {item.get('url')}\n\n## Memo\n{item.get('note','')}")
 
-        # Recipes
         if data.get('recipes'):
             folder_id = await self._find_file(service, self.drive_folder_id, "Recipes")
             if not folder_id: folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "Recipes")
@@ -622,7 +605,6 @@ class PartnerCog(commands.Cog):
                 t = item.get('name','Recipe'); safe_t = re.sub(r'[\\/*?:"<>|]', "", t)[:30]
                 await self._upload_text(service, folder_id, f"{date_str}-{safe_t}.md", f"# {t}\nURL: {item.get('url')}\n\n## Note\n{item.get('note','')}")
 
-        # Daily Note
         daily_folder = await self._find_file(service, self.drive_folder_id, "DailyNotes")
         if not daily_folder: daily_folder = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "DailyNotes")
         
