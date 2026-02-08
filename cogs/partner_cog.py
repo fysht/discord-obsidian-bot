@@ -74,6 +74,7 @@ class PartnerCog(commands.Cog):
     async def cog_load(self):
         await self._load_data_from_drive()
         self.inactivity_check_task.start()
+        self.nightly_reflection_task.start() # 追加
         self.daily_organize_task.start()
         self.morning_greeting_task.start()
         self.calendar_check_task.start()
@@ -82,6 +83,7 @@ class PartnerCog(commands.Cog):
 
     async def cog_unload(self):
         self.inactivity_check_task.cancel()
+        self.nightly_reflection_task.cancel()
         self.daily_organize_task.cancel()
         self.morning_greeting_task.cancel()
         self.calendar_check_task.cancel()
@@ -320,9 +322,10 @@ class PartnerCog(commands.Cog):
         1. **自然な会話:** 短く（1〜3文）、共感やリアクションを入れる。
         2. **記憶:** 過去のことを聞かれたら `search_memory` で調べて。
         3. **リマインダー:** セットされたら快諾して。
-        4. **アドバイス禁止。**
-
+        4. **アドバイス禁止:** 「日記に書こう」などは言わない。
+        
         **トリガー:** {trigger_type}
+        （nightly_reflectionの場合は、今日の会話を踏まえて1日を振り返るような質問をして）
         """
 
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
@@ -518,6 +521,17 @@ class PartnerCog(commands.Cog):
         channel = self.bot.get_channel(self.channel_id)
         if not channel: return
         reply = await self._generate_reply(channel, ["(朝だよ。天気と予定を教えて、明るく起こして)"], trigger_type="morning")
+        if reply: await channel.send(reply)
+
+    @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
+    async def nightly_reflection_task(self):
+        """22時の振り返り質問"""
+        if not self.channel_id: return
+        channel = self.bot.get_channel(self.channel_id)
+        if not channel: return
+
+        # 履歴を取得して質問を生成させる
+        reply = await self._generate_reply(channel, ["(もう22時だね。今日の会話や出来事を踏まえて、1日を振り返るような、答えやすい質問を1つだけ投げかけて。定型文は禁止)"], trigger_type="nightly_reflection")
         if reply: await channel.send(reply)
 
     @tasks.loop(minutes=60)
