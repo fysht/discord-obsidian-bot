@@ -7,7 +7,7 @@ from discord.ext import commands, tasks
 from google import genai
 from google.genai import types
 import datetime
-from datetime import timedelta, time
+from datetime import timedelta
 import zoneinfo
 import re
 import aiohttp
@@ -19,12 +19,17 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-# 外部ライブラリ
-try: from web_parser import parse_url_with_readability
-except ImportError: parse_url_with_readability = None
+# 外部ライブラリ (Web解析用)
+try:
+    from web_parser import parse_url_with_readability
+except ImportError:
+    parse_url_with_readability = None
 
-try: from utils.obsidian_utils import update_section
-except ImportError: def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
+try:
+    from utils.obsidian_utils import update_section
+except ImportError:
+    def update_section(content, text, header):
+        return f"{content}\n\n{header}\n{text}"
 
 # --- 定数 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -147,7 +152,6 @@ class PartnerCog(commands.Cog):
 
         data = {'history': self.history[-100:], 'last_interaction': self.last_interaction.isoformat()}
         b_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, BOT_FOLDER)
-        # フォルダ作成ロジック省略（既存前提）
         
         f_id = await loop.run_in_executor(None, self._find_file, service, b_folder, HISTORY_FILE_NAME)
         media = MediaIoBaseUpload(io.BytesIO(json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')), mimetype='application/json')
@@ -202,9 +206,6 @@ class PartnerCog(commands.Cog):
 
     # --- Chat Generation Core ---
     async def _generate_reply(self, inputs: list, trigger_type="reply"):
-        """
-        inputs: List of types.Content or types.Part (text, image, audio)
-        """
         if not self.gemini_client: return None
         
         # コンテキスト情報の収集
@@ -307,9 +308,7 @@ class PartnerCog(commands.Cog):
 
         if not input_parts: return
 
-        # 3. タスク状態の簡易管理 (会話内容から推測も可能だが、明示的なキーワードで補完)
-        # ※Geminiが賢いので、会話履歴に残れば夜のまとめで「〇〇をした」と認識される。
-        # ここでは「開始」の時刻を正確に取るための簡易フック。
+        # 3. タスク状態の簡易管理
         if "開始" in text_content or "やる" in text_content or "読む" in text_content:
             if not self.current_task:
                 self.current_task = {'name': text_content, 'start': datetime.datetime.now(JST)}
@@ -435,8 +434,7 @@ class PartnerCog(commands.Cog):
         if not service: return
 
         # 1. 個別ファイル保存 (WebClip, YouTube, Recipe)
-        # (ロジックは前のコードと同様、各フォルダにMD作成)
-        # 簡略化のため、ここではDaily Noteへの追記に集中させますが、必要なら復活可能です。
+        # (必要に応じて各フォルダにMD作成)
         
         # 2. Daily Note更新
         daily_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, "DailyNotes")
