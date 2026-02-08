@@ -523,7 +523,7 @@ class PartnerCog(commands.Cog):
         reply = await self._generate_reply(channel, ["(朝だよ。天気と予定を教えて、明るく起こして)"], trigger_type="morning")
         if reply: await channel.send(reply)
 
-    @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
+    @tasks.loop(time=datetime.time(hour=22, minute=10, tzinfo=JST))
     async def nightly_reflection_task(self):
         """22時の振り返り質問"""
         if not self.channel_id: return
