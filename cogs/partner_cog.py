@@ -176,6 +176,7 @@ class PartnerCog(commands.Cog):
 
     # --- Tool Functions ---
     async def _search_drive_notes(self, keywords: str):
+        """Google Drive検索"""
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return "検索エラー: Driveに接続できません"
@@ -200,10 +201,43 @@ class PartnerCog(commands.Cog):
             return f"検索結果:\n" + "\n---\n".join(search_results)
         except Exception as e: return f"エラー: {e}"
 
-    async def _create_calendar_event(self, summary: str, start_time: str, end_time: str, location: str = "", description: str = ""):
+    async def _check_schedule(self, date_str: str):
+        """指定日の予定を取得"""
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_calendar_service)
-        if not service: return "エラー: カレンダーに接続できません（権限を確認してください）"
+        if not service: return "エラー: カレンダーに接続できません"
+
+        try:
+            dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+            time_min = dt.replace(hour=0, minute=0, second=0).isoformat() + 'Z'
+            time_max = dt.replace(hour=23, minute=59, second=59).isoformat() + 'Z'
+            
+            events_result = await loop.run_in_executor(None, lambda: service.events().list(
+                calendarId=self.calendar_id, timeMin=time_min, timeMax=time_max,
+                singleEvents=True, orderBy='startTime').execute())
+            events = events_result.get('items', [])
+
+            if not events:
+                return f"{date_str} の予定は特にないみたいだよ。"
+            
+            result_text = f"【{date_str} の予定】\n"
+            for event in events:
+                start = event['start'].get('dateTime', event['start'].get('date'))
+                summary = event.get('summary', '(タイトルなし)')
+                if 'T' in start:
+                    t = datetime.datetime.fromisoformat(start).strftime('%H:%M')
+                    result_text += f"- {t} : {summary}\n"
+                else:
+                    result_text += f"- 終日 : {summary}\n"
+            return result_text
+        except Exception as e:
+            return f"スケジュール確認エラー: {e}"
+
+    async def _create_calendar_event(self, summary: str, start_time: str, end_time: str, location: str = "", description: str = ""):
+        """カレンダー登録"""
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self._get_calendar_service)
+        if not service: return "エラー: カレンダーに接続できません"
 
         event_body = {
             'summary': summary,
@@ -354,8 +388,17 @@ class PartnerCog(commands.Cog):
                     )
                 ),
                 types.FunctionDeclaration(
+                    name="check_schedule",
+                    description="指定した日付のGoogleカレンダーの予定を確認する。予定を追加する前には必ずこれを使用して重複を確認すること。",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={"date": types.Schema(type=types.Type.STRING, description="確認したい日付 (YYYY-MM-DD)")},
+                        required=["date"]
+                    )
+                ),
+                types.FunctionDeclaration(
                     name="create_calendar_event",
-                    description="Googleカレンダーに予定を追加する。ユーザーから日時と内容を聞き出してから実行すること。",
+                    description="Googleカレンダーに予定を追加する。",
                     parameters=types.Schema(
                         type=types.Type.OBJECT,
                         properties={
@@ -385,14 +428,15 @@ class PartnerCog(commands.Cog):
         **行動指針:**
         1. **自然な会話:** 短く（1〜3文）、共感やリアクションを入れる。
         2. **記憶:** 過去のことを聞かれたら `search_memory` で調べて。
-        3. **予定作成:** ユーザーが「予定を入れたい」と言ったら、**日時・内容・場所**を聞き出し、揃ったら `Calendar` を実行して。
-           ※ 日時が曖昧（例：「来週の土曜」）なら、具体的な日付を計算してツールに渡すこと。
+        3. **予定作成の手順:**
+           - ユーザーが「予定を入れたい」と言ったら、**まず `check_schedule` を使ってその日の予定を確認する**。
+           - 予定が空いていれば、**日時・内容・場所**を聞き出し、揃ったら `Calendar` を実行。
+           - もし予定が重複していたら、「その時間は〇〇があるけど大丈夫？」と確認する。
         4. **リマインダー:** セットされたら快諾して。
         5. **アドバイス禁止:** 「日記に書こう」などは言わない。
 
         **トリガー:** {trigger_type}
-        （morning: 天気・予定・昨日の日記・ニュースを含めて起こして）
-        （nightly_reflection: 今日の会話を踏まえて1日を振り返る質問をして）
+        （nightly_reflection: 今日の会話ログ全体を踏まえて1日を振り返る質問をして）
         """
 
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
@@ -430,25 +474,24 @@ class PartnerCog(commands.Cog):
                 if function_call.name == "search_memory":
                     tool_result = await self._search_drive_notes(function_call.args["keywords"])
                 
+                elif function_call.name == "check_schedule":
+                    tool_result = await self._check_schedule(function_call.args["date"])
+
                 elif function_call.name == "create_calendar_event":
                     args = function_call.args
-                    # argsはdictではなく、getメソッドを持つオブジェクトの可能性があるが
-                    # Python SDKでは通常dictのように振る舞うか、.get()を持つラッパー
-                    # 安全のため .get() を使用し、end_timeがない場合のフォールバックを実装
                     summary = args.get("summary")
                     start_time = args.get("start_time")
                     end_time = args.get("end_time")
                     location = args.get("location", "")
                     description = args.get("description", "")
 
-                    # 必須項目のチェックとend_timeの補完
                     if summary and start_time:
                         if not end_time:
                             try:
                                 dt = datetime.datetime.fromisoformat(start_time)
                                 end_time = (dt + timedelta(hours=1)).isoformat()
                             except ValueError:
-                                end_time = start_time # パース失敗時の安全策
+                                end_time = start_time 
 
                         tool_result = await self._create_calendar_event(
                             summary=summary,
