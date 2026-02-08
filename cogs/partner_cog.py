@@ -20,10 +20,16 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 # 外部ライブラリ
-try: from web_parser import parse_url_with_readability
-except ImportError: parse_url_with_readability = None
-try: from utils.obsidian_utils import update_section
-except ImportError: def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
+try: 
+    from web_parser import parse_url_with_readability
+except ImportError: 
+    parse_url_with_readability = None
+
+try: 
+    from utils.obsidian_utils import update_section
+except ImportError: 
+    def update_section(content, text, header):
+        return f"{content}\n\n{header}\n{text}"
 
 # --- 定数 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -143,6 +149,7 @@ class PartnerCog(commands.Cog):
             try:
                 request = service.files().get_media(fileId=r_id)
                 fh = io.BytesIO()
+                from googleapiclient.http import MediaIoBaseDownload
                 downloader = MediaIoBaseDownload(fh, request)
                 done = False
                 while not done: _, done = downloader.next_chunk()
@@ -344,7 +351,7 @@ class PartnerCog(commands.Cog):
             if reply:
                 await message.channel.send(reply)
                 self.history.append({'role': 'model', 'text': reply, 'timestamp': datetime.datetime.now(JST).isoformat()})
-                await self._save_history_to_drive()
+                await self._save_history_to_drive() # リマインダー込みで保存
 
     # --- Interim Summary (途中経過) ---
     async def _show_interim_summary(self, message):
@@ -515,7 +522,6 @@ class PartnerCog(commands.Cog):
             logging.error(f"Nightly Task Error: {e}")
 
     async def _execute_organization(self, data, date_str):
-        # ... (保存ロジックは前回と同じため省略なしで実装) ...
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return
@@ -528,7 +534,6 @@ class PartnerCog(commands.Cog):
                 t = item.get('title','Clip'); safe_t = re.sub(r'[\\/*?:"<>|]', "", t)[:30]
                 await self._upload_text(service, folder_id, f"{date_str}-{safe_t}.md", f"# {t}\nURL: {item.get('url')}\n\n## Note\n{item.get('note','')}")
 
-        # YouTube, Recipesも同様（省略せず実装）
         if data.get('youtube'):
             folder_id = await self._find_file(service, self.drive_folder_id, "YouTube")
             if not folder_id: folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "YouTube")
