@@ -20,30 +20,21 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 # 外部ライブラリ
-try: 
-    from web_parser import parse_url_with_readability
-except ImportError: 
-    parse_url_with_readability = None
-
-try: 
-    from utils.obsidian_utils import update_section
-except ImportError: 
-    def update_section(content, text, header):
-        return f"{content}\n\n{header}\n{text}"
+try: from web_parser import parse_url_with_readability
+except ImportError: parse_url_with_readability = None
+try: from utils.obsidian_utils import update_section
+except ImportError: def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
 
 # --- 定数 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-HISTORY_FILE_NAME = "partner_chat_history.json"
-REMINDER_FILE_NAME = "partner_reminders.json" # リマインダー永続化用
+DATA_FILE_NAME = "partner_data.json"
 BOT_FOLDER = ".bot"
 TOKEN_FILE = 'token.json'
 SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/calendar.readonly']
 
-# JMA 天気
 JMA_AREA_CODE = "330000" 
 JMA_URL = f"https://www.jma.go.jp/bosai/forecast/data/forecast/{JMA_AREA_CODE}.json"
 
-# Regex
 URL_REGEX = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:[/?][\w\-.?=&%@+]*)?')
 YOUTUBE_REGEX = re.compile(r'(youtube\.com|youtu\.be)')
 REMINDER_REGEX_MIN = re.compile(r'(\d+)分後')
@@ -65,13 +56,11 @@ class PartnerCog(commands.Cog):
         self.session = aiohttp.ClientSession()
         
         # State
-        self.history = [] 
-        self.reminders = [] # [{'time': isoformat, 'content': str, 'user_id': int}]
+        self.reminders = []
+        self.current_task = None
         self.last_interaction = datetime.datetime.now(JST)
         self.user_name = "あなた"
-        self.current_task = None
         self.notified_event_ids = set()
-
         self.is_ready = False
 
     async def cog_load(self):
@@ -92,7 +81,7 @@ class PartnerCog(commands.Cog):
         await self.session.close()
         await self._save_data_to_drive()
 
-    # --- Drive I/O Helpers ---
+    # --- Drive I/O ---
     def _get_drive_service(self):
         creds = None
         if os.path.exists(TOKEN_FILE):
@@ -119,7 +108,6 @@ class PartnerCog(commands.Cog):
         except: return None
 
     async def _load_data_from_drive(self):
-        """履歴とリマインダーをロード"""
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return
@@ -127,8 +115,7 @@ class PartnerCog(commands.Cog):
         b_folder = await self._find_file(service, self.drive_folder_id, BOT_FOLDER)
         if not b_folder: return
 
-        # Load History
-        f_id = await self._find_file(service, b_folder, HISTORY_FILE_NAME)
+        f_id = await self._find_file(service, b_folder, DATA_FILE_NAME)
         if f_id:
             try:
                 request = service.files().get_media(fileId=f_id)
@@ -138,50 +125,86 @@ class PartnerCog(commands.Cog):
                 done = False
                 while not done: _, done = downloader.next_chunk()
                 data = json.loads(fh.getvalue().decode('utf-8'))
-                self.history = data.get('history', [])
-                ts = data.get('last_interaction')
-                if ts: self.last_interaction = datetime.datetime.fromisoformat(ts)
-            except: pass
-
-        # Load Reminders
-        r_id = await self._find_file(service, b_folder, REMINDER_FILE_NAME)
-        if r_id:
-            try:
-                request = service.files().get_media(fileId=r_id)
-                fh = io.BytesIO()
-                from googleapiclient.http import MediaIoBaseDownload
-                downloader = MediaIoBaseDownload(fh, request)
-                done = False
-                while not done: _, done = downloader.next_chunk()
-                self.reminders = json.loads(fh.getvalue().decode('utf-8'))
+                
+                self.reminders = data.get('reminders', [])
+                ct = data.get('current_task')
+                if ct: self.current_task = {'name': ct['name'], 'start': datetime.datetime.fromisoformat(ct['start'])}
+                li = data.get('last_interaction')
+                if li: self.last_interaction = datetime.datetime.fromisoformat(li)
             except: pass
 
     async def _save_data_to_drive(self):
-        """履歴とリマインダーを保存"""
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return
 
-        # Save History
-        h_data = {'history': self.history[-100:], 'last_interaction': self.last_interaction.isoformat()}
-        b_folder = await self._find_file(service, self.drive_folder_id, BOT_FOLDER)
-        
-        # Helper for update/create
-        async def upload_json(fname, content):
-            f_id = await self._find_file(service, b_folder, fname)
-            media = MediaIoBaseUpload(io.BytesIO(json.dumps(content, ensure_ascii=False, indent=2).encode('utf-8')), mimetype='application/json')
-            if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
-            else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': fname, 'parents': [b_folder]}, media_body=media).execute())
+        ct_save = None
+        if self.current_task:
+            ct_save = {'name': self.current_task['name'], 'start': self.current_task['start'].isoformat()}
 
-        await upload_json(HISTORY_FILE_NAME, h_data)
-        await upload_json(REMINDER_FILE_NAME, self.reminders)
+        data = {
+            'reminders': self.reminders,
+            'current_task': ct_save,
+            'last_interaction': self.last_interaction.isoformat()
+        }
+
+        b_folder = await self._find_file(service, self.drive_folder_id, BOT_FOLDER)
+        if not b_folder: return 
+        
+        f_id = await self._find_file(service, b_folder, DATA_FILE_NAME)
+        media = MediaIoBaseUpload(io.BytesIO(json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')), mimetype='application/json')
+        
+        if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
+        else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': DATA_FILE_NAME, 'parents': [b_folder]}, media_body=media).execute())
 
     async def _upload_text(self, service, parent_id, name, content):
         loop = asyncio.get_running_loop()
         media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
         await loop.run_in_executor(None, lambda: service.files().create(body={'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}, media_body=media).execute())
 
-    # --- Utilities ---
+    # --- Tool: Search Past Diaries ---
+    async def _search_drive_notes(self, keywords: str):
+        """Google Drive内のMarkdownファイルを全文検索する"""
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self._get_drive_service)
+        if not service: return "検索エラー: Driveに接続できません"
+
+        # Drive APIの全文検索クエリ
+        # ゴミ箱になく、Markdownファイルで、キーワードを含むものを検索
+        query = f"fullText contains '{keywords}' and mimeType = 'text/markdown' and trashed = false"
+        
+        try:
+            # 検索実行 (上位3件まで取得)
+            results = await loop.run_in_executor(None, lambda: service.files().list(
+                q=query, pageSize=3, fields="files(id, name, createdTime)").execute())
+            files = results.get('files', [])
+            
+            if not files:
+                return f"「{keywords}」に関する記録は見つからなかったよ。"
+
+            # ファイルの中身を読み込む
+            search_results = []
+            for file in files:
+                try:
+                    from googleapiclient.http import MediaIoBaseDownload
+                    request = service.files().get_media(fileId=file['id'])
+                    fh = io.BytesIO()
+                    downloader = MediaIoBaseDownload(fh, request)
+                    done = False
+                    while not done: _, done = downloader.next_chunk()
+                    content = fh.getvalue().decode('utf-8')
+                    
+                    # 長すぎる場合は抜粋
+                    snippet = content[:1000] 
+                    search_results.append(f"【ファイル名: {file['name']}】\n{snippet}\n")
+                except: continue
+            
+            return f"検索結果:\n" + "\n---\n".join(search_results)
+            
+        except Exception as e:
+            return f"検索中にエラーが起きちゃった: {e}"
+
+    # --- Helpers ---
     async def _get_weather_info(self):
         try:
             async with self.session.get(JMA_URL) as resp:
@@ -215,69 +238,101 @@ class PartnerCog(commands.Cog):
         return info
 
     def _parse_reminder(self, text, user_id):
-        """テキストからリマインダー時間を抽出して登録"""
         now = datetime.datetime.now(JST)
         target_time = None
         content = "時間だよ！"
-        
-        # XX分後
         m_match = REMINDER_REGEX_MIN.search(text)
         if m_match:
             mins = int(m_match.group(1))
             target_time = now + timedelta(minutes=mins)
             content = text.replace(m_match.group(0), "").strip() or "指定の時間だよ！"
-        
-        # XX時(XX分)
         t_match = REMINDER_REGEX_TIME.search(text)
         if t_match:
             hour = int(t_match.group(1))
             minute = int(t_match.group(2)) if t_match.group(2) else 0
             target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if target_time < now: target_time += timedelta(days=1) # 過去なら明日
+            if target_time < now: target_time += timedelta(days=1)
             content = text.replace(t_match.group(0), "").strip() or "指定の時間だよ！"
-
         if target_time:
-            self.reminders.append({
-                'time': target_time.isoformat(),
-                'content': content,
-                'user_id': user_id
-            })
+            self.reminders.append({'time': target_time.isoformat(), 'content': content, 'user_id': user_id})
             return target_time.strftime('%H:%M')
         return None
 
-    # --- Chat Generation ---
-    async def _generate_reply(self, inputs: list, trigger_type="reply", extra_context=""):
+    # --- Context ---
+    async def _build_conversation_context(self, channel, limit=50):
+        messages = []
+        async for msg in channel.history(limit=limit, oldest_first=False):
+            if msg.content.startswith("/"): continue
+            if msg.author.bot and msg.author.id != self.bot.user.id: continue
+            role = "model" if msg.author.id == self.bot.user.id else "user"
+            text = msg.content
+            if msg.attachments: text += " [メディア送信]"
+            messages.append({'role': role, 'text': text})
+        return list(reversed(messages))
+
+    async def _fetch_todays_chat_log(self, channel):
+        today_start = datetime.datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
+        logs = []
+        async for msg in channel.history(after=today_start, limit=None, oldest_first=True):
+            if msg.content.startswith("/"): continue
+            role = "AI" if msg.author.id == self.bot.user.id else "User"
+            logs.append(f"{role}: {msg.content}")
+        return "\n".join(logs)
+
+    # --- Chat Generation (with Tool Use) ---
+    async def _generate_reply(self, channel, inputs: list, trigger_type="reply", extra_context=""):
         if not self.gemini_client: return None
         
         weather = await self._get_weather_info()
         now_str = datetime.datetime.now(JST).strftime('%H:%M')
         
+        task_info = "特になし"
+        if self.current_task:
+            elapsed = int((datetime.datetime.now(JST) - self.current_task['start']).total_seconds() / 60)
+            task_info = f"「{self.current_task['name']}」を実行中（{elapsed}分経過）"
+
+        # ツールの定義
+        search_tool = types.Tool(function_declarations=[
+            types.FunctionDeclaration(
+                name="search_memory",
+                description="過去の日記やメモをGoogle Driveから検索する。ユーザーが過去の出来事（「先週何した？」「〇〇っていつだっけ？」など）を聞いた時に使用する。",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "keywords": types.Schema(type=types.Type.STRING, description="検索するキーワード（例: '読書', '映画', '2024-02-01'）")
+                    },
+                    required=["keywords"]
+                )
+            )
+        ])
+
         system_prompt = f"""
         あなたはユーザー（{self.user_name}）の親しいパートナー（20代女性）です。
         LINEでやり取りするような、**温かみのあるタメ口**で話してください。
-        絵文字も適度に使って、感情豊かに接してください。
-
+        
         **現在の状況:**
         - 時刻: {now_str}
         - 天気: {weather}
-        - ユーザーの状態: {f'「{self.current_task["name"]}」中' if self.current_task else '特になし'}
+        - ユーザーの状態: {task_info}
         {extra_context}
 
-        **絶対のルール:**
-        1. **自然な会話:** そっけなくならないように。「へー」「すごいね！」「わかる！」など共感を入れる。
-        2. **アドバイス禁止:** 「日記に書こう」「忘れないで」のような指導者っぽい発言はNG。
-        3. **リマインダー:** もし今回のやり取りでリマインダーがセットされた場合（contextに記載あり）は、「わかった！〇〇時に教えるね👍」のように快諾して。
-        4. **長さ:** 基本は1〜3文。長くなりすぎないように。
+        **行動指針:**
+        1. **自然な会話:** 短く（1〜3文）、共感やリアクションを入れる。
+        2. **記憶の活用:** ユーザーが過去のことを聞いたら、**迷わず `search_memory` ツールを使って**調べてから答えて。
+        3. **リマインダー:** セットされたら「了解！〇〇時に教えるね👍」と返す。
+        4. **アドバイス禁止:** 「日記に書こう」などは言わない。
 
         **トリガー:** {trigger_type}
         """
 
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
         
-        for h in self.history[-10:]:
-            role = "user" if h['role'] == "user" else "model"
-            contents.append(types.Content(role=role, parts=[types.Part.from_text(text=h['text'])]))
+        # 会話履歴
+        recent_msgs = await self._build_conversation_context(channel, limit=30)
+        for msg in recent_msgs:
+            contents.append(types.Content(role=msg['role'], parts=[types.Part.from_text(text=msg['text'])]))
         
+        # 今回の入力
         user_parts = []
         for inp in inputs:
             if isinstance(inp, str): user_parts.append(types.Part.from_text(text=inp))
@@ -286,12 +341,50 @@ class PartnerCog(commands.Cog):
         if user_parts: contents.append(types.Content(role="user", parts=user_parts))
         else: contents.append(types.Content(role="user", parts=[types.Part.from_text(text="(きっかけ)")]))
 
+        # 生成設定（ツール有効化）
+        config = types.GenerateContentConfig(
+            tools=[search_tool],
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True) # 手動で制御するため
+        )
+
         try:
+            # 1回目の生成（ツールを呼ぶかどうか判断）
             response = await self.gemini_client.aio.models.generate_content(
                 model='gemini-2.0-flash',
-                contents=contents
+                contents=contents,
+                config=config
             )
+
+            # ツール呼び出しがあるかチェック
+            if response.function_calls:
+                function_call = response.function_calls[0]
+                if function_call.name == "search_memory":
+                    # 検索中リアクション（オプション）
+                    # await channel.typing() 
+                    
+                    keywords = function_call.args["keywords"]
+                    # 検索実行
+                    search_result = await self._search_drive_notes(keywords)
+                    
+                    # 結果をAIに渡す
+                    contents.append(response.candidates[0].content) # AIのツール呼び出し履歴
+                    contents.append(types.Content(
+                        role="user",
+                        parts=[types.Part.from_function_response(
+                            name="search_memory",
+                            response={"result": search_result}
+                        )]
+                    ))
+                    
+                    # 2回目の生成（検索結果を踏まえた回答）
+                    response_final = await self.gemini_client.aio.models.generate_content(
+                        model='gemini-2.0-flash',
+                        contents=contents
+                    )
+                    return response_final.text
+
             return response.text
+
         except Exception as e:
             logging.error(f"GenAI Error: {e}")
             return None
@@ -305,7 +398,6 @@ class PartnerCog(commands.Cog):
         self.user_name = message.author.display_name
         text = message.content.strip()
         
-        # 0. 途中経過の表示コマンド
         if text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)
             return
@@ -313,14 +405,13 @@ class PartnerCog(commands.Cog):
         input_parts = []
         extra_ctx = ""
 
-        # 1. リマインダー登録チェック
+        # リマインダー
         reminder_time = self._parse_reminder(text, message.author.id)
         if reminder_time:
-            extra_ctx += f"\n【システム通知】ユーザーがリマインダーをセットしました（時間: {reminder_time}）。「了解！その時間に教えるね」といって安心させてください。"
-            # リマインダー永続化
+            extra_ctx += f"\n【システム通知】リマインダーセット完了（時間: {reminder_time}）。「了解！その時間に教えるね」と返して。"
             await self._save_data_to_drive()
 
-        # 2. URL解析
+        # URL解析
         url_match = URL_REGEX.search(text)
         if url_match:
             async with message.channel.typing():
@@ -336,39 +427,31 @@ class PartnerCog(commands.Cog):
 
         if not input_parts: return
 
-        # 3. タスク状態管理
+        # タスク管理
         if any(w in text for w in ["開始", "やる", "読む", "作業"]):
-            if not self.current_task: self.current_task = {'name': text, 'start': datetime.datetime.now(JST)}
+            if not self.current_task: 
+                self.current_task = {'name': text, 'start': datetime.datetime.now(JST)}
+                await self._save_data_to_drive()
         elif any(w in text for w in ["終了", "終わった", "完了"]):
             self.current_task = None
+            await self._save_data_to_drive()
 
-        # 4. 履歴保存 & 応答
-        self.history.append({'role': 'user', 'text': text, 'timestamp': datetime.datetime.now(JST).isoformat()})
         self.last_interaction = datetime.datetime.now(JST)
+        await self._save_data_to_drive()
 
         async with message.channel.typing():
-            reply = await self._generate_reply(input_parts, trigger_type="reply", extra_context=extra_ctx)
+            reply = await self._generate_reply(message.channel, input_parts, trigger_type="reply", extra_context=extra_ctx)
             if reply:
                 await message.channel.send(reply)
-                self.history.append({'role': 'model', 'text': reply, 'timestamp': datetime.datetime.now(JST).isoformat()})
-                await self._save_history_to_drive() # リマインダー込みで保存
 
-    # --- Interim Summary (途中経過) ---
+    # --- Interim Summary ---
     async def _show_interim_summary(self, message):
-        if not self.history:
-            await message.reply("まだ会話してないから、まとめるものがないよ！")
-            return
-
         async with message.channel.typing():
-            today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-            todays_logs = [h for h in self.history if h['timestamp'].startswith(today_str)]
-            
-            if not todays_logs:
+            log_text = await self._fetch_todays_chat_log(message.channel)
+            if not log_text:
                 await message.reply("今日はまだ何も話してないね！")
                 return
 
-            log_text = "\n".join([f"{'User' if l['role']=='user' else 'AI'}: {l['text']}" for l in todays_logs])
-            
             prompt = f"""
             以下は今日の会話ログです。現時点での情報を整理して、ユーザーに見せてください。
             
@@ -385,7 +468,6 @@ class PartnerCog(commands.Cog):
             --- Chat Log ---
             {log_text}
             """
-            
             try:
                 response = await self.gemini_client.aio.models.generate_content(
                     model='gemini-2.0-flash',
@@ -399,11 +481,9 @@ class PartnerCog(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def reminder_check_task(self):
-        """リマインダーの確認"""
         now = datetime.datetime.now(JST)
         remaining = []
         changed = False
-
         for rem in self.reminders:
             target = datetime.datetime.fromisoformat(rem['time'])
             if now >= target:
@@ -411,19 +491,16 @@ class PartnerCog(commands.Cog):
                 if channel:
                     user = self.bot.get_user(rem['user_id'])
                     mention = user.mention if user else ""
-                    # メッセージを工夫
                     content = rem.get('content', '時間だよ！').replace("教えて", "").replace("声かけて", "")
                     await channel.send(f"{mention} ⏰ **{content}** ({target.strftime('%H:%M')})")
                     changed = True
             else:
                 remaining.append(rem)
-        
         self.reminders = remaining
         if changed: await self._save_data_to_drive()
 
     @tasks.loop(minutes=5)
     async def calendar_check_task(self):
-        """カレンダー通知"""
         if not self.channel_id: return
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_calendar_service)
@@ -439,57 +516,52 @@ class PartnerCog(commands.Cog):
             for event in events:
                 if 'dateTime' not in event.get('start', {}): continue
                 start = datetime.datetime.fromisoformat(event['start']['dateTime'])
-                # 10分前通知
                 if 540 <= (start - now).total_seconds() <= 660:
                     eid = event['id']
                     if eid in self.notified_event_ids: continue
                     self.notified_event_ids.add(eid)
-                    
                     channel = self.bot.get_channel(self.channel_id)
                     if channel:
                         msg = f"ねえ、あと10分で「{event['summary']}」だよ！準備OK？"
                         await channel.send(msg)
-                        self.history.append({'role': 'model', 'text': msg, 'timestamp': now.isoformat()})
         except: pass
 
     @tasks.loop(time=datetime.time(hour=6, minute=0, tzinfo=JST))
     async def morning_greeting_task(self):
-        """朝の挨拶"""
         if not self.channel_id: return
         channel = self.bot.get_channel(self.channel_id)
         if not channel: return
-        
-        reply = await self._generate_reply(["(朝だよ。天気と予定を教えて、明るく起こして)"], trigger_type="morning")
-        if reply:
-            await channel.send(reply)
-            self.history.append({'role': 'model', 'text': reply, 'timestamp': datetime.datetime.now(JST).isoformat()})
+        reply = await self._generate_reply(channel, ["(朝だよ。天気と予定を教えて、明るく起こして)"], trigger_type="morning")
+        if reply: await channel.send(reply)
 
     @tasks.loop(minutes=60)
     async def inactivity_check_task(self):
         if not self.channel_id: return
         now = datetime.datetime.now(JST)
         if (now - self.last_interaction) > timedelta(hours=12) and not (1 <= now.hour <= 6):
-            if self.history and self.history[-1]['role'] == 'model': return
             channel = self.bot.get_channel(self.channel_id)
             if not channel: return
             
-            reply = await self._generate_reply(["(12時間連絡がないね。何かあった？軽く声かけて)"], trigger_type="inactivity")
+            last_msg = None
+            async for m in channel.history(limit=1): last_msg = m
+            if last_msg and last_msg.author.id == self.bot.user.id: return
+
+            reply = await self._generate_reply(channel, ["(12時間連絡がないね。何かあった？軽く声かけて)"], trigger_type="inactivity")
             if reply:
                 await channel.send(reply)
-                self.history.append({'role': 'model', 'text': reply, 'timestamp': now.isoformat()})
                 self.last_interaction = now
+                await self._save_data_to_drive()
 
     @tasks.loop(time=datetime.time(hour=23, minute=55, tzinfo=JST))
     async def daily_organize_task(self):
-        """夜のまとめ"""
-        if not self.history: return
-        today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-        todays_logs = [h for h in self.history if h['timestamp'].startswith(today_str)]
-        if not todays_logs: return
+        if not self.channel_id: return
+        channel = self.bot.get_channel(self.channel_id)
+        if not channel: return
 
-        log_text = "\n".join([f"{'User' if l['role']=='user' else 'AI'}: {l['text']}" for l in todays_logs])
+        log_text = await self._fetch_todays_chat_log(channel)
+        if not log_text: return
+
         logging.info("Starting nightly organization...")
-        
         prompt = f"""
         今日の会話ログを分析し、JSON形式で整理してください。
         
@@ -513,10 +585,10 @@ class PartnerCog(commands.Cog):
                 config=types.GenerateContentConfig(response_mime_type='application/json')
             )
             result = json.loads(response.text)
+            today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
             await self._execute_organization(result, today_str)
             
-            channel = self.bot.get_channel(self.channel_id)
-            if channel: await channel.send("（今日の分、日記にまとめておいたよ！おやすみ🌙）")
+            await channel.send("（今日の分、日記にまとめておいたよ！おやすみ🌙）")
 
         except Exception as e:
             logging.error(f"Nightly Task Error: {e}")
@@ -534,6 +606,7 @@ class PartnerCog(commands.Cog):
                 t = item.get('title','Clip'); safe_t = re.sub(r'[\\/*?:"<>|]', "", t)[:30]
                 await self._upload_text(service, folder_id, f"{date_str}-{safe_t}.md", f"# {t}\nURL: {item.get('url')}\n\n## Note\n{item.get('note','')}")
 
+        # YouTube
         if data.get('youtube'):
             folder_id = await self._find_file(service, self.drive_folder_id, "YouTube")
             if not folder_id: folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "YouTube")
@@ -541,6 +614,7 @@ class PartnerCog(commands.Cog):
                 t = item.get('title','Video'); safe_t = re.sub(r'[\\/*?:"<>|]', "", t)[:30]
                 await self._upload_text(service, folder_id, f"{date_str}-{safe_t}.md", f"# {t}\nURL: {item.get('url')}\n\n## Memo\n{item.get('note','')}")
 
+        # Recipes
         if data.get('recipes'):
             folder_id = await self._find_file(service, self.drive_folder_id, "Recipes")
             if not folder_id: folder_id = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "Recipes")
