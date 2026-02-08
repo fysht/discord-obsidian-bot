@@ -176,7 +176,6 @@ class PartnerCog(commands.Cog):
 
     # --- Tool Functions ---
     async def _search_drive_notes(self, keywords: str):
-        """Google Drive検索"""
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_drive_service)
         if not service: return "検索エラー: Driveに接続できません"
@@ -202,7 +201,6 @@ class PartnerCog(commands.Cog):
         except Exception as e: return f"エラー: {e}"
 
     async def _create_calendar_event(self, summary: str, start_time: str, end_time: str, location: str = "", description: str = ""):
-        """カレンダー登録"""
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self._get_calendar_service)
         if not service: return "エラー: カレンダーに接続できません（権限を確認してください）"
@@ -434,13 +432,33 @@ class PartnerCog(commands.Cog):
                 
                 elif function_call.name == "create_calendar_event":
                     args = function_call.args
-                    tool_result = await self._create_calendar_event(
-                        summary=args["summary"],
-                        start_time=args["start_time"],
-                        end_time=args["end_time"],
-                        location=args.get("location", ""),
-                        description=args.get("description", "")
-                    )
+                    # argsはdictではなく、getメソッドを持つオブジェクトの可能性があるが
+                    # Python SDKでは通常dictのように振る舞うか、.get()を持つラッパー
+                    # 安全のため .get() を使用し、end_timeがない場合のフォールバックを実装
+                    summary = args.get("summary")
+                    start_time = args.get("start_time")
+                    end_time = args.get("end_time")
+                    location = args.get("location", "")
+                    description = args.get("description", "")
+
+                    # 必須項目のチェックとend_timeの補完
+                    if summary and start_time:
+                        if not end_time:
+                            try:
+                                dt = datetime.datetime.fromisoformat(start_time)
+                                end_time = (dt + timedelta(hours=1)).isoformat()
+                            except ValueError:
+                                end_time = start_time # パース失敗時の安全策
+
+                        tool_result = await self._create_calendar_event(
+                            summary=summary,
+                            start_time=start_time,
+                            end_time=end_time,
+                            location=location,
+                            description=description
+                        )
+                    else:
+                        tool_result = "エラー: 予定のタイトルまたは開始日時が正しく指定されていません。"
 
                 # Send result back
                 contents.append(response.candidates[0].content)
