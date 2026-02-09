@@ -13,6 +13,7 @@ import re
 import aiohttp
 import io
 import xml.etree.ElementTree as ET
+import base64
 
 # Google API
 from google.oauth2.credentials import Credentials
@@ -20,7 +21,12 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-# 外部ライブラリ
+# 外部ライブラリ (BeautifulSoupの読み込みを復元)
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
+
 try: 
     from web_parser import parse_url_with_readability
 except ImportError: 
@@ -29,8 +35,7 @@ except ImportError:
 try: 
     from utils.obsidian_utils import update_section
 except ImportError: 
-    def update_section(content, text, header):
-        return f"{content}\n\n{header}\n{text}"
+    def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
 
 # --- 定数 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -57,6 +62,11 @@ class PartnerCog(commands.Cog):
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+        
+        # Fitbit Credentials
+        self.fitbit_client_id = os.getenv("FITBIT_CLIENT_ID")
+        self.fitbit_client_secret = os.getenv("FITBIT_CLIENT_SECRET")
+        self.fitbit_refresh_token = os.getenv("FITBIT_REFRESH_TOKEN")
 
         if self.gemini_api_key:
             self.gemini_client = genai.Client(api_key=self.gemini_api_key)
@@ -149,6 +159,9 @@ class PartnerCog(commands.Cog):
                 if ct: self.current_task = {'name': ct['name'], 'start': datetime.datetime.fromisoformat(ct['start'])}
                 li = data.get('last_interaction')
                 if li: self.last_interaction = datetime.datetime.fromisoformat(li)
+                
+                if 'fitbit_refresh_token' in data:
+                    self.fitbit_refresh_token = data['fitbit_refresh_token']
             except: pass
 
     async def _save_data_to_drive(self):
@@ -163,7 +176,8 @@ class PartnerCog(commands.Cog):
         data = {
             'reminders': self.reminders,
             'current_task': ct_save,
-            'last_interaction': self.last_interaction.isoformat()
+            'last_interaction': self.last_interaction.isoformat(),
+            'fitbit_refresh_token': self.fitbit_refresh_token
         }
 
         b_folder = await self._find_file(service, self.drive_folder_id, BOT_FOLDER)
@@ -185,6 +199,65 @@ class PartnerCog(commands.Cog):
         else:
             f = await loop.run_in_executor(None, lambda: service.files().create(body={'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}, media_body=media, fields='id, webViewLink').execute())
             return f.get('id'), f.get('webViewLink')
+
+    # --- Fitbit Logic ---
+    async def _refresh_fitbit_token(self):
+        if not (self.fitbit_client_id and self.fitbit_client_secret and self.fitbit_refresh_token): return None
+        
+        auth_header = base64.b64encode(f"{self.fitbit_client_id}:{self.fitbit_client_secret}".encode()).decode()
+        headers = {'Authorization': f'Basic {auth_header}', 'Content-Type': 'application/x-www-form-urlencoded'}
+        data = {'grant_type': 'refresh_token', 'refresh_token': self.fitbit_refresh_token}
+        
+        try:
+            async with self.session.post('https://api.fitbit.com/oauth2/token', headers=headers, data=data) as resp:
+                if resp.status == 200:
+                    token_data = await resp.json()
+                    self.fitbit_refresh_token = token_data['refresh_token']
+                    await self._save_data_to_drive()
+                    return token_data['access_token']
+                else:
+                    logging.error(f"Fitbit Refresh Error: {await resp.text()}")
+                    return None
+        except Exception as e:
+            logging.error(f"Fitbit Connection Error: {e}")
+            return None
+
+    async def _get_fitbit_stats(self, date_str):
+        token = await self._refresh_fitbit_token()
+        if not token: return {}
+        headers = {'Authorization': f'Bearer {token}'}
+        stats = {}
+        try:
+            url = f"https://api.fitbit.com/1/user/-/activities/date/{date_str}.json"
+            async with self.session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    s = data.get('summary', {})
+                    stats['steps'] = s.get('steps', 0)
+                    stats['calories'] = s.get('caloriesOut', 0)
+                    distances = s.get('distances', [])
+                    stats['distance'] = next((d['distance'] for d in distances if d['activity'] == 'total'), 0)
+                    stats['floors'] = s.get('floors', 0)
+        except Exception as e: logging.error(f"Fitbit Act Error: {e}")
+
+        try:
+            url = f"https://api.fitbit.com/1/user/-/activities/heart/date/{date_str}/1d.json"
+            async with self.session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    try: stats['resting_hr'] = data['activities-heart'][0]['value'].get('restingHeartRate', 'N/A')
+                    except: stats['resting_hr'] = "N/A"
+        except: pass
+
+        try:
+            url = f"https://api.fitbit.com/1.2/user/-/sleep/date/{date_str}.json"
+            async with self.session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    summary = data.get('summary', {})
+                    stats['sleep_minutes'] = summary.get('totalMinutesAsleep', 0)
+        except: pass
+        return stats
 
     # --- Tool Functions ---
     async def _search_drive_notes(self, keywords: str):
@@ -301,20 +374,18 @@ class PartnerCog(commands.Cog):
 
     # --- Helpers ---
     async def _get_weather_stats(self):
-        """フロントマター用の天気情報を取得"""
         try:
             async with self.session.get(JMA_URL) as resp:
                 if resp.status != 200: return "Unknown", "N/A", "N/A"
                 data = await resp.json()
                 weather = data[0]["timeSeries"][0]["areas"][0]["weathers"][0]
-                # 気温 (時系列の取得が複雑なため簡易取得)
                 temps = data[0]["timeSeries"][2]["areas"][0].get("temps", [])
                 max_t = temps[1] if len(temps) > 1 else "N/A"
                 min_t = temps[0] if len(temps) > 0 else "N/A"
                 return weather.replace("\u3000", " "), max_t, min_t
         except: return "Unknown", "N/A", "N/A"
 
-    async def _get_weather_info(self): # 会話用
+    async def _get_weather_info(self):
         w, max_t, _ = await self._get_weather_stats()
         return f"{w} (最高{max_t}℃)" if max_t != "N/A" else w
     
@@ -350,7 +421,6 @@ class PartnerCog(commands.Cog):
             return target_time.strftime('%H:%M')
         return None
 
-    # --- Context ---
     async def _build_conversation_context(self, channel, limit=50):
         messages = []
         async for msg in channel.history(limit=limit, oldest_first=False):
@@ -601,6 +671,9 @@ class PartnerCog(commands.Cog):
         log_text = await self._fetch_todays_chat_log(channel)
         weather, max_t, min_t = await self._get_weather_stats()
         
+        # Fitbit (全データ)
+        fitbit_stats = await self._get_fitbit_stats(datetime.datetime.now(JST).strftime('%Y-%m-%d'))
+        
         prompt = f"""
         今日のログを整理。JSON形式。
         ルール: memosは省略せず全発言をカテゴリ分けしてリスト化。
@@ -612,16 +685,17 @@ class PartnerCog(commands.Cog):
             response = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt, config=types.GenerateContentConfig(response_mime_type='application/json'))
             result = json.loads(response.text)
             
-            # フロントマター用データ追加
+            # フロントマター用データ統合
             result['meta'] = {
                 'weather': weather,
                 'temp_max': max_t,
-                'temp_min': min_t
+                'temp_min': min_t,
+                **fitbit_stats # 辞書を展開して統合
             }
             
             today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
             await self._execute_organization(result, today_str)
-            await channel.send("（今日の分、日記にまとめておいたよ！おやすみ🌙）")
+            await channel.send("（日記にまとめたよ🌙）")
         except Exception as e: logging.error(f"Nightly Error: {e}")
 
     async def _execute_organization(self, data, date_str):
@@ -633,9 +707,22 @@ class PartnerCog(commands.Cog):
         if not daily_folder: daily_folder = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, "DailyNotes")
         f_id = await self._find_file(service, daily_folder, f"{date_str}.md")
         
-        # フロントマター作成
+        # フロントマター作成 (Fitbit項目を追加)
         meta = data.get('meta', {})
-        frontmatter = f"---\ndate: {date_str}\nweather: {meta.get('weather')}\ntemp_max: {meta.get('temp_max')}\ntemp_min: {meta.get('temp_min')}\n---\n\n"
+        frontmatter = "---\n"
+        frontmatter += f"date: {date_str}\n"
+        frontmatter += f"weather: {meta.get('weather', 'N/A')}\n"
+        frontmatter += f"temp_max: {meta.get('temp_max', 'N/A')}\n"
+        frontmatter += f"temp_min: {meta.get('temp_min', 'N/A')}\n"
+        # Fitbit Metrics
+        if 'steps' in meta: frontmatter += f"steps: {meta['steps']}\n"
+        if 'calories' in meta: frontmatter += f"calories: {meta['calories']}\n"
+        if 'distance' in meta: frontmatter += f"distance: {meta['distance']}\n"
+        if 'floors' in meta: frontmatter += f"floors: {meta['floors']}\n"
+        if 'resting_hr' in meta: frontmatter += f"resting_hr: {meta['resting_hr']}\n"
+        if 'sleep_minutes' in meta: frontmatter += f"sleep_time: {meta['sleep_minutes']}\n"
+        
+        frontmatter += "---\n\n"
         
         current_body = f"# Daily Note {date_str}\n"
         if f_id:
@@ -646,15 +733,12 @@ class PartnerCog(commands.Cog):
             done = False
             while not done: _, done = downloader.next_chunk()
             raw_content = fh.getvalue().decode('utf-8')
-            
-            # 既存のフロントマターを除去して本文だけ取り出す簡易処理
             if raw_content.startswith("---"):
                 parts = raw_content.split("---", 2)
                 if len(parts) >= 3: current_body = parts[2].strip()
                 else: current_body = raw_content
             else: current_body = raw_content
 
-        # 新しい内容を追記
         updates = []
         if data.get('diary'): updates.append(f"## 📝 Journal\n{data['diary']}")
         if data.get('memos'): updates.append("## 📌 Memos\n" + "\n".join(data['memos']))
