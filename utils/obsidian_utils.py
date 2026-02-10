@@ -11,6 +11,7 @@ SECTION_ORDER = [
 
     # --- 2. Input & Information (インプット・情報収集) ---
     "## WebClips",          # Web記事クリップ (WebClipCog)
+    "## YouTube",           # YouTube動画リンク (PartnerCog) <-- 追加
     "## YouTube Summaries", # 動画要約 (YouTubeCog)
     "## Reading Notes",     # 読書メモ (BookCog)
     "## Recipes",           # レシピ (RecipeCog)
