@@ -1,38 +1,29 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 from google import genai
 from google.genai import types
 import os
 import datetime
-import asyncio
 import logging
 import re
 import zoneinfo
-import io
 
-# Google Drive API
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+# Services
+from services.drive_service import DriveService
+from services.webclip_service import WebClipService
 
-# web_parser
-from web_parser import parse_url_with_readability
-from utils.obsidian_utils import update_section
-
-# --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-SCOPES = ['https://www.googleapis.com/auth/drive']
-TOKEN_FILE = 'token.json'
 
 class PartnerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        # 修正: 環境変数名を main.py と統一 (GOOGLE_DRIVE_FOLDER_ID を優先)
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID") or os.getenv("DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        
+        # サービスの初期化
+        self.drive_service = DriveService(self.drive_folder_id)
+        self.webclip_service = WebClipService(self.drive_service, self.gemini_api_key)
         
         self.gemini_client = None
         if self.gemini_api_key:
@@ -40,129 +31,8 @@ class PartnerCog(commands.Cog):
         
         self.last_interaction = None
 
-    # --- Google Drive Helper Methods ---
-    def _get_drive_service(self):
-        """トークンファイルを使用してDriveサービスを取得"""
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            try:
-                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            except Exception as e:
-                logging.error(f"PartnerCog: Token read error: {e}")
-
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try:
-                    creds.refresh(Request())
-                    with open(TOKEN_FILE, 'w') as token:
-                        token.write(creds.to_json())
-                except Exception as e:
-                    logging.error(f"PartnerCog: Token refresh error: {e}")
-                    return None
-            else:
-                logging.error("PartnerCog: Valid token not found.")
-                return None
-
-        try:
-            return build('drive', 'v3', credentials=creds)
-        except Exception as e:
-            logging.error(f"PartnerCog: Drive Init Error: {e}")
-            return None
-
-    async def _find_file(self, service, parent_id, name):
-        """指定フォルダ内のファイル/フォルダIDを検索"""
-        if not parent_id:
-            logging.error("PartnerCog: Parent ID is None. Cannot search file.")
-            return None
-            
-        query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
-        try:
-            results = await asyncio.to_thread(
-                lambda: service.files().list(q=query, fields="files(id)").execute()
-            )
-            files = results.get('files', [])
-            return files[0]['id'] if files else None
-        except Exception as e:
-            logging.error(f"Find File Error: {e}")
-            return None
-
-    async def _create_folder(self, service, parent_id, name):
-        """フォルダ作成"""
-        if not parent_id:
-             logging.error("PartnerCog: Parent ID is None. Cannot create folder.")
-             return None
-
-        file_metadata = {
-            'name': name,
-            'parents': [parent_id],
-            'mimeType': 'application/vnd.google-apps.folder'
-        }
-        file = await asyncio.to_thread(
-            lambda: service.files().create(body=file_metadata, fields='id').execute()
-        )
-        return file.get('id')
-
-    async def _upload_text(self, service, parent_id, name, content):
-        """テキストファイルをアップロード"""
-        if not parent_id:
-             logging.error("PartnerCog: Parent ID is None. Cannot upload file.")
-             return None
-
-        file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}
-        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown', resumable=True)
-        file = await asyncio.to_thread(
-            lambda: service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        )
-        return file.get('id')
-
-    async def _read_text_file(self, service, file_id):
-        """テキストファイルの中身を読み込む"""
-        try:
-            request = service.files().get_media(fileId=file_id)
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, request)
-            done = False
-            while not done: _, done = await asyncio.to_thread(downloader.next_chunk)
-            return fh.getvalue().decode('utf-8')
-        except Exception as e:
-            logging.error(f"Read File Error: {e}")
-            return ""
-
-    async def _update_daily_note_link(self, service, date_str, link_text, section_header):
-        """デイリーノートにリンクを追記する"""
-        if not self.drive_folder_id:
-            logging.error("PartnerCog: Drive Folder ID is not set.")
-            return
-
-        loop = asyncio.get_running_loop()
-        
-        daily_folder = await self._find_file(service, self.drive_folder_id, "DailyNotes")
-        if not daily_folder:
-            daily_folder = await self._create_folder(service, self.drive_folder_id, "DailyNotes")
-
-        filename = f"{date_str}.md"
-        f_id = await self._find_file(service, daily_folder, filename)
-        
-        content = ""
-        if f_id:
-            content = await self._read_text_file(service, f_id)
-        else:
-            content = f"# Daily Note {date_str}\n\n"
-
-        new_content = update_section(content, link_text, section_header)
-
-        media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown', resumable=True)
-        if f_id:
-            await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
-        else:
-            await loop.run_in_executor(None, lambda: service.files().create(body={'name': filename, 'parents': [daily_folder]}, media_body=media).execute())
-
-    # --- Core Logic ---
-
-    async def _save_data_to_drive(self):
-        pass 
-
     async def _fetch_yesterdays_journal(self):
+        # 将来的に DriveService から昨日の日記を取得する処理を実装可能
         return ""
 
     async def _build_conversation_context(self, channel, limit=50, ignore_msg_id=None):
@@ -182,79 +52,11 @@ class PartnerCog(commands.Cog):
         
         return list(reversed(messages))
 
-    async def _process_and_save_content(self, message, url, content_type, title, raw_text):
-        """記事・動画の保存処理"""
-        # IDチェック
-        if not self.drive_folder_id:
-            await message.reply("⚠️ Google DriveのフォルダIDが設定されていません。環境変数 GOOGLE_DRIVE_FOLDER_ID を確認してください。")
-            return
-
-        date_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-        safe_title = re.sub(r'[\\/*?:"<>|]', "", title)[:30]
-        
-        folder_name = "YouTube" if content_type == "YouTube" else "WebClips"
-        section_header = "## YouTube" if content_type == "YouTube" else "## WebClips"
-        
-        file_basename = f"{date_str}-{safe_title}"
-        filename = f"{file_basename}.md"
-        
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
-        if not service:
-            await message.add_reaction('❌')
-            return
-
-        final_content = ""
-        
-        if content_type == "YouTube":
-            user_comment = message.content.replace(url, "").strip()
-            final_content = (
-                f"# {title}\n\n"
-                f"- **URL:** {url}\n"
-                f"- **Saved at:** {datetime.datetime.now(JST)}\n\n"
-                f"## Note\n{user_comment}\n\n"
-                f"---\n"
-            )
-        else:
-            # コンテンツが短すぎる場合のガード
-            if len(raw_text) < 50:
-                logging.warning(f"WebClip Skipped: Content too short ({len(raw_text)} chars). URL: {url}")
-                await message.reply("⚠️ 記事の内容が短すぎるか、うまく読み取れなかったため、自動保存をスキップしました。")
-                return 
-
-            prompt = f"以下のWeb記事をObsidian保存用にMarkdownで整理。\nタイトル: {title}\nURL: {url}\n\n{raw_text}"
-            try:
-                response = await self.gemini_client.aio.models.generate_content(
-                    model='gemini-2.5-pro', 
-                    contents=prompt
-                )
-                final_content = f"{response.text}\n\n---\n**Saved at:** {datetime.datetime.now(JST)}"
-            except Exception as e:
-                logging.error(f"Summary Gen Error: {e}")
-                return
-
-        try:
-            folder_id = await self._find_file(service, self.drive_folder_id, folder_name)
-            if not folder_id: 
-                folder_id = await self._create_folder(service, self.drive_folder_id, folder_name)
-            
-            await self._upload_text(service, folder_id, filename, final_content)
-
-            link_str = f"- [[{folder_name}/{file_basename}|{title}]]"
-            await self._update_daily_note_link(service, date_str, link_str, section_header)
-
-            await message.reply(f"✅ {content_type}情報を保存し、日記にリンクしました！\n📂 `{folder_name}/{filename}`")
-        
-        except Exception as e:
-            logging.error(f"Save Process Error: {e}")
-            await message.add_reaction('❌')
-
-    async def _generate_reply(self, channel, inputs: list, trigger_type="reply", extra_context="", ignore_msg_id=None):
+    async def _generate_reply(self, channel, inputs: list, extra_context="", ignore_msg_id=None):
         if not self.gemini_client: return None
         
         weather_info = "天気情報取得不可"
         stock_info = "株価情報取得不可" 
-        
         yesterday_memory = await self._fetch_yesterdays_journal()
         
         system_prompt = (
@@ -303,7 +105,6 @@ class PartnerCog(commands.Cog):
         if message.channel.id != self.channel_id: return
 
         self.last_interaction = datetime.datetime.now(JST)
-        await self._save_data_to_drive()
 
         url_match = re.search(r'https?://\S+', message.content)
         input_parts = [message.content]
@@ -311,29 +112,18 @@ class PartnerCog(commands.Cog):
 
         if url_match:
             url = url_match.group()
-            is_youtube = "youtube.com" in url or "youtu.be" in url
-            
             async with message.channel.typing():
-                try:
-                    # === 修正: PlaywrightによるURL解析 (共通化) ===
-                    # どちらの場合も async なので直接 await します
-                    title, text_content = await parse_url_with_readability(url)
+                # WebClipServiceに処理を委譲
+                result = await self.webclip_service.process_url(url, message.content, message)
+                
+                if result:
+                    extra_ctx = result["summary"]
 
-                    if is_youtube:
-                        await self._process_and_save_content(message, url, "YouTube", title, text_content)
-                        extra_ctx = f"ユーザーがYouTube動画を共有しました: {title}"
-                    else:
-                        await self._process_and_save_content(message, url, "WebClip", title, text_content)
-                        extra_ctx = f"ユーザーがWeb記事を共有しました: {title}\n内容要約: {text_content[:200]}..."
-                except Exception as e:
-                    logging.error(f"URL Parse Error: {e}")
-                    await message.add_reaction('⚠️')
-
+        # 返信生成
         async with message.channel.typing():
             reply = await self._generate_reply(
                 message.channel, 
                 input_parts, 
-                trigger_type="reply", 
                 extra_context=extra_ctx, 
                 ignore_msg_id=message.id
             )
