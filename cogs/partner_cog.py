@@ -31,7 +31,7 @@ SERVICE_ACCOUNT_FILE = 'service_account.json'
 class PartnerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.channel_id = int(os.getenv("PARTNER_CHANNEL_ID", 0))
+        self.channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
