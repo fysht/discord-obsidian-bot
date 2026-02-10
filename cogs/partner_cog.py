@@ -19,8 +19,9 @@ from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 # 既存のユーティリティ
 from web_parser import parse_url_with_readability
-from cogs.stock_cog import get_stock_price
-from utils.obsidian_utils import update_section  # 追記用ユーティリティ
+# 修正: 存在しない関数のインポートを削除
+# from cogs.stock_cog import get_stock_price
+from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
@@ -208,7 +209,9 @@ class PartnerCog(commands.Cog):
         if not self.gemini_client: return None
         
         weather_info = "天気情報取得不可"
-        stock_info = get_stock_price()
+        # 修正: StockCogから値を取得できないため、一旦静的テキストまたはNoneにします
+        stock_info = "株価情報取得不可" 
+        
         yesterday_memory = await self._fetch_yesterdays_journal()
         
         system_prompt = (
@@ -222,22 +225,22 @@ class PartnerCog(commands.Cog):
         )
 
         # 修正: 新しい Content/Part 構造に合わせる
-        contents = [types.Content(role="user", parts=[types.Part(text=system_prompt)])]
+        contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
         
         recent_msgs = await self._build_conversation_context(channel, limit=30, ignore_msg_id=ignore_msg_id)
         
         for msg in recent_msgs:
-            contents.append(types.Content(role=msg['role'], parts=[types.Part(text=msg['text'])]))
+            contents.append(types.Content(role=msg['role'], parts=[types.Part.from_text(text=msg['text'])]))
         
         user_parts = []
         for inp in inputs:
-            if isinstance(inp, str): user_parts.append(types.Part(text=inp))
+            if isinstance(inp, str): user_parts.append(types.Part.from_text(text=inp))
             else: user_parts.append(inp)
         
         if user_parts:
             contents.append(types.Content(role="user", parts=user_parts))
         else:
-            contents.append(types.Content(role="user", parts=[types.Part(text="(きっかけ)")]))
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text="(きっかけ)")]))
 
         try:
             # 修正: config の指定方法も新しいライブラリに準拠
