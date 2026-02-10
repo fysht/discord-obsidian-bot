@@ -20,8 +20,6 @@ class WebClipService:
 
     async def get_youtube_info(self, url):
         """YouTubeのoembed APIからタイトルとチャンネル名を取得"""
-        # URLから動画IDらしきものを抽出する簡易正規表現（oembedに投げるのでURLそのままでも動くことが多いが、念のため）
-        # oembedは動画URLをパラメータとして受け取るため、URLそのままでリクエストします
         oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
         
         try:
@@ -38,25 +36,48 @@ class WebClipService:
         
         return None
 
+    def _is_recipe(self, title, url, text=""):
+        """タイトル、URL、本文からレシピかどうかを判定する"""
+        # 1. ドメイン判定 (代表的なレシピサイト)
+        recipe_domains = [
+            'cookpad.com', 'kurashiru.com', 'delishkitchen.tv', 
+            'macaro-ni.jp', 'orangepage.net', 'lettuceclub.net', 
+            'erecipe.woman.excite.co.jp', 'kyounoryouri.jp', 'ajinomoto.co.jp'
+        ]
+        if any(d in url for d in recipe_domains):
+            return True
+
+        # 2. キーワード判定 (タイトル)
+        keywords = ['レシピ', '作り方', '献立', 'Recipe', 'Cooking', '材料', '下ごしらえ']
+        if any(k in title for k in keywords):
+            return True
+            
+        # 3. 本文判定 (Web記事の場合)
+        # "材料" と "作り方" の両方が含まれていればレシピの可能性が高い
+        if text and '材料' in text and '作り方' in text:
+            return True
+
+        return False
+
     async def process_url(self, url, message_content, trigger_message_obj):
         """
         URLを処理し、Driveに保存し、結果の概要を返す
         """
         is_youtube = "youtube.com" in url or "youtu.be" in url
-        content_type = "YouTube" if is_youtube else "WebClip"
+        # 元のタイプ（保存形式の決定に使用）
+        source_type = "YouTube" if is_youtube else "WebClip"
         
         title = "Untitled"
         raw_text = ""
         author_name = ""
 
-        # 1. 情報取得（YouTubeとその他で分岐）
+        # 1. 情報取得
         if is_youtube:
             yt_info = await self.get_youtube_info(url)
             if yt_info:
                 title = yt_info.get("title", "Untitled")
                 author_name = yt_info.get("author_name", "")
             else:
-                # oembed失敗時のフォールバック
                 try:
                     title, _ = await parse_url_with_readability(url)
                 except:
@@ -70,12 +91,29 @@ class WebClipService:
                 logging.error(f"WebClip: Parse Error: {e}")
                 title = "Untitled"
 
-        # 2. ファイル名とコンテンツの作成
+        # 2. レシピ判定
+        # YouTubeの場合は本文がないため、タイトルとメッセージ内容で判定
+        check_text = raw_text if not is_youtube else (title + " " + message_content)
+        is_recipe = self._is_recipe(title, url, check_text)
+
+        # 3. 保存先フォルダとセクションの決定
+        if is_recipe:
+            folder_name = "Recipes"
+            content_type_label = "Recipe" # 完了メッセージ用
+        elif is_youtube:
+            folder_name = "YouTube"
+            content_type_label = "YouTube"
+        else:
+            folder_name = "WebClips"
+            content_type_label = "WebClip"
+
+        section_header = f"## {folder_name}"
+
+        # 4. ファイル名とコンテンツの作成
         now = datetime.datetime.now(JST)
         timestamp = now.strftime('%Y%m%d%H%M%S')
         daily_note_date = now.strftime('%Y-%m-%d')
         
-        # ファイル名に使えない文字を除去
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
         if not safe_title: safe_title = "Untitled"
         
@@ -85,9 +123,9 @@ class WebClipService:
         final_content = ""
         summary_text = ""
         
-        # --- 本文作成（# タイトル を削除しました）---
+        # コンテンツの形式は「元のソースタイプ」に従う
         if is_youtube:
-            # YouTubeの場合
+            # YouTube形式
             final_content = (
                 f"- **URL:** {url}\n"
                 f"- **Channel:** {author_name}\n"
@@ -96,9 +134,9 @@ class WebClipService:
                 f"---\n"
                 f"[[{daily_note_date}]]"
             )
-            summary_text = f"YouTube動画のメモを保存しました: {title}"
+            summary_text = f"YouTube動画を保存しました: {title}"
         else:
-            # Web記事の場合
+            # Web記事形式
             if len(raw_text) < 10:
                 logging.warning(f"WebClip Warning: Content might be empty. URL: {url}")
 
@@ -110,15 +148,15 @@ class WebClipService:
                 f"{raw_text}"
             )
             summary_text = f"Web記事を保存しました: {title}"
+            
+        if is_recipe:
+            summary_text = f"レシピを保存しました: {title}"
 
-        # 3. Driveへ保存
+        # 5. Driveへ保存
         service = self.drive_service.get_service()
         if not service:
             await trigger_message_obj.add_reaction('❌')
             return None
-
-        folder_name = "YouTube" if is_youtube else "WebClips"
-        section_header = f"## {folder_name}"
 
         try:
             # フォルダ取得・作成
@@ -134,12 +172,12 @@ class WebClipService:
             
             await self.drive_service.update_daily_note(service, daily_note_date, link_str, section_header)
 
-            await trigger_message_obj.reply(f"✅ {content_type}を保存しました。\n📂 `{folder_name}/{filename}`")
+            await trigger_message_obj.reply(f"✅ {content_type_label}を保存しました。\n📂 `{folder_name}/{filename}`")
             
             return {
                 "title": title,
                 "summary": summary_text,
-                "type": content_type
+                "type": content_type_label
             }
 
         except Exception as e:

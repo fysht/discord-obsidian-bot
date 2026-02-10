@@ -66,7 +66,7 @@ class PartnerCog(commands.Cog):
         self.inactivity_check_loop.cancel()
         await self.task_service.save_data()
 
-    # --- Helper ---
+    # --- Helper Methods ---
     async def _fetch_todays_chat_log(self, channel):
         today_start = datetime.datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
@@ -77,6 +77,20 @@ class PartnerCog(commands.Cog):
             if msg.attachments: content += " [画像/ファイル]"
             logs.append(f"{role}: {content}")
         return "\n".join(logs)
+
+    async def _build_conversation_context(self, channel, limit=50, ignore_msg_id=None):
+        """会話履歴を取得してGemini用のコンテキストを作成"""
+        messages = []
+        async for msg in channel.history(limit=limit, oldest_first=False):
+            if ignore_msg_id and msg.id == ignore_msg_id: continue
+            if msg.content.startswith("/"): continue
+            if msg.author.bot and msg.author.id != self.bot.user.id: continue
+            
+            role = "model" if msg.author.id == self.bot.user.id else "user"
+            text = msg.content
+            if msg.attachments: text += " [メディア送信]"
+            messages.append({'role': role, 'text': text})
+        return list(reversed(messages))
 
     # --- 定期タスク ---
     @tasks.loop(minutes=1)
@@ -106,15 +120,44 @@ class PartnerCog(commands.Cog):
                     self.task_service.notified_event_ids.add(e['id'])
                     await ch.send(f"🔔 あと10分で「**{e.get('summary','予定')}**」の時間だよ！")
 
-    @tasks.loop(time=datetime.time(hour=6, minute=0, tzinfo=JST))
+    # --- 朝の挨拶 (08:00) ---
+    @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
     async def morning_greeting_loop(self):
         ch = self.bot.get_channel(self.channel_id)
         if not ch: return
+
         info_text = await self.info_service.get_info_summary()
         today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
         schedule_text = await self.calendar_service.list_events_for_date(today_str)
         
-        prompt = f"朝6時です。以下の情報で「おはよう」のメッセージを作成。\n\n【情報】\n{info_text}\n\n【予定】\n{schedule_text}\n\n指示: 短く明るく。"
+        sleep_info = "睡眠データ: 未同期"
+        if self.fitbit_service:
+            stats = await self.fitbit_service.get_stats(datetime.datetime.now(JST))
+            if stats and 'sleep_minutes' in stats and stats['sleep_minutes'] > 0:
+                h, m = divmod(stats['sleep_minutes'], 60)
+                score = stats.get('sleep_score', 'N/A')
+                sleep_info = f"昨夜の睡眠: {h}時間{m}分 (スコア: {score})"
+            else:
+                sleep_info = "昨夜の睡眠: データなし（まだ同期されていないかも？）"
+        
+        prompt = f"""
+        今は朝8時です。以下の情報でユーザーを元気づける「おはよう」のメッセージを作成してください。
+        
+        【天気・ニュース】
+        {info_text}
+        
+        【ヘルスケア】
+        {sleep_info}
+        
+        【今日の予定】
+        {schedule_text}
+        
+        指示:
+        - 8時なので、そろそろ活動開始している想定で。
+        - 睡眠データが良い/悪い場合で一言添える。
+        - 予定がある場合はリマインドする。
+        - 明るく親しみやすく。
+        """
         try:
             resp = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
             await ch.send(resp.text)
@@ -122,6 +165,7 @@ class PartnerCog(commands.Cog):
             await self.task_service.save_data()
         except Exception as e: logging.error(f"Morning Error: {e}")
 
+    # --- 夜の振り返り (22:00) ---
     @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
     async def nightly_reflection_loop(self):
         ch = self.bot.get_channel(self.channel_id)
@@ -135,16 +179,15 @@ class PartnerCog(commands.Cog):
             await self.task_service.save_data()
         except Exception as e: logging.error(f"Nightly Error: {e}")
 
+    # --- 生存確認 (1時間ごと) ---
     @tasks.loop(minutes=60)
     async def inactivity_check_loop(self):
         ch = self.bot.get_channel(self.channel_id)
         if not ch: return
         now = datetime.datetime.now(JST)
-        if 0 <= now.hour < 6: return # 深夜は停止
+        if 0 <= now.hour < 6: return
 
-        # 最終会話から12時間経過で発動
         if (now - self.task_service.last_interaction) > datetime.timedelta(hours=12):
-            # 直近が自分ならスキップ
             try:
                 last_msg = [msg async for msg in ch.history(limit=1)]
                 if last_msg and last_msg[0].author.id == self.bot.user.id: return
@@ -157,6 +200,7 @@ class PartnerCog(commands.Cog):
                 await self.task_service.save_data()
             except Exception as e: logging.error(f"Inactivity Error: {e}")
 
+    # --- 日次まとめ (23:55) ---
     @tasks.loop(time=datetime.time(hour=23, minute=55, tzinfo=JST))
     async def daily_summary_loop(self):
         ch = self.bot.get_channel(self.channel_id)
@@ -167,7 +211,33 @@ class PartnerCog(commands.Cog):
         fitbit_stats = {}
         if self.fitbit_service: fitbit_stats = await self.fitbit_service.get_stats(today) or {}
 
-        prompt = f"日記作成。Markdown形式。\n天気:{weather_info}\nFitbit:{fitbit_stats}\nログ:\n{chat_log}\n指示:見出し整理、AIコメント含む。"
+        prompt = f"""
+        今日の日記（Daily Note）を作成します。
+        以下の情報を元に、Obsidian用のMarkdownテキストを作成してください。
+
+        【入力データ】
+        - 天気: {weather_info}
+        - Fitbit: {fitbit_stats}
+        - 会話ログ:
+        {chat_log if chat_log else "(会話なし)"}
+
+        【出力構成】
+        1. **## 📝 Journal**
+           - 今日の出来事、会話の流れ、ユーザーの様子をまとめた日記文章。
+           - あなた（パートナーAI）からの視点を含めて、親しみやすい文体で記述する。
+
+        2. **## 🗂️ Memos (Categorized)**
+           - 会話ログに含まれる情報、タスク、アイデア、思考の断片などを**可能な限り細かく箇条書き**にする。
+           - **省略せず、小さな情報も拾うこと。**
+           - 内容に応じて適切なカテゴリ見出し（例: ### 💻 Work, ### 🏠 Life, ### 💡 Ideas, ### 🔗 Links 等）を付けて整理する。
+
+        3. **## 🤖 AI Comment**
+           - 今日の活動全体に対する労いや、明日へのポジティブなメッセージ。
+
+        ※ 注意:
+        - Frontmatter（メタデータ）は含めないでください（別途プログラムが付与します）。
+        - Markdown形式のみを出力してください。
+        """
         
         try:
             resp = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
@@ -183,14 +253,17 @@ class PartnerCog(commands.Cog):
             
             if f_id:
                 content = await self.drive_service.read_text_file(service, f_id)
-                new_content = content + f"\n\n---\n### 🤖 AI Daily Report\n{diary_body}"
+                if "## 📝 Journal" in content:
+                    new_content = content + f"\n\n---\n### 🤖 AI Daily Report (Updated)\n{diary_body}"
+                else:
+                    new_content = content + f"\n\n{diary_body}"
                 await self.drive_service.update_text(service, f_id, new_content)
-                await ch.send("✅ 日記を保存しました🌙")
+                await ch.send("✅ 今日の日次まとめ（日記・詳細メモ）を作成・保存したよ！お疲れ様🌙")
         except Exception as e:
             logging.error(f"Daily Summary Error: {e}")
             await ch.send("⚠️ 日記保存エラー")
 
-    # --- 会話生成 ---
+    # --- 会話生成・ツール連携 ---
     async def _generate_reply(self, channel, inputs: list, extra_context="", ignore_msg_id=None):
         if not self.gemini_client: return None
         now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
@@ -201,7 +274,6 @@ class PartnerCog(commands.Cog):
             elapsed = int((datetime.datetime.now(JST) - ct['start']).total_seconds() / 60)
             task_info = f"「{ct['name']}」を実行中（{elapsed}分経過）"
 
-        # ツール定義：検索機能(search_memory)を追加
         tools = [
             types.Tool(function_declarations=[
                 types.FunctionDeclaration(
@@ -251,13 +323,11 @@ class PartnerCog(commands.Cog):
             if response.function_calls:
                 call = response.function_calls[0]
                 tool_result = "実行失敗"
-                
                 if call.name == "check_schedule":
                     tool_result = await self.calendar_service.list_events_for_date(call.args.get("date"))
                 elif call.name == "create_calendar_event":
                     tool_result = await self.calendar_service.create_event(call.args.get("summary"), call.args.get("start_time"), call.args.get("end_time"))
                 elif call.name == "search_memory":
-                    # DriveServiceの検索を実行
                     tool_result = await self.drive_service.search_markdown_files(call.args.get("keywords"))
                 
                 contents.append(response.candidates[0].content)
@@ -275,12 +345,7 @@ class PartnerCog(commands.Cog):
         if message.author.bot: return
         if message.channel.id != self.channel_id: return
         
-        # 最終会話日時を更新して保存
         self.task_service.update_last_interaction()
-        # 頻繁な保存を避けるため、ここではメモリ更新のみとし、保存は定期タスクか重要なアクション時のみにする運用も可
-        # ここでは確実性をとって保存しておく（IO負荷が気になるなら間引く）
-        # await self.task_service.save_data() 
-        
         text = message.content.strip()
         extra_ctx = ""
 
