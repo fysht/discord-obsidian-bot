@@ -17,7 +17,7 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-# 修正した web_parser をインポート
+# web_parser
 from web_parser import parse_url_with_readability
 from utils.obsidian_utils import update_section
 
@@ -30,7 +30,8 @@ class PartnerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        self.drive_folder_id = os.getenv("DRIVE_FOLDER_ID")
+        # 修正: 環境変数名を main.py と統一 (GOOGLE_DRIVE_FOLDER_ID を優先)
+        self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID") or os.getenv("DRIVE_FOLDER_ID")
         self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
         self.gemini_client = None
@@ -70,15 +71,27 @@ class PartnerCog(commands.Cog):
 
     async def _find_file(self, service, parent_id, name):
         """指定フォルダ内のファイル/フォルダIDを検索"""
+        if not parent_id:
+            logging.error("PartnerCog: Parent ID is None. Cannot search file.")
+            return None
+            
         query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
-        results = await asyncio.to_thread(
-            lambda: service.files().list(q=query, fields="files(id)").execute()
-        )
-        files = results.get('files', [])
-        return files[0]['id'] if files else None
+        try:
+            results = await asyncio.to_thread(
+                lambda: service.files().list(q=query, fields="files(id)").execute()
+            )
+            files = results.get('files', [])
+            return files[0]['id'] if files else None
+        except Exception as e:
+            logging.error(f"Find File Error: {e}")
+            return None
 
     async def _create_folder(self, service, parent_id, name):
         """フォルダ作成"""
+        if not parent_id:
+             logging.error("PartnerCog: Parent ID is None. Cannot create folder.")
+             return None
+
         file_metadata = {
             'name': name,
             'parents': [parent_id],
@@ -91,6 +104,10 @@ class PartnerCog(commands.Cog):
 
     async def _upload_text(self, service, parent_id, name, content):
         """テキストファイルをアップロード"""
+        if not parent_id:
+             logging.error("PartnerCog: Parent ID is None. Cannot upload file.")
+             return None
+
         file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}
         media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown', resumable=True)
         file = await asyncio.to_thread(
@@ -113,6 +130,10 @@ class PartnerCog(commands.Cog):
 
     async def _update_daily_note_link(self, service, date_str, link_text, section_header):
         """デイリーノートにリンクを追記する"""
+        if not self.drive_folder_id:
+            logging.error("PartnerCog: Drive Folder ID is not set.")
+            return
+
         loop = asyncio.get_running_loop()
         
         daily_folder = await self._find_file(service, self.drive_folder_id, "DailyNotes")
@@ -163,6 +184,11 @@ class PartnerCog(commands.Cog):
 
     async def _process_and_save_content(self, message, url, content_type, title, raw_text):
         """記事・動画の保存処理"""
+        # IDチェック
+        if not self.drive_folder_id:
+            await message.reply("⚠️ Google DriveのフォルダIDが設定されていません。環境変数 GOOGLE_DRIVE_FOLDER_ID を確認してください。")
+            return
+
         date_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)[:30]
         
@@ -190,7 +216,7 @@ class PartnerCog(commands.Cog):
                 f"---\n"
             )
         else:
-            # コンテンツが短すぎる場合のガード (50文字未満は保存しない)
+            # コンテンツが短すぎる場合のガード
             if len(raw_text) < 50:
                 logging.warning(f"WebClip Skipped: Content too short ({len(raw_text)} chars). URL: {url}")
                 await message.reply("⚠️ 記事の内容が短すぎるか、うまく読み取れなかったため、自動保存をスキップしました。")
@@ -289,19 +315,14 @@ class PartnerCog(commands.Cog):
             
             async with message.channel.typing():
                 try:
-                    # === 修正箇所: 非同期関数を直接 await します (to_thread削除) ===
+                    # === 修正: PlaywrightによるURL解析 (共通化) ===
+                    # どちらの場合も async なので直接 await します
+                    title, text_content = await parse_url_with_readability(url)
+
                     if is_youtube:
-                        # YouTubeはHTML解析不要なので web_parser は通さない（既存通り）
-                        title, text_content = await asyncio.to_thread(parse_url_with_readability, url)
-                        # 注意: web_parser.py を変更したため、parse_url_with_readability はHTML取得用になりました。
-                        # YouTubeのタイトル取得にも Playwright を使う形になります。
-                        
                         await self._process_and_save_content(message, url, "YouTube", title, text_content)
                         extra_ctx = f"ユーザーがYouTube動画を共有しました: {title}"
                     else:
-                        # WebClip用: ここが変更点
-                        title, text_content = await parse_url_with_readability(url)
-                        
                         await self._process_and_save_content(message, url, "WebClip", title, text_content)
                         extra_ctx = f"ユーザーがWeb記事を共有しました: {title}\n内容要約: {text_content[:200]}..."
                 except Exception as e:
