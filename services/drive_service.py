@@ -8,7 +8,10 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from utils.obsidian_utils import update_section
 
-SCOPES = ['https://www.googleapis.com/auth/drive']
+SCOPES = [
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/calendar'
+]
 TOKEN_FILE = 'token.json'
 
 class DriveService:
@@ -18,7 +21,6 @@ class DriveService:
         self._load_credentials()
 
     def _load_credentials(self):
-        """トークンの読み込みと更新"""
         if os.path.exists(TOKEN_FILE):
             try:
                 self.creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
@@ -39,19 +41,17 @@ class DriveService:
                 self.creds = None
 
     def get_service(self):
-        """Drive APIサービスビルダを取得"""
-        if not self.creds:
-            self._load_credentials()
-        
+        if not self.creds: self._load_credentials()
         if self.creds:
-            try:
-                return build('drive', 'v3', credentials=self.creds)
-            except Exception as e:
-                logging.error(f"DriveService: Init Error: {e}")
+            return build('drive', 'v3', credentials=self.creds)
         return None
+    
+    def get_creds(self):
+        if not self.creds: self._load_credentials()
+        return self.creds
 
+    # --- File Operations ---
     async def find_file(self, service, parent_id, name):
-        """ファイル/フォルダID検索"""
         if not parent_id: return None
         query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
         try:
@@ -65,20 +65,14 @@ class DriveService:
             return None
 
     async def create_folder(self, service, parent_id, name):
-        """フォルダ作成"""
         if not parent_id: return None
-        file_metadata = {
-            'name': name,
-            'parents': [parent_id],
-            'mimeType': 'application/vnd.google-apps.folder'
-        }
+        file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': 'application/vnd.google-apps.folder'}
         file = await asyncio.to_thread(
             lambda: service.files().create(body=file_metadata, fields='id').execute()
         )
         return file.get('id')
 
     async def upload_text(self, service, parent_id, name, content):
-        """テキストアップロード"""
         if not parent_id: return None
         file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}
         media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown', resumable=True)
@@ -86,9 +80,14 @@ class DriveService:
             lambda: service.files().create(body=file_metadata, media_body=media, fields='id').execute()
         )
         return file.get('id')
+    
+    async def update_text(self, service, file_id, content, mime_type='text/markdown'):
+        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype=mime_type, resumable=True)
+        await asyncio.to_thread(
+            lambda: service.files().update(fileId=file_id, media_body=media).execute()
+        )
 
     async def read_text_file(self, service, file_id):
-        """テキスト読み込み"""
         try:
             request = service.files().get_media(fileId=file_id)
             fh = io.BytesIO()
@@ -101,17 +100,13 @@ class DriveService:
             return ""
 
     async def update_daily_note(self, service, date_str, link_text, section_header):
-        """デイリーノートへの追記"""
         if not self.folder_id: return
-
         loop = asyncio.get_running_loop()
         
-        # フォルダ確認・作成
         daily_folder = await self.find_file(service, self.folder_id, "DailyNotes")
         if not daily_folder:
             daily_folder = await self.create_folder(service, self.folder_id, "DailyNotes")
 
-        # ファイル確認・作成
         filename = f"{date_str}.md"
         f_id = await self.find_file(service, daily_folder, filename)
         
@@ -121,12 +116,43 @@ class DriveService:
         else:
             content = f"# Daily Note {date_str}\n\n"
 
-        # utilsの関数を使って追記
         new_content = update_section(content, link_text, section_header)
-
         media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown', resumable=True)
         
         if f_id:
             await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else:
             await loop.run_in_executor(None, lambda: service.files().create(body={'name': filename, 'parents': [daily_folder]}, media_body=media).execute())
+
+    # --- 新規追加: 検索機能 ---
+    async def search_markdown_files(self, keywords, limit=3):
+        """指定したキーワードを含むMarkdownファイルを検索して内容を返す"""
+        service = self.get_service()
+        if not service: return "Drive接続エラー"
+        
+        # fullText検索クエリ
+        query = f"fullText contains '{keywords}' and mimeType = 'text/markdown' and trashed = false"
+        
+        try:
+            results = await asyncio.to_thread(
+                lambda: service.files().list(
+                    q=query, pageSize=limit, fields="files(id, name)"
+                ).execute()
+            )
+            files = results.get('files', [])
+            
+            if not files:
+                return f"「{keywords}」に関連するメモは見つかりませんでした。"
+            
+            search_results = []
+            for file in files:
+                content = await self.read_text_file(service, file['id'])
+                # 長すぎる場合は切り詰め
+                snippet = content[:500].replace("\n", " ") + "..."
+                search_results.append(f"【ファイル名: {file['name']}】\n{snippet}\n")
+            
+            return "\n".join(search_results)
+            
+        except Exception as e:
+            logging.error(f"Search Error: {e}")
+            return f"検索中にエラーが発生しました: {e}"
