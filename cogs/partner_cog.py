@@ -1,8 +1,9 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import google.generativeai as genai
-from google.generativeai import types
+# 修正: 新しいライブラリ google-genai を使用
+from google import genai
+from google.genai import types
 import os
 import datetime
 import asyncio
@@ -35,7 +36,7 @@ class PartnerCog(commands.Cog):
         
         self.gemini_client = None
         if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
+            # 修正: google-genai のクライアント初期化
             self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         
         self.last_interaction = None
@@ -97,12 +98,10 @@ class PartnerCog(commands.Cog):
         """デイリーノートにリンクを追記する"""
         loop = asyncio.get_running_loop()
         
-        # 1. DailyNotesフォルダを探す
         daily_folder = await self._find_file(service, self.drive_folder_id, "DailyNotes")
         if not daily_folder:
             daily_folder = await self._create_folder(service, self.drive_folder_id, "DailyNotes")
 
-        # 2. 今日のノートを探す
         filename = f"{date_str}.md"
         f_id = await self._find_file(service, daily_folder, filename)
         
@@ -112,10 +111,8 @@ class PartnerCog(commands.Cog):
         else:
             content = f"# Daily Note {date_str}\n\n"
 
-        # 3. リンクを追記
         new_content = update_section(content, link_text, section_header)
 
-        # 4. 保存（上書きまたは新規作成）
         media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown', resumable=True)
         if f_id:
             await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
@@ -130,14 +127,12 @@ class PartnerCog(commands.Cog):
 
     async def _fetch_yesterdays_journal(self):
         """(既存の処理) 前日の日記取得"""
-        # 実際の実装に合わせて調整してください。ここでは空文字を返します
         return ""
 
     async def _build_conversation_context(self, channel, limit=50, ignore_msg_id=None):
-        """会話履歴を取得 (修正: 今回のメッセージを除外する機能を追加)"""
+        """会話履歴を取得"""
         messages = []
         async for msg in channel.history(limit=limit, oldest_first=False):
-            # 今回処理中のメッセージIDと同じならスキップ（二重読み込み防止）
             if ignore_msg_id and msg.id == ignore_msg_id:
                 continue
             
@@ -152,15 +147,13 @@ class PartnerCog(commands.Cog):
         return list(reversed(messages))
 
     async def _process_and_save_content(self, message, url, content_type, title, raw_text):
-        """記事・動画の保存処理 (修正: Drive保存とリンク追記)"""
+        """記事・動画の保存処理"""
         date_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)[:30]
         
-        # フォルダ名とセクションヘッダーの決定
         folder_name = "YouTube" if content_type == "YouTube" else "WebClips"
         section_header = "## YouTube" if content_type == "YouTube" else "## WebClips"
         
-        # ファイル名
         file_basename = f"{date_str}-{safe_title}"
         filename = f"{file_basename}.md"
         
@@ -172,7 +165,6 @@ class PartnerCog(commands.Cog):
 
         final_content = ""
         
-        # コンテンツ生成
         if content_type == "YouTube":
             user_comment = message.content.replace(url, "").strip()
             final_content = (
@@ -182,12 +174,11 @@ class PartnerCog(commands.Cog):
                 f"## Note\n{user_comment}\n\n"
                 f"---\n"
             )
-            # 必要であればここでGeminiを使って動画要約を生成して追記も可能
         else:
             if len(raw_text) < 50: return 
             prompt = f"以下のWeb記事をObsidian保存用にMarkdownで整理。\nタイトル: {title}\nURL: {url}\n\n{raw_text}"
             try:
-                # モデル名は適宜調整してください
+                # 修正: aio.models.generate_content を使用
                 response = await self.gemini_client.aio.models.generate_content(
                     model='gemini-2.5-pro', 
                     contents=prompt
@@ -198,16 +189,12 @@ class PartnerCog(commands.Cog):
                 return
 
         try:
-            # 1. 保存先フォルダのID取得 (なければ作成)
             folder_id = await self._find_file(service, self.drive_folder_id, folder_name)
             if not folder_id: 
                 folder_id = await self._create_folder(service, self.drive_folder_id, folder_name)
             
-            # 2. 記事ファイルの保存
             await self._upload_text(service, folder_id, filename, final_content)
 
-            # 3. デイリーノートへリンクを追記
-            # リンク形式: [[FolderName/FileName|Title]]
             link_str = f"- [[{folder_name}/{file_basename}|{title}]]"
             await self._update_daily_note_link(service, date_str, link_str, section_header)
 
@@ -217,18 +204,13 @@ class PartnerCog(commands.Cog):
             logging.error(f"Save Process Error: {e}")
             await message.add_reaction('❌')
 
-
     async def _generate_reply(self, channel, inputs: list, trigger_type="reply", extra_context="", ignore_msg_id=None):
         if not self.gemini_client: return None
         
-        weather_info = "天気情報取得不可" # 必要ならweather_cog等から取得
+        weather_info = "天気情報取得不可"
         stock_info = get_stock_price()
         yesterday_memory = await self._fetch_yesterdays_journal()
         
-        tools = [
-             # 必要であればここにTool定義 (google_searchなど)
-        ]
-
         system_prompt = (
             f"あなたはユーザーの知的パートナーAIです。\n"
             f"現在日時: {datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')}\n"
@@ -239,37 +221,33 @@ class PartnerCog(commands.Cog):
             "返答は簡潔に、親しみを込めて。"
         )
 
-        contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
+        # 修正: 新しい Content/Part 構造に合わせる
+        contents = [types.Content(role="user", parts=[types.Part(text=system_prompt)])]
         
-        # 履歴取得時に今回のメッセージを除外 (ignore_msg_id)
         recent_msgs = await self._build_conversation_context(channel, limit=30, ignore_msg_id=ignore_msg_id)
         
         for msg in recent_msgs:
-            contents.append(types.Content(role=msg['role'], parts=[types.Part.from_text(text=msg['text'])]))
+            contents.append(types.Content(role=msg['role'], parts=[types.Part(text=msg['text'])]))
         
         user_parts = []
         for inp in inputs:
-            if isinstance(inp, str): user_parts.append(types.Part.from_text(text=inp))
+            if isinstance(inp, str): user_parts.append(types.Part(text=inp))
             else: user_parts.append(inp)
         
         if user_parts:
             contents.append(types.Content(role="user", parts=user_parts))
         else:
-            contents.append(types.Content(role="user", parts=[types.Part.from_text(text="(きっかけ)")]))
+            contents.append(types.Content(role="user", parts=[types.Part(text="(きっかけ)")]))
 
-        config = types.GenerateContentConfig(
-            tools=tools, 
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-        )
-        
         try:
-            # モデル名は適宜変更してください
+            # 修正: config の指定方法も新しいライブラリに準拠
             response = await self.gemini_client.aio.models.generate_content(
                 model='gemini-2.5-pro', 
                 contents=contents, 
-                config=config
+                config=types.GenerateContentConfig(
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+                )
             )
-            # Function Calling等の処理が必要な場合はここに追加
             return response.text
         except Exception as e:
             logging.error(f"GenAI Error: {e}")
@@ -280,8 +258,6 @@ class PartnerCog(commands.Cog):
         if message.author.bot: return
         if message.channel.id != self.channel_id: return
 
-        # メンションやコマンドは無視する等の処理があればここに追加
-
         self.last_interaction = datetime.datetime.now(JST)
         await self._save_data_to_drive()
 
@@ -289,7 +265,6 @@ class PartnerCog(commands.Cog):
         input_parts = [message.content]
         extra_ctx = ""
 
-        # --- URL処理 ---
         if url_match:
             url = url_match.group()
             is_youtube = "youtube.com" in url or "youtu.be" in url
@@ -298,24 +273,16 @@ class PartnerCog(commands.Cog):
                 try:
                     title, text_content = await asyncio.to_thread(parse_url_with_readability, url)
                     if is_youtube:
-                        # YouTubeの場合も保存処理へ
                         await self._process_and_save_content(message, url, "YouTube", title, text_content)
                         extra_ctx = f"ユーザーがYouTube動画を共有しました: {title}"
                     else:
-                        # Web記事の場合
                         await self._process_and_save_content(message, url, "WebClip", title, text_content)
                         extra_ctx = f"ユーザーがWeb記事を共有しました: {title}\n内容要約: {text_content[:200]}..."
-                    
-                    # AIへの入力に記事内容を含めたい場合はここに追加
-                    # input_parts.append(f"（共有されたコンテンツの内容: {text_content[:500]}...）")
-                    
                 except Exception as e:
                     logging.error(f"URL Parse Error: {e}")
                     await message.add_reaction('⚠️')
 
-        # --- 返信生成 ---
         async with message.channel.typing():
-            # ここで現在のメッセージID (message.id) を ignore_msg_id として渡す
             reply = await self._generate_reply(
                 message.channel, 
                 input_parts, 
