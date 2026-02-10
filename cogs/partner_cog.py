@@ -12,20 +12,18 @@ import zoneinfo
 import io
 
 # Google Drive API
-# 修正: サービスアカウントではなく、ユーザー認証(token.json)用のライブラリを使用
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
-# 既存のユーティリティ
+# 修正した web_parser をインポート
 from web_parser import parse_url_with_readability
 from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SCOPES = ['https://www.googleapis.com/auth/drive']
-# 修正: service_account.json ではなく token.json を使用
 TOKEN_FILE = 'token.json'
 
 class PartnerCog(commands.Cog):
@@ -43,21 +41,18 @@ class PartnerCog(commands.Cog):
 
     # --- Google Drive Helper Methods ---
     def _get_drive_service(self):
-        """トークンファイルを使用してDriveサービスを取得（修正済み）"""
+        """トークンファイルを使用してDriveサービスを取得"""
         creds = None
-        # token.json が存在すれば読み込む
         if os.path.exists(TOKEN_FILE):
             try:
                 creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
             except Exception as e:
                 logging.error(f"PartnerCog: Token read error: {e}")
 
-        # トークンが無効または期限切れの場合のリフレッシュ処理
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
-                    # リフレッシュしたトークンを保存
                     with open(TOKEN_FILE, 'w') as token:
                         token.write(creds.to_json())
                 except Exception as e:
@@ -144,11 +139,9 @@ class PartnerCog(commands.Cog):
     # --- Core Logic ---
 
     async def _save_data_to_drive(self):
-        """(既存の処理) 会話ログの一時保存など"""
         pass 
 
     async def _fetch_yesterdays_journal(self):
-        """(既存の処理) 前日の日記取得"""
         return ""
 
     async def _build_conversation_context(self, channel, limit=50, ignore_msg_id=None):
@@ -197,7 +190,12 @@ class PartnerCog(commands.Cog):
                 f"---\n"
             )
         else:
-            if len(raw_text) < 50: return 
+            # コンテンツが短すぎる場合のガード (50文字未満は保存しない)
+            if len(raw_text) < 50:
+                logging.warning(f"WebClip Skipped: Content too short ({len(raw_text)} chars). URL: {url}")
+                await message.reply("⚠️ 記事の内容が短すぎるか、うまく読み取れなかったため、自動保存をスキップしました。")
+                return 
+
             prompt = f"以下のWeb記事をObsidian保存用にMarkdownで整理。\nタイトル: {title}\nURL: {url}\n\n{raw_text}"
             try:
                 response = await self.gemini_client.aio.models.generate_content(
@@ -291,11 +289,19 @@ class PartnerCog(commands.Cog):
             
             async with message.channel.typing():
                 try:
-                    title, text_content = await asyncio.to_thread(parse_url_with_readability, url)
+                    # === 修正箇所: 非同期関数を直接 await します (to_thread削除) ===
                     if is_youtube:
+                        # YouTubeはHTML解析不要なので web_parser は通さない（既存通り）
+                        title, text_content = await asyncio.to_thread(parse_url_with_readability, url)
+                        # 注意: web_parser.py を変更したため、parse_url_with_readability はHTML取得用になりました。
+                        # YouTubeのタイトル取得にも Playwright を使う形になります。
+                        
                         await self._process_and_save_content(message, url, "YouTube", title, text_content)
                         extra_ctx = f"ユーザーがYouTube動画を共有しました: {title}"
                     else:
+                        # WebClip用: ここが変更点
+                        title, text_content = await parse_url_with_readability(url)
+                        
                         await self._process_and_save_content(message, url, "WebClip", title, text_content)
                         extra_ctx = f"ユーザーがWeb記事を共有しました: {title}\n内容要約: {text_content[:200]}..."
                 except Exception as e:

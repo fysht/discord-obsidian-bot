@@ -1,33 +1,57 @@
-import requests
+import logging
+from playwright.async_api import async_playwright
 from readability import Document
 from markdownify import markdownify as md
-import logging
 
-def parse_url_with_readability(url: str) -> tuple[str | None, str | None]:
+async def parse_url_with_readability(url: str) -> tuple[str | None, str | None]:
     """
-    requestsとreadability-lxmlを使い、ページのタイトルと本文(Markdown)を抽出する。
+    Playwrightを使ってブラウザ経由でページを取得し、JavaScript実行後のHTMLから
+    readabilityとmarkdownifyでタイトルと本文を抽出する。
     """
     try:
-        # 1. User-Agentを指定してウェブページを取得
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()  # HTTPエラーがあれば例外を発生
+        async with async_playwright() as p:
+            # ブラウザ起動 (Render等のサーバー環境では sandbox 無効化が必要な場合が多い)
+            browser = await p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox']
+            )
+            
+            # コンテキスト作成 (一般的なブラウザのUser-Agentを設定)
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+            
+            page = await context.new_page()
+            
+            # ページ遷移 (タイムアウト30秒)
+            # wait_until='domcontentloaded' でDOMの構築完了を待つ
+            try:
+                await page.goto(url, timeout=30000, wait_until='domcontentloaded')
+            except Exception as e:
+                logging.warning(f"ページ読み込みタイムアウト（処理は続行します）: {url} - {e}")
 
-        # 2. readabilityで本文を抽出
-        doc = Document(response.text)
-        title = doc.title()
-        content_html = doc.summary()
+            # 追加の待機: ネットワーク通信が落ち着くまで待つ (SPAや遅延ロード対策)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except:
+                pass # タイムアウトしても、取得できた時点のHTMLで解析を進める
 
-        # 3. HTMLをMarkdownに変換
-        markdown_content = md(content_html, heading_style="ATX")
+            # HTMLとタイトルを取得
+            content_html = await page.content()
+            page_title = await page.title()
+            
+            await browser.close()
 
-        return title, markdown_content
+            # readabilityで本文抽出
+            doc = Document(content_html)
+            title = page_title if page_title else doc.title()
+            summary_html = doc.summary()
 
-    except requests.exceptions.RequestException as e:
-        logging.error(f"URLの取得に失敗しました {url}: {e}")
-        return "No Title Found", f"（URLの取得に失敗しました: {e}）"
+            # HTMLをMarkdownに変換
+            markdown_content = md(summary_html, heading_style="ATX")
+
+            return title, markdown_content
+
     except Exception as e:
-        logging.error(f"URLの解析中に予期せぬエラーが発生しました {url}: {e}", exc_info=True)
+        logging.error(f"PlaywrightによるURL解析エラー: {url} -> {e}", exc_info=True)
         return "No Title Found", f"（ページの解析中にエラーが発生しました: {e}）"
