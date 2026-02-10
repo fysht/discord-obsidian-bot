@@ -1,7 +1,6 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-# 修正: 新しいライブラリ google-genai を使用
 from google import genai
 from google.genai import types
 import os
@@ -13,20 +12,21 @@ import zoneinfo
 import io
 
 # Google Drive API
-from google.oauth2 import service_account
+# 修正: サービスアカウントではなく、ユーザー認証(token.json)用のライブラリを使用
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 # 既存のユーティリティ
 from web_parser import parse_url_with_readability
-# 修正: 存在しない関数のインポートを削除
-# from cogs.stock_cog import get_stock_price
 from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 SCOPES = ['https://www.googleapis.com/auth/drive']
-SERVICE_ACCOUNT_FILE = 'service_account.json'
+# 修正: service_account.json ではなく token.json を使用
+TOKEN_FILE = 'token.json'
 
 class PartnerCog(commands.Cog):
     def __init__(self, bot):
@@ -37,19 +37,40 @@ class PartnerCog(commands.Cog):
         
         self.gemini_client = None
         if self.gemini_api_key:
-            # 修正: google-genai のクライアント初期化
             self.gemini_client = genai.Client(api_key=self.gemini_api_key)
         
         self.last_interaction = None
 
     # --- Google Drive Helper Methods ---
     def _get_drive_service(self):
+        """トークンファイルを使用してDriveサービスを取得（修正済み）"""
+        creds = None
+        # token.json が存在すれば読み込む
+        if os.path.exists(TOKEN_FILE):
+            try:
+                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+            except Exception as e:
+                logging.error(f"PartnerCog: Token read error: {e}")
+
+        # トークンが無効または期限切れの場合のリフレッシュ処理
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    # リフレッシュしたトークンを保存
+                    with open(TOKEN_FILE, 'w') as token:
+                        token.write(creds.to_json())
+                except Exception as e:
+                    logging.error(f"PartnerCog: Token refresh error: {e}")
+                    return None
+            else:
+                logging.error("PartnerCog: Valid token not found.")
+                return None
+
         try:
-            creds = service_account.Credentials.from_service_account_file(
-                SERVICE_ACCOUNT_FILE, scopes=SCOPES)
             return build('drive', 'v3', credentials=creds)
         except Exception as e:
-            logging.error(f"Drive Init Error: {e}")
+            logging.error(f"PartnerCog: Drive Init Error: {e}")
             return None
 
     async def _find_file(self, service, parent_id, name):
@@ -179,7 +200,6 @@ class PartnerCog(commands.Cog):
             if len(raw_text) < 50: return 
             prompt = f"以下のWeb記事をObsidian保存用にMarkdownで整理。\nタイトル: {title}\nURL: {url}\n\n{raw_text}"
             try:
-                # 修正: aio.models.generate_content を使用
                 response = await self.gemini_client.aio.models.generate_content(
                     model='gemini-2.5-pro', 
                     contents=prompt
@@ -209,7 +229,6 @@ class PartnerCog(commands.Cog):
         if not self.gemini_client: return None
         
         weather_info = "天気情報取得不可"
-        # 修正: StockCogから値を取得できないため、一旦静的テキストまたはNoneにします
         stock_info = "株価情報取得不可" 
         
         yesterday_memory = await self._fetch_yesterdays_journal()
@@ -224,7 +243,6 @@ class PartnerCog(commands.Cog):
             "返答は簡潔に、親しみを込めて。"
         )
 
-        # 修正: 新しい Content/Part 構造に合わせる
         contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
         
         recent_msgs = await self._build_conversation_context(channel, limit=30, ignore_msg_id=ignore_msg_id)
@@ -243,7 +261,6 @@ class PartnerCog(commands.Cog):
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text="(きっかけ)")]))
 
         try:
-            # 修正: config の指定方法も新しいライブラリに準拠
             response = await self.gemini_client.aio.models.generate_content(
                 model='gemini-2.5-pro', 
                 contents=contents, 
