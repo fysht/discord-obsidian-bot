@@ -51,13 +51,22 @@ class SyncCog(commands.Cog):
             return
 
         async with self.sync_lock:
-            self.logger.info("【強制同期】保留中のメモの同期処理を開始します...")
-            
+            # ファイルが存在しない、またはサイズが0の場合はスキップ
             if not PENDING_MEMOS_FILE.exists() or PENDING_MEMOS_FILE.stat().st_size == 0:
-                self.logger.info("【強制同期】保留中のメモはありませんでした。")
                 return
+            
+            # 中身が空の配列 '[]' の場合もスキップする
+            try:
+                with open(PENDING_MEMOS_FILE, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content in ('', '[]'):
+                        return
+            except Exception:
+                pass
 
+            self.logger.info("【強制同期】保留中のメモの同期処理を開始します...")
             self.logger.info("【強制同期】未同期のメモを検出しました。同期ワーカーを呼び出します...")
+            
             try:
                 # タイムアウト付きでサブプロセスを実行 (最大120秒)
                 proc = await asyncio.create_subprocess_exec(
@@ -72,12 +81,13 @@ class SyncCog(commands.Cog):
                     self.logger.error("【強制同期】ワーカーがタイムアウトしました。")
                     return
 
+                # sync_worker.py は標準エラー出力(stderr)にログを出すため、そちらを取得する
+                worker_logs = stderr.decode('utf-8', 'ignore').strip()
+
                 if proc.returncode == 0:
-                    log_output = stdout.decode('utf-8', 'ignore').strip()
-                    self.logger.info(f"【強制同期】ワーカーが正常に完了しました。\n--- ワーカーログ ---\n{log_output}\n--------------------")
+                    self.logger.info(f"【強制同期】ワーカーが正常に完了しました。\n--- ワーカーログ ---\n{worker_logs}\n--------------------")
                 else:
-                    error_output = stderr.decode('utf-8', 'ignore').strip()
-                    self.logger.error(f"【強制同期】ワーカーの実行に失敗しました (終了コード: {proc.returncode})。\n--- ワーカーエラーログ ---\n{error_output}\n--------------------------")
+                    self.logger.error(f"【強制同期】ワーカーの実行に失敗しました (終了コード: {proc.returncode})。\n--- ワーカーエラーログ ---\n{worker_logs}\n--------------------------")
             except Exception as e:
                 self.logger.error(f"【強制同期】ワーカーの呼び出し処理自体に失敗しました: {e}", exc_info=True)
 
