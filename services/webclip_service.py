@@ -53,7 +53,6 @@ class WebClipService:
             return True
             
         # 3. 本文判定 (Web記事の場合)
-        # "材料" と "作り方" の両方が含まれていればレシピの可能性が高い
         if text and '材料' in text and '作り方' in text:
             return True
 
@@ -64,7 +63,6 @@ class WebClipService:
         URLを処理し、Driveに保存し、結果の概要を返す
         """
         is_youtube = "youtube.com" in url or "youtu.be" in url
-        # 元のタイプ（保存形式の決定に使用）
         source_type = "YouTube" if is_youtube else "WebClip"
         
         title = "Untitled"
@@ -92,14 +90,13 @@ class WebClipService:
                 title = "Untitled"
 
         # 2. レシピ判定
-        # YouTubeの場合は本文がないため、タイトルとメッセージ内容で判定
         check_text = raw_text if not is_youtube else (title + " " + message_content)
         is_recipe = self._is_recipe(title, url, check_text)
 
         # 3. 保存先フォルダとセクションの決定
         if is_recipe:
             folder_name = "Recipes"
-            content_type_label = "Recipe" # 完了メッセージ用
+            content_type_label = "Recipe"
         elif is_youtube:
             folder_name = "YouTube"
             content_type_label = "YouTube"
@@ -120,29 +117,34 @@ class WebClipService:
         filename = f"{timestamp}-{safe_title}.md"
         filename_no_ext = f"{timestamp}-{safe_title}"
         
+        # ユーザーのメモを抽出（メッセージからURLを取り除いた部分）
+        user_comment = message_content.replace(url, "").strip()
+        note_section = f"## Note\n{user_comment}\n\n" if user_comment else ""
+
         final_content = ""
         summary_text = ""
         
-        # コンテンツの形式は「元のソースタイプ」に従う
         if is_youtube:
             # YouTube形式
             final_content = (
                 f"- **URL:** {url}\n"
                 f"- **Channel:** {author_name}\n"
                 f"- **Saved at:** {now}\n\n"
-                f"## Note\n{message_content}\n\n"
+                f"{note_section}"
                 f"---\n"
                 f"[[{daily_note_date}]]"
             )
             summary_text = f"YouTube動画を保存しました: {title}"
         else:
-            # Web記事形式
+            # Web記事・レシピ形式
             if len(raw_text) < 10:
                 logging.warning(f"WebClip Warning: Content might be empty. URL: {url}")
+                raw_text = "※本文の自動取得ができなかったページです。\n"
 
             final_content = (
                 f"- **Source:** <{url}>\n"
                 f"- **Saved at:** {now}\n\n"
+                f"{note_section}"
                 f"---\n\n"
                 f"[[{daily_note_date}]]\n\n"
                 f"{raw_text}"
