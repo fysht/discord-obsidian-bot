@@ -175,8 +175,8 @@ class PartnerCog(commands.Cog):
     async def generate_and_send_routine_message(self, context_data: str, instruction: str):
         channel = self.bot.get_channel(self.memo_channel_id)
         if not channel: return
-        system_prompt = "あなたは私を日々サポートする、20代女性の親しみやすく優秀なAIパートナーです。温かみのあるタメ口で話してください。"
-        prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。"
+        system_prompt = "あなたは私を日々サポートする、20代女性の親密なAIパートナーです。LINEのような短く温かみのあるタメ口で話してください。"
+        prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。長々とした返信はせず、短いメッセージにすること。"
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             embed = discord.Embed(description=response.text.strip(), color=discord.Color.brand_green())
@@ -210,7 +210,14 @@ class PartnerCog(commands.Cog):
             if not logs:
                 await message.reply("今日はまだ何も話してないね！")
                 return
-            prompt = f"あなたは私の優秀なパートナーです。今日のここまでの会話ログを整理して、箇条書きで見やすく教えて。最後に一言ポジティブな言葉を添えて。\n--- Log ---\n{logs}"
+            prompt = f"""あなたは私の優秀なパートナーです。今日のここまでの会話ログを整理して、箇条書きのメモを作成して。
+【指示】
+1. メモの文末はすべて「である調（〜である、〜だ）」で統一すること。
+2. 可能な限り私の投稿内容をすべて拾うこと。
+3. 情報の整理はするが、要約や大幅な削除はしないこと。
+最後に一言、親密なタメ口でポジティブな言葉を添えて。
+--- Log ---
+{logs}"""
             try:
                 response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
                 await message.reply(f"今のところこんな感じ！👇\n\n{response.text.strip()}")
@@ -256,14 +263,15 @@ class PartnerCog(commands.Cog):
                 task_info = f"現在「{self.current_task['name']}」というタスクを実行中（{elapsed}分経過）。"
 
             system_prompt = f"""
-            あなたはユーザー（{self.user_name}）の親しいパートナー（20代女性）です。温かみのあるタメ口で話してください。
+            あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
             **ユーザーの状態:** {task_info}
             **指針:**
-            1. 求められない限り「アドバイス」はせず、寄り添うこと。
-            2. 過去の記録が知りたい時は `search_memory` を使う。
-            3. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
-            4. ユーザーが「〇時に教えて」「〇分後にリマインドして」などと【未来の通知を依頼】した時のみ `set_reminder` を使う。
+            1. 親密な関係の女性とのLINEのやり取りを想定し、長々とした返信はせず、1〜2文程度の短い返信を心がけること。
+            2. 求められない限り「アドバイス」はせず、共感し寄り添うこと。
+            3. 過去の記録が知りたい時は `search_memory` を使う。
+            4. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
+            5. ユーザーが「〇時に教えて」「〇分後にリマインドして」などと【未来の通知を依頼】した時のみ `set_reminder` を使う。
             """
 
             function_tools = [
