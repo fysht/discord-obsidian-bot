@@ -2,12 +2,10 @@ import os
 import asyncio
 import logging
 from pathlib import Path
-from datetime import datetime, timezone
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import re
-import json # 環境変数からの復元用にjsonを追加
 
 try:
     from obsidian_handler import add_memo_async
@@ -42,11 +40,7 @@ restore_token_from_env()
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0")) 
-
-# --- Google Drive関連設定 ---
-# .env (またはRender環境変数) に GOOGLE_DRIVE_FOLDER_ID を設定してください
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-
 
 # --- 2. Bot本体のクラス定義 ---
 class MyBot(commands.Bot):
@@ -58,13 +52,14 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents) 
 
     async def setup_hook(self):
-        """Cogをロードする"""
+        """Cogを動的にロードする"""
         logging.info("Cogの読み込みを開始します...")
         cogs_dir = Path(__file__).parent / 'cogs'
 
         successful_loads = 0
         failed_loads = []
 
+        # cogsフォルダ内のファイルを自動で読み込む (新しく追加したCogもここで自動読み込みされます)
         for filename in os.listdir(cogs_dir):
             if filename == "__pycache__":
                 continue
@@ -99,12 +94,10 @@ class MyBot(commands.Bot):
         logging.info(f"{self.user} としてログインしました (Render - Main Bot)")
         logging.info("--- Bot is ready and listening for events ---")
         
-        # Dropboxトークンではなく、Google DriveフォルダIDが設定されているか確認
         if add_memo_async and GOOGLE_DRIVE_FOLDER_ID:
              await self.process_offline_memos()
 
     async def process_offline_memos(self):
-        # (既存の処理をそのまま維持)
         pass
 
 # --- 3. 起動処理 ---

@@ -58,6 +58,24 @@ class WebClipService:
 
         return False
 
+    async def _get_fallback_title(self, url):
+        """Playwrightでの取得が失敗した際に、軽量なHTTP通信でタイトルのみを取得する"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # 一般的なブラウザからのアクセスに見せかける
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                async with session.get(url, headers=headers, timeout=10) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        # 正規表現で <title> タグの中身だけを抽出
+                        match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+                        if match:
+                            return match.group(1).strip()
+        except Exception as e:
+            logging.error(f"Fallback Title Fetch Error: {e}")
+        
+        return "Untitled"
+
     async def process_url(self, url, message_content, trigger_message_obj):
         """
         URLを処理し、Driveに保存し、結果の概要を返す
@@ -82,12 +100,24 @@ class WebClipService:
                     title = "YouTube Video"
         else:
             try:
-                title, raw_text = await parse_url_with_readability(url)
+                # 35秒でタイムアウトするように設定
+                title, raw_text = await asyncio.wait_for(parse_url_with_readability(url), timeout=35.0)
+                
+                # タイトルが正常に取れなかった場合は予備メソッドで取得
                 if not title or title == "No Title Found":
-                    title = "Untitled"
+                    title = await self._get_fallback_title(url)
+                    
+            except asyncio.TimeoutError:
+                logging.warning(f"WebClip: Parse Timeout for URL: {url}")
+                # タイムアウト時は予備メソッドでタイトルだけ取得し、本文は固定メッセージにする
+                title = await self._get_fallback_title(url)
+                raw_text = "※ページの読み込みに時間がかかったため、本文は取得できませんでした。\n"
+                
             except Exception as e:
                 logging.error(f"WebClip: Parse Error: {e}")
-                title = "Untitled"
+                # その他のエラー時もタイトルだけ取得する
+                title = await self._get_fallback_title(url)
+                raw_text = f"※ページの解析中にエラーが発生しました。\n"
 
         # 2. レシピ判定
         check_text = raw_text if not is_youtube else (title + " " + message_content)

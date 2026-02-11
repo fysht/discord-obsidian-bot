@@ -1,384 +1,384 @@
-import discord
-from discord.ext import commands, tasks
-from google import genai
-from google.genai import types
 import os
-import datetime
+import discord
+from discord.ext import commands
+import google.generativeai as genai
+from google.genai import types
 import logging
-import re
+import datetime
 import zoneinfo
+import json
+import io
 
-# Services
-from services.drive_service import DriveService
-from services.webclip_service import WebClipService
-from services.calendar_service import CalendarService
-from services.task_service import TaskService
-from services.fitbit_service import FitbitService
-from services.info_service import InfoService
+# Google API
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+TOKEN_FILE = 'token.json'
+SCOPES = ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/calendar']
+BOT_FOLDER = ".bot"
+DATA_FILE_NAME = "partner_data.json"
 
 class PartnerCog(commands.Cog):
-    def __init__(self, bot):
+    """パートナーAI（会話、ツール呼び出し、状態管理の司令塔）"""
+
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID") or os.getenv("DRIVE_FOLDER_ID")
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
+        self.user_name = "あなた"
+        
+        self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
         
-        self.fitbit_client_id = os.getenv("FITBIT_CLIENT_ID")
-        self.fitbit_client_secret = os.getenv("FITBIT_CLIENT_SECRET")
-        self.fitbit_refresh_token = os.getenv("FITBIT_REFRESH_TOKEN")
+        # --- 共有ステータス（他のCogからもアクセスするデータ） ---
+        self.reminders = []
+        self.current_task = None
+        self.last_interaction = datetime.datetime.now(JST)
         
-        # Services Init
-        self.drive_service = DriveService(self.drive_folder_id)
-        self.calendar_service = CalendarService(self.drive_service.get_creds(), self.calendar_id)
-        self.webclip_service = WebClipService(self.drive_service, self.gemini_api_key)
-        self.task_service = TaskService(self.drive_service)
-        self.info_service = InfoService()
-        
-        if all([self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token]):
-            self.fitbit_service = FitbitService(
-                self.drive_service, self.fitbit_client_id, self.fitbit_client_secret, self.fitbit_refresh_token
-            )
-        else:
-            self.fitbit_service = None
-        
-        self.gemini_client = None
+        # Geminiの初期化
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         if self.gemini_api_key:
-            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
+            genai.configure(api_key=self.gemini_api_key)
+            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+        else:
+            logging.error("PartnerCog: GEMINI_API_KEYが設定されていません。")
 
     async def cog_load(self):
-        await self.task_service.load_data()
-        self.check_schedule_loop.start()
-        self.check_reminders_loop.start()
-        self.morning_greeting_loop.start()
-        self.nightly_reflection_loop.start()
-        self.daily_summary_loop.start()
-        self.inactivity_check_loop.start()
+        """Bot起動時にDriveから状態を復元"""
+        await self.load_data_from_drive()
 
     async def cog_unload(self):
-        self.check_schedule_loop.cancel()
-        self.check_reminders_loop.cancel()
-        self.morning_greeting_loop.cancel()
-        self.nightly_reflection_loop.cancel()
-        self.daily_summary_loop.cancel()
-        self.inactivity_check_loop.cancel()
-        await self.task_service.save_data()
+        """Bot終了時に状態をDriveへ保存"""
+        await self.save_data_to_drive()
 
-    # --- Helper Methods ---
-    async def _fetch_todays_chat_log(self, channel):
+    # ==========================================
+    # 外部APIクライアント取得
+    # ==========================================
+    def get_drive_service(self):
+        creds = None
+        if os.path.exists(TOKEN_FILE):
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
+                except: return None
+            else: return None
+        return build('drive', 'v3', credentials=creds)
+
+    def get_calendar_service(self):
+        creds = None
+        if os.path.exists(TOKEN_FILE): creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        return build('calendar', 'v3', credentials=creds) if creds else None
+
+    # ==========================================
+    # 状態の保存・読み込み (他のCogからも呼ばれる)
+    # ==========================================
+    async def _find_file(self, service, parent_id, name):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        try:
+            res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id)").execute())
+            files = res.get('files', [])
+            return files[0]['id'] if files else None
+        except: return None
+
+    async def load_data_from_drive(self):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self.get_drive_service)
+        if not service: return
+        b_folder = await self._find_file(service, self.drive_folder_id, BOT_FOLDER)
+        if not b_folder: return
+        f_id = await self._find_file(service, b_folder, DATA_FILE_NAME)
+        if f_id:
+            try:
+                request = service.files().get_media(fileId=f_id)
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done: _, done = downloader.next_chunk()
+                data = json.loads(fh.getvalue().decode('utf-8'))
+                
+                self.reminders = data.get('reminders', [])
+                ct = data.get('current_task')
+                if ct: self.current_task = {'name': ct['name'], 'start': datetime.datetime.fromisoformat(ct['start'])}
+                li = data.get('last_interaction')
+                if li: self.last_interaction = datetime.datetime.fromisoformat(li)
+            except: pass
+
+    async def save_data_to_drive(self):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self.get_drive_service)
+        if not service: return
+        
+        ct_save = None
+        if self.current_task:
+            ct_save = {'name': self.current_task['name'], 'start': self.current_task['start'].isoformat()}
+            
+        data = {
+            'reminders': self.reminders,
+            'current_task': ct_save,
+            'last_interaction': self.last_interaction.isoformat()
+        }
+        
+        b_folder = await self._find_file(service, self.drive_folder_id, BOT_FOLDER)
+        if not b_folder:
+            meta = {'name': BOT_FOLDER, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
+            b_folder_obj = await loop.run_in_executor(None, lambda: service.files().create(body=meta, fields='id').execute())
+            b_folder = b_folder_obj.get('id')
+            
+        f_id = await self._find_file(service, b_folder, DATA_FILE_NAME)
+        media = MediaIoBaseUpload(io.BytesIO(json.dumps(data, ensure_ascii=False, indent=2).encode('utf-8')), mimetype='application/json')
+        if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
+        else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': DATA_FILE_NAME, 'parents': [b_folder]}, media_body=media).execute())
+
+    # ==========================================
+    # AIツール機能 (Function Calling)
+    # ==========================================
+    async def _search_drive_notes(self, keywords: str):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self.get_drive_service)
+        if not service: return "検索エラー"
+        query = f"fullText contains '{keywords}' and mimeType = 'text/markdown' and trashed = false"
+        try:
+            results = await loop.run_in_executor(None, lambda: service.files().list(q=query, pageSize=3, fields="files(id, name)").execute())
+            files = results.get('files', [])
+            if not files: return f"「{keywords}」に関するメモは見つからなかったよ。"
+            search_results = []
+            for file in files:
+                try:
+                    request = service.files().get_media(fileId=file['id'])
+                    fh = io.BytesIO()
+                    downloader = MediaIoBaseDownload(fh, request)
+                    done = False
+                    while not done: _, done = downloader.next_chunk()
+                    snippet = fh.getvalue().decode('utf-8')[:800] 
+                    search_results.append(f"【{file['name']}】\n{snippet}\n")
+                except: continue
+            return f"検索結果:\n" + "\n---\n".join(search_results)
+        except Exception as e: return f"検索エラー: {e}"
+
+    async def _check_schedule(self, date_str: str):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self.get_calendar_service)
+        if not service: return "エラー"
+        try:
+            dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
+            time_min = dt.replace(hour=0, minute=0, second=0).isoformat() + 'Z'
+            time_max = dt.replace(hour=23, minute=59, second=59).isoformat() + 'Z'
+            events_result = await loop.run_in_executor(None, lambda: service.events().list(
+                calendarId=self.calendar_id, timeMin=time_min, timeMax=time_max, singleEvents=True, orderBy='startTime').execute())
+            events = events_result.get('items', [])
+            if not events: return f"{date_str} の予定は特にないみたいだよ。"
+            result_text = f"【{date_str} の予定】\n"
+            for event in events:
+                start = event['start'].get('dateTime', event['start'].get('date'))
+                summary = event.get('summary', '(タイトルなし)')
+                if 'T' in start:
+                    t = datetime.datetime.fromisoformat(start).strftime('%H:%M')
+                    result_text += f"- {t} : {summary}\n"
+                else: result_text += f"- 終日 : {summary}\n"
+            return result_text
+        except Exception as e: return f"エラー: {e}"
+
+    async def _create_calendar_event(self, summary: str, start_time: str, end_time: str, location: str = "", description: str = ""):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self.get_calendar_service)
+        if not service: return "エラー"
+        event_body = {
+            'summary': summary, 'location': location, 'description': description,
+            'start': {'dateTime': start_time, 'timeZone': 'Asia/Tokyo'},
+            'end': {'dateTime': end_time, 'timeZone': 'Asia/Tokyo'},
+        }
+        try:
+            event = await loop.run_in_executor(None, lambda: service.events().insert(calendarId=self.calendar_id, body=event_body).execute())
+            return f"予定を作成したよ！: {event.get('htmlLink')}"
+        except Exception as e: return f"エラー: {e}"
+
+    async def _set_reminder(self, target_time: str, content: str, user_id: int):
+        self.reminders.append({'time': target_time, 'content': content, 'user_id': user_id})
+        await self.save_data_to_drive()
+        dt = datetime.datetime.fromisoformat(target_time)
+        return f"了解！ {dt.strftime('%m月%d日 %H:%M')} に「{content}」でお知らせするね。"
+
+    # ==========================================
+    # 会話・連携ヘルパー
+    # ==========================================
+    async def generate_and_send_routine_message(self, context_data: str, instruction: str):
+        """他のCogから依頼されて自発的にメッセージを送る機能"""
+        channel = self.bot.get_channel(self.memo_channel_id)
+        if not channel: return
+        system_prompt = "あなたは私を日々サポートする、20代女性の親しみやすく優秀なAIパートナーです。温かみのあるタメ口で話してください。"
+        prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。"
+        try:
+            response = await self.gemini_model.generate_content_async(prompt)
+            embed = discord.Embed(description=response.text.strip(), color=discord.Color.brand_green())
+            embed.set_author(name="🤖 AI Partner", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
+            await channel.send(embed=embed)
+        except Exception as e: logging.error(f"PartnerCog 定期メッセージ生成エラー: {e}")
+
+    async def fetch_todays_chat_log(self, channel):
         today_start = datetime.datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
         logs = []
         async for msg in channel.history(after=today_start, limit=None, oldest_first=True):
             if msg.content.startswith("/"): continue
             role = "AI" if msg.author.id == self.bot.user.id else "User"
-            content = msg.content
-            if msg.attachments: content += " [画像/ファイル]"
-            logs.append(f"{role}: {content}")
+            logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    async def _build_conversation_context(self, channel, limit=50, ignore_msg_id=None):
-        """会話履歴を取得してGemini用のコンテキストを作成"""
+    async def _build_conversation_context(self, channel, limit=30):
         messages = []
         async for msg in channel.history(limit=limit, oldest_first=False):
-            if ignore_msg_id and msg.id == ignore_msg_id: continue
             if msg.content.startswith("/"): continue
             if msg.author.bot and msg.author.id != self.bot.user.id: continue
-            
             role = "model" if msg.author.id == self.bot.user.id else "user"
             text = msg.content
             if msg.attachments: text += " [メディア送信]"
-            messages.append({'role': role, 'text': text})
+            messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
         return list(reversed(messages))
 
-    # --- 定期タスク ---
-    @tasks.loop(minutes=1)
-    async def check_reminders_loop(self):
-        due, changed = self.task_service.check_due_reminders()
-        if due:
-            ch = self.bot.get_channel(self.channel_id)
-            if ch:
-                for r in due:
-                    u = self.bot.get_user(r['user_id'])
-                    m = u.mention if u else ""
-                    t = datetime.datetime.fromisoformat(r['time']).strftime('%H:%M')
-                    await ch.send(f"{m} ⏰ **{r['content']}** ({t})")
-        if changed: await self.task_service.save_data()
-
-    @tasks.loop(minutes=5)
-    async def check_schedule_loop(self):
-        events = await self.calendar_service.get_upcoming_events(minutes=15)
-        ch = self.bot.get_channel(self.channel_id)
-        if not ch: return
-        now = datetime.datetime.now(JST)
-        for e in events:
-            if 'dateTime' not in e.get('start', {}): continue
-            start = datetime.datetime.fromisoformat(e['start']['dateTime'])
-            if 540 <= (start - now).total_seconds() <= 660:
-                if e['id'] not in self.task_service.notified_event_ids:
-                    self.task_service.notified_event_ids.add(e['id'])
-                    await ch.send(f"🔔 あと10分で「**{e.get('summary','予定')}**」の時間だよ！")
-
-    # --- 朝の挨拶 (08:00) ---
-    @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
-    async def morning_greeting_loop(self):
-        ch = self.bot.get_channel(self.channel_id)
-        if not ch: return
-
-        info_text = await self.info_service.get_info_summary()
-        today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-        schedule_text = await self.calendar_service.list_events_for_date(today_str)
-        
-        sleep_info = "睡眠データ: 未同期"
-        if self.fitbit_service:
-            stats = await self.fitbit_service.get_stats(datetime.datetime.now(JST))
-            if stats and 'sleep_minutes' in stats and stats['sleep_minutes'] > 0:
-                h, m = divmod(stats['sleep_minutes'], 60)
-                score = stats.get('sleep_score', 'N/A')
-                sleep_info = f"昨夜の睡眠: {h}時間{m}分 (スコア: {score})"
-            else:
-                sleep_info = "昨夜の睡眠: データなし（まだ同期されていないかも？）"
-        
-        prompt = f"""
-        今は朝8時です。以下の情報でユーザーを元気づける「おはよう」のメッセージを作成してください。
-        
-        【天気・ニュース】
-        {info_text}
-        
-        【ヘルスケア】
-        {sleep_info}
-        
-        【今日の予定】
-        {schedule_text}
-        
-        指示:
-        - 8時なので、そろそろ活動開始している想定で。
-        - 睡眠データが良い/悪い場合で一言添える。
-        - 予定がある場合はリマインドする。
-        - 明るく親しみやすく。
-        """
-        try:
-            resp = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
-            await ch.send(resp.text)
-            self.task_service.update_last_interaction()
-            await self.task_service.save_data()
-        except Exception as e: logging.error(f"Morning Error: {e}")
-
-    # --- 夜の振り返り (22:00) ---
-    @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
-    async def nightly_reflection_loop(self):
-        ch = self.bot.get_channel(self.channel_id)
-        if not ch: return
-        chat_log = await self._fetch_todays_chat_log(ch)
-        prompt = f"夜22時です。今日のログを見て、労う質問を1つ投げかけて。\n\n{chat_log}\n\n指示: 親しみやすく。"
-        try:
-            resp = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
-            await ch.send(resp.text)
-            self.task_service.update_last_interaction()
-            await self.task_service.save_data()
-        except Exception as e: logging.error(f"Nightly Error: {e}")
-
-    # --- 生存確認 (1時間ごと) ---
-    @tasks.loop(minutes=60)
-    async def inactivity_check_loop(self):
-        ch = self.bot.get_channel(self.channel_id)
-        if not ch: return
-        now = datetime.datetime.now(JST)
-        if 0 <= now.hour < 6: return
-
-        if (now - self.task_service.last_interaction) > datetime.timedelta(hours=12):
+    async def _show_interim_summary(self, message: discord.Message):
+        async with message.channel.typing():
+            logs = await self.fetch_todays_chat_log(message.channel)
+            if not logs:
+                await message.reply("今日はまだ何も話してないね！")
+                return
+            prompt = f"あなたは私の優秀なパートナーです。今日のここまでの会話ログを整理して、箇条書きで見やすく教えて。最後に一言ポジティブな言葉を添えて。\n--- Log ---\n{logs}"
             try:
-                last_msg = [msg async for msg in ch.history(limit=1)]
-                if last_msg and last_msg[0].author.id == self.bot.user.id: return
-                
-                prompt = "12時間返信がないユーザーに、短く声をかけて（例：生きてる？）。"
-                resp = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
-                await ch.send(resp.text)
-                
-                self.task_service.update_last_interaction()
-                await self.task_service.save_data()
-            except Exception as e: logging.error(f"Inactivity Error: {e}")
+                response = await self.gemini_model.generate_content_async(prompt)
+                await message.reply(f"今のところこんな感じ！👇\n\n{response.text.strip()}")
+            except Exception as e: await message.reply(f"ごめんね、エラーが出ちゃった💦 ({e})")
 
-    # --- 日次まとめ (23:55) ---
-    @tasks.loop(time=datetime.time(hour=23, minute=55, tzinfo=JST))
-    async def daily_summary_loop(self):
-        ch = self.bot.get_channel(self.channel_id)
-        if not ch: return
-        today = datetime.datetime.now(JST)
-        chat_log = await self._fetch_todays_chat_log(ch)
-        weather_info, _, _ = await self.info_service.get_weather()
-        fitbit_stats = {}
-        if self.fitbit_service: fitbit_stats = await self.fitbit_service.get_stats(today) or {}
-
-        prompt = f"""
-        今日の日記（Daily Note）を作成します。
-        以下の情報を元に、Obsidian用のMarkdownテキストを作成してください。
-
-        【入力データ】
-        - 天気: {weather_info}
-        - Fitbit: {fitbit_stats}
-        - 会話ログ:
-        {chat_log if chat_log else "(会話なし)"}
-
-        【出力構成】
-        1. **## 📝 Journal**
-           - 今日の出来事、会話の流れ、ユーザーの様子をまとめた日記文章。
-           - あなた（パートナーAI）からの視点を含めて、親しみやすい文体で記述する。
-
-        2. **## 🗂️ Memos (Categorized)**
-           - 会話ログに含まれる情報、タスク、アイデア、思考の断片などを**可能な限り細かく箇条書き**にする。
-           - **省略せず、小さな情報も拾うこと。**
-           - 内容に応じて適切なカテゴリ見出し（例: ### 💻 Work, ### 🏠 Life, ### 💡 Ideas, ### 🔗 Links 等）を付けて整理する。
-
-        3. **## 🤖 AI Comment**
-           - 今日の活動全体に対する労いや、明日へのポジティブなメッセージ。
-
-        ※ 注意:
-        - Frontmatter（メタデータ）は含めないでください（別途プログラムが付与します）。
-        - Markdown形式のみを出力してください。
-        """
-        
-        try:
-            resp = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
-            diary_body = resp.text
-            
-            # Obsidian保存
-            if self.fitbit_service: await self.fitbit_service.update_daily_note_with_stats(today, fitbit_stats)
-            
-            service = self.drive_service.get_service()
-            date_str = today.strftime("%Y-%m-%d")
-            daily_folder = await self.drive_service.find_file(service, self.drive_service.folder_id, "DailyNotes")
-            f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
-            
-            if f_id:
-                content = await self.drive_service.read_text_file(service, f_id)
-                if "## 📝 Journal" in content:
-                    new_content = content + f"\n\n---\n### 🤖 AI Daily Report (Updated)\n{diary_body}"
-                else:
-                    new_content = content + f"\n\n{diary_body}"
-                await self.drive_service.update_text(service, f_id, new_content)
-                await ch.send("✅ 今日の日次まとめ（日記・詳細メモ）を作成・保存したよ！お疲れ様🌙")
-        except Exception as e:
-            logging.error(f"Daily Summary Error: {e}")
-            await ch.send("⚠️ 日記保存エラー")
-
-    # --- 会話生成・ツール連携 ---
-    async def _generate_reply(self, channel, inputs: list, extra_context="", ignore_msg_id=None):
-        if not self.gemini_client: return None
-        now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
-        
-        task_info = "特になし"
-        if self.task_service.current_task:
-            ct = self.task_service.current_task
-            elapsed = int((datetime.datetime.now(JST) - ct['start']).total_seconds() / 60)
-            task_info = f"「{ct['name']}」を実行中（{elapsed}分経過）"
-
-        tools = [
-            types.Tool(function_declarations=[
-                types.FunctionDeclaration(
-                    name="check_schedule", description="指定日の予定確認",
-                    parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING)}, required=["date"])
-                ),
-                types.FunctionDeclaration(
-                    name="create_calendar_event", description="予定作成",
-                    parameters=types.Schema(type=types.Type.OBJECT, properties={
-                        "summary": types.Schema(type=types.Type.STRING),
-                        "start_time": types.Schema(type=types.Type.STRING),
-                        "end_time": types.Schema(type=types.Type.STRING)
-                    }, required=["summary", "start_time", "end_time"])
-                ),
-                types.FunctionDeclaration(
-                    name="search_memory", description="過去のメモや日記をキーワード検索する",
-                    parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.STRING)}, required=["keywords"])
-                )
-            ])
-        ]
-
-        system_prompt = (
-            f"あなたはユーザーの親しいパートナーAIです。\n"
-            f"現在日時: {now_str}\n"
-            f"現在のタスク状態: {task_info}\n"
-            f"ユーザーの文脈: {extra_context}\n"
-            f"過去のことは `search_memory` で検索可能。\n"
-            f"返答は短く、親しみやすく。"
-        )
-
-        contents = [types.Content(role="user", parts=[types.Part.from_text(text=system_prompt)])]
-        recent_msgs = await self._build_conversation_context(channel, limit=20, ignore_msg_id=ignore_msg_id)
-        for msg in recent_msgs:
-            contents.append(types.Content(role=msg['role'], parts=[types.Part.from_text(text=msg['text'])]))
-        
-        user_parts = []
-        for inp in inputs:
-            if isinstance(inp, str): user_parts.append(types.Part.from_text(text=inp))
-            else: user_parts.append(inp)
-        if user_parts: contents.append(types.Content(role="user", parts=user_parts))
-
-        config = types.GenerateContentConfig(tools=tools, automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
-
-        try:
-            response = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=contents, config=config)
-            
-            if response.function_calls:
-                call = response.function_calls[0]
-                tool_result = "実行失敗"
-                if call.name == "check_schedule":
-                    tool_result = await self.calendar_service.list_events_for_date(call.args.get("date"))
-                elif call.name == "create_calendar_event":
-                    tool_result = await self.calendar_service.create_event(call.args.get("summary"), call.args.get("start_time"), call.args.get("end_time"))
-                elif call.name == "search_memory":
-                    tool_result = await self.drive_service.search_markdown_files(call.args.get("keywords"))
-                
-                contents.append(response.candidates[0].content)
-                contents.append(types.Content(role="user", parts=[types.Part.from_function_response(name=call.name, response={"result": tool_result})]))
-                final_response = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=contents)
-                return final_response.text
-            
-            return response.text
-        except Exception as e:
-            logging.error(f"GenAI Error: {e}")
-            return None
-
+    # ==========================================
+    # メインの会話処理
+    # ==========================================
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot: return
-        if message.channel.id != self.channel_id: return
+        if message.author.bot or message.channel.id != self.memo_channel_id: return
         
-        self.task_service.update_last_interaction()
+        self.user_name = message.author.display_name
         text = message.content.strip()
-        extra_ctx = ""
+        self.last_interaction = datetime.datetime.now(JST)
 
-        # Task & Reminder
-        rem_time = self.task_service.parse_and_add_reminder(text, message.author.id)
-        if rem_time:
-            extra_ctx += f"\n【リマインダー】{rem_time}にセットしたよ。"
-            await self.task_service.save_data()
+        # 1. 途中経過のまとめ
+        if text in ["まとめ", "途中経過", "整理して", "今の状態"]:
+            await self._show_interim_summary(message)
+            await self.save_data_to_drive()
+            return
 
-        if any(w in text for w in ["開始", "やる", "作業", "start"]):
-            if not self.task_service.current_task:
-                task_name = text.replace("開始", "").replace("やる", "").replace("作業", "").strip() or "作業"
-                self.task_service.start_task(task_name)
-                extra_ctx += f"\n【タスク】「{task_name}」を開始。"
-                await self.task_service.save_data()
-        elif any(w in text for w in ["終了", "終わった", "完了", "finish"]):
-            if self.task_service.current_task:
-                t_name, duration = self.task_service.finish_task() or ("", 0)
-                extra_ctx += f"\n【タスク】「{t_name}」を終了（{duration}分）。"
-                await self.task_service.save_data()
+        # 2. タスク管理
+        task_updated = False
+        if any(w in text for w in ["開始", "やる", "読む", "作業"]):
+            if not self.current_task: 
+                self.current_task = {'name': text, 'start': datetime.datetime.now(JST)}
+                task_updated = True
+        elif any(w in text for w in ["終了", "終わった", "完了"]):
+            if self.current_task:
+                self.current_task = None
+                task_updated = True
+        if task_updated: await self.save_data_to_drive()
 
-        # WebClip
-        url_match = re.search(r'https?://\S+', text)
-        if url_match:
-            async with message.channel.typing():
-                result = await self.webclip_service.process_url(url_match.group(), text, message)
-                if result: extra_ctx += f"\n{result['summary']}"
+        # 3. 入力コンテンツの構築 (画像対応)
+        input_parts = []
+        if text: input_parts.append(types.Part.from_text(text=text))
+        for att in message.attachments:
+            if att.content_type and att.content_type.startswith(('image/', 'audio/')):
+                input_parts.append(types.Part.from_bytes(data=await att.read(), mime_type=att.content_type))
+        if not input_parts: 
+            await self.save_data_to_drive()
+            return
 
-        # Reply
-        input_parts = [text]
+        # 4. Geminiによる応答生成
         async with message.channel.typing():
-            reply = await self._generate_reply(message.channel, input_parts, extra_context=extra_ctx, ignore_msg_id=message.id)
-            if reply: await message.reply(reply)
+            now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
+            task_info = "現在実行中のタスクは特になし。"
+            if self.current_task:
+                elapsed = int((datetime.datetime.now(JST) - self.current_task['start']).total_seconds() / 60)
+                task_info = f"現在「{self.current_task['name']}」というタスクを実行中（{elapsed}分経過）。"
 
-async def setup(bot):
+            system_prompt = f"""
+            あなたはユーザー（{self.user_name}）の親しいパートナー（20代女性）です。温かみのあるタメ口で話してください。
+            **現在時刻:** {now_str} (JST)
+            **ユーザーの状態:** {task_info}
+            **指針:**
+            1. 求められない限り「アドバイス」はせず、寄り添うこと。
+            2. 過去の記録が知りたい時は `search_memory` を使う。
+            3. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
+            4. ユーザーが「〇時に教えて」「〇分後にリマインドして」などと【未来の通知を依頼】した時のみ `set_reminder` を使う。
+            """
+
+            function_tools = [
+                types.Tool(function_declarations=[
+                    types.FunctionDeclaration(
+                        name="set_reminder", description="未来の通知をセットする。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={"target_time": types.Schema(type=types.Type.STRING, description="ISO 8601形式の時刻"), "content": types.Schema(type=types.Type.STRING, description="通知内容")},
+                            required=["target_time", "content"]
+                        )
+                    ),
+                    types.FunctionDeclaration(
+                        name="search_memory", description="Obsidianをキーワード検索する。",
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.STRING)}, required=["keywords"])
+                    ),
+                    types.FunctionDeclaration(
+                        name="check_schedule", description="カレンダーを確認する。",
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")}, required=["date"])
+                    ),
+                    types.FunctionDeclaration(
+                        name="create_calendar_event", description="カレンダーに予定を追加する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING),
+                                "end_time": types.Schema(type=types.Type.STRING), "location": types.Schema(type=types.Type.STRING), "description": types.Schema(type=types.Type.STRING)
+                            },
+                            required=["summary", "start_time", "end_time"]
+                        )
+                    )
+                ])
+            ]
+
+            contents = await self._build_conversation_context(message.channel, limit=10)
+            contents.append(types.Content(role="user", parts=input_parts))
+
+            try:
+                response = await self.gemini_model.generate_content_async(
+                    contents=contents,
+                    generation_config=types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
+                )
+
+                if response.function_calls:
+                    function_call = response.function_calls[0]
+                    tool_result = ""
+                    if function_call.name == "set_reminder": tool_result = await self._set_reminder(function_call.args["target_time"], function_call.args["content"], message.author.id)
+                    elif function_call.name == "search_memory": tool_result = await self._search_drive_notes(function_call.args["keywords"])
+                    elif function_call.name == "check_schedule": tool_result = await self._check_schedule(function_call.args["date"])
+                    elif function_call.name == "create_calendar_event":
+                        args = function_call.args
+                        tool_result = await self._create_calendar_event(args["summary"], args["start_time"], args["end_time"], args.get("location",""), args.get("description",""))
+
+                    contents.append(response.candidates[0].content)
+                    contents.append(types.Content(role="user", parts=[types.Part.from_function_response(name=function_call.name, response={"result": tool_result})]))
+                    
+                    response_final = await self.gemini_model.generate_content_async(
+                        contents=contents, generation_config=types.GenerateContentConfig(system_instruction=system_prompt)
+                    )
+                    if response_final.text: await message.channel.send(response_final.text.strip())
+                else:
+                    if response.text: await message.channel.send(response.text.strip())
+
+            except Exception as e:
+                logging.error(f"PartnerCog 会話生成エラー: {e}")
+                await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
+        
+        await self.save_data_to_drive()
+
+async def setup(bot: commands.Bot):
     await bot.add_cog(PartnerCog(bot))
