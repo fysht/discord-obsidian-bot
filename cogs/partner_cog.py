@@ -1,7 +1,7 @@
 import os
 import discord
 from discord.ext import commands
-import google.generativeai as genai
+from google import genai
 from google.genai import types
 import logging
 import datetime
@@ -9,7 +9,6 @@ import zoneinfo
 import json
 import io
 
-# Google API
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -22,44 +21,28 @@ BOT_FOLDER = ".bot"
 DATA_FILE_NAME = "partner_data.json"
 
 class PartnerCog(commands.Cog):
-    """パートナーAI（会話、ツール呼び出し、状態管理の司令塔）"""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.user_name = "あなた"
-        
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
         
-        # --- 共有ステータス（他のCogからもアクセスするデータ） ---
         self.reminders = []
         self.current_task = None
         self.last_interaction = datetime.datetime.now(JST)
         
-        # Geminiの初期化
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
-        if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
-        else:
-            logging.error("PartnerCog: GEMINI_API_KEYが設定されていません。")
+        self.gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
     async def cog_load(self):
-        """Bot起動時にDriveから状態を復元"""
         await self.load_data_from_drive()
 
     async def cog_unload(self):
-        """Bot終了時に状態をDriveへ保存"""
         await self.save_data_to_drive()
 
-    # ==========================================
-    # 外部APIクライアント取得
-    # ==========================================
     def get_drive_service(self):
         creds = None
-        if os.path.exists(TOKEN_FILE):
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        if os.path.exists(TOKEN_FILE): creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
@@ -72,9 +55,6 @@ class PartnerCog(commands.Cog):
         if os.path.exists(TOKEN_FILE): creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
         return build('calendar', 'v3', credentials=creds) if creds else None
 
-    # ==========================================
-    # 状態の保存・読み込み (他のCogからも呼ばれる)
-    # ==========================================
     async def _find_file(self, service, parent_id, name):
         import asyncio
         loop = asyncio.get_running_loop()
@@ -115,14 +95,9 @@ class PartnerCog(commands.Cog):
         if not service: return
         
         ct_save = None
-        if self.current_task:
-            ct_save = {'name': self.current_task['name'], 'start': self.current_task['start'].isoformat()}
+        if self.current_task: ct_save = {'name': self.current_task['name'], 'start': self.current_task['start'].isoformat()}
             
-        data = {
-            'reminders': self.reminders,
-            'current_task': ct_save,
-            'last_interaction': self.last_interaction.isoformat()
-        }
+        data = {'reminders': self.reminders, 'current_task': ct_save, 'last_interaction': self.last_interaction.isoformat()}
         
         b_folder = await self._find_file(service, self.drive_folder_id, BOT_FOLDER)
         if not b_folder:
@@ -135,9 +110,6 @@ class PartnerCog(commands.Cog):
         if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': DATA_FILE_NAME, 'parents': [b_folder]}, media_body=media).execute())
 
-    # ==========================================
-    # AIツール機能 (Function Calling)
-    # ==========================================
     async def _search_drive_notes(self, keywords: str):
         import asyncio
         loop = asyncio.get_running_loop()
@@ -171,17 +143,14 @@ class PartnerCog(commands.Cog):
             dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
             time_min = dt.replace(hour=0, minute=0, second=0).isoformat() + 'Z'
             time_max = dt.replace(hour=23, minute=59, second=59).isoformat() + 'Z'
-            events_result = await loop.run_in_executor(None, lambda: service.events().list(
-                calendarId=self.calendar_id, timeMin=time_min, timeMax=time_max, singleEvents=True, orderBy='startTime').execute())
+            events_result = await loop.run_in_executor(None, lambda: service.events().list(calendarId=self.calendar_id, timeMin=time_min, timeMax=time_max, singleEvents=True, orderBy='startTime').execute())
             events = events_result.get('items', [])
             if not events: return f"{date_str} の予定は特にないみたいだよ。"
             result_text = f"【{date_str} の予定】\n"
             for event in events:
                 start = event['start'].get('dateTime', event['start'].get('date'))
                 summary = event.get('summary', '(タイトルなし)')
-                if 'T' in start:
-                    t = datetime.datetime.fromisoformat(start).strftime('%H:%M')
-                    result_text += f"- {t} : {summary}\n"
+                if 'T' in start: result_text += f"- {datetime.datetime.fromisoformat(start).strftime('%H:%M')} : {summary}\n"
                 else: result_text += f"- 終日 : {summary}\n"
             return result_text
         except Exception as e: return f"エラー: {e}"
@@ -191,11 +160,7 @@ class PartnerCog(commands.Cog):
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_calendar_service)
         if not service: return "エラー"
-        event_body = {
-            'summary': summary, 'location': location, 'description': description,
-            'start': {'dateTime': start_time, 'timeZone': 'Asia/Tokyo'},
-            'end': {'dateTime': end_time, 'timeZone': 'Asia/Tokyo'},
-        }
+        event_body = {'summary': summary, 'location': location, 'description': description, 'start': {'dateTime': start_time, 'timeZone': 'Asia/Tokyo'}, 'end': {'dateTime': end_time, 'timeZone': 'Asia/Tokyo'}}
         try:
             event = await loop.run_in_executor(None, lambda: service.events().insert(calendarId=self.calendar_id, body=event_body).execute())
             return f"予定を作成したよ！: {event.get('htmlLink')}"
@@ -207,17 +172,13 @@ class PartnerCog(commands.Cog):
         dt = datetime.datetime.fromisoformat(target_time)
         return f"了解！ {dt.strftime('%m月%d日 %H:%M')} に「{content}」でお知らせするね。"
 
-    # ==========================================
-    # 会話・連携ヘルパー
-    # ==========================================
     async def generate_and_send_routine_message(self, context_data: str, instruction: str):
-        """他のCogから依頼されて自発的にメッセージを送る機能"""
         channel = self.bot.get_channel(self.memo_channel_id)
         if not channel: return
         system_prompt = "あなたは私を日々サポートする、20代女性の親しみやすく優秀なAIパートナーです。温かみのあるタメ口で話してください。"
         prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。"
         try:
-            response = await self.gemini_model.generate_content_async(prompt)
+            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             embed = discord.Embed(description=response.text.strip(), color=discord.Color.brand_green())
             embed.set_author(name="🤖 AI Partner", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
             await channel.send(embed=embed)
@@ -251,28 +212,22 @@ class PartnerCog(commands.Cog):
                 return
             prompt = f"あなたは私の優秀なパートナーです。今日のここまでの会話ログを整理して、箇条書きで見やすく教えて。最後に一言ポジティブな言葉を添えて。\n--- Log ---\n{logs}"
             try:
-                response = await self.gemini_model.generate_content_async(prompt)
+                response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
                 await message.reply(f"今のところこんな感じ！👇\n\n{response.text.strip()}")
             except Exception as e: await message.reply(f"ごめんね、エラーが出ちゃった💦 ({e})")
 
-    # ==========================================
-    # メインの会話処理
-    # ==========================================
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.channel.id != self.memo_channel_id: return
-        
         self.user_name = message.author.display_name
         text = message.content.strip()
         self.last_interaction = datetime.datetime.now(JST)
 
-        # 1. 途中経過のまとめ
         if text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)
             await self.save_data_to_drive()
             return
 
-        # 2. タスク管理
         task_updated = False
         if any(w in text for w in ["開始", "やる", "読む", "作業"]):
             if not self.current_task: 
@@ -284,7 +239,6 @@ class PartnerCog(commands.Cog):
                 task_updated = True
         if task_updated: await self.save_data_to_drive()
 
-        # 3. 入力コンテンツの構築 (画像対応)
         input_parts = []
         if text: input_parts.append(types.Part.from_text(text=text))
         for att in message.attachments:
@@ -294,7 +248,6 @@ class PartnerCog(commands.Cog):
             await self.save_data_to_drive()
             return
 
-        # 4. Geminiによる応答生成
         async with message.channel.typing():
             now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
             task_info = "現在実行中のタスクは特になし。"
@@ -317,11 +270,7 @@ class PartnerCog(commands.Cog):
                 types.Tool(function_declarations=[
                     types.FunctionDeclaration(
                         name="set_reminder", description="未来の通知をセットする。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={"target_time": types.Schema(type=types.Type.STRING, description="ISO 8601形式の時刻"), "content": types.Schema(type=types.Type.STRING, description="通知内容")},
-                            required=["target_time", "content"]
-                        )
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"target_time": types.Schema(type=types.Type.STRING, description="ISO 8601形式の時刻"), "content": types.Schema(type=types.Type.STRING, description="通知内容")}, required=["target_time", "content"])
                     ),
                     types.FunctionDeclaration(
                         name="search_memory", description="Obsidianをキーワード検索する。",
@@ -333,14 +282,7 @@ class PartnerCog(commands.Cog):
                     ),
                     types.FunctionDeclaration(
                         name="create_calendar_event", description="カレンダーに予定を追加する。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING),
-                                "end_time": types.Schema(type=types.Type.STRING), "location": types.Schema(type=types.Type.STRING), "description": types.Schema(type=types.Type.STRING)
-                            },
-                            required=["summary", "start_time", "end_time"]
-                        )
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING), "location": types.Schema(type=types.Type.STRING), "description": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])
                     )
                 ])
             ]
@@ -349,9 +291,10 @@ class PartnerCog(commands.Cog):
             contents.append(types.Content(role="user", parts=input_parts))
 
             try:
-                response = await self.gemini_model.generate_content_async(
+                response = await self.gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-pro",
                     contents=contents,
-                    generation_config=types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
+                    config=types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
                 )
 
                 if response.function_calls:
@@ -360,15 +303,15 @@ class PartnerCog(commands.Cog):
                     if function_call.name == "set_reminder": tool_result = await self._set_reminder(function_call.args["target_time"], function_call.args["content"], message.author.id)
                     elif function_call.name == "search_memory": tool_result = await self._search_drive_notes(function_call.args["keywords"])
                     elif function_call.name == "check_schedule": tool_result = await self._check_schedule(function_call.args["date"])
-                    elif function_call.name == "create_calendar_event":
-                        args = function_call.args
-                        tool_result = await self._create_calendar_event(args["summary"], args["start_time"], args["end_time"], args.get("location",""), args.get("description",""))
+                    elif function_call.name == "create_calendar_event": tool_result = await self._create_calendar_event(function_call.args["summary"], function_call.args["start_time"], function_call.args["end_time"], function_call.args.get("location",""), function_call.args.get("description",""))
 
                     contents.append(response.candidates[0].content)
                     contents.append(types.Content(role="user", parts=[types.Part.from_function_response(name=function_call.name, response={"result": tool_result})]))
                     
-                    response_final = await self.gemini_model.generate_content_async(
-                        contents=contents, generation_config=types.GenerateContentConfig(system_instruction=system_prompt)
+                    response_final = await self.gemini_client.aio.models.generate_content(
+                        model="gemini-2.5-pro",
+                        contents=contents,
+                        config=types.GenerateContentConfig(system_instruction=system_prompt)
                     )
                     if response_final.text: await message.channel.send(response_final.text.strip())
                 else:

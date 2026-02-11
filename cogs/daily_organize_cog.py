@@ -1,7 +1,7 @@
 import os
 import discord
 from discord.ext import commands, tasks
-import google.generativeai as genai
+from google import genai
 from google.genai import types
 import logging
 import datetime
@@ -9,8 +9,6 @@ import zoneinfo
 import json
 import io
 import aiohttp
-
-# Google API
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
@@ -21,23 +19,15 @@ TOKEN_FILE = 'token.json'
 SCOPES = ['https://www.googleapis.com/auth/drive']
 
 class DailyOrganizeCog(commands.Cog):
-    """毎晩23:55に会話ログを整理し、Fitbitデータ等と共にObsidianへ保存するCog"""
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
-        if self.gemini_api_key:
-            genai.configure(api_key=self.gemini_api_key)
-            self.gemini_model = genai.GenerativeModel("gemini-2.5-pro")
+        self.gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if not self.daily_organize_task.is_running():
-            self.daily_organize_task.start()
-        logging.info("DailyOrganizeCog: 深夜の自動整理タスクをスケジュールしました。")
+        if not self.daily_organize_task.is_running(): self.daily_organize_task.start()
 
     def cog_unload(self):
         self.daily_organize_task.cancel()
@@ -46,8 +36,7 @@ class DailyOrganizeCog(commands.Cog):
         creds = None
         if os.path.exists(TOKEN_FILE):
             creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        if creds and creds.valid:
-            return build('drive', 'v3', credentials=creds)
+        if creds and creds.valid: return build('drive', 'v3', credentials=creds)
         elif creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
@@ -68,15 +57,10 @@ class DailyOrganizeCog(commands.Cog):
     @tasks.loop(time=datetime.time(hour=23, minute=55, tzinfo=JST))
     async def daily_organize_task(self):
         channel = self.bot.get_channel(self.memo_channel_id)
-        if not channel: return
-        
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog: return
+        if not channel or not partner_cog: return
 
-        # 1. 会話ログの取得
         log_text = await partner_cog.fetch_todays_chat_log(channel)
-        
-        # 2. 天気データの取得
         weather, max_t, min_t = "N/A", "N/A", "N/A"
         try:
             async with aiohttp.ClientSession() as session:
@@ -87,11 +71,9 @@ class DailyOrganizeCog(commands.Cog):
                         temps = data[0]["timeSeries"][2]["areas"][0].get("temps", [])
                         valid_temps = [float(t) for t in temps if t and t != "--"]
                         if valid_temps:
-                            max_t = int(max(valid_temps))
-                            min_t = int(min(valid_temps))
-        except Exception as e: logging.error(f"DailyOrganize: Weather fetch error: {e}")
+                            max_t, min_t = int(max(valid_temps)), int(min(valid_temps))
+        except: pass
 
-        # 3. Fitbitフルデータの取得
         fitbit_stats = {}
         fitbit_cog = self.bot.get_cog("FitbitCog")
         if fitbit_cog and hasattr(fitbit_cog, 'fitbit_client'):
@@ -99,9 +81,7 @@ class DailyOrganizeCog(commands.Cog):
             target_date = datetime.datetime.now(JST).date()
             try:
                 sleep_data = await client.get_sleep_data(target_date)
-                if sleep_data and 'summary' in sleep_data:
-                    fitbit_stats['sleep_minutes'] = sleep_data['summary'].get('totalMinutesAsleep', 0)
-                
+                if sleep_data and 'summary' in sleep_data: fitbit_stats['sleep_minutes'] = sleep_data['summary'].get('totalMinutesAsleep', 0)
                 act_data = await client.get_activity_summary(target_date)
                 if act_data and 'summary' in act_data:
                     s = act_data['summary']
@@ -111,33 +91,22 @@ class DailyOrganizeCog(commands.Cog):
                     fitbit_stats['distance'] = next((d['distance'] for d in distances if d['activity'] == 'total'), 0)
                     fitbit_stats['floors'] = s.get('floors', 0)
                     fitbit_stats['resting_hr'] = s.get('restingHeartRate', 'N/A')
-            except Exception as e: logging.error(f"DailyOrganize: Fitbit Error: {e}")
+            except: pass
 
-        # 4. Geminiによるログ整理 (JSON化)
         result = {"diary": "", "memos": [], "links": []}
         if log_text.strip():
-            prompt = f"""
-            今日の会話ログを整理し、JSON形式で出力してください。
-            ルール: memosは省略せず全発言をカテゴリ分けしてリスト化すること。
-            JSONフォーマット: {{ "diary": "...", "memos": ["- [カテゴリ] 内容..."], "links": ["タイトル - URL"] }}
-            --- Chat Log ---
-            {log_text}
-            """
+            prompt = f"今日の会話ログを整理し、JSON形式で出力。\nルール: memosは省略せず全発言をカテゴリ分けしてリスト化。\nフォーマット: {{ \"diary\": \"...\", \"memos\": [\"- [カテゴリ] 内容...\"], \"links\": [\"タイトル - URL\"] }}\n--- Chat Log ---\n{log_text}"
             try:
-                response = await self.gemini_model.generate_content_async(
+                response = await self.gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-pro",
                     contents=prompt,
-                    generation_config=types.GenerateContentConfig(response_mime_type='application/json')
+                    config=types.GenerateContentConfig(response_mime_type="application/json")
                 )
                 result = json.loads(response.text)
             except Exception as e: logging.error(f"DailyOrganize: JSON Error: {e}")
 
-        # 5. メタデータ統合と保存の実行
-        result['meta'] = {
-            'weather': weather, 'temp_max': max_t, 'temp_min': min_t, **fitbit_stats
-        }
-        
-        today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-        await self._execute_organization(result, today_str)
+        result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t, **fitbit_stats}
+        await self._execute_organization(result, datetime.datetime.now(JST).strftime('%Y-%m-%d'))
         await channel.send("（今日の会話とデータをノートにまとめたよ🌙 おやすみ！）")
 
     async def _execute_organization(self, data, date_str):
@@ -153,13 +122,8 @@ class DailyOrganizeCog(commands.Cog):
             daily_folder = folder_obj.get('id')
             
         f_id = await self._find_file(service, daily_folder, f"{date_str}.md")
-        
         meta = data.get('meta', {})
-        frontmatter = "---\n"
-        frontmatter += f"date: {date_str}\n"
-        frontmatter += f"weather: {meta.get('weather', 'N/A')}\n"
-        frontmatter += f"temp_max: {meta.get('temp_max', 'N/A')}\n"
-        frontmatter += f"temp_min: {meta.get('temp_min', 'N/A')}\n"
+        frontmatter = "---\n" + f"date: {date_str}\n" + f"weather: {meta.get('weather', 'N/A')}\n" + f"temp_max: {meta.get('temp_max', 'N/A')}\n" + f"temp_min: {meta.get('temp_min', 'N/A')}\n"
         if 'steps' in meta: frontmatter += f"steps: {meta['steps']}\n"
         if 'calories' in meta: frontmatter += f"calories: {meta['calories']}\n"
         if 'distance' in meta: frontmatter += f"distance: {meta['distance']}\n"
@@ -177,7 +141,6 @@ class DailyOrganizeCog(commands.Cog):
                 done = False
                 while not done: _, done = downloader.next_chunk()
                 raw_content = fh.getvalue().decode('utf-8')
-                
                 if raw_content.startswith("---"):
                     parts = raw_content.split("---", 2)
                     if len(parts) >= 3: current_body = parts[2].strip()
@@ -187,15 +150,10 @@ class DailyOrganizeCog(commands.Cog):
 
         updates = []
         if data.get('diary'): updates.append(f"## 📝 Journal\n{data['diary']}")
-        if data.get('memos') and len(data['memos']) > 0: 
-            memos_text = "\n".join(data['memos']) if isinstance(data['memos'], list) else str(data['memos'])
-            updates.append(f"## 📌 Memos\n{memos_text}")
-        if data.get('links') and len(data['links']) > 0: 
-            links_text = "\n".join([f"- {l}" for l in data['links']]) if isinstance(data['links'], list) else str(data['links'])
-            updates.append(f"## 🔗 Links\n{links_text}")
+        if data.get('memos') and len(data['memos']) > 0: updates.append("## 📌 Memos\n" + ("\n".join(data['memos']) if isinstance(data['memos'], list) else str(data['memos'])))
+        if data.get('links') and len(data['links']) > 0: updates.append("## 🔗 Links\n" + ("\n".join([f"- {l}" for l in data['links']]) if isinstance(data['links'], list) else str(data['links'])))
 
         new_content = frontmatter + current_body + "\n\n" + "\n\n".join(updates)
-        
         media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown', resumable=True)
         if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': f"{date_str}.md", 'parents': [daily_folder]}, media_body=media).execute())
