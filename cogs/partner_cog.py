@@ -8,6 +8,7 @@ import datetime
 import zoneinfo
 import json
 import io
+import asyncio
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -55,17 +56,18 @@ class PartnerCog(commands.Cog):
         if os.path.exists(TOKEN_FILE): creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
         return build('calendar', 'v3', credentials=creds) if creds else None
 
-    async def _find_file(self, service, parent_id, name):
-        import asyncio
+    async def _find_file(self, service, parent_id, name, mime_type=None):
         loop = asyncio.get_running_loop()
+        query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
+        if mime_type:
+            query += f" and mimeType = '{mime_type}'"
         try:
-            res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id)").execute())
+            res = await loop.run_in_executor(None, lambda: service.files().list(q=query, fields="files(id)").execute())
             files = res.get('files', [])
             return files[0]['id'] if files else None
         except: return None
 
     async def load_data_from_drive(self):
-        import asyncio
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_drive_service)
         if not service: return
@@ -89,7 +91,6 @@ class PartnerCog(commands.Cog):
             except: pass
 
     async def save_data_to_drive(self):
-        import asyncio
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_drive_service)
         if not service: return
@@ -110,8 +111,57 @@ class PartnerCog(commands.Cog):
         if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': DATA_FILE_NAME, 'parents': [b_folder]}, media_body=media).execute())
 
+    # --- 追加: ユーザーの投稿をそのままObsidianのデイリーノートに追記するメソッド ---
+    async def _append_raw_message_to_obsidian(self, text: str):
+        if not text: return
+        loop = asyncio.get_running_loop()
+        service = await loop.run_in_executor(None, self.get_drive_service)
+        if not service: return
+
+        # DailyNotesフォルダを探す
+        dn_folder_id = await self._find_file(service, self.drive_folder_id, "DailyNotes", "application/vnd.google-apps.folder")
+        if not dn_folder_id:
+            # 見つからなければ作成する
+            meta = {'name': "DailyNotes", 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
+            dn_folder_obj = await loop.run_in_executor(None, lambda: service.files().create(body=meta, fields='id').execute())
+            dn_folder_id = dn_folder_obj.get('id')
+
+        # 今日の日付のファイル名
+        now = datetime.datetime.now(JST)
+        date_str = now.strftime('%Y-%m-%d')
+        time_str = now.strftime('%H:%M')
+        file_name = f"{date_str}.md"
+        
+        f_id = await self._find_file(service, dn_folder_id, file_name)
+        
+        # 追記するテキスト
+        append_text = f"- {time_str} {text}\n"
+        content = ""
+        
+        if f_id:
+            try:
+                request = service.files().get_media(fileId=f_id)
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                while not done: _, done = downloader.next_chunk()
+                content = fh.getvalue().decode('utf-8')
+                # 最後の文字が改行でない場合は改行を挟む
+                if content and not content.endswith('\n'):
+                    content += '\n'
+            except Exception as e:
+                logging.error(f"DailyNote読み込みエラー: {e}")
+        
+        content += append_text
+        
+        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
+        if f_id:
+            await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
+        else:
+            await loop.run_in_executor(None, lambda: service.files().create(body={'name': file_name, 'parents': [dn_folder_id]}, media_body=media).execute())
+    # -------------------------------------------------------------------------
+
     async def _search_drive_notes(self, keywords: str):
-        import asyncio
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_drive_service)
         if not service: return "検索エラー"
@@ -135,7 +185,6 @@ class PartnerCog(commands.Cog):
         except Exception as e: return f"検索エラー: {e}"
 
     async def _check_schedule(self, date_str: str):
-        import asyncio
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_calendar_service)
         if not service: return "エラー"
@@ -156,7 +205,6 @@ class PartnerCog(commands.Cog):
         except Exception as e: return f"エラー: {e}"
 
     async def _create_calendar_event(self, summary: str, start_time: str, end_time: str, location: str = "", description: str = ""):
-        import asyncio
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_calendar_service)
         if not service: return "エラー"
@@ -228,6 +276,14 @@ class PartnerCog(commands.Cog):
         text = message.content.strip()
         self.last_interaction = datetime.datetime.now(JST)
 
+        # -----------------------------------------------------
+        # 追加: ユーザーの発言をそのままObsidianにバックグラウンドで追記
+        # コマンドらしきもの（まとめ、開始など）以外を記録する
+        ignore_words = ["まとめ", "途中経過", "整理して", "今の状態", "開始", "やる", "読む", "作業", "終了", "終わった", "完了"]
+        if text and not any(w in text for w in ignore_words) and not text.startswith('/'):
+            asyncio.create_task(self._append_raw_message_to_obsidian(text))
+        # -----------------------------------------------------
+
         if text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)
             await self.save_data_to_drive()
@@ -260,18 +316,20 @@ class PartnerCog(commands.Cog):
                 elapsed = int((datetime.datetime.now(JST) - self.current_task['start']).total_seconds() / 60)
                 task_info = f"現在「{self.current_task['name']}」というタスクを実行中（{elapsed}分経過）。"
 
+            # プロンプトをアップデート
             system_prompt = f"""
-            あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。温かみのあるタメ口で話してください。
+            あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
             **ユーザーの状態:** {task_info}
-            **会話の目的:** ユーザーの思考やアイデアを引き出し、後で有益なメモを作成できるようにサポートすること。
+            **会話の目的:** 日々の他愛ない会話を楽しみつつ、自然な形でユーザーに寄り添うこと。
             **指針:**
-            1. 親密な関係の女性とのやり取りを想定し、自然で温かい返信を心がけること。
-            2. ユーザーの発言に対して強い興味を示し、「それってどういうこと？」「もう少し詳しく教えて！」「〇〇についてはどう思う？」など、会話を広げたり深掘りしたりするような【軽い質問】を適度に投げかけること。
-            3. 求められない限り「アドバイス」はせず、ユーザー自身が言語化するのを手伝う「聞き上手・壁打ち相手」に徹すること。
-            4. 過去の記録が知りたい時は `search_memory` を使う。
-            5. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
-            6. ユーザーが「〇時に教えて」「〇分後にリマインドして」などと【未来の通知を依頼】した時のみ `set_reminder` を使う。
+            1. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
+            2. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
+            3. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず「そっか！」「お疲れ様！」「いいね！」などの共感のみで会話を自然に区切ってください。
+            4. 求められない限り「アドバイス」はせず、聞き上手・壁打ち相手に徹すること。
+            5. 過去の記録が知りたい時は `search_memory` を使う。
+            6. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
+            7. ユーザーが「〇時に教えて」「〇分後にリマインドして」などと【未来の通知を依頼】した時のみ `set_reminder` を使う。
             """
 
             function_tools = [
