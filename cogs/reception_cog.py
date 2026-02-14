@@ -1,66 +1,62 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 import os
 import re
 import logging
 
-# --- 定数定義 ---
-# YouTubeのURLパターン
-YOUTUBE_URL_REGEX = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/shorts/)([a-zA-Z0-9_-]{11})')
-# Botが付けるリアクション
-BOT_PROCESS_TRIGGER_REACTION = '📥'
+# Servicesの読み込み (フォルダ構成に合わせてインポート)
+from services.drive_service import DriveService
+from services.webclip_service import WebClipService
+
+# 一般的なURLを抽出する正規表現
+URL_REGEX = re.compile(r'https?://[^\s]+')
 
 class ReceptionCog(commands.Cog):
     """
-    YouTubeのURL投稿を監視し、処理待ちのリアクション(📥)を付ける受付係Cog
-    (Render側で常時稼働し、重い処理は行わない)
+    メモチャンネルのURL投稿を監視し、WebClip/YouTubeの即時処理を行うCog
     """
-
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.youtube_summary_channel_id = int(os.getenv("YOUTUBE_SUMMARY_CHANNEL_ID", 0))
-        self.recipe_channel_id = int(os.getenv("RECIPE_CHANNEL_ID", 0))
+        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         
-        # 監視対象チャンネルのリスト
-        self.watched_channels = set()
-        if self.youtube_summary_channel_id:
-            self.watched_channels.add(self.youtube_summary_channel_id)
-        
-        # レシピチャンネルも同様にリアクション付与だけ行いたい場合は追加
-        # if self.recipe_channel_id:
-        #     self.watched_channels.add(self.recipe_channel_id)
-            
-        if 0 in self.watched_channels:
-            self.watched_channels.remove(0)
-            logging.warning("ReceptionCog: 監視対象チャンネルID(0)が含まれています。")
+        # サービス群の初期化
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.drive_service = DriveService() 
+        self.webclip_service = WebClipService(self.drive_service, gemini_api_key)
+
+        if self.memo_channel_id == 0:
+            logging.warning("[ReceptionCog] MEMO_CHANNEL_ID が設定されていません。")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Bot自身のメッセージや、監視対象外のチャンネルは無視
+        # Bot自身のメッセージや、メモチャンネル以外は無視
         if message.author.bot:
             return
         
-        if message.channel.id not in self.watched_channels:
+        if message.channel.id != self.memo_channel_id:
             return
 
-        # YouTubeのURLが含まれているかチェック
-        if YOUTUBE_URL_REGEX.search(message.content):
-            # 既にリアクションが付いているか確認（自分自身によるもの）
-            already_reacted = False
-            for reaction in message.reactions:
-                if str(reaction.emoji) == BOT_PROCESS_TRIGGER_REACTION and reaction.me:
-                    already_reacted = True
-                    break
+        # メッセージの中にURLが含まれているかチェック
+        match = URL_REGEX.search(message.content)
+        if match:
+            url = match.group(0)
+            logging.info(f"[ReceptionCog] URLを検知し、処理を開始します: {url}")
             
-            if not already_reacted:
-                try:
-                    await message.add_reaction(BOT_PROCESS_TRIGGER_REACTION)
-                    logging.info(f"[ReceptionCog] URLを検知し、リアクションを付与: {message.jump_url}")
-                except discord.Forbidden:
-                    logging.error(f"[ReceptionCog] リアクション付与権限がありません: {message.channel.name}")
-                except Exception as e:
-                    logging.error(f"[ReceptionCog] リアクション付与中にエラー: {e}")
+            # 処理中のリアクションを付ける
+            await message.add_reaction('⏳')
+            
+            try:
+                # WebClipServiceにURLを渡して即時処理（YouTubeかWeb記事かはサービス側で自動判定されます）
+                result = await self.webclip_service.process_url(url, message.content, message)
+                
+                # 処理が終了したら⏳リアクションを外す
+                await message.remove_reaction('⏳', self.bot.user)
+                
+            except Exception as e:
+                logging.error(f"[ReceptionCog] URL処理中にエラーが発生しました: {e}", exc_info=True)
+                await message.remove_reaction('⏳', self.bot.user)
+                await message.add_reaction('❌')
 
 async def setup(bot: commands.Bot):
+    # ファイル名は reception_cog.py のまま、機能だけをアップデート
     await bot.add_cog(ReceptionCog(bot))
