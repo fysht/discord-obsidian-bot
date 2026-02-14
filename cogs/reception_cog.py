@@ -21,7 +21,11 @@ class ReceptionCog(commands.Cog):
         
         # サービス群の初期化
         gemini_api_key = os.getenv("GEMINI_API_KEY")
-        self.drive_service = DriveService() 
+        
+        # 【修正箇所】環境変数からフォルダIDを取得して DriveService に渡す
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID") 
+        self.drive_service = DriveService(folder_id) 
+        
         self.webclip_service = WebClipService(self.drive_service, gemini_api_key)
 
         if self.memo_channel_id == 0:
@@ -58,5 +62,4 @@ class ReceptionCog(commands.Cog):
                 await message.add_reaction('❌')
 
 async def setup(bot: commands.Bot):
-    # ファイル名は reception_cog.py のまま、機能だけをアップデート
     await bot.add_cog(ReceptionCog(bot))

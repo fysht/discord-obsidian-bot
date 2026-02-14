@@ -63,11 +63,6 @@ class MyBot(commands.Bot):
         for filename in os.listdir(cogs_dir):
             if filename == "__pycache__":
                 continue
-            
-            # youtube_cog.py はローカルワーカー(重い処理)用なのでRenderではスキップ
-            if filename == 'youtube_cog.py':
-                logging.info(f" -> cogs/{filename} はローカルワーカーが担当するためスキップします。")
-                continue
 
             if filename.endswith('.py') and not filename.startswith('__'):
                 cog_name = f'cogs.{filename[:-3]}'

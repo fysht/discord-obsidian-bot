@@ -37,6 +37,11 @@ class PartnerRoutineCog(commands.Cog):
 
         for rem in partner_cog.reminders:
             target = datetime.datetime.fromisoformat(rem['time'])
+            
+            # 【修正箇所】取得した時間にタイムゾーン情報がない場合はJSTを付与する
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=JST)
+                
             if now >= target:
                 channel = self.bot.get_channel(self.memo_channel_id)
                 if channel:
