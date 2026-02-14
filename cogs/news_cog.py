@@ -79,11 +79,19 @@ class NewsCog(commands.Cog):
         weather_text = await self._get_jma_weather_forecast()
         news_text = await self._get_news()
         stock_text = await self._get_stocks()
-        context_data = f"【今日の天気 ({self.location_name})】\n{weather_text}\n\n【今日の主要ニュース】\n{news_text}\n\n【昨晩の株価】\n{stock_text}"
-        instruction = "「おはようございます！」から始まる朝のメッセージを作成してください。ニュースや株価に対して簡単な一言コメントを添え、今日も一日頑張ろうと思えるようなポジティブな励ましを入れてください。"
         
         partner_cog = self.bot.get_cog("PartnerCog")
         if partner_cog:
+            # 今日のチャットログ（深夜0時以降）を取得して文脈に追加する
+            memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
+            channel = self.bot.get_channel(memo_channel_id)
+            recent_log = ""
+            if channel:
+                recent_log = await partner_cog.fetch_todays_chat_log(channel)
+
+            context_data = f"【今日の天気 ({self.location_name})】\n{weather_text}\n\n【今日の主要ニュース】\n{news_text}\n\n【昨晩の株価】\n{stock_text}\n\n【最近の会話ログ】\n{recent_log}"
+            instruction = "「おはようございます！」から始まる朝のメッセージを作成してください。最近の会話の流れ（ログ）を意識しつつ、ニュースや株価に対して簡単な一言コメントを添え、今日も一日頑張ろうと思えるようなポジティブな励ましを入れてください。"
+            
             await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
 async def setup(bot: commands.Bot):

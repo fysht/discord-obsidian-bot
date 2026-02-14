@@ -72,17 +72,25 @@ class FitbitCog(commands.Cog):
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog: return
 
+        # 今日のチャットログを取得して文脈に追加する
+        memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
+        channel = self.bot.get_channel(memo_channel_id)
+        today_log = ""
+        if channel:
+            today_log = await partner_cog.fetch_todays_chat_log(channel)
+
         if not sleep_summary:
-            context_data = "今日の睡眠データ：まだ同期されていません"
-            instruction = "「おはようございます！睡眠データがまだ同期されていないみたいです。アプリを開いてみてくださいね」と優しく伝えてください。"
+            context_data = f"今日の睡眠データ：まだ同期されていません\n【最近の会話ログ】\n{today_log}"
+            instruction = "「おはようございます！睡眠データがまだ同期されていないみたいです。アプリを開いてみてくださいね」と優しく伝えてください。その際、最近の会話の流れ（ログ）も少し意識して声をかけてください。"
         else:
             sleep_score = sleep_summary.get('sleep_score', 0)
             sleep_time = self._format_minutes(sleep_summary.get('minutesAsleep', 0))
-            context_data = f"【昨晩の睡眠データ】\nスコア: {sleep_score} / 100\n合計睡眠時間: {sleep_time}"
-            instruction = "「睡眠データの速報です！」のような親しみやすい語りかけから始めてください。スコアや時間に対して労いやポジティブなコメントをし、今日も一日元気に過ごせるような一言を添えてください。"
+            context_data = f"【昨晩の睡眠データ】\nスコア: {sleep_score} / 100\n合計睡眠時間: {sleep_time}\n【最近の会話ログ】\n{today_log}"
+            instruction = "「睡眠データの速報です！」のような親しみやすい語りかけから始めてください。最近の会話の流れ（ログ）を意識しつつ、スコアや時間に対して労いやポジティブなコメントをし、今日も一日元気に過ごせるような一言を添えてください。"
+        
         await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
-    @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
+    @tasks.loop(time=datetime.time(hour=22, minute=15, tzinfo=JST))
     async def full_health_report(self):
         if not self.is_ready: return
         target_date = datetime.datetime.now(JST).date()
@@ -94,10 +102,19 @@ class FitbitCog(commands.Cog):
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog: return
         
+        # 今日のチャットログを取得して文脈に追加する
+        memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
+        channel = self.bot.get_channel(memo_channel_id)
+        today_log = ""
+        if channel:
+            today_log = await partner_cog.fetch_todays_chat_log(channel)
+        
         sleep_text = f"スコア: {sleep_summary.get('sleep_score', 'N/A')}, 睡眠時間: {self._format_minutes(sleep_summary.get('minutesAsleep', 0))}" if sleep_summary else "データなし"
         activity_text = f"歩数: {activity_data.get('summary', {}).get('steps', 'N/A')}歩, 消費: {activity_data.get('summary', {}).get('caloriesOut', 'N/A')}kcal" if activity_data else "データなし"
-        context_data = f"【本日の睡眠】\n{sleep_text}\n【本日の活動】\n{activity_text}"
-        instruction = "「今日もお疲れ様でした！」から始まる夜のメッセージを作成してください。今日の健康データ（歩数や睡眠）を振り返り、良かった点を褒め、明日への優しいアドバイスを1つだけ添えてください。"
+        
+        context_data = f"【本日の睡眠】\n{sleep_text}\n【本日の活動】\n{activity_text}\n【今日の会話ログ】\n{today_log}"
+        instruction = "「今日もお疲れ様でした！」から始まる夜のメッセージを作成してください。今日の会話の流れ（ログ）を意識しつつ、今日の健康データ（歩数や睡眠）を振り返り、良かった点を褒め、明日への優しいアドバイスを1つだけ添えてください。"
+        
         await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
 async def setup(bot: commands.Bot):

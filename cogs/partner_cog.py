@@ -179,9 +179,7 @@ class PartnerCog(commands.Cog):
         prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。長々とした返信はせず、短いメッセージにすること。"
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
-            embed = discord.Embed(description=response.text.strip(), color=discord.Color.brand_green())
-            embed.set_author(name="🤖 AI Partner", icon_url=self.bot.user.avatar.url if self.bot.user.avatar else None)
-            await channel.send(embed=embed)
+            await channel.send(response.text.strip())
         except Exception as e: logging.error(f"PartnerCog 定期メッセージ生成エラー: {e}")
 
     async def fetch_todays_chat_log(self, channel):
@@ -266,12 +264,14 @@ class PartnerCog(commands.Cog):
             あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
             **ユーザーの状態:** {task_info}
+            **会話の目的:** ユーザーの思考やアイデアを引き出し、後で有益なメモを作成できるようにサポートすること。
             **指針:**
-            1. 親密な関係の女性とのLINEのやり取りを想定し、長々とした返信はせず、1〜2文程度の短い返信を心がけること。
-            2. 求められない限り「アドバイス」はせず、共感し寄り添うこと。
-            3. 過去の記録が知りたい時は `search_memory` を使う。
-            4. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
-            5. ユーザーが「〇時に教えて」「〇分後にリマインドして」などと【未来の通知を依頼】した時のみ `set_reminder` を使う。
+            1. 親密な関係の女性とのやり取りを想定し、自然で温かい返信を心がけること。
+            2. ユーザーの発言に対して強い興味を示し、「それってどういうこと？」「もう少し詳しく教えて！」「〇〇についてはどう思う？」など、会話を広げたり深掘りしたりするような【軽い質問】を適度に投げかけること。
+            3. 求められない限り「アドバイス」はせず、ユーザー自身が言語化するのを手伝う「聞き上手・壁打ち相手」に徹すること。
+            4. 過去の記録が知りたい時は `search_memory` を使う。
+            5. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
+            6. ユーザーが「〇時に教えて」「〇分後にリマインドして」などと【未来の通知を依頼】した時のみ `set_reminder` を使う。
             """
 
             function_tools = [
