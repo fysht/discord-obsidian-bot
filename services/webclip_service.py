@@ -100,8 +100,8 @@ class WebClipService:
                     title = "YouTube Video"
         else:
             try:
-                # 35秒でタイムアウトするように設定
-                title, raw_text = await asyncio.wait_for(parse_url_with_readability(url), timeout=35.0)
+                # 60秒でタイムアウトするように設定
+                title, raw_text = await asyncio.wait_for(parse_url_with_readability(url), timeout=60.0)
                 
                 # タイトルが正常に取れなかった場合は予備メソッドで取得
                 if not title or title == "No Title Found":

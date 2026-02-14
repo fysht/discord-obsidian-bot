@@ -56,8 +56,8 @@ def main():
             
             try:
                 flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-                # ローカルサーバーを立ち上げて認証 (ポート0は空きポートを自動選択)
-                creds = flow.run_local_server(port=0)
+                # ポートを 8080 に固定して確実につなぐ
+                creds = flow.run_local_server(port=8080)
             except Exception as e:
                  logging.error(f"認証フローの実行中にエラーが発生しました: {e}")
                  return
