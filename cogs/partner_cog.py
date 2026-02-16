@@ -111,33 +111,33 @@ class PartnerCog(commands.Cog):
         if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': DATA_FILE_NAME, 'parents': [b_folder]}, media_body=media).execute())
 
-    # --- 追加: ユーザーの投稿をそのままObsidianのデイリーノートに追記するメソッド ---
-    async def _append_raw_message_to_obsidian(self, text: str):
+    # --- 変更：引数を増やし、保存先のフォルダ名・ファイル名・見出しを指定できるように汎用化 ---
+    async def _append_raw_message_to_obsidian(self, text: str, folder_name: str = "DailyNotes", file_name: str = None, target_heading: str = "## 💬 タイムライン"):
         if not text: return
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_drive_service)
         if not service: return
 
-        # DailyNotesフォルダを探す
-        dn_folder_id = await self._find_file(service, self.drive_folder_id, "DailyNotes", "application/vnd.google-apps.folder")
-        if not dn_folder_id:
-            # 見つからなければ作成する
-            meta = {'name': "DailyNotes", 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
-            dn_folder_obj = await loop.run_in_executor(None, lambda: service.files().create(body=meta, fields='id').execute())
-            dn_folder_id = dn_folder_obj.get('id')
+        # ターゲットのフォルダを探す
+        folder_id = await self._find_file(service, self.drive_folder_id, folder_name, "application/vnd.google-apps.folder")
+        if not folder_id:
+            meta = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
+            folder_obj = await loop.run_in_executor(None, lambda: service.files().create(body=meta, fields='id').execute())
+            folder_id = folder_obj.get('id')
 
-        # 今日の日付のファイル名
         now = datetime.datetime.now(JST)
-        date_str = now.strftime('%Y-%m-%d')
         time_str = now.strftime('%H:%M')
-        file_name = f"{date_str}.md"
         
-        f_id = await self._find_file(service, dn_folder_id, file_name)
+        # ファイル名が指定されていない場合はデイリーノートとする
+        if not file_name:
+            file_name = f"{now.strftime('%Y-%m-%d')}.md"
         
-        # 追記するテキスト
-        append_text = f"- {time_str} {text}\n"
+        f_id = await self._find_file(service, folder_id, file_name)
+        
+        formatted_text = text.replace('\n', '\n  ')
+        append_text = f"- {time_str} {formatted_text}\n"
+        
         content = ""
-        
         if f_id:
             try:
                 request = service.files().get_media(fileId=f_id)
@@ -146,20 +146,34 @@ class PartnerCog(commands.Cog):
                 done = False
                 while not done: _, done = downloader.next_chunk()
                 content = fh.getvalue().decode('utf-8')
-                # 最後の文字が改行でない場合は改行を挟む
                 if content and not content.endswith('\n'):
                     content += '\n'
             except Exception as e:
-                logging.error(f"DailyNote読み込みエラー: {e}")
+                logging.error(f"Note読み込みエラー: {e}")
         
-        content += append_text
+        if target_heading not in content:
+            if content and not content.endswith('\n'):
+                content += '\n\n'
+            content += f"{target_heading}\n{append_text}"
+        else:
+            parts = content.split(target_heading)
+            sub_parts = parts[1].split("\n## ")
+            if not sub_parts[0].endswith('\n'):
+                sub_parts[0] += '\n'
+            sub_parts[0] += append_text
+            
+            if len(sub_parts) > 1:
+                parts[1] = "\n## ".join(sub_parts)
+            else:
+                parts[1] = sub_parts[0]
+                
+            content = target_heading.join(parts)
         
         media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
         if f_id:
             await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else:
-            await loop.run_in_executor(None, lambda: service.files().create(body={'name': file_name, 'parents': [dn_folder_id]}, media_body=media).execute())
-    # -------------------------------------------------------------------------
+            await loop.run_in_executor(None, lambda: service.files().create(body={'name': file_name, 'parents': [folder_id]}, media_body=media).execute())
 
     async def _search_drive_notes(self, keywords: str):
         loop = asyncio.get_running_loop()
@@ -271,30 +285,44 @@ class PartnerCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or message.channel.id != self.memo_channel_id: return
+        if message.author.bot: return
+        
+        # --- 追加：発言場所が「通常チャンネル」か「本のスレッド」かを判定 ---
+        is_book_thread = isinstance(message.channel, discord.Thread) and message.channel.name.startswith("📖 ")
+        
+        # メモチャンネル、または本のスレッド以外での発言は無視
+        if message.channel.id != self.memo_channel_id and not is_book_thread: 
+            return
+
         self.user_name = message.author.display_name
         text = message.content.strip()
         self.last_interaction = datetime.datetime.now(JST)
 
-        # -----------------------------------------------------
-        # 追加: ユーザーの発言をそのままObsidianにバックグラウンドで追記
-        # コマンドらしきもの（まとめ、開始など）以外を記録する
-        ignore_words = ["まとめ", "途中経過", "整理して", "今の状態", "開始", "やる", "読む", "作業", "終了", "終わった", "完了"]
-        if text and not any(w in text for w in ignore_words) and not text.startswith('/'):
-            asyncio.create_task(self._append_raw_message_to_obsidian(text))
+        is_short_message = len(text) < 30
+
+        # --- 変更：保存先のルーティング ---
+        if text and not text.startswith('/'):
+            if is_book_thread:
+                # 本のスレッドの場合は、BookNotesフォルダの該当ファイルへ保存
+                book_title = message.channel.name[2:].strip() # "📖 "を除外してタイトルを取得
+                file_name = f"{book_title}.md"
+                asyncio.create_task(self._append_raw_message_to_obsidian(text, folder_name="BookNotes", file_name=file_name, target_heading="## 💬 読書ログ"))
+            else:
+                # 通常のタイムラインの場合は今まで通りDailyNotesへ保存
+                asyncio.create_task(self._append_raw_message_to_obsidian(text))
         # -----------------------------------------------------
 
-        if text in ["まとめ", "途中経過", "整理して", "今の状態"]:
+        if is_short_message and text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)
             await self.save_data_to_drive()
             return
 
         task_updated = False
-        if any(w in text for w in ["開始", "やる", "読む", "作業"]):
+        if is_short_message and any(w in text for w in ["開始", "やる", "読む", "作業"]):
             if not self.current_task: 
                 self.current_task = {'name': text, 'start': datetime.datetime.now(JST)}
                 task_updated = True
-        elif any(w in text for w in ["終了", "終わった", "完了"]):
+        elif is_short_message and any(w in text for w in ["終了", "終わった", "完了"]):
             if self.current_task:
                 self.current_task = None
                 task_updated = True
@@ -316,7 +344,6 @@ class PartnerCog(commands.Cog):
                 elapsed = int((datetime.datetime.now(JST) - self.current_task['start']).total_seconds() / 60)
                 task_info = f"現在「{self.current_task['name']}」というタスクを実行中（{elapsed}分経過）。"
 
-            # プロンプトをアップデート
             system_prompt = f"""
             あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
