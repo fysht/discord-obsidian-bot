@@ -65,6 +65,9 @@ class FitbitClient:
             if resp.status == 200:
                 await self._save_new_refresh_token(response_json.get("refresh_token"))
                 return response_json.get("access_token")
+            else:
+                # ★追加：トークン取得失敗の理由を表示
+                logging.error(f"🚨 トークン取得エラー ({resp.status}): {response_json}")
             return None
 
     async def get_sleep_data(self, target_date: date) -> Optional[Dict[str, Any]]:
@@ -74,7 +77,11 @@ class FitbitClient:
         headers = {"Authorization": f"Bearer {access_token}"}
         async with self.session.get(url, headers=headers) as resp:
             response_json = await resp.json()
-            if resp.status == 200 and response_json.get('sleep'): return response_json
+            if resp.status == 200 and response_json.get('sleep'): 
+                return response_json
+            else:
+                # ★追加：睡眠データ取得失敗の理由を表示
+                logging.warning(f"⚠️ 睡眠データ取得失敗 ({resp.status}): {response_json}")
             return None
 
     async def get_activity_summary(self, target_date: date) -> Optional[Dict[str, Any]]:
@@ -88,4 +95,7 @@ class FitbitClient:
                 heart_rate_zones = response_json.get('summary', {}).get('heartRateZones', [])
                 response_json['summary']['heartRateZones'] = {zone['name']: zone for zone in heart_rate_zones}
                 return response_json
+            else:
+                # ★追加：活動データ取得失敗の理由を表示
+                logging.warning(f"⚠️ 活動データ取得失敗 ({resp.status}): {response_json}")
             return None
