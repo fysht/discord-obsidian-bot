@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 from datetime import date
+import time
 from typing import Optional, Dict, Any
 import aiohttp
 import base64
@@ -17,6 +18,11 @@ class FitbitClient:
         self.drive_service = drive_service
         self.drive_folder_id = drive_folder_id
         self.token_file_name = "fitbit_refresh_token.txt"
+
+        # ★追加：トークンの使い回し（キャッシュ）と同時実行防止の仕組み
+        self._cached_access_token = None
+        self._token_expires_at = 0
+        self._token_lock = asyncio.Lock()
 
     async def _find_file(self, parent_id, name):
         loop = asyncio.get_running_loop()
@@ -55,20 +61,34 @@ class FitbitClient:
             logging.error(f"Driveへのトークン保存に失敗: {e}")
 
     async def _get_access_token(self) -> Optional[str]:
-        url = "https://api.fitbit.com/oauth2/token"
-        auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
-        headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/x-www-form-urlencoded"}
-        current_refresh_token = await self._get_latest_refresh_token()
-        payload = {"grant_type": "refresh_token", "refresh_token": current_refresh_token}
-        async with self.session.post(url, headers=headers, data=payload) as resp:
-            response_json = await resp.json()
-            if resp.status == 200:
-                await self._save_new_refresh_token(response_json.get("refresh_token"))
-                return response_json.get("access_token")
-            else:
-                # ★追加：トークン取得失敗の理由を表示
-                logging.error(f"🚨 トークン取得エラー ({resp.status}): {response_json}")
-            return None
+        # すでに有効なアクセストークンがあれば使い回す（有効期限内かチェック）
+        if self._cached_access_token and time.time() < self._token_expires_at:
+            return self._cached_access_token
+
+        # トークン取得処理が複数同時に走らないように順番待ち（ロック）させる
+        async with self._token_lock:
+            # 待っている間に別の処理がトークンを取得してくれていたら、それを使う
+            if self._cached_access_token and time.time() < self._token_expires_at:
+                return self._cached_access_token
+
+            url = "https://api.fitbit.com/oauth2/token"
+            auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
+            headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/x-www-form-urlencoded"}
+            current_refresh_token = await self._get_latest_refresh_token()
+            payload = {"grant_type": "refresh_token", "refresh_token": current_refresh_token}
+            
+            async with self.session.post(url, headers=headers, data=payload) as resp:
+                response_json = await resp.json()
+                if resp.status == 200:
+                    # 成功したらアクセストークンをメモリに保存（余裕を持って7時間で破棄設定）
+                    self._cached_access_token = response_json.get("access_token")
+                    self._token_expires_at = time.time() + (7 * 3600)
+                    
+                    await self._save_new_refresh_token(response_json.get("refresh_token"))
+                    return self._cached_access_token
+                else:
+                    logging.error(f"🚨 トークン取得エラー ({resp.status}): {response_json}")
+                    return None
 
     async def get_sleep_data(self, target_date: date) -> Optional[Dict[str, Any]]:
         access_token = await self._get_access_token()
@@ -80,7 +100,6 @@ class FitbitClient:
             if resp.status == 200 and response_json.get('sleep'): 
                 return response_json
             else:
-                # ★追加：睡眠データ取得失敗の理由を表示
                 logging.warning(f"⚠️ 睡眠データ取得失敗 ({resp.status}): {response_json}")
             return None
 
@@ -96,6 +115,5 @@ class FitbitClient:
                 response_json['summary']['heartRateZones'] = {zone['name']: zone for zone in heart_rate_zones}
                 return response_json
             else:
-                # ★追加：活動データ取得失敗の理由を表示
                 logging.warning(f"⚠️ 活動データ取得失敗 ({resp.status}): {response_json}")
             return None
