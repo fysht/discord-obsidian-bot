@@ -203,9 +203,12 @@ class PartnerCog(commands.Cog):
         service = await loop.run_in_executor(None, self.get_calendar_service)
         if not service: return "エラー"
         try:
-            dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
-            time_min = dt.replace(hour=0, minute=0, second=0).isoformat() + 'Z'
-            time_max = dt.replace(hour=23, minute=59, second=59).isoformat() + 'Z'
+            # === 【修正箇所】JSTタイムゾーンを付与し、UTC化を防ぐ ===
+            dt = datetime.datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=JST)
+            time_min = dt.replace(hour=0, minute=0, second=0).isoformat()
+            time_max = dt.replace(hour=23, minute=59, second=59).isoformat()
+            # ========================================================
+            
             events_result = await loop.run_in_executor(None, lambda: service.events().list(calendarId=self.calendar_id, timeMin=time_min, timeMax=time_max, singleEvents=True, orderBy='startTime').execute())
             events = events_result.get('items', [])
             if not events: return f"{date_str} の予定は特にないみたいだよ。"
@@ -273,10 +276,18 @@ class PartnerCog(commands.Cog):
             prompt = f"""あなたは私の優秀なパートナーです。今日のここまでの会話ログを整理して、箇条書きのメモを作成して。
 【指示】
 1. メモの文末はすべて「である調（〜である、〜だ）」で統一すること。
-2. 可能な限り私の投稿内容をすべて拾うこと。
-3. 情報の整理はするが、要約や大幅な削除はしないこと。
+2. 【最重要】ログの中から「User（私）」の投稿内容のみを抽出し、AIの発言内容は一切メモに含めないでください。
+3. 【重要】私自身が書いたメモとして整理すること。「AIに話した」「AIが〜と言った」などの表現は完全に排除し、一人称視点（「〇〇をした」「〇〇について考えた」など）の事実や思考として記述してください。
+4. 可能な限り私の投稿内容をすべて拾うこと。
+5. 情報の整理はするが、要約や大幅な削除はしないこと。
+
+【出力構成】
+後で見返しやすいよう、必ず以下の順番と見出しで整理してください。該当内容がない項目は省略可能です。
+・📝 出来事・行動記録
+・💡 考えたこと・気づき
+・➡️ ネクストアクション
+
 最後に一言、親密なタメ口でポジティブな言葉を添えて。
---- Log ---
 {logs}"""
             try:
                 response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
