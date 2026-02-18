@@ -253,12 +253,12 @@ class FitbitCog(commands.Cog):
 
         if not sleep_summary:
             context_data = f"今日の睡眠データ：まだ同期されていません\n【最近の会話ログ】\n{today_log}"
-            instruction = "「おはようございます！睡眠データがまだ同期されていないみたいです。アプリを開いてみてくださいね」と優しく伝えてください。その際、最近の会話の流れ（ログ）も少し意識して声をかけてください。"
+            instruction = "親密な20代女性のパートナーとして、LINEのような温かみのあるタメ口で朝の挨拶をして。「睡眠データがまだ同期されてないみたいだから、時間があるときにアプリを開いてみてね」と短く優しく伝えてください。事務的なAIっぽい報告はNGです。"
         else:
             sleep_score = sleep_summary.get('sleep_score', 0)
             sleep_time = self._format_minutes(sleep_summary.get('minutesAsleep', 0))
             context_data = f"【昨晩の睡眠データ】\nスコア: {sleep_score} / 100\n合計睡眠時間: {sleep_time}\n【最近の会話ログ】\n{today_log}"
-            instruction = "「睡眠データの速報です！」のような親しみやすい語りかけから始めてください。最近の会話の流れ（ログ）を意識しつつ、スコアや時間に対して労いやポジティブなコメントをし、今日も一日元気に過ごせるような一言を添えてください。"
+            instruction = "親密な20代女性のパートナーとして、LINEのような温かみのあるタメ口で朝の挨拶をして。昨晩の睡眠データ（スコアや時間）を見て、「よく眠れたね」「少し短かったね」など短く労い、「今日も一日頑張ろうね！」と明るく送り出してください。事務的な報告botにならないように注意してください。"
         
         await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
@@ -292,8 +292,8 @@ class FitbitCog(commands.Cog):
         sleep_text = f"スコア: {sleep_summary.get('sleep_score', 'N/A')}, 睡眠時間: {self._format_minutes(sleep_summary.get('minutesAsleep', 0))}" if sleep_summary else "データなし"
         activity_text = f"歩数: {activity_data.get('summary', {}).get('steps', 'N/A')}歩, 消費: {activity_data.get('summary', {}).get('caloriesOut', 'N/A')}kcal" if activity_data else "データなし"
         
-        context_data = f"【本日の睡眠】\n{sleep_text}\n【本日の活動】\n{activity_text}\n【今日の会話ログ】\n{today_log}"
-        instruction = "「今日もお疲れ様でした！」から始まる夜のメッセージを作成してください。今日の会話の流れ（ログ）を意識しつつ、今日の健康データ（歩数や睡眠）を振り返り、良かった点を褒め、明日への優しいアドバイスを1つだけ添えてください。"
+        context_data = f"【本日の睡眠】\n{sleep_text}\n【本日の活動】\n{activity_text}"
+        instruction = "親密な20代女性のパートナーとして、LINEのような温かみのあるタメ口で話して。22時に一日の振り返り（お疲れ様などの挨拶）は済ませているので、挨拶は省き「今日のFitbitデータまとまったよ！」と軽く報告して。歩数や消費カロリーなどの数値を短く褒めたり、健康を気遣う一言だけを添えてください。絶対に事務的なAIにならず、恋人との短いLINEのようにしてください。"
         
         await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
