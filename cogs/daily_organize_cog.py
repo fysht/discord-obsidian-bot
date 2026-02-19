@@ -93,21 +93,44 @@ class DailyOrganizeCog(commands.Cog):
                     fitbit_stats['resting_hr'] = s.get('restingHeartRate', 'N/A')
             except: pass
 
-        result = {"diary": "", "memos": [], "links": []}
+        # --- 変更: journal (日記) を追加 ---
+        result = {"journal": "", "events": [], "insights": [], "next_actions": [], "message": "（今日の会話とデータをノートにまとめたよ🌙 おやすみ！）"}
         if log_text.strip():
-            prompt = f"今日の会話ログを整理し、JSON形式で出力。\nルール: memosは省略せず全発言をカテゴリ分けしてリスト化。\nフォーマット: {{ \"diary\": \"...\", \"memos\": [\"- [カテゴリ] 内容...\"], \"links\": [\"タイトル - URL\"] }}\n--- Chat Log ---\n{log_text}"
+            prompt = f"""今日の会話ログを整理し、JSON形式で出力してください。
+【指示】
+1. メモの文末はすべて「である調（〜である、〜だ）」で統一すること。
+2. 【最重要】ログの中から「User（私）」の投稿内容のみを抽出し、AIの発言内容は一切メモに含めないでください。
+3. 【重要】私自身が書いたメモとして整理すること。「AIに話した」「AIが〜と言った」などの表現は完全に排除し、一人称視点（「〇〇をした」「〇〇について考えた」など）の事実や思考として記述してください。
+4. 可能な限り私の投稿内容をすべて拾うこと。
+5. 情報の整理はするが、要約や大幅な削除はしないこと。
+6. 全体の内容を振り返る、読みやすくて感情豊かな短い日記（1〜2段落程度）を「journal」として作成してください。これも一人称の「である調」とします。
+
+【出力フォーマット】
+以下のキーを持つJSONで出力してください（各値は箇条書きの配列形式、journalは文字列）。該当内容がない項目は空にしてください。
+{{
+  "journal": "今日一日の振り返り日記",
+  "events": ["- 行動や出来事1", "- 行動や出来事2..."],
+  "insights": ["- 気づきや考えたこと1", "- 気づきや考えたこと2..."],
+  "next_actions": ["- アクション1", "- アクション2..."],
+  "message": "最後に私へ一言、親密なタメ口でポジティブなおやすみの挨拶を書いてください"
+}}
+--- Chat Log ---
+{log_text}"""
             try:
                 response = await self.gemini_client.aio.models.generate_content(
                     model="gemini-2.5-pro",
                     contents=prompt,
                     config=types.GenerateContentConfig(response_mime_type="application/json")
                 )
-                result = json.loads(response.text)
+                res_data = json.loads(response.text)
+                result.update(res_data)
             except Exception as e: logging.error(f"DailyOrganize: JSON Error: {e}")
 
         result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t, **fitbit_stats}
         await self._execute_organization(result, datetime.datetime.now(JST).strftime('%Y-%m-%d'))
-        await channel.send("（今日の会話とデータをノートにまとめたよ🌙 おやすみ！）")
+        
+        send_msg = result.get('message', '（今日の会話とデータをノートにまとめたよ🌙 今日も一日お疲れ様、おやすみ！）')
+        await channel.send(send_msg)
 
     async def _execute_organization(self, data, date_str):
         import asyncio
@@ -149,11 +172,25 @@ class DailyOrganizeCog(commands.Cog):
             except: pass
 
         updates = []
-        if data.get('diary'): updates.append(f"## 📝 Journal\n{data['diary']}")
-        if data.get('memos') and len(data['memos']) > 0: updates.append("## 📌 Memos\n" + ("\n".join(data['memos']) if isinstance(data['memos'], list) else str(data['memos'])))
-        if data.get('links') and len(data['links']) > 0: updates.append("## 🔗 Links\n" + ("\n".join([f"- {l}" for l in data['links']]) if isinstance(data['links'], list) else str(data['links'])))
+        
+        # --- 変更: 📔 Daily Journal を一番上に追加 ---
+        if data.get('journal'):
+            updates.append(f"## 📔 Daily Journal\n{data['journal']}")
+            
+        if data.get('events') and len(data['events']) > 0:
+            events_text = "\n".join(data['events']) if isinstance(data['events'], list) else str(data['events'])
+            updates.append(f"## 📝 Events & Actions\n{events_text}")
+            
+        if data.get('insights') and len(data['insights']) > 0:
+            insights_text = "\n".join(data['insights']) if isinstance(data['insights'], list) else str(data['insights'])
+            updates.append(f"## 💡 Insights & Thoughts\n{insights_text}")
+            
+        if data.get('next_actions') and len(data['next_actions']) > 0:
+            actions_text = "\n".join(data['next_actions']) if isinstance(data['next_actions'], list) else str(data['next_actions'])
+            updates.append(f"## ➡️ Next Actions\n{actions_text}")
 
         new_content = frontmatter + current_body + "\n\n" + "\n\n".join(updates)
+        
         media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown', resumable=True)
         if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': f"{date_str}.md", 'parents': [daily_folder]}, media_body=media).execute())

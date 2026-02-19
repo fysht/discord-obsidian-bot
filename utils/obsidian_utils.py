@@ -5,30 +5,24 @@ import re
 # デイリーノートの見出し順序定義
 # Botは項目を新規作成する際、この順序に従って適切な位置に挿入します。
 SECTION_ORDER = [
-    # --- 1. Daily Context (朝・コンテキスト) ---
-    "## Weather",           # 天気予報 (NewsCog) - 旧テキスト形式用(互換性のため維持)
-    "## Habits",            # 習慣トラッカー (HabitCog) - 旧テキスト形式用
+    # --- 1. Timeline (リアルタイムメモ) ---
+    "## 💬 Timeline",           # 日常のつぶやき・メモ (PartnerCog)
 
-    # --- 2. Input & Information (インプット・情報収集) ---
-    "## WebClips",          # Web記事クリップ (WebClipCog)
-    "## YouTube",           # YouTube動画リンク (PartnerCog) <-- 追加
-    "## YouTube Summaries", # 動画要約 (YouTubeCog)
-    "## Reading Notes",     # 読書メモ (BookCog)
-    "## Recipes",           # レシピ (RecipeCog)
+    # --- 2. Daily Summary (1日の振り返り整理) ---
+    "## 📔 Daily Journal",      # AIによる振り返り日記 (DailyOrganizeCog)
+    "## 📝 Events & Actions",   # 出来事・行動記録 (DailyOrganizeCog)
+    "## 💡 Insights & Thoughts",# 考えたこと・気づき (DailyOrganizeCog)
+    "## ➡️ Next Actions",       # ネクストアクション (DailyOrganizeCog)
 
-    # --- 3. Output & Thoughts (アウトプット・思考・学習) ---
-    "## Memo",              # テキストメモ (MemoCog)
-    "## Handwritten Memos", # 手書きメモ画像 (HandwrittenMemoCog)
-    "## Zero-Second Thinking", # 0秒思考 (ZeroSecondThinkingCog)
-    "## Journal",           # 日記・ジャーナル (JournalCog)
-    "## English Learning Logs", # 英語学習ログ (EnglishLearningCog)
+    # --- 3. Input & Information (インプット・情報収集) ---
+    "## 🍳 Recipes",            # レシピクリップ (WebClipService)
+    "## 📺 YouTube",            # YouTube動画リンク (WebClipService)
+    "## 🔗 WebClips",           # Web記事クリップ (WebClipService)
+    "## 📖 Reading Log",        # 読書メモ (PartnerCog)
 
-    # --- 4. Logs & Records (ログ・記録・活動データ) ---
-    "## Task Log",          # タスクログ (TodoCog)
-    "## Completed Tasks",   # 完了タスク (TodoCog)
-    "## Health Metrics",    # 健康データ (FitbitCog)
-    "## Location Logs",     # 位置情報ログ (LocationLogCog)
-    "## Life Logs"          # 生活ログ (LifeLogCog)
+    # --- 4. Logs & Records (自動記録・活動データ) ---
+    "## 📍 Location History",   # 位置情報ログ (LocationLogCog)
+    "## 📊 Health Metrics"      # 健康データ (FitbitCog)
 ]
 
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
@@ -38,7 +32,7 @@ def update_section(current_content: str, text_to_add: str, section_header: str) 
     Args:
         current_content (str): 現在のノートの全内容
         text_to_add (str): 追加または更新するテキスト (見出しを含まない内容のみ)
-        section_header (str): 対象となるセクションの見出し (例: "## Journal")
+        section_header (str): 対象となるセクションの見出し (例: "## 💬 Timeline")
 
     Returns:
         str: 更新後のノートの全内容

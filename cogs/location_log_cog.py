@@ -241,9 +241,11 @@ class LocationLogCog(commands.Cog):
         if daily_file:
             cur = await loop.run_in_executor(None, self._read_text, service, daily_file)
         else:
-            cur = f"---\ntitle: {date_str}\ndate: {date_str}\n---\n\n# {date_str}\n\n## 📍 Location Logs\n\n"
+            # 変更：フロントマターを他の機能と統一し、見出しを英語に変更
+            cur = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n\n## 📍 Location History\n\n"
         
-        new = update_section(cur, log_text, "## 📍 Location Logs")
+        # 変更：見出しを英語に変更
+        new = update_section(cur, log_text, "## 📍 Location History")
         
         if daily_file:
             await loop.run_in_executor(None, self._update_text, service, daily_file, new)

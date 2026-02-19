@@ -49,7 +49,6 @@ class FitbitCog(commands.Cog):
             self.is_ready = False
             logging.error("FitbitCog: Drive APIの認証に失敗しました。")
 
-    # --- 提案1: 睡眠スコア計算の精緻化 ---
     def _calculate_sleep_score(self, summary: dict) -> int:
         """Fitbitアプリのスコアを模倣した総合睡眠スコアを計算する"""
         total_asleep_min = summary.get('minutesAsleep', 0)
@@ -103,7 +102,6 @@ class FitbitCog(commands.Cog):
         h, m = divmod(minutes, 60)
         return f"{h}時間{m}分" if h > 0 else f"{m}分"
 
-    # --- Obsidian関連ユーティリティ ---
     def _parse_note_content(self, content: str):
         try:
             if content.startswith('---'):
@@ -113,7 +111,6 @@ class FitbitCog(commands.Cog):
         except yaml.YAMLError: pass
         return {}, content
 
-    # --- 提案3: Obsidian (Google Drive) への自動保存機能 ---
     async def _save_data_to_obsidian(self, target_date: datetime.date, sleep_data: dict, activity_data: dict):
         if not self.drive_service: return
         loop = asyncio.get_running_loop()
@@ -151,7 +148,7 @@ class FitbitCog(commands.Cog):
                     
             frontmatter, body = self._parse_note_content(current_content)
             
-            # フロントマターの更新
+            # --- 全データをフロントマターに集約 ---
             if sleep_data:
                 levels = sleep_data.get('levels', {}).get('summary', {})
                 frontmatter.update({
@@ -160,37 +157,52 @@ class FitbitCog(commands.Cog):
                     'time_in_bed_minutes': sleep_data.get('timeInBed'),
                     'deep_sleep_minutes': levels.get('deep'),
                     'rem_sleep_minutes': levels.get('rem'),
-                    'light_sleep_minutes': levels.get('light')
+                    'light_sleep_minutes': levels.get('light'),
+                    'wake_sleep_minutes': levels.get('wake')
                 })
+            
             if activity_data:
                 summary = activity_data.get('summary', {})
+                raw_hr_zones = summary.get('heartRateZones', [])
+                hr_zones = {z['name']: z for z in raw_hr_zones} if isinstance(raw_hr_zones, list) else raw_hr_zones
+                
                 frontmatter.update({
                     'steps': summary.get('steps'),
                     'distance_km': next((d['distance'] for d in summary.get('distances', []) if d['activity'] == 'total'), None),
                     'calories_out': summary.get('caloriesOut'),
                     'resting_heart_rate': summary.get('restingHeartRate'),
-                    'active_minutes_fairly': summary.get('fairlyActiveMinutes'),
                     'active_minutes_very': summary.get('veryActiveMinutes'),
+                    'active_minutes_fairly': summary.get('fairlyActiveMinutes'),
+                    'active_minutes_lightly': summary.get('lightlyActiveMinutes'),
+                    'sedentary_minutes': summary.get('sedentaryMinutes'),
+                    'hr_zone_fat_burn_minutes': hr_zones.get('Fat Burn', {}).get('minutes'),
+                    'hr_zone_cardio_minutes': hr_zones.get('Cardio', {}).get('minutes'),
+                    'hr_zone_peak_minutes': hr_zones.get('Peak', {}).get('minutes')
                 })
 
+            # null (None) の項目をフロントマターから取り除く
+            frontmatter = {k: v for k, v in frontmatter.items() if v is not None}
+
+            # --- 本文(Body)への追記処理（統一感のある英語見出しで） ---
             metrics_sections = []
             if sleep_data:
                 levels = sleep_data.get('levels', {}).get('summary', {})
                 sleep_text = (
-                    f"#### Sleep\n"
+                    f"#### 🌙 Sleep\n"
                     f"- **Score:** {sleep_data.get('sleep_score', 'N/A')} / 100\n"
                     f"- **Total Sleep:** {self._format_minutes(sleep_data.get('minutesAsleep'))}\n"
                     f"- **Time in Bed:** {self._format_minutes(sleep_data.get('timeInBed'))}\n"
                     f"- **Stages:** Deep {self._format_minutes(levels.get('deep'))}, "
                     f"REM {self._format_minutes(levels.get('rem'))}, "
-                    f"Light {self._format_minutes(levels.get('light'))}"
+                    f"Light {self._format_minutes(levels.get('light'))}, "
+                    f"Wake {self._format_minutes(levels.get('wake'))}"
                 )
                 metrics_sections.append(sleep_text)
             
             if activity_data:
                 summary = activity_data.get('summary', {})
                 activity_text = (
-                    f"#### Activity\n"
+                    f"#### 🏃‍♂️ Activity\n"
                     f"- **Steps:** {summary.get('steps', 'N/A')} steps\n"
                     f"- **Distance:** {next((d['distance'] for d in summary.get('distances', []) if d['activity'] == 'total'), 'N/A')} km\n"
                     f"- **Calories Out:** {summary.get('caloriesOut', 'N/A')} kcal\n"
@@ -198,9 +210,10 @@ class FitbitCog(commands.Cog):
                 )
                 metrics_sections.append(activity_text)
 
-                hr_zones = summary.get('heartRateZones', {})
+                raw_hr_zones = summary.get('heartRateZones', [])
+                hr_zones = {z['name']: z for z in raw_hr_zones} if isinstance(raw_hr_zones, list) else raw_hr_zones
                 heart_rate_text = (
-                    f"#### Heart Rate\n"
+                    f"#### ❤️ Heart Rate\n"
                     f"- **Resting Heart Rate:** {summary.get('restingHeartRate', 'N/A')} bpm\n"
                     f"- **Fat Burn:** {self._format_minutes(hr_zones.get('Fat Burn', {}).get('minutes'))}\n"
                     f"- **Cardio:** {self._format_minutes(hr_zones.get('Cardio', {}).get('minutes'))}\n"
@@ -208,7 +221,8 @@ class FitbitCog(commands.Cog):
                 )
                 metrics_sections.append(heart_rate_text)
 
-            new_body = update_section(body, "\n\n".join(metrics_sections), "## Health Metrics")
+            # utils.obsidian_utils の update_section を使って本文の所定位置を更新
+            new_body = update_section(body.strip(), "\n\n".join(metrics_sections), "## 📊 Health Metrics")
             new_daily_content = f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False)}---\n\n{new_body}"
             
             media = MediaIoBaseUpload(io.BytesIO(new_daily_content.encode('utf-8')), mimetype='text/markdown')
@@ -216,7 +230,7 @@ class FitbitCog(commands.Cog):
                 await loop.run_in_executor(None, lambda: self.drive_service.files().update(fileId=file_id, media_body=media).execute())
             else:
                 await loop.run_in_executor(None, lambda: self.drive_service.files().create(body={'name': file_name, 'parents': [dn_folder_id]}, media_body=media).execute())
-            logging.info(f"FitbitCog: {file_name} を更新しました。")
+            logging.info(f"FitbitCog: {file_name} を更新しました（フロントマターと本文の両方に保存）。")
         except Exception as e:
             logging.error(f"FitbitCog: Obsidian保存中にエラー: {e}")
 
@@ -237,7 +251,6 @@ class FitbitCog(commands.Cog):
         raw_sleep_data = await self.fitbit_client.get_sleep_data(target_date)
         sleep_summary = self._process_sleep_data(raw_sleep_data)
         
-        # --- 提案4: PartnerCogやChannelのエラーハンドリング強化 ---
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog: 
             logging.error("FitbitCog: PartnerCogが見つかりません。")
@@ -253,12 +266,12 @@ class FitbitCog(commands.Cog):
 
         if not sleep_summary:
             context_data = f"今日の睡眠データ：まだ同期されていません\n【最近の会話ログ】\n{today_log}"
-            instruction = "親密な20代女性のパートナーとして、LINEのような温かみのあるタメ口で朝の挨拶をして。「睡眠データがまだ同期されてないみたいだから、時間があるときにアプリを開いてみてね」と短く優しく伝えてください。事務的なAIっぽい報告はNGです。"
+            instruction = "親密な20代女性のパートナーとして、LINEのような温かみのあるタメ口で話して。朝の挨拶は6時に済ませているので不要です。「そういえば、睡眠データがまだ同期されてないみたいだから、時間があるときにアプリを開いてみてね」と短く優しく伝えてください。事務的なAIっぽい報告はNGです。"
         else:
             sleep_score = sleep_summary.get('sleep_score', 0)
             sleep_time = self._format_minutes(sleep_summary.get('minutesAsleep', 0))
             context_data = f"【昨晩の睡眠データ】\nスコア: {sleep_score} / 100\n合計睡眠時間: {sleep_time}\n【最近の会話ログ】\n{today_log}"
-            instruction = "親密な20代女性のパートナーとして、LINEのような温かみのあるタメ口で朝の挨拶をして。昨晩の睡眠データ（スコアや時間）を見て、「よく眠れたね」「少し短かったね」など短く労い、「今日も一日頑張ろうね！」と明るく送り出してください。事務的な報告botにならないように注意してください。"
+            instruction = "親密な20代女性のパートナーとして、LINEのような温かみのあるタメ口で話して。朝の挨拶（おはよう、今日も頑張ろう等）は6時に済ませているので絶対に省いてください。昨晩の睡眠データ（スコアや時間）を見て、「よく眠れたみたいだね！」「ちょっと睡眠短かったね、無理しないでね」など、体調を気遣う一言だけを自然に添えて報告して。事務的な報告botにならないように注意してください。"
         
         await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
@@ -272,10 +285,9 @@ class FitbitCog(commands.Cog):
         )
         sleep_summary = self._process_sleep_data(raw_sleep_data)
         
-        # Obsidianへの保存を実行 (追加)
+        # Obsidianへの保存を実行
         await self._save_data_to_obsidian(target_date, sleep_summary, activity_data)
         
-        # --- 提案4: PartnerCogやChannelのエラーハンドリング強化 ---
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog: 
             logging.error("FitbitCog: PartnerCogが見つかりません。")
@@ -297,7 +309,6 @@ class FitbitCog(commands.Cog):
         
         await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
-    # --- 提案2: 手動実行用スラッシュコマンド ---
     @app_commands.command(name="fitbit_morning", description="今日の睡眠レポートを手動で取得し、パートナーに報告させます。")
     async def get_morning_report(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False)
@@ -309,7 +320,6 @@ class FitbitCog(commands.Cog):
         await interaction.response.defer(ephemeral=False)
         await self.full_health_report()
         await interaction.followup.send("🌙 総合ヘルスレポートの取得と保存をリクエストしました！")
-
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(FitbitCog(bot))

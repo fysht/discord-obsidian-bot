@@ -123,18 +123,19 @@ class WebClipService:
         check_text = raw_text if not is_youtube else (title + " " + message_content)
         is_recipe = self._is_recipe(title, url, check_text)
 
-        # 3. 保存先フォルダとセクションの決定
+        # 3. 保存先フォルダとセクションの決定（絵文字＋英語の統一見出し）
         if is_recipe:
             folder_name = "Recipes"
             content_type_label = "Recipe"
+            section_header = "## 🍳 Recipes"
         elif is_youtube:
             folder_name = "YouTube"
             content_type_label = "YouTube"
+            section_header = "## 📺 YouTube"
         else:
             folder_name = "WebClips"
             content_type_label = "WebClip"
-
-        section_header = f"## {folder_name}"
+            section_header = "## 🔗 WebClips"
 
         # 4. ファイル名とコンテンツの作成
         now = datetime.datetime.now(JST)
@@ -149,7 +150,8 @@ class WebClipService:
         
         # ユーザーのメモを抽出（メッセージからURLを取り除いた部分）
         user_comment = message_content.replace(url, "").strip()
-        note_section = f"## Note\n{user_comment}\n\n" if user_comment else ""
+        # 統一された見出しに変更
+        note_section = f"## 💬 Note\n{user_comment}\n\n" if user_comment else ""
 
         final_content = ""
         summary_text = ""

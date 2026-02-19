@@ -54,7 +54,17 @@ class PartnerCog(commands.Cog):
     def get_calendar_service(self):
         creds = None
         if os.path.exists(TOKEN_FILE): creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        return build('calendar', 'v3', credentials=creds) if creds else None
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                try:
+                    creds.refresh(Request())
+                    open(TOKEN_FILE, 'w').write(creds.to_json())
+                except Exception as e:
+                    logging.error(f"Calendar Token Refresh Error: {e}")
+                    return None
+            else:
+                return None
+        return build('calendar', 'v3', credentials=creds)
 
     async def _find_file(self, service, parent_id, name, mime_type=None):
         loop = asyncio.get_running_loop()
@@ -111,14 +121,13 @@ class PartnerCog(commands.Cog):
         if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
         else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': DATA_FILE_NAME, 'parents': [b_folder]}, media_body=media).execute())
 
-    # --- 変更：引数を増やし、保存先のフォルダ名・ファイル名・見出しを指定できるように汎用化 ---
-    async def _append_raw_message_to_obsidian(self, text: str, folder_name: str = "DailyNotes", file_name: str = None, target_heading: str = "## 💬 タイムライン"):
+    # --- 変更: タイムラインのデフォルト見出しを英語表記に ---
+    async def _append_raw_message_to_obsidian(self, text: str, folder_name: str = "DailyNotes", file_name: str = None, target_heading: str = "## 💬 Timeline"):
         if not text: return
         loop = asyncio.get_running_loop()
         service = await loop.run_in_executor(None, self.get_drive_service)
         if not service: return
 
-        # ターゲットのフォルダを探す
         folder_id = await self._find_file(service, self.drive_folder_id, folder_name, "application/vnd.google-apps.folder")
         if not folder_id:
             meta = {'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
@@ -128,7 +137,6 @@ class PartnerCog(commands.Cog):
         now = datetime.datetime.now(JST)
         time_str = now.strftime('%H:%M')
         
-        # ファイル名が指定されていない場合はデイリーノートとする
         if not file_name:
             file_name = f"{now.strftime('%Y-%m-%d')}.md"
         
@@ -203,11 +211,9 @@ class PartnerCog(commands.Cog):
         service = await loop.run_in_executor(None, self.get_calendar_service)
         if not service: return "エラー"
         try:
-            # === 【修正箇所】JSTタイムゾーンを付与し、UTC化を防ぐ ===
             dt = datetime.datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=JST)
             time_min = dt.replace(hour=0, minute=0, second=0).isoformat()
             time_max = dt.replace(hour=23, minute=59, second=59).isoformat()
-            # ========================================================
             
             events_result = await loop.run_in_executor(None, lambda: service.events().list(calendarId=self.calendar_id, timeMin=time_min, timeMax=time_max, singleEvents=True, orderBy='startTime').execute())
             events = events_result.get('items', [])
@@ -283,9 +289,9 @@ class PartnerCog(commands.Cog):
 
 【出力構成】
 後で見返しやすいよう、必ず以下の順番と見出しで整理してください。該当内容がない項目は省略可能です。
-・📝 出来事・行動記録
-・💡 考えたこと・気づき
-・➡️ ネクストアクション
+・📝 Events & Actions
+・💡 Insights & Thoughts
+・➡️ Next Actions
 
 最後に一言、親密なタメ口でポジティブな言葉を添えて。
 {logs}"""
@@ -298,10 +304,8 @@ class PartnerCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot: return
         
-        # --- 追加：発言場所が「通常チャンネル」か「本のスレッド」かを判定 ---
         is_book_thread = isinstance(message.channel, discord.Thread) and message.channel.name.startswith("📖 ")
         
-        # メモチャンネル、または本のスレッド以外での発言は無視
         if message.channel.id != self.memo_channel_id and not is_book_thread: 
             return
 
@@ -311,17 +315,14 @@ class PartnerCog(commands.Cog):
 
         is_short_message = len(text) < 30
 
-        # --- 変更：保存先のルーティング ---
+        # --- 変更: 本のスレッドの場合の見出しを英語表記に ---
         if text and not text.startswith('/'):
             if is_book_thread:
-                # 本のスレッドの場合は、BookNotesフォルダの該当ファイルへ保存
-                book_title = message.channel.name[2:].strip() # "📖 "を除外してタイトルを取得
+                book_title = message.channel.name[2:].strip()
                 file_name = f"{book_title}.md"
-                asyncio.create_task(self._append_raw_message_to_obsidian(text, folder_name="BookNotes", file_name=file_name, target_heading="## 💬 読書ログ"))
+                asyncio.create_task(self._append_raw_message_to_obsidian(text, folder_name="BookNotes", file_name=file_name, target_heading="## 📖 Reading Log"))
             else:
-                # 通常のタイムラインの場合は今まで通りDailyNotesへ保存
                 asyncio.create_task(self._append_raw_message_to_obsidian(text))
-        # -----------------------------------------------------
 
         if is_short_message and text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)
