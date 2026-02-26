@@ -33,7 +33,6 @@ class PartnerCog(commands.Cog):
         service = self.drive_service.get_service()
         if not service: return
 
-        # 修正：第4引数の MIMEタイプ を削除
         folder_id = await self.drive_service.find_file(service, self.drive_folder_id, folder_name)
         if not folder_id:
             folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, folder_name)
@@ -73,7 +72,7 @@ class PartnerCog(commands.Cog):
         channel = self.bot.get_channel(self.memo_channel_id)
         if not channel: return
         system_prompt = "あなたは私を日々サポートする、20代女性の親密なAIパートナーです。LINEのような短く温かみのあるタメ口で話してください。"
-        prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。長々とした返信はせず、短いメッセージにすること。"
+        prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。長文は絶対に避け、1〜2文程度の短いメッセージにすること。"
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             await channel.send(response.text.strip())
@@ -178,17 +177,22 @@ class PartnerCog(commands.Cog):
                 elapsed = int((datetime.datetime.now(JST) - self.task_service.current_task['start']).total_seconds() / 60)
                 task_info = f"現在「{self.task_service.current_task['name']}」というタスクを実行中（{elapsed}分経過）。"
 
+            # -------------------------------------------------------------------
+            # ★ 修正ポイント1: 人格・返信の長さをコントロールするプロンプトを厳格化
+            # -------------------------------------------------------------------
             system_prompt = f"""
             あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
             **ユーザーの状態:** {task_info}
             **会話の目的:** 日々の他愛ない会話を楽しみつつ、自然な形でユーザーに寄り添うこと。
             **指針:**
-            1. 基本は共感をメインとし、長文や質問攻めは避けること。
-            2. 未来の通知を依頼された時は `add_reminders` を使う。
-            3. リマインダーの確認や削除依頼時は `list_reminders` や `delete_reminders` を使う。
-            4. タスク（やることリスト）の追加・確認・完了・削除の依頼は `manage_tasks` を使う。
-            5. スケジュールの確認や作成は `check_schedule` や `Calendar` を使う。
+            1. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
+            2. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
+            3. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず「そっか！」「お疲れ様！」「いいね！」などの共感のみで会話を自然に区切ってください。
+            4. 求められない限り「アドバイス」はせず、聞き上手・壁打ち相手に徹すること。
+            5. 未来の通知設定・確認・削除は `add_reminders`, `list_reminders`, `delete_reminders` を使う。
+            6. タスクの追加・確認・完了・削除は `manage_tasks` を使う。
+            7. スケジュールの確認・作成・削除は `check_schedule`, `Calendar`, `delete_calendar_event` を使う。
             """
 
             function_tools = [
@@ -225,6 +229,13 @@ class PartnerCog(commands.Cog):
                     types.FunctionDeclaration(
                         name="create_calendar_event", description="カレンダーに予定を追加する。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING), "description": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])
+                    ),
+                    # -------------------------------------------------------------------
+                    # ★ 修正ポイント2: カレンダー削除用のツールの定義を追加
+                    # -------------------------------------------------------------------
+                    types.FunctionDeclaration(
+                        name="delete_calendar_event", description="カレンダーの予定をキーワードで検索して削除する。",
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD"), "keyword": types.Schema(type=types.Type.STRING, description="削除したい予定のタイトルや内容に含まれるキーワード")}, required=["date", "keyword"])
                     )
                 ])
             ]
@@ -264,6 +275,17 @@ class PartnerCog(commands.Cog):
                                 function_call.args["start_time"], 
                                 function_call.args["end_time"], 
                                 function_call.args.get("description", "")
+                            )
+                        else:
+                            tool_result = "カレンダーに接続できないみたい💦"
+                    # -------------------------------------------------------------------
+                    # ★ 修正ポイント3: カレンダー削除ツールが呼ばれた時の処理を追加
+                    # -------------------------------------------------------------------
+                    elif function_call.name == "delete_calendar_event":
+                        if self.calendar_service:
+                            tool_result = await self.calendar_service.delete_event_by_keyword(
+                                function_call.args["date"], 
+                                function_call.args["keyword"]
                             )
                         else:
                             tool_result = "カレンダーに接続できないみたい💦"
