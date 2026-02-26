@@ -96,4 +96,4 @@ class CalendarService:
             return f"予定を作成したよ！: {event.get('htmlLink')}"
         except Exception as e:
             logging.error(f"Calendar Create Error: {e}")
-            return f"予定の作成に失敗しました: {e}"
+            return f"予定の作成に失敗しました。: {e}"
