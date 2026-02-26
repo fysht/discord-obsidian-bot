@@ -70,11 +70,26 @@ class CalendarService:
     # 修正：AIが生成したラフな日時文字列をGoogle Calendar向けの厳密な形式に直す
     def _format_iso_time(self, t_str):
         try:
-            t_str = t_str.replace(" ", "T")
-            if len(t_str) == 16: # "YYYY-MM-DDTHH:MM" の場合は秒を補う
+            # 1. 余計な空白を取り除き、スラッシュをハイフンに、Tを空白に統一
+            t_str = t_str.strip().replace("/", "-").replace("T", " ")
+            
+            # 2. "2026-02-26 10:00" のように秒がない場合は ":00" を足す
+            if t_str.count(":") == 1:
                 t_str += ":00"
-            return t_str
-        except:
+            
+            # 3. 文字列を datetime オブジェクトに変換
+            dt = datetime.datetime.strptime(t_str, "%Y-%m-%d %H:%M:%S")
+            
+            # 4. タイムゾーン(JST)を設定してISOフォーマットで出力
+            dt = dt.replace(tzinfo=JST)
+            return dt.isoformat()
+            
+        except Exception as e:
+            # 万が一、AIが想定外の文字列を出した時のフォールバック（保険）
+            logging.warning(f"日時フォーマットの変換に失敗しました: '{t_str}' - {e}")
+            t_str = str(t_str).replace(" ", "T")
+            if len(t_str) == 16:
+                t_str += ":00"
             return t_str
 
     async def create_event(self, summary, start_time, end_time, description=""):
