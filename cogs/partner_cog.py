@@ -16,9 +16,8 @@ class PartnerCog(commands.Cog):
         self.user_name = "あなた"
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
-        # Bot本体から共通サービスを受け取る
         self.drive_service = bot.drive_service
-        self.calendar_service = bot.calendar_service  # カレンダーサービスもここで受け取る
+        self.calendar_service = bot.calendar_service
         self.gemini_client = bot.gemini_client
         
         self.task_service = TaskService(self.drive_service)
@@ -34,7 +33,8 @@ class PartnerCog(commands.Cog):
         service = self.drive_service.get_service()
         if not service: return
 
-        folder_id = await self.drive_service.find_file(service, self.drive_folder_id, folder_name, "application/vnd.google-apps.folder")
+        # 修正：第4引数の MIMEタイプ を削除
+        folder_id = await self.drive_service.find_file(service, self.drive_folder_id, folder_name)
         if not folder_id:
             folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, folder_name)
 
@@ -108,8 +108,8 @@ class PartnerCog(commands.Cog):
             prompt = f"""あなたは私の優秀なパートナーです。今日のここまでの会話ログを整理して、箇条書きのメモを作成して。
 【指示】
 1. メモの文末はすべて「である調（〜である、〜だ）」で統一すること。
-2. 【最重要】ログの中から「User（私）」の投稿内容のみを抽出し、AIの発言内容は一切メモに含めないでください。
-3. 【重要】私自身が書いたメモとして整理すること。「AIに話した」「AIが〜と言った」などの表現は完全に排除し、一人称視点（「〇〇をした」「〇〇について考えた」など）の事実や思考として記述してください。
+2. ログの中から「User（私）」の投稿内容のみを抽出し、AIの発言内容は一切メモに含めないでください。
+3. 私自身が書いたメモとして整理すること。「AIに話した」などの表現は完全に排除し、一人称視点（「〇〇をした」「〇〇について考えた」など）の事実や思考として記述してください。
 4. 可能な限り私の投稿内容をすべて拾うこと。
 5. 情報の整理はするが、要約や大幅な削除はしないこと。
 
@@ -224,7 +224,7 @@ class PartnerCog(commands.Cog):
                     ),
                     types.FunctionDeclaration(
                         name="create_calendar_event", description="カレンダーに予定を追加する。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING), "location": types.Schema(type=types.Type.STRING), "description": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING), "description": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])
                     )
                 ])
             ]
@@ -252,14 +252,11 @@ class PartnerCog(commands.Cog):
                         elif action == 'list': tool_result = await self.task_service.get_task_list()
                         elif action in ['complete', 'delete']: tool_result = await self.task_service.modify_tasks(function_call.args.get("target_indices", []), action)
                     elif function_call.name == "search_memory": tool_result = await self._search_drive_notes(function_call.args["keywords"])
-                    
-                    # --- カレンダー機能の呼び出しを CalendarService 経由に統一 ---
                     elif function_call.name == "check_schedule": 
                         if self.calendar_service:
                             tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"])
                         else:
                             tool_result = "カレンダーに接続できないみたい💦"
-                            
                     elif function_call.name == "create_calendar_event": 
                         if self.calendar_service:
                             tool_result = await self.calendar_service.create_event(
@@ -270,7 +267,6 @@ class PartnerCog(commands.Cog):
                             )
                         else:
                             tool_result = "カレンダーに接続できないみたい💦"
-                    # -------------------------------------------------------------
 
                     contents.append(response.candidates[0].content)
                     contents.append(types.Content(role="user", parts=[types.Part.from_function_response(name=function_call.name, response={"result": tool_result})]))

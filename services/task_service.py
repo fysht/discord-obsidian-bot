@@ -19,82 +19,47 @@ class TaskService:
         self.last_interaction = datetime.datetime.now(JST)
 
     async def load_data(self):
-        """Driveからデータをロード"""
         service = self.drive_service.get_service()
         if not service: return
-
         try:
             b_folder = await self.drive_service.find_file(service, self.drive_service.folder_id, BOT_FOLDER)
             if not b_folder: return
-
             f_id = await self.drive_service.find_file(service, b_folder, DATA_FILE_NAME)
             if f_id:
                 content = await self.drive_service.read_text_file(service, f_id)
                 data = json.loads(content)
-                
                 self.reminders = data.get('reminders', [])
-                
                 ct = data.get('current_task')
-                if ct:
-                    self.current_task = {
-                        'name': ct['name'], 
-                        'start': datetime.datetime.fromisoformat(ct['start'])
-                    }
-                else:
-                    self.current_task = None
-                
-                # 最終会話日時の読み込み
+                if ct: self.current_task = {'name': ct['name'], 'start': datetime.datetime.fromisoformat(ct['start'])}
                 li = data.get('last_interaction')
                 if li:
-                    try:
-                        self.last_interaction = datetime.datetime.fromisoformat(li)
-                    except ValueError:
-                        self.last_interaction = datetime.datetime.now(JST)
-                
-                logging.info("TaskService: Data loaded.")
+                    try: self.last_interaction = datetime.datetime.fromisoformat(li)
+                    except ValueError: self.last_interaction = datetime.datetime.now(JST)
         except Exception as e:
             logging.error(f"TaskService Load Error: {e}")
 
     async def save_data(self):
-        """Driveへデータを保存"""
         service = self.drive_service.get_service()
         if not service: return
-
         try:
             ct_save = None
-            if self.current_task:
-                ct_save = {
-                    'name': self.current_task['name'], 
-                    'start': self.current_task['start'].isoformat()
-                }
-
-            data = {
-                'reminders': self.reminders,
-                'current_task': ct_save,
-                'last_interaction': self.last_interaction.isoformat()
-            }
+            if self.current_task: ct_save = {'name': self.current_task['name'], 'start': self.current_task['start'].isoformat()}
+            data = {'reminders': self.reminders, 'current_task': ct_save, 'last_interaction': self.last_interaction.isoformat()}
             json_str = json.dumps(data, ensure_ascii=False, indent=2)
 
             b_folder = await self.drive_service.find_file(service, self.drive_service.folder_id, BOT_FOLDER)
-            if not b_folder:
-                b_folder = await self.drive_service.create_folder(service, self.drive_service.folder_id, BOT_FOLDER)
+            if not b_folder: b_folder = await self.drive_service.create_folder(service, self.drive_service.folder_id, BOT_FOLDER)
 
             f_id = await self.drive_service.find_file(service, b_folder, DATA_FILE_NAME)
-            if f_id:
-                await self.drive_service.update_text(service, f_id, json_str, mime_type='application/json')
-            else:
-                await self.drive_service.upload_text(service, b_folder, DATA_FILE_NAME, json_str)
-                
+            if f_id: await self.drive_service.update_text(service, f_id, json_str, mime_type='application/json')
+            else: await self.drive_service.upload_text(service, b_folder, DATA_FILE_NAME, json_str)
         except Exception as e:
             logging.error(f"TaskService Save Error: {e}")
 
     def update_last_interaction(self):
-        """最終会話日時を更新"""
         self.last_interaction = datetime.datetime.now(JST)
 
-    # --- リマインダー管理 ---
     async def add_reminders(self, reminders_data, user_id):
-        """AIから渡された複数のリマインダーを一括登録"""
         added = []
         for r in reminders_data:
             self.reminders.append({'time': r['time'], 'content': r['content'], 'user_id': user_id})
@@ -112,7 +77,6 @@ class TaskService:
         return "\n".join(res)
 
     async def delete_reminders(self, indices):
-        """指定された番号(1始まり)のリマインダーを削除"""
         if not self.reminders: return "削除するリマインダーがないよ。"
         indices = sorted(list(set(indices)), reverse=True)
         deleted = []
@@ -126,19 +90,25 @@ class TaskService:
         now = datetime.datetime.now(JST)
         due, remaining, is_changed = [], [], False
         for rem in self.reminders:
-            if now >= datetime.datetime.fromisoformat(rem['time']):
-                due.append(rem); is_changed = True
-            else: remaining.append(rem)
+            target = datetime.datetime.fromisoformat(rem['time'])
+            # 修正：タイムゾーンがない場合はJSTを付与する
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=JST)
+                
+            if now >= target:
+                due.append(rem)
+                is_changed = True
+            else:
+                remaining.append(rem)
         self.reminders = remaining
         return due, is_changed
 
-    # --- タスク(TaskLog.md)管理 ---
     async def _get_task_file_id(self, service):
-        import asyncio
-        loop = asyncio.get_running_loop()
-        tasks_folder = await loop.run_in_executor(None, self.drive_service.find_file, service, self.drive_service.folder_id, TASKS_FOLDER)
-        if not tasks_folder: tasks_folder = await loop.run_in_executor(None, self.drive_service.create_folder, service, self.drive_service.folder_id, TASKS_FOLDER)
-        task_file = await loop.run_in_executor(None, self.drive_service.find_file, service, tasks_folder, TASK_FILE_NAME)
+        # 修正：run_in_executor を外して直接 await します
+        tasks_folder = await self.drive_service.find_file(service, self.drive_service.folder_id, TASKS_FOLDER)
+        if not tasks_folder: 
+            tasks_folder = await self.drive_service.create_folder(service, self.drive_service.folder_id, TASKS_FOLDER)
+        task_file = await self.drive_service.find_file(service, tasks_folder, TASK_FILE_NAME)
         return task_file, tasks_folder
 
     async def get_task_list(self) -> str:
@@ -149,7 +119,6 @@ class TaskService:
         content = await self.drive_service.read_text_file(service, file_id)
         tasks = [line.strip() for line in content.split('\n') if re.match(r'^\s*-\s*\[ \]', line)]
         if not tasks: return "現在、未完了のタスクはないよ！"
-        
         res = ["【現在の未完了タスク】"]
         for idx, t in enumerate(tasks):
             res.append(f"{idx + 1}. {re.sub(r'^\s*-\s*\[ \]\s*', '', t)}")
@@ -191,10 +160,7 @@ class TaskService:
         return f"以下のタスクを{word}よ！\n・" + "\n・".join(affected)
 
     def start_task(self, task_name):
-        self.current_task = {
-            'name': task_name,
-            'start': datetime.datetime.now(JST)
-        }
+        self.current_task = {'name': task_name, 'start': datetime.datetime.now(JST)}
     
     def finish_task(self):
         if not self.current_task: return None
