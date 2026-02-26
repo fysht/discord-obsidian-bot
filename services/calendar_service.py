@@ -1,10 +1,10 @@
 import asyncio
 import logging
 import datetime
-import zoneinfo
 from googleapiclient.discovery import build
 
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+# --- 変更：config.py から共通のタイムゾーン設定を読み込む ---
+from config import JST
 
 class CalendarService:
     def __init__(self, creds, calendar_id="primary"):
@@ -36,23 +36,23 @@ class CalendarService:
             return []
 
     async def list_events_for_date(self, date_str):
-        """指定日の予定一覧を取得（チャット返答用）"""
+        """指定日の予定をテキストで返す"""
         service = self.get_service()
-        if not service: return "カレンダーに接続できませんでした。"
+        if not service: return "エラー: カレンダーに接続できません。"
 
         try:
-            dt = datetime.datetime.strptime(date_str, '%Y-%m-%d')
-            time_min = dt.replace(hour=0, minute=0, second=0).astimezone(JST).isoformat()
-            time_max = dt.replace(hour=23, minute=59, second=59).astimezone(JST).isoformat()
-
+            dt = datetime.datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=JST)
+            time_min = dt.replace(hour=0, minute=0, second=0).isoformat()
+            time_max = dt.replace(hour=23, minute=59, second=59).isoformat()
+            
             events_result = await asyncio.to_thread(lambda: service.events().list(
                 calendarId=self.calendar_id, timeMin=time_min, timeMax=time_max,
                 singleEvents=True, orderBy='startTime'
             ).execute())
-            
             events = events_result.get('items', [])
-            if not events: return f"{date_str} の予定は特にないみたいです。"
-
+            
+            if not events: return f"{date_str} の予定は特にないみたいだよ。"
+            
             result = []
             for event in events:
                 start = event['start'].get('dateTime', event['start'].get('date'))
@@ -85,7 +85,7 @@ class CalendarService:
             event = await asyncio.to_thread(lambda: service.events().insert(
                 calendarId=self.calendar_id, body=event_body
             ).execute())
-            return f"予定を作成しました: {event.get('htmlLink')}"
+            return f"予定を作成したよ！: {event.get('htmlLink')}"
         except Exception as e:
             logging.error(f"Calendar Create Error: {e}")
-            return f"作成に失敗しました: {e}"
+            return f"予定の作成に失敗しました: {e}"

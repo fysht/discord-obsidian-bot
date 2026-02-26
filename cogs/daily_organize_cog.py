@@ -1,29 +1,25 @@
 import os
 import discord
 from discord.ext import commands, tasks
-from google import genai
 from google.genai import types
 import logging
 import datetime
-import zoneinfo
 import json
-import io
 import aiohttp
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+import re
 
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-TOKEN_FILE = 'token.json'
-SCOPES = ['https://www.googleapis.com/auth/drive']
+from config import JST
+from services.task_service import TaskService
 
 class DailyOrganizeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        self.gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+        
+        # Bot本体から共通サービスを受け取る
+        self.drive_service = bot.drive_service
+        self.gemini_client = bot.gemini_client
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -31,28 +27,6 @@ class DailyOrganizeCog(commands.Cog):
 
     def cog_unload(self):
         self.daily_organize_task.cancel()
-
-    def _get_drive_service(self):
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        if creds and creds.valid: return build('drive', 'v3', credentials=creds)
-        elif creds and creds.expired and creds.refresh_token:
-            try:
-                creds.refresh(Request())
-                open(TOKEN_FILE, 'w').write(creds.to_json())
-                return build('drive', 'v3', credentials=creds)
-            except: pass
-        return None
-
-    async def _find_file(self, service, parent_id, name):
-        import asyncio
-        loop = asyncio.get_running_loop()
-        try:
-            res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id)").execute())
-            files = res.get('files', [])
-            return files[0]['id'] if files else None
-        except: return None
 
     @tasks.loop(time=datetime.time(hour=23, minute=55, tzinfo=JST))
     async def daily_organize_task(self):
@@ -93,7 +67,6 @@ class DailyOrganizeCog(commands.Cog):
                     fitbit_stats['resting_hr'] = s.get('restingHeartRate', 'N/A')
             except: pass
 
-        # --- 変更: journal (日記) を追加 ---
         result = {"journal": "", "events": [], "insights": [], "next_actions": [], "message": "（今日の会話とデータをノートにまとめたよ🌙 おやすみ！）"}
         if log_text.strip():
             prompt = f"""今日の会話ログを整理し、JSON形式で出力してください。
@@ -129,22 +102,30 @@ class DailyOrganizeCog(commands.Cog):
         result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t, **fitbit_stats}
         await self._execute_organization(result, datetime.datetime.now(JST).strftime('%Y-%m-%d'))
         
+        # --- 追加：Next ActionsをTaskLog.mdに自動登録 ---
+        if result.get('next_actions'):
+            # 行頭の "- " や箇条書きの記号を除去して純粋なタスク名にする
+            clean_actions = [re.sub(r'^-\s*', '', act).strip() for act in result['next_actions']]
+            if clean_actions:
+                try:
+                    ts = TaskService(self.drive_service)
+                    await ts.add_tasks(clean_actions)
+                except Exception as e:
+                    logging.error(f"Next Action自動登録エラー: {e}")
+        # ---------------------------------------------
+
         send_msg = result.get('message', '（今日の会話とデータをノートにまとめたよ🌙 今日も一日お疲れ様、おやすみ！）')
         await channel.send(send_msg)
 
     async def _execute_organization(self, data, date_str):
-        import asyncio
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return
 
-        daily_folder = await self._find_file(service, self.drive_folder_id, "DailyNotes")
+        daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
         if not daily_folder: 
-            meta = {'name': "DailyNotes", 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
-            folder_obj = await loop.run_in_executor(None, lambda: service.files().create(body=meta, fields='id').execute())
-            daily_folder = folder_obj.get('id')
+            daily_folder = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
             
-        f_id = await self._find_file(service, daily_folder, f"{date_str}.md")
+        f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
         meta = data.get('meta', {})
         frontmatter = "---\n" + f"date: {date_str}\n" + f"weather: {meta.get('weather', 'N/A')}\n" + f"temp_max: {meta.get('temp_max', 'N/A')}\n" + f"temp_min: {meta.get('temp_min', 'N/A')}\n"
         if 'steps' in meta: frontmatter += f"steps: {meta['steps']}\n"
@@ -158,12 +139,7 @@ class DailyOrganizeCog(commands.Cog):
         current_body = f"# Daily Note {date_str}\n"
         if f_id:
             try:
-                request = service.files().get_media(fileId=f_id)
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, request)
-                done = False
-                while not done: _, done = downloader.next_chunk()
-                raw_content = fh.getvalue().decode('utf-8')
+                raw_content = await self.drive_service.read_text_file(service, f_id)
                 if raw_content.startswith("---"):
                     parts = raw_content.split("---", 2)
                     if len(parts) >= 3: current_body = parts[2].strip()
@@ -172,28 +148,22 @@ class DailyOrganizeCog(commands.Cog):
             except: pass
 
         updates = []
-        
-        # --- 変更: 📔 Daily Journal を一番上に追加 ---
         if data.get('journal'):
             updates.append(f"## 📔 Daily Journal\n{data['journal']}")
-            
         if data.get('events') and len(data['events']) > 0:
             events_text = "\n".join(data['events']) if isinstance(data['events'], list) else str(data['events'])
             updates.append(f"## 📝 Events & Actions\n{events_text}")
-            
         if data.get('insights') and len(data['insights']) > 0:
             insights_text = "\n".join(data['insights']) if isinstance(data['insights'], list) else str(data['insights'])
             updates.append(f"## 💡 Insights & Thoughts\n{insights_text}")
-            
         if data.get('next_actions') and len(data['next_actions']) > 0:
             actions_text = "\n".join(data['next_actions']) if isinstance(data['next_actions'], list) else str(data['next_actions'])
             updates.append(f"## ➡️ Next Actions\n{actions_text}")
 
         new_content = frontmatter + current_body + "\n\n" + "\n\n".join(updates)
         
-        media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown', resumable=True)
-        if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
-        else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': f"{date_str}.md", 'parents': [daily_folder]}, media_body=media).execute())
+        if f_id: await self.drive_service.update_text(service, f_id, new_content)
+        else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new_content)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DailyOrganizeCog(bot))

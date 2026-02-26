@@ -7,9 +7,8 @@ import logging
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 DATA_FILE_NAME = "partner_data.json"
 BOT_FOLDER = ".bot"
-
-REMINDER_REGEX_MIN = re.compile(r'(\d+)分後')
-REMINDER_REGEX_TIME = re.compile(r'(\d{1,2})[:時](\d{0,2})')
+TASKS_FOLDER = "Tasks"
+TASK_FILE_NAME = "TaskLog.md"
 
 class TaskService:
     def __init__(self, drive_service):
@@ -17,7 +16,6 @@ class TaskService:
         self.reminders = []
         self.current_task = None
         self.notified_event_ids = set()
-        # デフォルトは現在時刻
         self.last_interaction = datetime.datetime.now(JST)
 
     async def load_data(self):
@@ -73,7 +71,7 @@ class TaskService:
             data = {
                 'reminders': self.reminders,
                 'current_task': ct_save,
-                'last_interaction': self.last_interaction.isoformat() # 追加
+                'last_interaction': self.last_interaction.isoformat()
             }
             json_str = json.dumps(data, ensure_ascii=False, indent=2)
 
@@ -94,51 +92,103 @@ class TaskService:
         """最終会話日時を更新"""
         self.last_interaction = datetime.datetime.now(JST)
 
-    def parse_and_add_reminder(self, text, user_id):
-        now = datetime.datetime.now(JST)
-        target_time = None
-        content = "時間だよ！"
+    # --- リマインダー管理 ---
+    async def add_reminders(self, reminders_data, user_id):
+        """AIから渡された複数のリマインダーを一括登録"""
+        added = []
+        for r in reminders_data:
+            self.reminders.append({'time': r['time'], 'content': r['content'], 'user_id': user_id})
+            dt = datetime.datetime.fromisoformat(r['time'])
+            added.append(f"{dt.strftime('%m/%d %H:%M')} に「{r['content']}」")
+        await self.save_data()
+        return "セット完了！\n・" + "\n・".join(added)
 
-        m_match = REMINDER_REGEX_MIN.search(text)
-        if m_match:
-            mins = int(m_match.group(1))
-            target_time = now + datetime.timedelta(minutes=mins)
-            content = text.replace(m_match.group(0), "").strip() or "指定の時間だよ！"
+    def get_reminders_list(self):
+        if not self.reminders: return "現在設定されているリマインダーはないよ！"
+        res = ["【現在のリマインダー】"]
+        for idx, r in enumerate(self.reminders):
+            dt = datetime.datetime.fromisoformat(r['time'])
+            res.append(f"{idx + 1}. {dt.strftime('%m/%d %H:%M')} - {r['content']}")
+        return "\n".join(res)
 
-        t_match = REMINDER_REGEX_TIME.search(text)
-        if not target_time and t_match:
-            hour = int(t_match.group(1))
-            minute = int(t_match.group(2)) if t_match.group(2) else 0
-            target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if target_time < now:
-                target_time += datetime.timedelta(days=1)
-            content = text.replace(t_match.group(0), "").strip() or "指定の時間だよ！"
-
-        if target_time:
-            self.reminders.append({
-                'time': target_time.isoformat(), 
-                'content': content, 
-                'user_id': user_id
-            })
-            return target_time.strftime('%H:%M')
-        return None
+    async def delete_reminders(self, indices):
+        """指定された番号(1始まり)のリマインダーを削除"""
+        if not self.reminders: return "削除するリマインダーがないよ。"
+        indices = sorted(list(set(indices)), reverse=True)
+        deleted = []
+        for idx in indices:
+            if 0 <= idx - 1 < len(self.reminders):
+                deleted.append(self.reminders.pop(idx - 1)['content'])
+        await self.save_data()
+        return f"削除したよ！: {', '.join(deleted)}" if deleted else "番号が見つからなかったよ。"
 
     def check_due_reminders(self):
         now = datetime.datetime.now(JST)
-        due = []
-        remaining = []
-        is_changed = False
-
+        due, remaining, is_changed = [], [], False
         for rem in self.reminders:
-            target = datetime.datetime.fromisoformat(rem['time'])
-            if now >= target:
-                due.append(rem)
-                is_changed = True
-            else:
-                remaining.append(rem)
-        
+            if now >= datetime.datetime.fromisoformat(rem['time']):
+                due.append(rem); is_changed = True
+            else: remaining.append(rem)
         self.reminders = remaining
         return due, is_changed
+
+    # --- タスク(TaskLog.md)管理 ---
+    async def _get_task_file_id(self, service):
+        import asyncio
+        loop = asyncio.get_running_loop()
+        tasks_folder = await loop.run_in_executor(None, self.drive_service.find_file, service, self.drive_service.folder_id, TASKS_FOLDER)
+        if not tasks_folder: tasks_folder = await loop.run_in_executor(None, self.drive_service.create_folder, service, self.drive_service.folder_id, TASKS_FOLDER)
+        task_file = await loop.run_in_executor(None, self.drive_service.find_file, service, tasks_folder, TASK_FILE_NAME)
+        return task_file, tasks_folder
+
+    async def get_task_list(self) -> str:
+        service = self.drive_service.get_service()
+        if not service: return "エラー"
+        file_id, _ = await self._get_task_file_id(service)
+        if not file_id: return "現在、タスクはないよ！"
+        content = await self.drive_service.read_text_file(service, file_id)
+        tasks = [line.strip() for line in content.split('\n') if re.match(r'^\s*-\s*\[ \]', line)]
+        if not tasks: return "現在、未完了のタスクはないよ！"
+        
+        res = ["【現在の未完了タスク】"]
+        for idx, t in enumerate(tasks):
+            res.append(f"{idx + 1}. {re.sub(r'^\s*-\s*\[ \]\s*', '', t)}")
+        return "\n".join(res)
+
+    async def add_tasks(self, task_names: list):
+        service = self.drive_service.get_service()
+        if not service: return "エラー"
+        file_id, folder_id = await self._get_task_file_id(service)
+        content = await self.drive_service.read_text_file(service, file_id) if file_id else ""
+        append_str = "\n".join([f"- [ ] {name}" for name in task_names])
+        new_content = content + f"\n{append_str}" if content and not content.endswith('\n') else content + f"{append_str}\n"
+        
+        if file_id: await self.drive_service.update_text(service, file_id, new_content)
+        else: await self.drive_service.upload_text(service, folder_id, TASK_FILE_NAME, new_content)
+        return "タスクを追加したよ！\n・" + "\n・".join(task_names)
+
+    async def modify_tasks(self, indices: list, action: str):
+        service = self.drive_service.get_service()
+        if not service: return "エラー"
+        file_id, _ = await self._get_task_file_id(service)
+        if not file_id: return "タスクがないよ。"
+        
+        content = await self.drive_service.read_text_file(service, file_id)
+        lines = content.split('\n')
+        task_line_indices = [i for i, line in enumerate(lines) if re.match(r'^\s*-\s*\[ \]', line)]
+        
+        affected = []
+        for t_idx in sorted([idx - 1 for idx in indices], reverse=True):
+            if 0 <= t_idx < len(task_line_indices):
+                line_idx = task_line_indices[t_idx]
+                affected.append(re.sub(r'^\s*-\s*\[ \]\s*', '', lines[line_idx]))
+                if action == 'complete': lines[line_idx] = re.sub(r'\[ \]', '[x]', lines[line_idx], count=1)
+                elif action == 'delete': lines.pop(line_idx)
+                    
+        if not affected: return "番号が見つからなかったよ。"
+        await self.drive_service.update_text(service, file_id, "\n".join(lines))
+        word = "完了にした" if action == 'complete' else "削除した"
+        return f"以下のタスクを{word}よ！\n・" + "\n・".join(affected)
 
     def start_task(self, task_name):
         self.current_task = {

@@ -7,6 +7,10 @@ from discord.ext import commands
 from dotenv import load_dotenv
 import re
 
+from google import genai
+from services.drive_service import DriveService
+from services.calendar_service import CalendarService
+
 try:
     from obsidian_handler import add_memo_async
 except ImportError:
@@ -50,6 +54,29 @@ class MyBot(commands.Bot):
         intents.members = True       
         intents.reactions = True     
         super().__init__(command_prefix="!", intents=intents) 
+        
+        # --- DriveServiceの生成 ---
+        if GOOGLE_DRIVE_FOLDER_ID:
+            self.drive_service = DriveService(GOOGLE_DRIVE_FOLDER_ID)
+        else:
+            self.drive_service = None
+            logging.warning("GOOGLE_DRIVE_FOLDER_IDが設定されていません。")
+        
+        # --- 追加：CalendarServiceの生成 ---
+        if self.drive_service and self.drive_service.creds:
+            calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
+            self.calendar_service = CalendarService(self.drive_service.creds, calendar_id)
+        else:
+            self.calendar_service = None
+            logging.warning("カレンダー用の認証情報がありません。")
+            
+        # --- Geminiクライアントの生成 ---
+        api_key = os.getenv("GEMINI_API_KEY")
+        if api_key:
+            self.gemini_client = genai.Client(api_key=api_key)
+        else:
+            self.gemini_client = None
+            logging.warning("GEMINI_API_KEYが設定されていません。")
 
     async def setup_hook(self):
         """Cogを動的にロードする"""
@@ -59,7 +86,7 @@ class MyBot(commands.Bot):
         successful_loads = 0
         failed_loads = []
 
-        # cogsフォルダ内のファイルを自動で読み込む (新しく追加したCogもここで自動読み込みされます)
+        # cogsフォルダ内のファイルを自動で読み込む
         for filename in os.listdir(cogs_dir):
             if filename == "__pycache__":
                 continue

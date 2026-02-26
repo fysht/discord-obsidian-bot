@@ -9,11 +9,10 @@ CREDENTIALS_FILE = 'credentials.json'
 TOKEN_FILE = 'token.json'
 
 # --- スコープ設定 ---
-# 修正: Google Drive API (読み書き権限) を追加しました
+# 現在のBotに必要なDriveとCalendarの権限のみに絞っています
 SCOPES = [
-    'https://www.googleapis.com/auth/calendar',   # Calendar Cog用
-    'https://www.googleapis.com/auth/documents',  # Google Docs Handler用
-    'https://www.googleapis.com/auth/drive'       # Google Drive Sync用 (★追加)
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/drive'
 ]
 # --- ここまで ---
 
@@ -76,7 +75,6 @@ def main():
             logging.error(f"ファイル書き込みエラー: {e}")
     else:
          logging.error("認証情報の取得に失敗したため、token.json は更新されませんでした。")
-
 
 if __name__ == '__main__':
     main()
