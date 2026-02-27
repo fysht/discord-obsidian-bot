@@ -1,14 +1,20 @@
+# ---------------------------------------------------------
+# 1. インポート処理の整理
+# ---------------------------------------------------------
 import os
-import discord
-from discord.ext import commands, tasks
-from google.genai import types
 import logging
 import datetime
 import json
-import io
 import aiohttp
 import re
 
+import discord
+from discord.ext import commands, tasks
+from google.genai import types
+
+# ---------------------------------------------------------
+# ローカルモジュールのインポート
+# ---------------------------------------------------------
 from config import JST
 from services.task_service import TaskService
 
@@ -22,7 +28,8 @@ class DailyOrganizeCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if not self.daily_organize_task.is_running(): self.daily_organize_task.start()
+        if not self.daily_organize_task.is_running(): 
+            self.daily_organize_task.start()
 
     def cog_unload(self):
         self.daily_organize_task.cancel()
@@ -32,6 +39,13 @@ class DailyOrganizeCog(commands.Cog):
         channel = self.bot.get_channel(self.memo_channel_id)
         partner_cog = self.bot.get_cog("PartnerCog")
         if not channel or not partner_cog: return
+
+        # ---------------------------------------------------------
+        # ★ 改善ポイント1: 処理開始前に現在のタスク一覧を取得しておく
+        # ---------------------------------------------------------
+        ts = TaskService(self.drive_service)
+        await ts.load_data()
+        current_tasks_text = await ts.get_task_list()
 
         log_text = await partner_cog.fetch_todays_chat_log(channel)
         weather, max_t, min_t = "N/A", "N/A", "N/A"
@@ -67,7 +81,11 @@ class DailyOrganizeCog(commands.Cog):
             except: pass
 
         result = {"journal": "", "events": [], "insights": [], "next_actions": [], "message": "（今日の会話とデータをノートにまとめたよ🌙 おやすみ！）"}
+        
         if log_text.strip():
+            # ---------------------------------------------------------
+            # ★ 改善ポイント2: AIへのプロンプトで「既存タスクの除外」を強く指示
+            # ---------------------------------------------------------
             prompt = f"""今日の会話ログを整理し、JSON形式で出力してください。
 【指示】
 1. メモの文末はすべて「である調（〜である、〜だ）」で統一すること。
@@ -76,6 +94,10 @@ class DailyOrganizeCog(commands.Cog):
 4. 可能な限り私の投稿内容をすべて拾うこと。
 5. 情報の整理はするが、要約や大幅な削除はしないこと。
 6. 全体の内容を振り返る、読みやすくて感情豊かな短い日記（1〜2段落程度）を「journal」として作成してください。これも一人称の「である調」とします。
+7. 【最重要】「next_actions」には、会話内で「タスクに追加して」と明示的に依頼した事柄や、既に以下の【現在のタスク一覧】に含まれている内容は **絶対に含めない** でください。会話の中でふと呟いた「明日〇〇しよう」「今度〇〇について調べよう」といった、まだタスク化されていない潜在的なアクションのみを抽出してください。見つからない場合は空配列 [] にしてください。
+
+【現在のタスク一覧】
+{current_tasks_text}
 
 【出力フォーマット】
 以下のキーを持つJSONで出力してください（各値は箇条書きの配列形式、journalは文字列）。該当内容がない項目は空にしてください。
@@ -96,17 +118,31 @@ class DailyOrganizeCog(commands.Cog):
                 )
                 res_data = json.loads(response.text)
                 result.update(res_data)
-            except Exception as e: logging.error(f"DailyOrganize: JSON Error: {e}")
+            except Exception as e: 
+                logging.error(f"DailyOrganize: JSON Error: {e}")
 
         result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t, **fitbit_stats}
         await self._execute_organization(result, datetime.datetime.now(JST).strftime('%Y-%m-%d'))
         
+        # ---------------------------------------------------------
+        # ★ 改善ポイント3: Python側での文字列比較フィルター（迎撃処理）
+        # ---------------------------------------------------------
         if result.get('next_actions'):
             clean_actions = [re.sub(r'^-\s*', '', act).strip() for act in result['next_actions']]
-            if clean_actions:
+            
+            # 既存タスクとの部分一致チェック
+            existing_tasks_lower = current_tasks_text.lower()
+            unique_actions = []
+            
+            for act in clean_actions:
+                # すでに存在するタスク名に似ていなければ新規として扱う
+                if act and act.lower() not in existing_tasks_lower:
+                    unique_actions.append(act)
+
+            if unique_actions:
                 try:
-                    ts = TaskService(self.drive_service)
-                    await ts.add_tasks(clean_actions)
+                    await ts.add_tasks(unique_actions)
+                    await ts.save_data()
                 except Exception as e:
                     logging.error(f"Next Action自動登録エラー: {e}")
 
@@ -117,7 +153,6 @@ class DailyOrganizeCog(commands.Cog):
         service = self.drive_service.get_service()
         if not service: return
 
-        # 修正：run_in_executor を外して、そのまま await します
         daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
         if not daily_folder: 
             daily_folder = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")

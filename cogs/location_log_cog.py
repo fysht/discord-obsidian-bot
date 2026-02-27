@@ -1,29 +1,27 @@
+# ---------------------------------------------------------
+# 1. インポート処理の整理
+# ---------------------------------------------------------
 import os
+import logging
+import json
+from datetime import datetime, time, timedelta
+import io
+import asyncio
+import re
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import logging
-import json
-from datetime import datetime, time
-import zoneinfo
-import io
-import asyncio
 import googlemaps
 from geopy.distance import great_circle
-import re
+from googleapiclient.http import MediaIoBaseDownload
 
-# Google Drive API
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
-
+# ---------------------------------------------------------
+# ローカルモジュールのインポートと定数設定
+# ---------------------------------------------------------
+from config import JST
 from utils.obsidian_utils import update_section
 
-# --- 定数定義 ---
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-TOKEN_FILE = 'token.json'
-SCOPES = ['https://www.googleapis.com/auth/drive']
 DATE_REGEX = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 ACTIVITY_TYPE_MAP = {
@@ -44,9 +42,13 @@ ACTIVITY_TYPE_MAP = {
 class LocationLogCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # 自動通知先をMEMO_CHANNEL_IDに変更
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        
+        # ---------------------------------------------------------
+        # 統合されたDriveサービスを利用
+        # ---------------------------------------------------------
+        self.drive_service = bot.drive_service
         
         self.home_coordinates = self._parse_coordinates(os.getenv("HOME_COORDINATES"))
         self.work_coordinates = self._parse_coordinates(os.getenv("WORK_COORDINATES"))
@@ -55,7 +57,6 @@ class LocationLogCog(commands.Cog):
         
         self.gmaps = googlemaps.Client(key=self.google_places_api_key) if self.google_places_api_key else None
         
-        # 毎日 23:50 に自動で処理を開始する
         self.process_timeline_json.start()
 
     def cog_unload(self):
@@ -94,26 +95,7 @@ class LocationLogCog(commands.Cog):
             return datetime.fromisoformat(ts_str)
         except (ValueError, TypeError): return None
 
-    # --- Google Drive API 関連メソッド ---
-    def _get_drive_service(self):
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            except: pass
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
-                except: return None
-            else: return None
-        return build('drive', 'v3', credentials=creds)
-
-    def _find_file_recursive(self, service, parent_id, name, mime_type=None):
-        query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
-        if mime_type: query += f" and mimeType = '{mime_type}'"
-        res = service.files().list(q=query, fields="files(id)").execute()
-        files = res.get('files', [])
-        return files[0]['id'] if files else None
-
+    # --- Google Drive 固有処理 (専用の操作のみ残す) ---
     def _find_folder_in_root(self, service, name):
         query = f"'root' in parents and name = '{name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         res = service.files().list(q=query, fields="files(id)").execute()
@@ -121,13 +103,11 @@ class LocationLogCog(commands.Cog):
         return files[0]['id'] if files else None
 
     def _get_unprocessed_json(self, service, folder_id):
-        # ★ 処理待ちの「タイムライン.json」を探すように修正
         query = f"'{folder_id}' in parents and name contains 'タイムライン.json' and not name contains '処理済み_' and trashed = false"
         res = service.files().list(q=query, fields="files(id, name)").execute()
         return res.get('files', [])
 
     def _get_latest_timeline_json(self, service, folder_id):
-        # ★ 処理済み・未処理問わず、一番新しい「タイムライン.json」を取得するよう修正
         query = f"'{folder_id}' in parents and name contains 'タイムライン.json' and trashed = false"
         res = service.files().list(q=query, fields="files(id, name, createdTime)", orderBy="createdTime desc").execute()
         files = res.get('files', [])
@@ -143,22 +123,11 @@ class LocationLogCog(commands.Cog):
         while not done: _, done = downloader.next_chunk()
         return json.loads(fh.getvalue().decode('utf-8'))
 
-    def _read_text(self, service, file_id):
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
-        done = False
-        while not done: _, done = downloader.next_chunk()
-        return fh.getvalue().decode('utf-8')
-
-    def _update_text(self, service, file_id, content):
-        service.files().update(fileId=file_id, media_body=MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')).execute()
-
-    def _create_text(self, service, parent_id, name, content):
-        service.files().create(body={'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}, media_body=MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')).execute()
-
     # --- JSONデータ解析の共通ロジック ---
-    def _extract_logs_from_json(self, data: dict, target_date_str: str) -> dict:
-        """指定された日付（target_date_str）のデータのみを抽出してテキスト化する"""
+    def _extract_logs_from_json(self, data: dict, target_dates: set[str] = None) -> dict:
+        """
+        target_dates に含まれる日付のデータのみを抽出する。
+        """
         segments = data.get("semanticSegments", [])
         if not segments: return None
 
@@ -171,8 +140,8 @@ class LocationLogCog(commands.Cog):
             event_date = start_time.astimezone(JST).date()
             date_str = event_date.strftime('%Y-%m-%d')
 
-            # 指定された日付以外は完全に無視する
-            if date_str != target_date_str: continue
+            # 対象日付セットが指定されていて、かつそれに含まれない場合はスキップ
+            if target_dates and date_str not in target_dates: continue
 
             events_by_date.setdefault(date_str, [])
             duration_seconds = (end_time - start_time).total_seconds()
@@ -228,49 +197,64 @@ class LocationLogCog(commands.Cog):
         return logs_by_date
 
     # --- Obsidian書き込みの共通ロジック ---
-    async def _write_to_obsidian(self, service, loop, date_str: str, log_text: str):
-        daily_folder = await loop.run_in_executor(None, self._find_file_recursive, service, self.drive_folder_id, "DailyNotes", "application/vnd.google-apps.folder")
-        if not daily_folder:
-            meta = {'name': 'DailyNotes', 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
-            folder_obj = await loop.run_in_executor(None, lambda: service.files().create(body=meta, fields='id').execute())
-            daily_folder = folder_obj.get('id')
+    async def _write_to_obsidian(self, date_str: str, log_text: str, force: bool = False) -> bool:
+        """
+        Obsidianに書き込む。すでに記入済みの場合はスキップするが、force=Trueの場合は上書きする。
+        書き込みを実行した場合はTrueを返す。
+        """
+        service = self.drive_service.get_service()
+        if not service: return False
 
-        daily_file = await loop.run_in_executor(None, self._find_file_recursive, service, daily_folder, f"{date_str}.md")
+        daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+        if not daily_folder:
+            daily_folder = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
+
+        daily_file = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
         
         cur = ""
         if daily_file:
-            cur = await loop.run_in_executor(None, self._read_text, service, daily_file)
-        else:
-            # 変更：フロントマターを他の機能と統一し、見出しを英語に変更
+            try:
+                cur = await self.drive_service.read_text_file(service, daily_file)
+            except Exception as e:
+                logging.error(f"ファイル読み込みエラー: {e}")
+
+        # ★ 変更: 強制フラグがない場合、既にロケーション履歴（箇条書きの - ）が存在すればスキップ
+        if not force and re.search(r'## 📍 Location History\s*-', cur):
+            return False
+
+        if not cur:
             cur = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n\n## 📍 Location History\n\n"
         
-        # 変更：見出しを英語に変更
         new = update_section(cur, log_text, "## 📍 Location History")
         
         if daily_file:
-            await loop.run_in_executor(None, self._update_text, service, daily_file, new)
+            await self.drive_service.update_text(service, daily_file, new)
         else:
-            await loop.run_in_executor(None, self._create_text, service, daily_folder, f"{date_str}.md", new)
+            await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new)
+            
+        return True
 
 
-    # ▼ 毎日 23:50 に全自動で実行される処理（当日分のみ）
+    # ▼ 毎日 23:50 に全自動で実行される処理
     @tasks.loop(time=time(hour=23, minute=50, tzinfo=JST))
     async def process_timeline_json(self):
         logging.info("タイムラインJSONの自動処理を開始します。")
         loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return
 
-        # 送信先をメモチャンネルにする
         channel = self.bot.get_channel(self.memo_channel_id)
-        today_str = datetime.now(JST).strftime('%Y-%m-%d')
 
-        # 保存先フォルダは「Timeline」のまま（変更なし）
         timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
         if not timeline_folder_id: return
 
         json_files = await loop.run_in_executor(None, self._get_unprocessed_json, service, timeline_folder_id)
         if not json_files: return 
+
+        # ★ 変更: 過去何日分を遡って補完処理するかを指定（今回は7日間）
+        lookback_days = 7
+        today = datetime.now(JST).date()
+        target_dates = { (today - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(lookback_days) }
 
         for file_info in json_files:
             file_id = file_info['id']
@@ -282,19 +266,26 @@ class LocationLogCog(commands.Cog):
                 logging.error(f"JSON読み込みエラー: {e}")
                 continue
 
-            # 今日の日付（today_str）だけを抽出する
-            logs_by_date = self._extract_logs_from_json(data, today_str)
+            # 過去7日分の日付だけを抽出
+            logs_by_date = self._extract_logs_from_json(data, target_dates=target_dates)
 
-            if logs_by_date and today_str in logs_by_date:
-                # 抽出できた場合のみObsidianに書き込む
-                await self._write_to_obsidian(service, loop, today_str, logs_by_date[today_str])
+            processed_dates = []
+            if logs_by_date:
+                # 抽出された日付ごとに書き込みを試みる
+                for date_str, log_text in logs_by_date.items():
+                    # すでに記入済みの日はスキップされ、未処理の日だけ書き込まれる
+                    was_written = await self._write_to_obsidian(date_str, log_text, force=False)
+                    if was_written:
+                        processed_dates.append(date_str)
 
-            # 過去のデータが含まれていようがいまいが、今日チェックしたファイルは「処理済み」にして二重処理を防ぐ
+            # JSONファイルを「処理済み」にリネーム
             timestamp = datetime.now(JST).strftime('%Y%m%d_%H%M%S')
             await loop.run_in_executor(None, self._rename_file, service, file_id, f"処理済み_{timestamp}_{file_name}")
             
-            if channel and logs_by_date:
-                await channel.send(f"📍 本日のロケーション履歴を解析してObsidianに保存しました！")
+            if channel and processed_dates:
+                # 処理した日付を昇順に並べ替えて通知
+                dates_str = ", ".join(sorted(processed_dates))
+                await channel.send(f"📍 未処理のロケーション履歴を解析し、以下の日付のデータをObsidianに保存しました！\n({dates_str})")
 
 
     # ▼ 手動で過去のデータを同期するコマンド
@@ -308,7 +299,7 @@ class LocationLogCog(commands.Cog):
             return
 
         loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service:
             await interaction.followup.send("❌ Google Drive APIの認証に失敗しました。")
             return
@@ -318,26 +309,26 @@ class LocationLogCog(commands.Cog):
             await interaction.followup.send("❌ マイドライブに `Timeline` フォルダが見つかりません。")
             return
 
-        # 処理済み・未処理問わず、一番新しい タイムライン.json を取得
         latest_file = await loop.run_in_executor(None, self._get_latest_timeline_json, service, timeline_folder_id)
         if not latest_file:
             await interaction.followup.send("❌ `Timeline` フォルダにJSONファイルが見つかりません。")
             return
 
-        # 読み込みと解析
         try:
             data = await loop.run_in_executor(None, self._read_json, service, latest_file['id'])
         except Exception as e:
             await interaction.followup.send(f"❌ ファイルの読み込みに失敗しました。({e})")
             return
 
-        logs_by_date = self._extract_logs_from_json(data, target_date)
+        # 手動実行の場合は、指定された1日分だけを抽出
+        logs_by_date = self._extract_logs_from_json(data, target_dates={target_date})
+        
         if not logs_by_date or target_date not in logs_by_date:
             await interaction.followup.send(f"⚠️ 参照したファイル（`{latest_file['name']}`）内に **{target_date}** の移動データが見つかりませんでした。")
             return
 
-        # Obsidianへの書き込み
-        await self._write_to_obsidian(service, loop, target_date, logs_by_date[target_date])
+        # 手動実行なので、記入済みであっても強制的に上書き (force=True)
+        await self._write_to_obsidian(target_date, logs_by_date[target_date], force=True)
         await interaction.followup.send(f"✅ **{target_date}** のロケーション履歴を手動同期して保存しました！\n(参照ファイル: `{latest_file['name']}`)")
 
 
@@ -345,4 +336,5 @@ class LocationLogCog(commands.Cog):
     async def before_process(self):
         await self.bot.wait_until_ready()
 
-async def setup(bot): await bot.add_cog(LocationLogCog(bot))
+async def setup(bot): 
+    await bot.add_cog(LocationLogCog(bot))
