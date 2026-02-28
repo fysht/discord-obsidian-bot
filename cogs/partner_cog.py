@@ -137,31 +137,20 @@ class PartnerCog(commands.Cog):
             logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    # ★ 根本修正: 取得した履歴の中で同じRole（User同士など）が連続した場合に結合する
+    # ★ 余計な結合処理を削除し、元のシンプルな形に戻しました
     async def _build_conversation_context(self, channel, current_msg_id: int, limit=30):
-        raw_messages = []
+        messages = []
         async for msg in channel.history(limit=limit + 1, oldest_first=False):
             if msg.id == current_msg_id: continue
             if msg.content.startswith("/"): continue
             if msg.author.bot and msg.author.id != self.bot.user.id: continue
-            if msg.content.startswith("📚 "): continue # Botのステータス通知は除外
+            if msg.content.startswith("📚 "): continue
             
             role = "model" if msg.author.id == self.bot.user.id else "user"
             text = msg.content
             if msg.attachments: text += " [メディア送信]"
-            raw_messages.append({"role": role, "text": text})
-
-        merged_contents = []
-        # 古い順に処理して、ロールが連続した場合はテキストを結合する
-        for msg in reversed(raw_messages):
-            if not merged_contents:
-                merged_contents.append(types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["text"])]))
-            elif merged_contents[-1].role == msg["role"]:
-                merged_contents[-1].parts.append(types.Part.from_text(text="\n" + msg["text"]))
-            else:
-                merged_contents.append(types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["text"])]))
-
-        return merged_contents
+            messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
+        return list(reversed(messages))
 
     async def _show_interim_summary(self, message: discord.Message):
         async with message.channel.typing():
@@ -319,19 +308,14 @@ class PartnerCog(commands.Cog):
             ]
 
             if gemini_file:
-                # ★ 正しい渡し方に戻しています
-                input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type="application/pdf"))
+                # ★ SDKの仕様に沿った最も安全な渡し方 (from_uriを使用)
+                input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type=gemini_file.mime_type))
                 use_model = "gemini-2.5-pro"
             else:
                 use_model = "gemini-2.5-flash"
                 
             contents = await self._build_conversation_context(message.channel, message.id, limit=10)
-
-            # ★ 最新のメッセージも、履歴の末尾のRoleが同じなら結合してエラーを防ぐ
-            if contents and contents[-1].role == "user":
-                contents[-1].parts.extend(input_parts)
-            else:
-                contents.append(types.Content(role="user", parts=input_parts))
+            contents.append(types.Content(role="user", parts=input_parts))
 
             try:
                 response = await self.gemini_client.aio.models.generate_content(
