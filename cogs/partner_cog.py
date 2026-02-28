@@ -7,7 +7,6 @@ import datetime
 import asyncio
 
 from config import JST
-from services.google_tasks_service import GoogleTasksService
 
 class PartnerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -16,9 +15,10 @@ class PartnerCog(commands.Cog):
         self.user_name = "あなた"
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
+        # サービスの読み込みを Bot本体(main.py) に統一
         self.drive_service = bot.drive_service
         self.calendar_service = bot.calendar_service
-        self.tasks_service = GoogleTasksService()  # ★ 新設したTasksサービスを読み込み
+        self.tasks_service = getattr(bot, 'tasks_service', None)
         self.gemini_client = bot.gemini_client
 
     async def _append_raw_message_to_obsidian(self, text: str, folder_name: str = "DailyNotes", file_name: str = None, target_heading: str = "## 💬 Timeline"):
@@ -147,7 +147,6 @@ class PartnerCog(commands.Cog):
         async with message.channel.typing():
             now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
 
-            # ★ 変更: カレンダーとタスクの役割分担を明確化
             system_prompt = f"""
             あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
@@ -159,6 +158,8 @@ class PartnerCog(commands.Cog):
             5. 【重要: 予定とタスクの使い分け】
                - カレンダー（`check_schedule`, `Calendar`, `delete_calendar_event`）: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用します。
                - Google Tasks（`check_tasks`, `add_task`, `complete_task`）: 日時が決まっていない「〇〇をやる」「〇〇を買う」といったToDoに使用します。
+            6. 【★重要: 複数同時の依頼について】
+               ユーザーから「〇〇と××を追加して」「〇〇と××を完了にして」のように複数の処理を同時に頼まれた場合は、機能を複数回同時に呼び出して（並列実行して）、すべて漏れなく処理してください。
             """
 
             function_tools = [
@@ -197,7 +198,6 @@ class PartnerCog(commands.Cog):
             contents.append(types.Content(role="user", parts=input_parts))
 
             try:
-                # 日常会話は Flash モデルで高速・省エネに実行
                 response = await self.gemini_client.aio.models.generate_content(
                     model="gemini-2.5-flash",
                     contents=contents,
@@ -205,29 +205,40 @@ class PartnerCog(commands.Cog):
                 )
 
                 if response.function_calls:
-                    function_call = response.function_calls[0]
-                    tool_result = ""
-                    
-                    if function_call.name == "search_memory": tool_result = await self._search_drive_notes(function_call.args["keywords"])
-                    elif function_call.name == "check_schedule": 
-                        if self.calendar_service: tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"])
-                        else: tool_result = "カレンダーに接続できないみたい💦"
-                    elif function_call.name == "create_calendar_event": 
-                        if self.calendar_service:
-                            tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_call.args["start_time"], function_call.args["end_time"], "")
-                        else: tool_result = "カレンダーに接続できないみたい💦"
-                    elif function_call.name == "delete_calendar_event":
-                        if self.calendar_service: tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], function_call.args["keyword"])
-                        else: tool_result = "カレンダーに接続できないみたい💦"
-                    elif function_call.name == "check_tasks":
-                        tool_result = await self.tasks_service.get_uncompleted_tasks()
-                    elif function_call.name == "add_task":
-                        tool_result = await self.tasks_service.add_task(function_call.args["title"])
-                    elif function_call.name == "complete_task":
-                        tool_result = await self.tasks_service.complete_task_by_keyword(function_call.args["keyword"])
-
+                    # モデルの機能呼び出しリクエストを履歴に追加
                     contents.append(response.candidates[0].content)
-                    contents.append(types.Content(role="user", parts=[types.Part.from_function_response(name=function_call.name, response={"result": tool_result})]))
+                    
+                    function_responses = []
+                    
+                    # ★ 変更: 複数の呼び出し（並列処理）をループで全て実行するように修正
+                    for function_call in response.function_calls:
+                        tool_result = ""
+                        
+                        if function_call.name == "search_memory": tool_result = await self._search_drive_notes(function_call.args["keywords"])
+                        elif function_call.name == "check_schedule": 
+                            if self.calendar_service: tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"])
+                            else: tool_result = "カレンダーに接続できないみたい💦"
+                        elif function_call.name == "create_calendar_event": 
+                            if self.calendar_service:
+                                tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_call.args["start_time"], function_call.args["end_time"], "")
+                            else: tool_result = "カレンダーに接続できないみたい💦"
+                        elif function_call.name == "delete_calendar_event":
+                            if self.calendar_service: tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], function_call.args["keyword"])
+                            else: tool_result = "カレンダーに接続できないみたい💦"
+                        elif function_call.name == "check_tasks":
+                            if self.tasks_service: tool_result = await self.tasks_service.get_uncompleted_tasks()
+                        elif function_call.name == "add_task":
+                            if self.tasks_service: tool_result = await self.tasks_service.add_task(function_call.args["title"])
+                        elif function_call.name == "complete_task":
+                            if self.tasks_service: tool_result = await self.tasks_service.complete_task_by_keyword(function_call.args["keyword"])
+
+                        # 実行結果をリストに蓄積
+                        function_responses.append(
+                            types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)})
+                        )
+
+                    # すべての実行結果をまとめてAIに返す
+                    contents.append(types.Content(role="user", parts=function_responses))
                     
                     response_final = await self.gemini_client.aio.models.generate_content(
                         model="gemini-2.5-flash",
