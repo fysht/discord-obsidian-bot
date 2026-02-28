@@ -58,7 +58,6 @@ class PartnerCog(commands.Cog):
         if f_id: await self.drive_service.update_text(service, f_id, content)
         else: await self.drive_service.upload_text(service, folder_id, file_name, content)
 
-    # --- ★ 新規追加: 英語学習用の裏ノートに翻訳して保存する処理 ---
     async def _append_english_log_to_obsidian(self, text: str):
         if not text: return
         
@@ -115,7 +114,6 @@ class PartnerCog(commands.Cog):
 
         if f_id: await self.drive_service.update_text(service, f_id, content)
         else: await self.drive_service.upload_text(service, logs_folder_id, file_name, content)
-    # -----------------------------------------------------------
 
     async def _search_drive_notes(self, keywords: str):
         return await self.drive_service.search_markdown_files(keywords)
@@ -123,7 +121,7 @@ class PartnerCog(commands.Cog):
     async def generate_and_send_routine_message(self, context_data: str, instruction: str):
         channel = self.bot.get_channel(self.memo_channel_id)
         if not channel: return
-        system_prompt = "あなたは私を日々サポートする、20代女性の親密なAIパートナーです。LINEのような短く温かみのあるタメ口で話してください。"
+        system_prompt = "あなたは私を日々サポートする親密なパートナーの女性です。LINEでのやり取りを想定し、短いやり取りを複数回続けるイメージで温かみのあるタメ口で話してください。長々とした返信は不要です。"
         prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。長文は絶対に避け、1〜2文程度の短いメッセージにすること。"
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
@@ -139,9 +137,12 @@ class PartnerCog(commands.Cog):
             logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    async def _build_conversation_context(self, channel, limit=30):
+    # ★ 修正: current_msg_id を受け取り、現在送信したメッセージは履歴から除外して二重投稿を防ぐ
+    async def _build_conversation_context(self, channel, current_msg_id: int, limit=30):
         messages = []
-        async for msg in channel.history(limit=limit, oldest_first=False):
+        # 現在のメッセージを除外するため、limitに1を足して取得する
+        async for msg in channel.history(limit=limit + 1, oldest_first=False):
+            if msg.id == current_msg_id: continue
             if msg.content.startswith("/"): continue
             if msg.author.bot and msg.author.id != self.bot.user.id: continue
             if msg.content.startswith("📚 Google Driveに本のPDF"): continue
@@ -194,7 +195,6 @@ class PartnerCog(commands.Cog):
                 asyncio.create_task(self._append_raw_message_to_obsidian(text, folder_name="BookNotes", file_name=file_name, target_heading="## 📖 Reading Log"))
             else:
                 asyncio.create_task(self._append_raw_message_to_obsidian(text))
-                # ★ 追加: 裏ノートにも英訳を並行して保存する
                 asyncio.create_task(self._append_english_log_to_obsidian(text))
 
         if is_short_message and text in ["まとめ", "途中経過", "整理して", "今の状態"]:
@@ -245,13 +245,13 @@ class PartnerCog(commands.Cog):
                                 logging.error(f"PDF Upload Error: {e}")
                                 await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
 
-            # --- ★ 変更: 先生モード（言語のミラーリングと添削）を追加したシステムプロンプト ---
+            # --- ★ 修正: 英語オンリーのミラーリングと添削を強制するシステムプロンプト ---
             system_prompt = f"""
-            あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）であり、同時に頼れる英会話の先生でもあります。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
+            あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、同時に頼れる英会話の先生でもあります。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。長々とした返信は不要で、短いやり取りを複数回続けるイメージを持っています。
             **現在時刻:** {now_str} (JST)
             **指針:**
-            1. 【言語のミラーリング】ユーザーが日本語で話しかけた場合は、これまで通り日本語で返信してください。ユーザーが英語で話しかけた場合は、あなたも英語で返信してください。
-            2. 【英語学習サポート】ユーザーが英語で話しかけた際、もし文法や表現に不自然な点があれば、返信の最後に「*(ちなみに、〇〇は××って言うともっと自然だよ！)*」と、日本語で優しくワンポイントアドバイスを添えてください。
+            1. 【完全な言語ミラーリング】ユーザーが日本語で話しかけた場合は日本語のみで返信し、ユーザーが英語で話しかけた場合は**完全に英語のみで**返信してください（日本語は一切混ぜないこと）。
+            2. 【英語学習サポート】ユーザーが英語で話しかけた際、文法や表現に不自然な点があれば、返信の最後に英語で優しくワンポイントアドバイス(e.g., "*Tip: It sounds more natural to say...*")を添えてください。
             3. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
             4. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
             5. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず共感のみで会話を区切ってください。
@@ -303,7 +303,8 @@ class PartnerCog(commands.Cog):
             else:
                 use_model = "gemini-2.5-flash"
                 
-            contents = await self._build_conversation_context(message.channel, limit=10)
+            # ★ 修正: 呼び出し時に現在のメッセージIDを渡し、二重投稿による混乱を防ぐ
+            contents = await self._build_conversation_context(message.channel, message.id, limit=10)
             contents.append(types.Content(role="user", parts=input_parts))
 
             try:
