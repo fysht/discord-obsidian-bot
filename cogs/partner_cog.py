@@ -282,9 +282,7 @@ class PartnerCog(commands.Cog):
 
                 history = await self._build_conversation_context_rest(message.channel, message.id, limit=10)
                 
-                # ★ 修正: REST APIが要求する厳密なURIフォーマットを手動で構築
-                correct_uri = f"https://generativelanguage.googleapis.com/{gemini_file.name}"
-                input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type, "fileUri": correct_uri}})
+                input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type,"fileUri": gemini_file.name}})
                 history.append({"role": "user", "parts": input_parts})
                 
                 payload = {
