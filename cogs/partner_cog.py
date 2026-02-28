@@ -6,7 +6,7 @@ import logging
 import datetime
 import asyncio
 import aiohttp
-import json # ★ 追加: ペイロードのログ出力用
+import json
 
 from config import JST
 
@@ -140,7 +140,8 @@ class PartnerCog(commands.Cog):
             logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    async def _build_conversation_context(self, channel, current_msg_id: int, limit=30):
+    # ★ 修正: SDK用の履歴取得関数（ロールは "model"）
+    async def _build_conversation_context_sdk(self, channel, current_msg_id: int, limit=30):
         messages = []
         async for msg in channel.history(limit=limit + 1, oldest_first=False):
             if msg.id == current_msg_id: continue
@@ -148,8 +149,22 @@ class PartnerCog(commands.Cog):
             if msg.author.bot and msg.author.id != self.bot.user.id: continue
             if msg.content.startswith("📚 "): continue
             
-            # ★ Geminiの仕様通り、AIのロールは "model" を使用する
             role = "model" if msg.author.id == self.bot.user.id else "user"
+            text = msg.content
+            if msg.attachments: text += " [メディア送信]"
+            messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
+        return list(reversed(messages))
+
+    # ★ 修正: REST API用の履歴取得関数（ロールは "assistant"）
+    async def _build_conversation_context_rest(self, channel, current_msg_id: int, limit=30):
+        messages = []
+        async for msg in channel.history(limit=limit + 1, oldest_first=False):
+            if msg.id == current_msg_id: continue
+            if msg.content.startswith("/"): continue
+            if msg.author.bot and msg.author.id != self.bot.user.id: continue
+            if msg.content.startswith("📚 "): continue
+            
+            role = "assistant" if msg.author.id == self.bot.user.id else "user"
             text = msg.content
             if msg.attachments: text += " [メディア送信]"
             messages.append({"role": role, "parts": [{"text": text}]})
@@ -261,23 +276,23 @@ class PartnerCog(commands.Cog):
                                 await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
 
             if gemini_file:
+                # 読書スレッド (REST API)
                 system_prompt = f"""あなたはユーザー（{self.user_name}）の専属読書メンターです。提供されたPDFデータに基づき、ユーザーの質問や壁打ちに対して示唆に富む回答を提供してください。
 現在時刻: {now_str} (JST)
 1. 専門的でありながら親しみやすいトーンで話してください。
 2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。"""
 
-                history = await self._build_conversation_context(message.channel, message.id, limit=10)
+                # ★ REST専用の履歴取得関数を使用（ロールは assistant）
+                history = await self._build_conversation_context_rest(message.channel, message.id, limit=10)
                 
                 input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type, "fileUri": gemini_file.uri}})
                 history.append({"role": "user", "parts": input_parts})
                 
-                # ★ 修正: systemInstruction のキャメルケース対応
                 payload = {
                     "systemInstruction": {"parts": [{"text": system_prompt}]},
                     "contents": history
                 }
                 
-                # ★ デバッグ用: ペイロードの構造をログに出力
                 logging.info(f"REST API Payload: {json.dumps(payload, ensure_ascii=False)}")
 
                 try:
@@ -297,6 +312,7 @@ class PartnerCog(commands.Cog):
                     await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
 
             else:
+                # 日常スレッド (SDK)
                 system_prompt = f"""あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、頼れる英会話の先生です。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。
 現在時刻: {now_str} (JST)
 1. ユーザーが日本語で話しかけた場合は日本語のみで返信し、英語で話しかけた場合は完全に英語のみで返信してください。
@@ -317,11 +333,12 @@ class PartnerCog(commands.Cog):
                     ])
                 ]
 
-                sdk_contents = []
-                for msg in await self._build_conversation_context(message.channel, message.id, limit=10):
-                    sdk_contents.append(types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["parts"][0]["text"])]))
+                # ★ SDK専用の履歴取得関数を使用（ロールは model）
+                sdk_contents = await self._build_conversation_context_sdk(message.channel, message.id, limit=10)
                 
-                sdk_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
+                # 今回の入力（テキスト）をPart形式で追加
+                input_parts_sdk = [types.Part.from_text(text=text)]
+                sdk_contents.append(types.Content(role="user", parts=input_parts_sdk))
 
                 try:
                     response = await self.gemini_client.aio.models.generate_content(
