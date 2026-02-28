@@ -5,24 +5,12 @@ import os
 import json
 import asyncio
 import datetime
-import zoneinfo
-# Google API
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-import io
 
-try: 
-    from utils.obsidian_utils import update_frontmatter
-except ImportError: 
-    def update_frontmatter(content, updates): return content
+# --- リファクタリング: 定数とユーティリティのクリーンなインポート ---
+from config import JST, BOT_FOLDER
+from utils.obsidian_utils import update_frontmatter
 
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 HABIT_DATA_FILE = "habit_data.json"
-BOT_FOLDER = ".bot"
-SCOPES = ['https://www.googleapis.com/auth/drive']
-TOKEN_FILE = 'token.json'
 
 class HabitAddModal(discord.ui.Modal, title="新しい習慣を追加"):
     habit_name = discord.ui.TextInput(
@@ -43,7 +31,6 @@ class HabitAddModal(discord.ui.Modal, title="新しい習慣を追加"):
         name = self.habit_name.value.strip()
         
         data = await self.cog._load_data()
-        # ID生成ロジック: 既存IDの最大値+1
         existing_ids = [int(h['id']) for h in data['habits']]
         new_id = str(max(existing_ids) + 1) if existing_ids else "1"
         
@@ -109,7 +96,6 @@ class HabitManagerView(discord.ui.View):
         self.cog = cog
 
     async def refresh_view(self, interaction: discord.Interaction = None, message: discord.Message = None):
-        """表示を最新状態に更新"""
         data = await self.cog._load_data()
         today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
         daily_log = data['logs'].get(today_str, [])
@@ -164,62 +150,43 @@ class HabitCog(commands.Cog):
         self.bot = bot
         self.channel_id = int(os.getenv("NEWS_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        # ループは on_ready 後に開始するのが安全
+        
+        # --- リファクタリング: Bot本体のサービスを使い回す ---
+        self.drive_service = bot.drive_service
+        
         self.daily_task.start()
-
-    def _get_drive_service(self):
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            except: pass
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
-                except: return None
-            else: return None
-        return build('drive', 'v3', credentials=creds)
-
-    def _find_file(self, service, parent_id, name):
-        try:
-            res = service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id)").execute()
-            files = res.get('files', [])
-            return files[0]['id'] if files else None
-        except: return None
 
     async def _load_data(self):
         default = {"habits": [], "logs": {}}
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return default
         
-        b_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, BOT_FOLDER)
+        b_folder = await self.drive_service.find_file(service, self.drive_folder_id, BOT_FOLDER)
         if not b_folder: return default
         
-        f_id = await loop.run_in_executor(None, self._find_file, service, b_folder, HABIT_DATA_FILE)
+        f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
         if f_id:
             try:
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=f_id))
-                done=False
-                while not done: _, done = downloader.next_chunk()
-                return json.loads(fh.getvalue().decode('utf-8'))
-            except: pass
+                content = await self.drive_service.read_text_file(service, f_id)
+                return json.loads(content)
+            except Exception: pass
         return default
 
     async def _save_data(self, data):
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return False
         
-        b_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, BOT_FOLDER)
-        # フォルダ作成ロジックは簡略化のため省略(NewsCog等で作成される前提)
-        if not b_folder: return False 
+        b_folder = await self.drive_service.find_file(service, self.drive_folder_id, BOT_FOLDER)
+        if not b_folder: 
+            b_folder = await self.drive_service.create_folder(service, self.drive_folder_id, BOT_FOLDER)
         
-        f_id = await loop.run_in_executor(None, self._find_file, service, b_folder, HABIT_DATA_FILE)
-        media = MediaIoBaseUpload(io.BytesIO(json.dumps(data, ensure_ascii=False).encode('utf-8')), mimetype='application/json')
+        f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
+        json_str = json.dumps(data, ensure_ascii=False)
         
-        if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
-        else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': HABIT_DATA_FILE, 'parents': [b_folder]}, media_body=media).execute())
+        if f_id:
+            await self.drive_service.update_text(service, f_id, json_str, mime_type='application/json')
+        else:
+            await self.drive_service.upload_text(service, b_folder, HABIT_DATA_FILE, json_str, mime_type='application/json')
         return True
 
     async def toggle_habit(self, habit_id):
@@ -240,35 +207,30 @@ class HabitCog(commands.Cog):
         await self._sync_to_obsidian_daily(data, today_str)
 
     async def _sync_to_obsidian_daily(self, data, date_str):
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return
 
-        daily_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, "DailyNotes")
+        daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
         if not daily_folder: return
 
-        f_id = await loop.run_in_executor(None, self._find_file, service, daily_folder, f"{date_str}.md")
+        f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
         
         content = f"# Daily Note {date_str}\n"
         if f_id:
             try:
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=f_id))
-                done=False
-                while not done: _, done = downloader.next_chunk()
-                content = fh.getvalue().decode('utf-8')
-            except: pass
+                content = await self.drive_service.read_text_file(service, f_id)
+            except Exception: pass
 
         daily_log = data['logs'].get(date_str, [])
         completed = [h['name'] for h in data['habits'] if h['id'] in daily_log]
         
         new_content = update_frontmatter(content, {"habits": completed})
         
-        media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown')
-        if f_id: await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
-        else: await loop.run_in_executor(None, lambda: service.files().create(body={'name': f"{date_str}.md", 'parents': [daily_folder]}, media_body=media).execute())
+        if f_id:
+            await self.drive_service.update_text(service, f_id, new_content)
+        else:
+            await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new_content)
 
-    # --- 外部呼び出し用メソッド (NewsCog連携) ---
     async def get_weekly_stats_embed(self) -> discord.Embed:
         data = await self._load_data()
         
@@ -277,7 +239,7 @@ class HabitCog(commands.Cog):
         
         today = datetime.datetime.now(JST)
         dates = [(today - datetime.timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
-        dates.reverse() # 古い順
+        dates.reverse()
         
         header_date = " ".join([d[5:].replace("-", "/") for d in dates])
         description = "```\n"
@@ -304,9 +266,6 @@ class HabitCog(commands.Cog):
 
         view = HabitManagerView(self)
         await view.refresh_view(message=None)
-        
-        # 埋め込みは refresh_view 内で生成されるものを使用するため、ここではViewを使って送信するロジックを整理
-        # refresh_view は interaction/message 更新用なので、新規送信用のロジックが必要
         
         data = await self._load_data()
         today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
@@ -350,7 +309,7 @@ class HabitCog(commands.Cog):
         
         await interaction.response.defer()
         view = HabitManagerView(self)
-        await view.refresh_view(interaction) # こちらはrefresh_viewで送信可能
+        await view.refresh_view(interaction)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(HabitCog(bot))

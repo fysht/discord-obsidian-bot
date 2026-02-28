@@ -6,26 +6,12 @@ import logging
 import re
 import asyncio
 import datetime
-import zoneinfo
-# --- 新しいライブラリ ---
-from google import genai
-# ----------------------
 
-# Google Drive API
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-import io
-
-try:
-    from utils.obsidian_utils import update_section
-except ImportError:
-    logging.warning("StockCog: utils/obsidian_utils.pyが見つかりません。")
-    def update_section(content, text, header): return f"{content}\n{header}\n{text}"
+# --- リファクタリング: 定数とユーティリティのクリーンなインポート ---
+from config import JST
+from utils.obsidian_utils import update_section
 
 # --- 定数定義 ---
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 INVESTMENT_FOLDER = "Investment"
 STOCKS_FOLDER = "Stocks"
 
@@ -34,9 +20,6 @@ PROCESS_COMPLETE_EMOJI = '✅'
 PROCESS_ERROR_EMOJI = '❌'
 SELECT_EMOJI = '🤔'
 STOCK_CODE_REGEX = re.compile(r'(?:^|[\s$])([0-9]{4}|[a-zA-Z]{1,5})(?:[\s.]|$)')
-
-SCOPES = ['https://www.googleapis.com/auth/drive']
-TOKEN_FILE = 'token.json'
 
 class StockSelectView(discord.ui.View):
     def __init__(self, cog, stock_files, memo_content, original_message):
@@ -48,17 +31,9 @@ class StockSelectView(discord.ui.View):
         options = []
         for file in stock_files[:25]:
             label = os.path.splitext(file['name'])[0][:100]
-            options.append(discord.SelectOption(
-                label=label,
-                value=file['id']
-            ))
+            options.append(discord.SelectOption(label=label, value=file['id']))
             
-        select = discord.ui.Select(
-            placeholder="メモを追加する銘柄を選択...",
-            options=options,
-            min_values=1,
-            max_values=1
-        )
+        select = discord.ui.Select(placeholder="メモを追加する銘柄を選択...", options=options, min_values=1, max_values=1)
         select.callback = self.select_callback
         self.add_item(select)
 
@@ -139,98 +114,64 @@ class StockCog(commands.Cog):
         self.bot = bot
         self.channel_id = int(os.getenv("STOCK_LOG_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
-        # --- Client初期化 ---
-        if self.gemini_api_key:
-            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
-        else:
-            self.gemini_client = None
-        # ------------------
+        # --- リファクタリング: Bot本体のサービスを使い回す ---
+        self.drive_service = bot.drive_service
+        self.gemini_client = bot.gemini_client
         self.is_ready = bool(self.drive_folder_id)
 
-    def _get_drive_service(self):
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            except: pass
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
-                except: return None
-            else: return None
-        return build('drive', 'v3', credentials=creds)
-
-    def _find_file(self, service, parent_id, name):
-        res = service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id, name)").execute()
-        files = res.get('files', [])
-        return files[0] if files else None
-
     async def _get_stocks_folder(self, service):
-        loop = asyncio.get_running_loop()
-        inv_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, INVESTMENT_FOLDER)
-        if not inv_folder: inv_folder = await loop.run_in_executor(None, lambda: service.files().create(body={'name': INVESTMENT_FOLDER, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}, fields='id').execute())
-        else: inv_folder = inv_folder['id'] 
+        inv_folder = await self.drive_service.find_file(service, self.drive_folder_id, INVESTMENT_FOLDER)
+        if not inv_folder: 
+            inv_folder = await self.drive_service.create_folder(service, self.drive_folder_id, INVESTMENT_FOLDER)
         
-        if isinstance(inv_folder, dict): inv_folder = inv_folder['id']
-
-        stocks_folder = await loop.run_in_executor(None, self._find_file, service, inv_folder, STOCKS_FOLDER)
-        if not stocks_folder: stocks_folder = await loop.run_in_executor(None, lambda: service.files().create(body={'name': STOCKS_FOLDER, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [inv_folder]}, fields='id').execute())
-        
-        if isinstance(stocks_folder, dict): stocks_folder = stocks_folder['id']
-        else: stocks_folder = stocks_folder.get('id')
+        stocks_folder = await self.drive_service.find_file(service, inv_folder, STOCKS_FOLDER)
+        if not stocks_folder: 
+            stocks_folder = await self.drive_service.create_folder(service, inv_folder, STOCKS_FOLDER)
         
         return stocks_folder
 
     async def _save_file(self, filename, content) -> bool | str:
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return False
 
         stocks_folder_id = await self._get_stocks_folder(service)
-        existing = await loop.run_in_executor(None, self._find_file, service, stocks_folder_id, filename)
+        existing = await self.drive_service.find_file(service, stocks_folder_id, filename)
         if existing: return "EXISTS"
 
-        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
-        await loop.run_in_executor(None, lambda: service.files().create(body={'name': filename, 'parents': [stocks_folder_id], 'mimeType': 'text/markdown'}, media_body=media).execute())
+        await self.drive_service.upload_text(service, stocks_folder_id, filename, content)
         return True
 
     async def _find_stock_note_id(self, code: str) -> str | None:
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
+        if not service: return None
         stocks_folder_id = await self._get_stocks_folder(service)
         
         q = f"'{stocks_folder_id}' in parents and name contains '{code}_' and mimeType = 'text/markdown' and trashed = false"
-        res = await loop.run_in_executor(None, lambda: service.files().list(q=q, fields="files(id, name)").execute())
+        res = await asyncio.to_thread(lambda: service.files().list(q=q, fields="files(id, name)").execute())
         files = res.get('files', [])
         return files[0]['id'] if files else None
 
     async def _get_stock_list(self):
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
+        if not service: return []
         stocks_folder_id = await self._get_stocks_folder(service)
         
-        res = await loop.run_in_executor(None, lambda: service.files().list(q=f"'{stocks_folder_id}' in parents and mimeType = 'text/markdown' and trashed = false", fields="files(id, name, modifiedTime)").execute())
+        res = await asyncio.to_thread(lambda: service.files().list(q=f"'{stocks_folder_id}' in parents and mimeType = 'text/markdown' and trashed = false", fields="files(id, name, modifiedTime)").execute())
         files = res.get('files', [])
         files.sort(key=lambda x: x.get('modifiedTime', ''), reverse=True)
         return files
 
     async def _append_memo_to_note(self, file_id: str, content_text: str) -> bool:
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
+        if not service: return False
         
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
-        done=False
-        while not done: _, done = downloader.next_chunk()
-        current_content = fh.getvalue().decode('utf-8')
-        
+        current_content = await self.drive_service.read_text_file(service, file_id)
         now = datetime.datetime.now(JST)
         memo_line = f"- {now.strftime('%Y-%m-%d %H:%M')} {content_text}"
         new_content = update_section(current_content, memo_line, "## Logs")
         
-        media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown')
-        await loop.run_in_executor(None, lambda: service.files().update(fileId=file_id, media_body=media).execute())
+        await self.drive_service.update_text(service, file_id, new_content)
         return True
 
     @app_commands.command(name="stock_new", description="新規の銘柄ノートを作成します。")
@@ -252,36 +193,21 @@ class StockCog(commands.Cog):
             return
 
         try:
-            loop = asyncio.get_running_loop()
-            service = await loop.run_in_executor(None, self._get_drive_service)
-            fh = io.BytesIO()
-            downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
-            done=False
-            while not done: _, done = downloader.next_chunk()
-            content = fh.getvalue().decode('utf-8')
+            service = self.drive_service.get_service()
+            content = await self.drive_service.read_text_file(service, file_id)
 
-            prompt = f"""
-            あなたはプロの投資コーチです。以下の投資ノート（エントリーの根拠、戦略、ログ）を読み、
-            今回のトレードの振り返りと今後のための教訓を提示してください。
+            prompt = f"""あなたはプロの投資コーチです。以下の投資ノート（エントリーの根拠、戦略、ログ）を読み、今回のトレードの振り返りと今後のための教訓を提示してください。
             # ノートの内容
-            {content}
-            """
+            {content}"""
             
-            # --- 生成メソッド変更 ---
             if self.gemini_client:
-                response = await self.gemini_client.aio.models.generate_content(
-                    model='gemini-2.5-pro',
-                    contents=prompt
-                )
+                response = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
                 review_text = response.text.strip()
             else:
                 review_text = "API Key error."
-            # ----------------------
 
             new_content = update_section(content, f"\n{review_text}", "## Review")
-            
-            media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown')
-            await loop.run_in_executor(None, lambda: service.files().update(fileId=file_id, media_body=media).execute())
+            await self.drive_service.update_text(service, file_id, new_content)
 
             embed = discord.Embed(title=f"📊 振り返り: {code}", description=review_text[:4000], color=discord.Color.gold())
             await interaction.followup.send(embed=embed)

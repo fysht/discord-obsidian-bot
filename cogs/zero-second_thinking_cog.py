@@ -2,84 +2,39 @@ import discord
 from discord.ext import commands
 import os
 from datetime import datetime
-# --- 新しいライブラリ ---
-from google import genai
-# ----------------------
 import asyncio
 
-# Google Drive API
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-import io
+# --- リファクタリング: 定数のクリーンなインポート ---
+from config import JST
 
-# --- 定数定義 ---
 ZT_FOLDER_NAME = "00_ZeroSecondThinking"
-SCOPES = ['https://www.googleapis.com/auth/drive']
-TOKEN_FILE = 'token.json'
 
 class ZeroSecondThinking(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
-        # --- Client初期化 ---
-        if self.gemini_api_key:
-            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
-        else:
-            self.gemini_client = None
-        # ------------------
-
-    def _get_drive_service(self):
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            except: pass
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
-                except: return None
-            else: return None
-        return build('drive', 'v3', credentials=creds)
-
-    def _find_file(self, service, parent_id, name):
-        res = service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id)").execute()
-        files = res.get('files', [])
-        return files[0]['id'] if files else None
-
-    def _create_folder(self, service, parent_id, name):
-        f = service.files().create(body={'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}, fields='id').execute()
-        return f.get('id')
+        # --- リファクタリング: Bot本体のサービスを使い回す ---
+        self.gemini_client = bot.gemini_client
+        self.drive_service = bot.drive_service
 
     async def _save_to_drive(self, filename, content):
         if not self.drive_folder_id: return False
-        
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return False
 
-        zt_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, ZT_FOLDER_NAME)
-        if not zt_folder: zt_folder = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, ZT_FOLDER_NAME)
+        zt_folder = await self.drive_service.find_file(service, self.drive_folder_id, ZT_FOLDER_NAME)
+        if not zt_folder: 
+            zt_folder = await self.drive_service.create_folder(service, self.drive_folder_id, ZT_FOLDER_NAME)
         
-        file_id = await loop.run_in_executor(None, self._find_file, service, zt_folder, filename)
+        file_id = await self.drive_service.find_file(service, zt_folder, filename)
         
         if file_id:
-            fh = io.BytesIO()
-            from googleapiclient.http import MediaIoBaseDownload
-            downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
-            done=False
-            while not done: _, done = downloader.next_chunk()
-            current_content = fh.getvalue().decode('utf-8')
-            
+            current_content = await self.drive_service.read_text_file(service, file_id)
             new_content = current_content + content
-            media_update = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown')
-            await loop.run_in_executor(None, lambda: service.files().update(fileId=file_id, media_body=media_update).execute())
-            
+            await self.drive_service.update_text(service, file_id, new_content)
         else:
-            media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
-            await loop.run_in_executor(None, lambda: service.files().create(body={'name': filename, 'parents': [zt_folder], 'mimeType': 'text/markdown'}, media_body=media).execute())
+            await self.drive_service.upload_text(service, zt_folder, filename, content)
             
         return True
 
@@ -88,22 +43,20 @@ class ZeroSecondThinking(commands.Cog):
         try:
             user_intent = f"「{keyword}」というキーワードに関連して" if keyword else "今、何を書くべきか迷っている状態に対して、頭の中を整理するために"
             prompt = (
-                f"あなたは『ゼロ秒思考（赤羽雄二氏提唱）』のメモ書きファシリテーターです。\n"
+                f"あなたは『ゼロ秒思考』のメモ書きファシリテーターです。\n"
                 f"ユーザーは{user_intent}、1分間で書き出すためのメモのタイトル（テーマ）を求めています。\n"
-                "ユーザーの思考を深掘りし、感情や課題を吐き出させるような、具体的で刺激的なタイトルを5つ提案してください。\n\n"
+                "ユーザーの思考を深掘りする具体的なタイトルを5つ提案してください。\n\n"
                 "**条件:**\n"
-                "1. タイトルは疑問形（～はなぜか？、～をどうするか？など）を中心にする。\n"
+                "1. 疑問形を中心にする。\n"
                 "2. 抽象的な言葉だけでなく、具体的で少しドキッとするような切り口も含める。\n"
                 "3. 箇条書きで出力する。\n"
                 "4. 余計な挨拶は省略し、テーマ案だけを出力する。"
             )
-            # --- 生成メソッド変更 ---
             response = await self.gemini_client.aio.models.generate_content(
                 model='gemini-2.5-pro',
                 contents=prompt
             )
             return response.text.strip()
-            # ----------------------
         except Exception as e:
             print(f"Gemini API Error: {e}")
             return "（AI生成エラー）申し訳ありません。現在テーマを生成できません。"
@@ -118,10 +71,9 @@ class ZeroSecondThinking(commands.Cog):
 
     @commands.command(name='zt')
     async def digital_zt(self, ctx, *, content):
-        date_str = datetime.now().strftime('%Y-%m-%d')
+        date_str = datetime.now(JST).strftime('%Y-%m-%d')
         filename = f"{date_str}_ZeroSecondThinking.md"
-        
-        entry = f"\n\n## {datetime.now().strftime('%H:%M')} (Digital)\n{content}\n"
+        entry = f"\n\n## {datetime.now(JST).strftime('%H:%M')} (Digital)\n{content}\n"
         
         success = await self._save_to_drive(filename, entry)
         if success: await ctx.message.add_reaction('✅')

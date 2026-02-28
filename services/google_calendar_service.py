@@ -6,7 +6,7 @@ from googleapiclient.discovery import build
 
 from config import JST
 
-class CalendarService:
+class GoogleCalendarService:
     def __init__(self, creds, calendar_id="primary"):
         self.creds = creds
         self.calendar_id = calendar_id

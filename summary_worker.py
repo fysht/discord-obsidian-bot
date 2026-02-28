@@ -2,11 +2,8 @@ import os
 import sys
 import logging
 from datetime import datetime, timedelta
-import zoneinfo
 from dotenv import load_dotenv
-# --- 新しいライブラリ ---
 from google import genai
-# ----------------------
 
 # Google Drive API Imports
 from google.oauth2.credentials import Credentials
@@ -15,6 +12,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 import io
+
+# --- リファクタリング: クリーンなインポート ---
+from config import JST, TOKEN_FILE, SCOPES
 
 # --- .env 読み込み ---
 load_dotenv()
@@ -30,14 +30,6 @@ sys.stdout.reconfigure(encoding='utf-8')
 # --- 定数・設定 ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") # VaultのルートID
-TOKEN_FILE = 'token.json'
-SCOPES = ['https://www.googleapis.com/auth/drive']
-
-# タイムゾーン設定
-try:
-    JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-except Exception:
-    JST = datetime.timezone(timedelta(hours=9))
 
 # --- Drive API Helper Functions (sync_worker.pyと同様) ---
 def get_drive_service():

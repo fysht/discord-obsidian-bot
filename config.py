@@ -10,6 +10,7 @@ TOKEN_FILE = 'token.json'
 SCOPES = [
     'https://www.googleapis.com/auth/drive',
     'https://www.googleapis.com/auth/calendar'
+    'https://www.googleapis.com/auth/tasks'
 ]
 
 # フォルダ・ファイル設定

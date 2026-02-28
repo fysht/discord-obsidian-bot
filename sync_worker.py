@@ -4,7 +4,6 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
-import zoneinfo
 from filelock import FileLock
 from dotenv import load_dotenv
 
@@ -16,17 +15,9 @@ from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 from googleapiclient.errors import HttpError
 import io
 
-# utils.obsidian_utilsからupdate_sectionをインポート
-try:
-    from utils.obsidian_utils import update_section
-except ImportError:
-    try:
-        sys.path.append(str(Path(__file__).resolve().parent.parent))
-        from utils.obsidian_utils import update_section
-    except ImportError:
-        logging.error("[IMPORT ERROR] utils.obsidian_utilsが見つかりません。", exc_info=True)
-        def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
-            return f"{current_content}\n\n{section_header}\n{text_to_add}\n"
+# --- リファクタリング: クリーンなインポート ---
+from utils.obsidian_utils import update_section
+from config import JST, TOKEN_FILE, SCOPES
 
 # --- .env 読み込み ---
 load_dotenv()
@@ -41,14 +32,6 @@ logging.basicConfig(
 # --- 基本設定 ---
 PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID") # VaultのルートフォルダID
-TOKEN_FILE = 'token.json' # 認証トークン
-SCOPES = ['https://www.googleapis.com/auth/drive'] # Drive全権限 (読み書き)
-
-# タイムゾーン設定
-try:
-    JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-except Exception:
-    JST = datetime.timezone(timedelta(hours=9))
 
 def get_drive_service():
     """Google Drive APIサービスを取得する"""

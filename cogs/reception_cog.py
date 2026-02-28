@@ -4,8 +4,7 @@ import os
 import re
 import logging
 
-# Servicesの読み込み (フォルダ構成に合わせてインポート)
-from services.drive_service import DriveService
+# Servicesの読み込み (DriveServiceのインポートは不要になりました)
 from services.webclip_service import WebClipService
 
 # 一般的なURLを抽出する正規表現
@@ -19,13 +18,13 @@ class ReceptionCog(commands.Cog):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         
-        # サービス群の初期化
+        # ---------------------------------------------------------
+        # ★ 変更点: main.py で作成された統合サービスを受け取る
+        # ---------------------------------------------------------
+        self.drive_service = bot.drive_service
+        
+        # ※WebClipService側の仕様を変更しないよう、とりあえずAPIキーはここで渡しておきます
         gemini_api_key = os.getenv("GEMINI_API_KEY")
-        
-        # 【修正箇所】環境変数からフォルダIDを取得して DriveService に渡す
-        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID") 
-        self.drive_service = DriveService(folder_id) 
-        
         self.webclip_service = WebClipService(self.drive_service, gemini_api_key)
 
         if self.memo_channel_id == 0:
@@ -50,7 +49,7 @@ class ReceptionCog(commands.Cog):
             await message.add_reaction('⏳')
             
             try:
-                # WebClipServiceにURLを渡して即時処理（YouTubeかWeb記事かはサービス側で自動判定されます）
+                # WebClipServiceにURLを渡して即時処理
                 result = await self.webclip_service.process_url(url, message.content, message)
                 
                 # 処理が終了したら⏳リアクションを外す

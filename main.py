@@ -8,8 +8,11 @@ from dotenv import load_dotenv
 import re
 
 from google import genai
-from services.drive_service import DriveService
-from services.calendar_service import CalendarService
+
+# --- 変更点：サービス群のインポート名を統一 ---
+from services.google_drive_service import GoogleDriveService
+from services.google_calendar_service import GoogleCalendarService
+from services.google_tasks_service import GoogleTasksService
 
 try:
     from obsidian_handler import add_memo_async
@@ -55,20 +58,23 @@ class MyBot(commands.Bot):
         intents.reactions = True     
         super().__init__(command_prefix="!", intents=intents) 
         
-        # --- DriveServiceの生成 ---
+        # --- GoogleDriveServiceの生成 ---
         if GOOGLE_DRIVE_FOLDER_ID:
-            self.drive_service = DriveService(GOOGLE_DRIVE_FOLDER_ID)
+            self.drive_service = GoogleDriveService(GOOGLE_DRIVE_FOLDER_ID)
         else:
             self.drive_service = None
             logging.warning("GOOGLE_DRIVE_FOLDER_IDが設定されていません。")
         
-        # --- 追加：CalendarServiceの生成 ---
-        if self.drive_service and self.drive_service.creds:
+        # --- GoogleCalendarServiceの生成 ---
+        if self.drive_service and hasattr(self.drive_service, 'creds') and self.drive_service.creds:
             calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
-            self.calendar_service = CalendarService(self.drive_service.creds, calendar_id)
+            self.calendar_service = GoogleCalendarService(self.drive_service.creds, calendar_id)
         else:
             self.calendar_service = None
             logging.warning("カレンダー用の認証情報がありません。")
+            
+        # --- ★追加：GoogleTasksServiceの生成 ---
+        self.tasks_service = GoogleTasksService()
             
         # --- Geminiクライアントの生成 ---
         api_key = os.getenv("GEMINI_API_KEY")

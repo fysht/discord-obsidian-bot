@@ -8,13 +8,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from utils.obsidian_utils import update_section
 
-SCOPES = [
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/calendar'
-]
-TOKEN_FILE = 'token.json'
+from config import TOKEN_FILE, SCOPES
 
-class DriveService:
+class GoogleDriveService:
     def __init__(self, folder_id):
         self.folder_id = folder_id
         self.creds = None
@@ -45,47 +41,34 @@ class DriveService:
         if self.creds:
             return build('drive', 'v3', credentials=self.creds)
         return None
-    
-    def get_creds(self):
-        if not self.creds: self._load_credentials()
-        return self.creds
 
-    # --- File Operations ---
     async def find_file(self, service, parent_id, name):
         if not parent_id: return None
         query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
         try:
-            results = await asyncio.to_thread(
-                lambda: service.files().list(q=query, fields="files(id)").execute()
-            )
+            results = await asyncio.to_thread(lambda: service.files().list(q=query, fields="files(id)").execute())
             files = results.get('files', [])
             return files[0]['id'] if files else None
         except Exception as e:
-            logging.error(f"Find File Error: {e}")
             return None
 
     async def create_folder(self, service, parent_id, name):
         if not parent_id: return None
         file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': 'application/vnd.google-apps.folder'}
-        file = await asyncio.to_thread(
-            lambda: service.files().create(body=file_metadata, fields='id').execute()
-        )
+        file = await asyncio.to_thread(lambda: service.files().create(body=file_metadata, fields='id').execute())
         return file.get('id')
 
-    async def upload_text(self, service, parent_id, name, content):
+    # mime_type を引数で受け取れるように拡張（HabitのJSON保存用）
+    async def upload_text(self, service, parent_id, name, content, mime_type='text/markdown'):
         if not parent_id: return None
-        file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}
-        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown', resumable=True)
-        file = await asyncio.to_thread(
-            lambda: service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-        )
+        file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': mime_type}
+        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype=mime_type, resumable=True)
+        file = await asyncio.to_thread(lambda: service.files().create(body=file_metadata, media_body=media, fields='id').execute())
         return file.get('id')
     
     async def update_text(self, service, file_id, content, mime_type='text/markdown'):
         media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype=mime_type, resumable=True)
-        await asyncio.to_thread(
-            lambda: service.files().update(fileId=file_id, media_body=media).execute()
-        )
+        await asyncio.to_thread(lambda: service.files().update(fileId=file_id, media_body=media).execute())
 
     async def read_text_file(self, service, file_id):
         try:
@@ -96,63 +79,22 @@ class DriveService:
             while not done: _, done = await asyncio.to_thread(downloader.next_chunk)
             return fh.getvalue().decode('utf-8')
         except Exception as e:
-            logging.error(f"Read File Error: {e}")
             return ""
 
-    async def update_daily_note(self, service, date_str, link_text, section_header):
-        if not self.folder_id: return
-        loop = asyncio.get_running_loop()
-        
-        daily_folder = await self.find_file(service, self.folder_id, "DailyNotes")
-        if not daily_folder:
-            daily_folder = await self.create_folder(service, self.folder_id, "DailyNotes")
-
-        filename = f"{date_str}.md"
-        f_id = await self.find_file(service, daily_folder, filename)
-        
-        content = ""
-        if f_id:
-            content = await self.read_text_file(service, f_id)
-        else:
-            content = f"# Daily Note {date_str}\n\n"
-
-        new_content = update_section(content, link_text, section_header)
-        media = MediaIoBaseUpload(io.BytesIO(new_content.encode('utf-8')), mimetype='text/markdown', resumable=True)
-        
-        if f_id:
-            await loop.run_in_executor(None, lambda: service.files().update(fileId=f_id, media_body=media).execute())
-        else:
-            await loop.run_in_executor(None, lambda: service.files().create(body={'name': filename, 'parents': [daily_folder]}, media_body=media).execute())
-
-    # --- 新規追加: 検索機能 ---
     async def search_markdown_files(self, keywords, limit=3):
-        """指定したキーワードを含むMarkdownファイルを検索して内容を返す"""
         service = self.get_service()
         if not service: return "Drive接続エラー"
-        
-        # fullText検索クエリ
         query = f"fullText contains '{keywords}' and mimeType = 'text/markdown' and trashed = false"
-        
         try:
-            results = await asyncio.to_thread(
-                lambda: service.files().list(
-                    q=query, pageSize=limit, fields="files(id, name)"
-                ).execute()
-            )
+            results = await asyncio.to_thread(lambda: service.files().list(q=query, pageSize=limit, fields="files(id, name)").execute())
             files = results.get('files', [])
-            
-            if not files:
-                return f"「{keywords}」に関連するメモは見つかりませんでした。"
+            if not files: return f"「{keywords}」に関連するメモは見つかりませんでした。"
             
             search_results = []
             for file in files:
                 content = await self.read_text_file(service, file['id'])
-                # 長すぎる場合は切り詰め
                 snippet = content[:500].replace("\n", " ") + "..."
                 search_results.append(f"【ファイル名: {file['name']}】\n{snippet}\n")
-            
             return "\n".join(search_results)
-            
         except Exception as e:
-            logging.error(f"Search Error: {e}")
             return f"検索中にエラーが発生しました: {e}"

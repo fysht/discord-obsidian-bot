@@ -2,9 +2,9 @@ import aiohttp
 import xml.etree.ElementTree as ET
 import logging
 import datetime
-import zoneinfo
 
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+# --- リファクタリング: 定数のクリーンなインポート ---
+from config import JST
 
 # 気象庁エリアコード: 岡山県 = 330000
 # (参考: 東京=130000, 大阪=270000)
@@ -30,23 +30,13 @@ class InfoService:
                     return "天気情報取得失敗", "N/A", "N/A"
                 
                 data = await resp.json()
-                # データ構造: [0] -> timeSeries[0](天気) -> areas[0] -> weathers[0]
-                #            [0] -> timeSeries[2](気温) -> areas[0] -> temps
+                weather_text = data[0]["timeSeries"][0]["areas"][0]["weathers"][0]
+                weather_text = weather_text.replace("\u3000", " ") 
                 
-                report = data[0]
-                area_weather = report["timeSeries"][0]["areas"][0]
-                weather_text = area_weather["weathers"][0].replace("\u3000", " ") # 全角スペース除去
+                temps = data[0]["timeSeries"][2]["areas"][0].get("temps", [])
                 
-                # 気温 (朝の時点では [0]=最低, [1]=最高 の場合が多いが、時間帯による変動あり)
-                temps = report["timeSeries"][2]["areas"][0].get("temps", [])
-                
-                # 簡易的な判定
                 if len(temps) >= 2:
-                    # 多くの場合は [日中の最高, 明日の最低] または [今日の最低, 今日の最高]
-                    # APIの仕様上、時間帯で変わるため簡易的に取得
-                    t1 = temps[0]
-                    t2 = temps[1]
-                    return weather_text, t2, t1 # 暫定的に 高/低 とみなす
+                    return weather_text, temps[1], temps[0]
                 elif len(temps) == 1:
                     return weather_text, temps[0], "N/A"
                 else:
@@ -67,7 +57,6 @@ class InfoService:
                 xml_content = await resp.text()
                 root = ET.fromstring(xml_content)
                 
-                # RSS 2.0形式
                 items = root.findall(".//item")
                 headlines = []
                 for item in items[:limit]:
@@ -84,7 +73,7 @@ class InfoService:
         w_text, t1, t2 = await self.get_weather()
         news_list = await self.get_news()
         
-        weather_str = f"岡山の天気: {w_text} (🌡️ {t1}℃ / {t2}℃)"
-        news_str = "ニュース:\n" + "\n".join([f"・{n}" for n in news_list])
+        weather_str = f"☁️ 天気: {w_text} (最高: {t1}℃ / 最低: {t2}℃)\n"
+        news_str = "📰 今日のニュース:\n" + "\n".join([f"- {n}" for n in news_list])
         
-        return f"{weather_str}\n\n{news_str}"
+        return weather_str + "\n" + news_str

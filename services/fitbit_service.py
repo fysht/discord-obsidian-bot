@@ -6,11 +6,11 @@ import logging
 import asyncio
 import re
 import aiohttp
-import zoneinfo
 
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+# --- リファクタリング: 定数のクリーンなインポート ---
+from config import JST, BOT_FOLDER
+
 TOKEN_FILE_NAME = "fitbit_token.json"
-BOT_FOLDER = ".bot"
 
 class FitbitService:
     def __init__(self, drive_service, client_id, client_secret, initial_refresh_token, user_id="-"):

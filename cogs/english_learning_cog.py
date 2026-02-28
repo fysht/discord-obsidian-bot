@@ -1,99 +1,36 @@
 import os
-import json
 import asyncio
 import logging
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-# --- 新しいライブラリ ---
-from google import genai
-from google.genai import types
-# ----------------------
-import re
-from datetime import time, datetime
-import zoneinfo
-import aiohttp
 import random
+from datetime import time, datetime
 
-# Google API
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
-import io
+from google.genai import types
 
-try:
-    from utils.obsidian_utils import update_section
-except ImportError:
-    def update_section(content, text, header): return f"{content}\n{header}\n{text}"
+# --- リファクタリング: インポート整理と定数化 ---
+from config import JST
+from utils.obsidian_utils import update_section
 
-# --- 定数定義 ---
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 MORNING_SAKUBUN_TIME = time(hour=8, minute=0, tzinfo=JST)
 EVENING_SAKUBUN_TIME = time(hour=21, minute=0, tzinfo=JST)
 SAKUBUN_FILE_NAME = "瞬間英作文リスト.md"
 ENGLISH_LOG_FOLDER = "English Learning"
-SCOPES = ['https://www.googleapis.com/auth/drive']
-TOKEN_FILE = 'token.json'
 
 class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.channel_id = int(os.getenv("ENGLISH_LEARNING_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
-        # --- Client初期化 ---
-        if self.gemini_api_key:
-            self.gemini_client = genai.Client(api_key=self.gemini_api_key)
-        else:
-            self.gemini_client = None
-        # ------------------
+        # --- リファクタリング: Bot本体のサービスを使い回す ---
+        self.drive_service = bot.drive_service
+        self.gemini_client = bot.gemini_client
         
         self.chat_sessions = {} # {user_id: [Content objects...]}
         self.sakubun_questions = []
         self.is_ready = bool(self.drive_folder_id and self.channel_id)
-
-    def _get_drive_service(self):
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            try: creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-            except: pass
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                try: creds.refresh(Request()); open(TOKEN_FILE,'w').write(creds.to_json())
-                except: return None
-            else: return None
-        return build('drive', 'v3', credentials=creds)
-
-    def _find_file(self, service, parent_id, name):
-        try:
-            res = service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id)").execute()
-            files = res.get('files', [])
-            return files[0]['id'] if files else None
-        except: return None
-
-    def _find_file_recursive(self, service, parent_id, name):
-        return self._find_file(service, parent_id, name)
-
-    def _read_text(self, service, file_id):
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
-        done=False
-        while not done: _, done = downloader.next_chunk()
-        return fh.getvalue().decode('utf-8')
-
-    def _create_text(self, service, parent_id, name, content):
-        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
-        service.files().create(body={'name': name, 'parents': [parent_id], 'mimeType': 'text/markdown'}, media_body=media).execute()
-
-    def _update_text(self, service, file_id, content):
-        media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/markdown')
-        service.files().update(fileId=file_id, media_body=media).execute()
-
-    def _create_folder(self, service, parent_id, name):
-        f = service.files().create(body={'name': name, 'mimeType': 'application/vnd.google-apps.folder', 'parents': [parent_id]}, fields='id').execute()
-        return f.get('id')
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -103,17 +40,16 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             self.evening_sakubun_task.start()
 
     async def _load_sakubun_questions(self):
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return
         
-        study_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, "Study")
+        study_folder = await self.drive_service.find_file(service, self.drive_folder_id, "Study")
         target_folder = study_folder if study_folder else self.drive_folder_id
         
-        file_id = await loop.run_in_executor(None, self._find_file, service, target_folder, SAKUBUN_FILE_NAME)
+        file_id = await self.drive_service.find_file(service, target_folder, SAKUBUN_FILE_NAME)
         if file_id:
             try:
-                content = await loop.run_in_executor(None, self._read_text, service, file_id)
+                content = await self.drive_service.read_text_file(service, file_id)
                 questions = []
                 for line in content.split('\n'):
                     line = line.strip()
@@ -132,7 +68,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 logging.error(f"Error loading sakubun questions: {e}")
 
     # --- Tasks ---
-
     @tasks.loop(time=MORNING_SAKUBUN_TIME)
     async def morning_sakubun_task(self):
         await self._send_random_question("☀️ 朝の瞬間英作文")
@@ -151,7 +86,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         await channel.send(embed=embed)
 
     # --- Commands ---
-
     @app_commands.command(name="english", description="AIと英会話を開始します")
     async def english(self, interaction: discord.Interaction):
         if interaction.channel_id != self.channel_id:
@@ -171,14 +105,11 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         if user_id in self.chat_sessions:
             content = message.content.strip()
             
-            # 終了判定
             if content.lower() in ["end", "finish", "quit", "終了"]:
                 await message.channel.send("Conversation ended. Saving log...")
                 await self._finish_session(message.author)
                 return
 
-            # AI応答
-            # 新しい履歴形式: {'role': 'user', 'parts': [{'text': '...'}]}
             self.chat_sessions[user_id].append(
                 types.Content(role="user", parts=[types.Part.from_text(text=content)])
             )
@@ -186,7 +117,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             async with message.channel.typing():
                 try:
                     if self.gemini_client:
-                        # --- チャット生成 ---
                         response = await self.gemini_client.aio.models.generate_content(
                             model='gemini-2.0-flash',
                             contents=self.chat_sessions[user_id]
@@ -209,7 +139,6 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
             del self.chat_sessions[user_id]
             return
 
-        # 履歴をテキスト化
         full_text = ""
         for h in history:
             role = h.role
@@ -234,7 +163,8 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
                 review = res.text
             else:
                 review = "AI Error"
-        except: review = "Review generation failed."
+        except: 
+            review = "Review generation failed."
 
         await self._save_chat_log_to_obsidian(user, history, review)
         
@@ -245,8 +175,7 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         if channel: await channel.send(f"{user.mention}", embed=embed)
 
     async def _save_chat_log_to_obsidian(self, user, history, review):
-        loop = asyncio.get_running_loop()
-        service = await loop.run_in_executor(None, self._get_drive_service)
+        service = self.drive_service.get_service()
         if not service: return
 
         now = datetime.now(JST)
@@ -261,28 +190,27 @@ class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
         
         content = f"# English Chat Log\n\n[[{date_str}]]\n\n## Review\n{review}\n\n## Transcript\n" + "\n".join(log_parts)
         
-        log_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
+        log_folder = await self.drive_service.find_file(service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
         if not log_folder:
-            log_folder = await loop.run_in_executor(None, self._create_folder, service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
+            log_folder = await self.drive_service.create_folder(service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
         
-        await loop.run_in_executor(None, self._create_text, service, log_folder, filename, content)
+        await self.drive_service.upload_text(service, log_folder, filename, content)
 
-        daily_folder = await loop.run_in_executor(None, self._find_file, service, self.drive_folder_id, "DailyNotes")
+        daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
         if daily_folder:
-            d_file = await loop.run_in_executor(None, self._find_file, service, daily_folder, f"{date_str}.md")
+            d_file = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
             cur = ""
             if d_file:
-                try: cur = await loop.run_in_executor(None, self._read_text, service, d_file)
-                except: pass
+                cur = await self.drive_service.read_text_file(service, d_file)
             else:
                 cur = f"# Daily Note {date_str}\n"
 
             new = update_section(cur, f"- [[{ENGLISH_LOG_FOLDER}/{filename}|English Chat]]", "## English Logs")
             
             if d_file:
-                await loop.run_in_executor(None, self._update_text, service, d_file, new)
+                await self.drive_service.update_text(service, d_file, new)
             else:
-                await loop.run_in_executor(None, self._create_text, service, daily_folder, f"{date_str}.md", new)
+                await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new)
 
 async def setup(bot):
     if int(os.getenv("ENGLISH_LEARNING_CHANNEL_ID", 0)) == 0:

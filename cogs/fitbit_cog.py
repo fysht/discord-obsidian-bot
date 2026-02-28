@@ -4,39 +4,24 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import logging
 import datetime
-import zoneinfo
 import asyncio
 import yaml
-import io
-from io import StringIO
-
-from google.oauth2.credentials import Credentials
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 from fitbit_client import FitbitClient
 
-try:
-    from utils.obsidian_utils import update_section
-except ImportError:
-    def update_section(content, text, header): return f"{content}\n\n{header}\n{text}"
-
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
-TOKEN_FILE = 'token.json'
-SCOPES = ['https://www.googleapis.com/auth/drive']
+# --- リファクタリング: 定数とユーティリティのクリーンなインポート ---
+from config import JST
+from utils.obsidian_utils import update_section
 
 class FitbitCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        self.drive_service = None
         
-        creds = None
-        if os.path.exists(TOKEN_FILE):
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        if creds and creds.valid:
-            self.drive_service = build('drive', 'v3', credentials=creds)
+        # --- リファクタリング: Bot本体のサービスを使い回す ---
+        self.drive_service = bot.drive_service
+        
+        if self.drive_service:
             self.fitbit_client = FitbitClient(
                 os.getenv("FITBIT_CLIENT_ID"),
                 os.getenv("FITBIT_CLIENT_SECRET"),
@@ -47,10 +32,9 @@ class FitbitCog(commands.Cog):
             self.is_ready = True
         else:
             self.is_ready = False
-            logging.error("FitbitCog: Drive APIの認証に失敗しました。")
+            logging.error("FitbitCog: Driveサービスが初期化されていません。")
 
     def _calculate_sleep_score(self, summary: dict) -> int:
-        """Fitbitアプリのスコアを模倣した総合睡眠スコアを計算する"""
         total_asleep_min = summary.get('minutesAsleep', 0)
         total_in_bed_min = summary.get('timeInBed', 0)
         deep_min = summary.get('levels', {}).get('summary', {}).get('deep', 0)
@@ -59,24 +43,20 @@ class FitbitCog(commands.Cog):
 
         if total_asleep_min == 0: return 0
 
-        # 1. 睡眠時間 (最大50点)
         duration_score = min(50, (total_asleep_min / 480) * 50)
 
-        # 2. 睡眠の質 (最大25点)
         deep_percentage = (deep_min / total_asleep_min) * 100
         rem_percentage = (rem_min / total_asleep_min) * 100
         deep_score = 12.5 if deep_percentage >= 20 else 10 if deep_percentage >= 15 else 7.5 if deep_percentage >= 10 else 5
         rem_score = 12.5 if rem_percentage >= 25 else 10 if rem_percentage >= 20 else 7.5 if rem_percentage >= 15 else 5
         quality_score = deep_score + rem_score
 
-        # 3. 回復度 (最大25点)
         restlessness_percentage = (wake_min / total_in_bed_min) * 100 if total_in_bed_min > 0 else 100
         restoration_score = 25 if restlessness_percentage <= 5 else 22 if restlessness_percentage <= 10 else 18 if restlessness_percentage <= 15 else 14 if restlessness_percentage <= 20 else 10
 
         return min(100, round(duration_score + quality_score + restoration_score))
 
     def _process_sleep_data(self, sleep_data: dict) -> dict:
-        """複数の睡眠ログを統合し、サマリーデータと新しいスコアを作成する"""
         if not sleep_data or 'sleep' not in sleep_data or not sleep_data['sleep']: return None
         
         total_minutes_asleep = sum(log.get('minutesAsleep', 0) for log in sleep_data['sleep'])
@@ -107,48 +87,31 @@ class FitbitCog(commands.Cog):
             if content.startswith('---'):
                 parts = content.split('---', 2)
                 if len(parts) >= 3:
-                    return yaml.safe_load(StringIO(parts[1])) or {}, parts[2].lstrip()
+                    return yaml.safe_load(parts[1]) or {}, parts[2].lstrip()
         except yaml.YAMLError: pass
         return {}, content
 
     async def _save_data_to_obsidian(self, target_date: datetime.date, sleep_data: dict, activity_data: dict):
         if not self.drive_service: return
-        loop = asyncio.get_running_loop()
-        
-        # DailyNotesフォルダを探す
-        query = f"'{self.drive_folder_id}' in parents and name = 'DailyNotes' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        service = self.drive_service.get_service()
+        if not service: return
+
         try:
-            res = await loop.run_in_executor(None, lambda: self.drive_service.files().list(q=query, fields="files(id)").execute())
-            folders = res.get('files', [])
-            if not folders:
-                meta = {'name': 'DailyNotes', 'mimeType': 'application/vnd.google-apps.folder', 'parents': [self.drive_folder_id]}
-                folder = await loop.run_in_executor(None, lambda: self.drive_service.files().create(body=meta, fields='id').execute())
-                dn_folder_id = folder.get('id')
-            else:
-                dn_folder_id = folders[0]['id']
+            # 統合された DriveService のヘルパーメソッドを利用してシンプルに！
+            dn_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+            if not dn_folder_id:
+                dn_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
 
             file_name = f"{target_date.strftime('%Y-%m-%d')}.md"
-            query = f"'{dn_folder_id}' in parents and name = '{file_name}' and trashed = false"
-            res = await loop.run_in_executor(None, lambda: self.drive_service.files().list(q=query, fields="files(id)").execute())
-            files = res.get('files', [])
+            file_id = await self.drive_service.find_file(service, dn_folder_id, file_name)
             
             current_content = ""
-            file_id = None
-            if files:
-                file_id = files[0]['id']
-                try:
-                    request = self.drive_service.files().get_media(fileId=file_id)
-                    fh = io.BytesIO()
-                    downloader = MediaIoBaseDownload(fh, request)
-                    done = False
-                    while not done: _, done = downloader.next_chunk()
-                    current_content = fh.getvalue().decode('utf-8')
-                except Exception as e:
-                    logging.error(f"FitbitCog: ノート読み込みエラー {e}")
+            if file_id:
+                current_content = await self.drive_service.read_text_file(service, file_id)
                     
             frontmatter, body = self._parse_note_content(current_content)
             
-            # --- 全データをフロントマターに集約 ---
+            # --- フロントマターの更新 ---
             if sleep_data:
                 levels = sleep_data.get('levels', {}).get('summary', {})
                 frontmatter.update({
@@ -180,10 +143,9 @@ class FitbitCog(commands.Cog):
                     'hr_zone_peak_minutes': hr_zones.get('Peak', {}).get('minutes')
                 })
 
-            # null (None) の項目をフロントマターから取り除く
             frontmatter = {k: v for k, v in frontmatter.items() if v is not None}
 
-            # --- 本文(Body)への追記処理（統一感のある英語見出しで） ---
+            # --- 本文(Body)への追記 ---
             metrics_sections = []
             if sleep_data:
                 levels = sleep_data.get('levels', {}).get('summary', {})
@@ -221,15 +183,14 @@ class FitbitCog(commands.Cog):
                 )
                 metrics_sections.append(heart_rate_text)
 
-            # utils.obsidian_utils の update_section を使って本文の所定位置を更新
             new_body = update_section(body.strip(), "\n\n".join(metrics_sections), "## 📊 Health Metrics")
             new_daily_content = f"---\n{yaml.dump(frontmatter, allow_unicode=True, sort_keys=False)}---\n\n{new_body}"
             
-            media = MediaIoBaseUpload(io.BytesIO(new_daily_content.encode('utf-8')), mimetype='text/markdown')
             if file_id:
-                await loop.run_in_executor(None, lambda: self.drive_service.files().update(fileId=file_id, media_body=media).execute())
+                await self.drive_service.update_text(service, file_id, new_daily_content)
             else:
-                await loop.run_in_executor(None, lambda: self.drive_service.files().create(body={'name': file_name, 'parents': [dn_folder_id]}, media_body=media).execute())
+                await self.drive_service.upload_text(service, dn_folder_id, file_name, new_daily_content)
+                
             logging.info(f"FitbitCog: {file_name} を更新しました（フロントマターと本文の両方に保存）。")
         except Exception as e:
             logging.error(f"FitbitCog: Obsidian保存中にエラー: {e}")
@@ -252,17 +213,13 @@ class FitbitCog(commands.Cog):
         sleep_summary = self._process_sleep_data(raw_sleep_data)
         
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog: 
-            logging.error("FitbitCog: PartnerCogが見つかりません。")
-            return
+        if not partner_cog: return
 
         memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         channel = self.bot.get_channel(memo_channel_id)
         today_log = "（会話ログなし）"
         if channel:
             today_log = await partner_cog.fetch_todays_chat_log(channel)
-        else:
-            logging.warning("FitbitCog: MEMO_CHANNEL_IDが正しく設定されていないか、チャンネルが見つかりません。")
 
         if not sleep_summary:
             context_data = f"今日の睡眠データ：まだ同期されていません\n【最近の会話ログ】\n{today_log}"
@@ -285,21 +242,16 @@ class FitbitCog(commands.Cog):
         )
         sleep_summary = self._process_sleep_data(raw_sleep_data)
         
-        # Obsidianへの保存を実行
         await self._save_data_to_obsidian(target_date, sleep_summary, activity_data)
         
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog: 
-            logging.error("FitbitCog: PartnerCogが見つかりません。")
-            return
+        if not partner_cog: return
         
         memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         channel = self.bot.get_channel(memo_channel_id)
         today_log = "（会話ログなし）"
         if channel:
             today_log = await partner_cog.fetch_todays_chat_log(channel)
-        else:
-            logging.warning("FitbitCog: MEMO_CHANNEL_IDが正しく設定されていないか、チャンネルが見つかりません。")
         
         sleep_text = f"スコア: {sleep_summary.get('sleep_score', 'N/A')}, 睡眠時間: {self._format_minutes(sleep_summary.get('minutesAsleep', 0))}" if sleep_summary else "データなし"
         activity_text = f"歩数: {activity_data.get('summary', {}).get('steps', 'N/A')}歩, 消費: {activity_data.get('summary', {}).get('caloriesOut', 'N/A')}kcal" if activity_data else "データなし"

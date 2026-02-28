@@ -3,14 +3,13 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import datetime
-import zoneinfo
 import asyncio
 import sys
 from pathlib import Path
 import logging
 
-# --- 定数定義 ---
-JST = zoneinfo.ZoneInfo("Asia/Tokyo")
+# --- リファクタリング: 定数のクリーンなインポート ---
+from config import JST
 
 class SummaryCog(commands.Cog):
     """サマリー生成Cog (定時実行タスクは無効化されています)"""
@@ -19,8 +18,6 @@ class SummaryCog(commands.Cog):
         self.bot = bot
         self.summary_channel_id = int(os.getenv("JOURNAL_CHANNEL_ID", 0))
         self.worker_path = str(Path(__file__).resolve().parent.parent / "summary_worker.py")
-
-    # 定時実行タスク (daily_summary, weekly_summary, monthly_summary) は削除されました。
 
     async def run_summary_logic(self, period: str, target_date: datetime.date, interaction: discord.Interaction | None = None):
         """サマリー生成の手動実行用ロジック"""
@@ -32,35 +29,49 @@ class SummaryCog(commands.Cog):
         
         channel = self.bot.get_channel(self.summary_channel_id)
         if not channel and not interaction:
-            logging.error(f"【{period.capitalize()}サマリー】出力先チャンネルが見つかりません。")
+            logging.error(f"【{period.capitalize()}サマリー】指定されたチャンネル(ID: {self.summary_channel_id})が見つかりません。")
             return
-            
-        logging.info(f"【{period.capitalize()}サマリー】ワーカー呼び出し: {target_date}")
-        
+
+        message = ""
+        if interaction:
+            await interaction.response.defer(ephemeral=False)
+            message = await interaction.followup.send(f"⏳ **{period.capitalize()} サマリー**の生成を開始します...")
+        elif channel:
+            message = await channel.send(f"⏳ **{period.capitalize()} サマリー**の生成を開始します...")
+
         try:
-            env = os.environ.copy()
-            env["PYTHONIOENCODING"] = "utf-8"
+            date_str = target_date.strftime("%Y-%m-%d")
             
             proc = await asyncio.create_subprocess_exec(
-                sys.executable, self.worker_path, period, str(target_date),
+                sys.executable, self.worker_path, period, date_str,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env
+                stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await proc.communicate()
 
             if proc.returncode == 0:
-                result = stdout.decode('utf-8').strip()
-                if not result:
-                     message = f"📝 {target_date} のメモはありませんでした。"
-                elif "NO_MEMO" in result:
-                    message = f"📝 対象期間のメモはありませんでした。"
-                elif result.startswith("ERROR:"):
-                    message = f"🤖 エラー: {result}"
+                summary_text = stdout.decode('utf-8').strip()
+                if summary_text == "NO_MEMO_TODAY":
+                     msg = "📝 今日はまだメモがないみたいです。"
+                     if interaction: await interaction.followup.send(msg)
+                     else: await channel.send(msg)
+                     return
+
+                # 2000文字を超える場合はファイルとして送信する処理
+                if len(summary_text) > 2000:
+                    file_path = f"{period}_summary.md"
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(summary_text)
+                    if interaction:
+                         await interaction.followup.send(f"✅ **{period.capitalize()} サマリー**が完成しました！", file=discord.File(file_path))
+                    else:
+                         await channel.send(f"✅ **{period.capitalize()} サマリー**が完成しました！", file=discord.File(file_path))
+                    os.remove(file_path)
+                    return
                 else:
                     embed = discord.Embed(
-                        title=f"📝 {target_date} {period.capitalize()} Summary",
-                        description=result,
+                        title=f"📅 {period.capitalize()} Summary ({date_str})",
+                        description=summary_text,
                         color=discord.Color.light_grey()
                     )
                     if interaction: await interaction.followup.send(embed=embed)
@@ -75,8 +86,6 @@ class SummaryCog(commands.Cog):
 
         except Exception as e:
             logging.error(f"Summary run error: {e}", exc_info=True)
-
-    # --- Manual Test Commands (残しておきますが、不要であれば削除可能です) ---
 
     @app_commands.command(name="test_summary", description="サマリー生成を手動でテスト実行します。")
     async def test_summary(self, interaction: discord.Interaction):
