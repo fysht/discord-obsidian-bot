@@ -5,6 +5,7 @@ from google.genai import types
 import logging
 import datetime
 import asyncio
+import aiohttp # ★ 追加: 直接通信用
 
 from config import JST
 
@@ -19,6 +20,7 @@ class PartnerCog(commands.Cog):
         self.calendar_service = bot.calendar_service
         self.tasks_service = getattr(bot, 'tasks_service', None)
         self.gemini_client = bot.gemini_client
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY") # ★ 追加: 直接通信用APIキー
         
         self.pdf_cache = {}
 
@@ -148,7 +150,7 @@ class PartnerCog(commands.Cog):
             role = "model" if msg.author.id == self.bot.user.id else "user"
             text = msg.content
             if msg.attachments: text += " [メディア送信]"
-            messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
+            messages.append({"role": role, "parts": [{"text": text}]}) # ★ 変更: API直接送信用に辞書形式で構築
         return list(reversed(messages))
 
     async def _show_interim_summary(self, message: discord.Message):
@@ -200,10 +202,12 @@ class PartnerCog(commands.Cog):
             return
 
         input_parts = []
-        if text: input_parts.append(types.Part.from_text(text=text))
+        if text: input_parts.append({"text": text}) # ★ 変更: API直接送信用に辞書形式で構築
         for att in message.attachments:
             if att.content_type and att.content_type.startswith(('image/', 'audio/')):
-                input_parts.append(types.Part.from_bytes(data=await att.read(), mime_type=att.content_type))
+                # ★ 画像等は今回は省略（PDFとの競合を避けるため、テキストのみとする）
+                pass
+                
         if not input_parts: return
 
         async with message.channel.typing():
@@ -255,137 +259,104 @@ class PartnerCog(commands.Cog):
                                 logging.error(f"PDF Upload Error: {e}")
                                 await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
 
-            # プロンプトとツールの定義（ChatGPTの指摘を反映して完全に修正）
+            # --- ★ 変更: 読書スレッドと日常スレッドで処理のルートを完全に分ける ---
             if gemini_file:
-                system_prompt = f"""
-                あなたはユーザー（{self.user_name}）の専属読書メンターです。提供されたPDFデータ（本の内容）に基づき、ユーザーの質問や壁打ちに対して、示唆に富む回答を提供してください。
-                **現在時刻:** {now_str} (JST)
-                **指針:**
-                1. 専門的でありながら、親しみやすいトーンで話してください。
-                2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。
-                """
-                function_tools = None
+                # 読書スレッド (SDKを捨てて直接REST APIを叩く)
+                system_prompt = f"""あなたはユーザー（{self.user_name}）の専属読書メンターです。提供されたPDFデータに基づき、ユーザーの質問や壁打ちに対して示唆に富む回答を提供してください。
+現在時刻: {now_str} (JST)
+1. 専門的でありながら親しみやすいトーンで話してください。
+2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。"""
 
-                # ★ 修正: 元の正しい引数名 'file_uri' に戻す
-                input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type=gemini_file.mime_type))
-                use_model = "gemini-2.5-pro"
-            else:
-                system_prompt = f"""
-                あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、同時に頼れる英会話の先生でもあります。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。長々とした返信は不要で、短いやり取りを複数回続けるイメージを持っています。
-                **現在時刻:** {now_str} (JST)
-                **指針:**
-                1. 【完全な言語ミラーリング】ユーザーが日本語で話しかけた場合は日本語のみで返信し、ユーザーが英語で話しかけた場合は**完全に英語のみで**返信してください（日本語は一切混ぜないこと）。
-                2. 【英語学習サポート】ユーザーが英語で話しかけた際、文法や表現に不自然な点があれば、返信の最後に英語で優しくワンポイントアドバイス(e.g., "*Tip: It sounds more natural to say...*")を添えてください。
-                3. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
-                4. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
-                5. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず共感のみで会話を区切ってください。
-                6. 過去の記録を知りたい時は `search_memory` を使う。
-                7. 【重要: 予定とタスクの使い分け】
-                   - カレンダー: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用。
-                   - Google Tasks: 日時が決まっていないToDoに使用。
-                8. 【★超重要: 複数同時の依頼について】
-                   ユーザーから「〇〇と××を追加して」のように複数の処理を同時に頼まれた場合は、機能を【複数回同時に呼び出して】すべて漏れなく処理してください。
-                9. 【★絶対厳守: 実行の確約】
-                   ユーザーからタスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で返事をするだけでなく、絶対に必ず対象のツール（add_task等）を呼び出してシステムに登録してください。
-                """
+                history = await self._build_conversation_context(message.channel, message.id, limit=10)
+                # 今回のユーザーメッセージにPDFのURIデータを追加
+                input_parts.insert(0, {"file_data": {"mime_type": gemini_file.mime_type, "file_uri": gemini_file.uri}})
+                history.append({"role": "user", "parts": input_parts})
                 
-                # ★ 修正: すべてのFunctionDeclarationに明確なSchema（parameters）を定義
+                payload = {
+                    "system_instruction": {"parts": [{"text": system_prompt}]},
+                    "contents": history
+                }
+
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={self.gemini_api_key}"
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, json=payload) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                reply_text = data['candidates'][0]['content']['parts'][0]['text']
+                                await message.channel.send(reply_text.strip())
+                            else:
+                                error_data = await resp.text()
+                                logging.error(f"REST API Error: {error_data}")
+                                await message.channel.send("ごめんね、本の読み込みでちょっとエラーが起きちゃったみたい💦")
+                except Exception as e:
+                    logging.error(f"PartnerCog REST API 通信エラー: {e}")
+                    await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
+
+            else:
+                # 日常スレッド (これまで通りSDKとToolsを使う)
+                system_prompt = f"""あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、頼れる英会話の先生です。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。
+現在時刻: {now_str} (JST)
+1. ユーザーが日本語で話しかけた場合は日本語のみで返信し、英語で話しかけた場合は完全に英語のみで返信してください。
+2. 英語で話しかけた際、不自然な点があれば最後に英語で優しくワンポイントアドバイスを添えてください。
+3. LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
+4. 過去の記録を知りたい時は `search_memory` を使う。
+5. 予定とタスクの使い分け: カレンダーは日時が決まっているもの、Google Tasksは日時が決まっていないToDo。"""
+
                 function_tools = [
                     types.Tool(function_declarations=[
-                        types.FunctionDeclaration(
-                            name="search_memory", description="Obsidianをキーワード検索する。",
-                            parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.STRING)}, required=["keywords"])
-                        ),
-                        types.FunctionDeclaration(
-                            name="check_schedule", description="カレンダーの予定・リマインダーを確認する。",
-                            parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")}, required=["date"])
-                        ),
-                        types.FunctionDeclaration(
-                            name="create_calendar_event", description="カレンダーに予定やリマインダーを追加する。",
-                            parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])
-                        ),
-                        types.FunctionDeclaration(
-                            name="delete_calendar_event", description="カレンダーの予定を検索してキャンセル・削除する。",
-                            parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD"), "keyword": types.Schema(type=types.Type.STRING)}, required=["date", "keyword"])
-                        ),
-                        types.FunctionDeclaration(
-                            name="check_tasks", description="Google Tasksの未完了タスク（ToDoリスト）を確認する。",
-                            parameters=types.Schema(type=types.Type.OBJECT, properties={})
-                        ),
-                        types.FunctionDeclaration(
-                            name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。複数のタスクを頼まれた場合はこの機能を複数回呼び出すこと。",
-                            parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING, description="タスク名")}, required=["title"])
-                        ),
-                        types.FunctionDeclaration(
-                            name="complete_task", description="Google Tasksのタスクを完了（チェック）する。複数の完了を頼まれた場合はこの機能を複数回呼び出すこと。",
-                            parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING, description="完了させたいタスク名の一部")}, required=["keyword"])
-                        )
+                        types.FunctionDeclaration(name="search_memory", description="Obsidianを検索する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.STRING)}, required=["keywords"])),
+                        types.FunctionDeclaration(name="check_schedule", description="カレンダーを確認する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING)}, required=["date"])),
+                        types.FunctionDeclaration(name="create_calendar_event", description="カレンダーに追加する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])),
+                        types.FunctionDeclaration(name="delete_calendar_event", description="カレンダーから削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING), "keyword": types.Schema(type=types.Type.STRING)}, required=["date", "keyword"])),
+                        types.FunctionDeclaration(name="check_tasks", description="Google Tasksを確認する。", parameters=types.Schema(type=types.Type.OBJECT, properties={})),
+                        types.FunctionDeclaration(name="add_task", description="Google Tasksに追加する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING)}, required=["title"])),
+                        types.FunctionDeclaration(name="complete_task", description="Google Tasksを完了する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING)}, required=["keyword"]))
                     ])
                 ]
-                use_model = "gemini-2.5-flash"
+
+                # SDK用の形式に履歴を再構築
+                sdk_contents = []
+                for msg in await self._build_conversation_context(message.channel, message.id, limit=10):
+                    sdk_contents.append(types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["parts"][0]["text"])]))
                 
-            contents = await self._build_conversation_context(message.channel, message.id, limit=10)
-            contents.append(types.Content(role="user", parts=input_parts))
+                # 今回の入力（テキスト）を追加
+                sdk_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
-            try:
-                # ★ 修正: function_tools の扱いを安全な形に
-                gen_config = types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=function_tools if function_tools else None
-                )
-
-                response = await self.gemini_client.aio.models.generate_content(
-                    model=use_model,
-                    contents=contents,
-                    config=gen_config
-                )
-
-                if response.function_calls:
-                    contents.append(response.candidates[0].content)
-                    function_responses = []
-                    
-                    for function_call in response.function_calls:
-                        tool_result = ""
-                        
-                        if function_call.name == "search_memory": 
-                            tool_result = await self._search_drive_notes(function_call.args["keywords"])
-                        elif function_call.name == "check_schedule": 
-                            if self.calendar_service: tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"])
-                            else: tool_result = "システムエラー: カレンダーサービスに接続されていません。"
-                        elif function_call.name == "create_calendar_event": 
-                            if self.calendar_service: tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_call.args["start_time"], function_call.args["end_time"], "")
-                            else: tool_result = "システムエラー: カレンダーサービスに接続されていません。"
-                        elif function_call.name == "delete_calendar_event":
-                            if self.calendar_service: tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], function_call.args["keyword"])
-                            else: tool_result = "システムエラー: カレンダーサービスに接続されていません。"
-                        elif function_call.name == "check_tasks":
-                            if self.tasks_service: tool_result = await self.tasks_service.get_uncompleted_tasks()
-                            else: tool_result = "システムエラー: Tasksサービスに接続されていません。"
-                        elif function_call.name == "add_task":
-                            if self.tasks_service: tool_result = await self.tasks_service.add_task(function_call.args["title"])
-                            else: tool_result = "システムエラー: Tasksサービスに接続されていません。"
-                        elif function_call.name == "complete_task":
-                            if self.tasks_service: tool_result = await self.tasks_service.complete_task_by_keyword(function_call.args["keyword"])
-                            else: tool_result = "システムエラー: Tasksサービスに接続されていません。"
-
-                        function_responses.append(
-                            types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)})
-                        )
-
-                    contents.append(types.Content(role="user", parts=function_responses))
-                    
-                    response_final = await self.gemini_client.aio.models.generate_content(
-                        model=use_model,
-                        contents=contents,
-                        config=gen_config
+                try:
+                    response = await self.gemini_client.aio.models.generate_content(
+                        model="gemini-2.5-flash",
+                        contents=sdk_contents,
+                        config=types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
                     )
-                    if response_final.text: await message.channel.send(response_final.text.strip())
-                else:
-                    if response.text: await message.channel.send(response.text.strip())
 
-            except Exception as e:
-                logging.error(f"PartnerCog 会話生成エラー: {e}")
-                await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
+                    if response.function_calls:
+                        sdk_contents.append(response.candidates[0].content)
+                        function_responses = []
+                        
+                        for function_call in response.function_calls:
+                            tool_result = ""
+                            if function_call.name == "search_memory": tool_result = await self._search_drive_notes(function_call.args["keywords"])
+                            elif function_call.name == "check_schedule": tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"]) if self.calendar_service else "エラー"
+                            elif function_call.name == "create_calendar_event": tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_call.args["start_time"], function_call.args["end_time"], "") if self.calendar_service else "エラー"
+                            elif function_call.name == "delete_calendar_event": tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], function_call.args["keyword"]) if self.calendar_service else "エラー"
+                            elif function_call.name == "check_tasks": tool_result = await self.tasks_service.get_uncompleted_tasks() if self.tasks_service else "エラー"
+                            elif function_call.name == "add_task": tool_result = await self.tasks_service.add_task(function_call.args["title"]) if self.tasks_service else "エラー"
+                            elif function_call.name == "complete_task": tool_result = await self.tasks_service.complete_task_by_keyword(function_call.args["keyword"]) if self.tasks_service else "エラー"
+
+                            function_responses.append(types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)}))
+
+                        sdk_contents.append(types.Content(role="user", parts=function_responses))
+                        response_final = await self.gemini_client.aio.models.generate_content(
+                            model="gemini-2.5-flash", contents=sdk_contents, config=types.GenerateContentConfig(system_instruction=system_prompt)
+                        )
+                        if response_final.text: await message.channel.send(response_final.text.strip())
+                    else:
+                        if response.text: await message.channel.send(response.text.strip())
+
+                except Exception as e:
+                    logging.error(f"PartnerCog SDK 会話生成エラー: {e}")
+                    await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PartnerCog(bot))
