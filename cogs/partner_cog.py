@@ -255,9 +255,8 @@ class PartnerCog(commands.Cog):
                                 logging.error(f"PDF Upload Error: {e}")
                                 await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
 
-            # ★ 修正: 読書スレッドと日常スレッドでプロンプト・ツールを完全に分ける
+            # プロンプトとツールの定義（ChatGPTの指摘を反映して完全に修正）
             if gemini_file:
-                # 読書スレッド用（ツール機能なし）
                 system_prompt = f"""
                 あなたはユーザー（{self.user_name}）の専属読書メンターです。提供されたPDFデータ（本の内容）に基づき、ユーザーの質問や壁打ちに対して、示唆に富む回答を提供してください。
                 **現在時刻:** {now_str} (JST)
@@ -266,10 +265,11 @@ class PartnerCog(commands.Cog):
                 2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。
                 """
                 function_tools = None
-                input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type=gemini_file.mime_type))
+                
+                # ★ 修正: types.Part.from_uri の引数を `uri` に変更
+                input_parts.insert(0, types.Part.from_uri(uri=gemini_file.uri, mime_type=gemini_file.mime_type))
                 use_model = "gemini-2.5-pro"
             else:
-                # 日常スレッド用（ツール機能あり）
                 system_prompt = f"""
                 あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、同時に頼れる英会話の先生でもあります。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。長々とした返信は不要で、短いやり取りを複数回続けるイメージを持っています。
                 **現在時刻:** {now_str} (JST)
@@ -288,6 +288,8 @@ class PartnerCog(commands.Cog):
                 9. 【★絶対厳守: 実行の確約】
                    ユーザーからタスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で返事をするだけでなく、絶対に必ず対象のツール（add_task等）を呼び出してシステムに登録してください。
                 """
+                
+                # ★ 修正: すべてのFunctionDeclarationに明確なSchema（parameters）を定義
                 function_tools = [
                     types.Tool(function_declarations=[
                         types.FunctionDeclaration(
@@ -307,7 +309,8 @@ class PartnerCog(commands.Cog):
                             parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD"), "keyword": types.Schema(type=types.Type.STRING)}, required=["date", "keyword"])
                         ),
                         types.FunctionDeclaration(
-                            name="check_tasks", description="Google Tasksの未完了タスク（ToDoリスト）を確認する。"
+                            name="check_tasks", description="Google Tasksの未完了タスク（ToDoリスト）を確認する。",
+                            parameters=types.Schema(type=types.Type.OBJECT, properties={})
                         ),
                         types.FunctionDeclaration(
                             name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。複数のタスクを頼まれた場合はこの機能を複数回呼び出すこと。",
@@ -325,11 +328,11 @@ class PartnerCog(commands.Cog):
             contents.append(types.Content(role="user", parts=input_parts))
 
             try:
-                # ★ 修正: ツールが不要な場合はConfigから外す
-                if function_tools:
-                    gen_config = types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
-                else:
-                    gen_config = types.GenerateContentConfig(system_instruction=system_prompt)
+                # ★ 修正: function_tools の扱いを安全な形に
+                gen_config = types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    tools=function_tools if function_tools else None
+                )
 
                 response = await self.gemini_client.aio.models.generate_content(
                     model=use_model,
