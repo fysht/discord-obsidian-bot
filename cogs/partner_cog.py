@@ -15,7 +15,6 @@ class PartnerCog(commands.Cog):
         self.user_name = "あなた"
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
-        # サービスの読み込みを Bot本体(main.py) に統一
         self.drive_service = bot.drive_service
         self.calendar_service = bot.calendar_service
         self.tasks_service = getattr(bot, 'tasks_service', None)
@@ -147,6 +146,7 @@ class PartnerCog(commands.Cog):
         async with message.channel.typing():
             now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
 
+            # ★ AIの「やったふり」を防止し、確実なツール実行を強制するプロンプト
             system_prompt = f"""
             あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
@@ -158,8 +158,10 @@ class PartnerCog(commands.Cog):
             5. 【重要: 予定とタスクの使い分け】
                - カレンダー（`check_schedule`, `Calendar`, `delete_calendar_event`）: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用します。
                - Google Tasks（`check_tasks`, `add_task`, `complete_task`）: 日時が決まっていない「〇〇をやる」「〇〇を買う」といったToDoに使用します。
-            6. 【★重要: 複数同時の依頼について】
-               ユーザーから「〇〇と××を追加して」「〇〇と××を完了にして」のように複数の処理を同時に頼まれた場合は、機能を複数回同時に呼び出して（並列実行して）、すべて漏れなく処理してください。
+            6. 【★超重要: 複数同時の依頼について】
+               ユーザーから「〇〇と××を追加して」「〇〇と××を完了にして」のように複数の処理を同時に頼まれた場合は、機能を【複数回同時に呼び出して】（並列実行して）、すべて漏れなく処理してください。
+            7. 【★絶対厳守: 実行の確約】
+               ユーザーからタスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で「追加したよ」と返事をするだけでなく、**絶対に必ず対象のツール（add_task等）を呼び出してシステムに登録してください。** ツールを呼び出さずに返事だけを行う（やったふりをする）ことはシステムエラーの原因となるため固く禁じます。
             """
 
             function_tools = [
@@ -184,11 +186,11 @@ class PartnerCog(commands.Cog):
                         name="check_tasks", description="Google Tasksの未完了タスク（ToDoリスト）を確認する。"
                     ),
                     types.FunctionDeclaration(
-                        name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。",
+                        name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。複数のタスクを頼まれた場合はこの機能を複数回呼び出すこと。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING, description="タスク名")}, required=["title"])
                     ),
                     types.FunctionDeclaration(
-                        name="complete_task", description="Google Tasksのタスクを完了（チェック）する。",
+                        name="complete_task", description="Google Tasksのタスクを完了（チェック）する。複数の完了を頼まれた場合はこの機能を複数回呼び出すこと。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING, description="完了させたいタスク名の一部")}, required=["keyword"])
                     )
                 ])
@@ -205,39 +207,38 @@ class PartnerCog(commands.Cog):
                 )
 
                 if response.function_calls:
-                    # モデルの機能呼び出しリクエストを履歴に追加
                     contents.append(response.candidates[0].content)
-                    
                     function_responses = []
                     
-                    # ★ 変更: 複数の呼び出し（並列処理）をループで全て実行するように修正
                     for function_call in response.function_calls:
                         tool_result = ""
                         
-                        if function_call.name == "search_memory": tool_result = await self._search_drive_notes(function_call.args["keywords"])
+                        # ★ 万が一APIやサービス接続に失敗した場合、AIに「失敗した」という事実を確実に伝えるための else を追加
+                        if function_call.name == "search_memory": 
+                            tool_result = await self._search_drive_notes(function_call.args["keywords"])
                         elif function_call.name == "check_schedule": 
                             if self.calendar_service: tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"])
-                            else: tool_result = "カレンダーに接続できないみたい💦"
+                            else: tool_result = "システムエラー: カレンダーサービスに接続されていません。"
                         elif function_call.name == "create_calendar_event": 
-                            if self.calendar_service:
-                                tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_call.args["start_time"], function_call.args["end_time"], "")
-                            else: tool_result = "カレンダーに接続できないみたい💦"
+                            if self.calendar_service: tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_call.args["start_time"], function_call.args["end_time"], "")
+                            else: tool_result = "システムエラー: カレンダーサービスに接続されていません。"
                         elif function_call.name == "delete_calendar_event":
                             if self.calendar_service: tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], function_call.args["keyword"])
-                            else: tool_result = "カレンダーに接続できないみたい💦"
+                            else: tool_result = "システムエラー: カレンダーサービスに接続されていません。"
                         elif function_call.name == "check_tasks":
                             if self.tasks_service: tool_result = await self.tasks_service.get_uncompleted_tasks()
+                            else: tool_result = "システムエラー: Tasksサービスに接続されていません。"
                         elif function_call.name == "add_task":
                             if self.tasks_service: tool_result = await self.tasks_service.add_task(function_call.args["title"])
+                            else: tool_result = "システムエラー: Tasksサービスに接続されていません。"
                         elif function_call.name == "complete_task":
                             if self.tasks_service: tool_result = await self.tasks_service.complete_task_by_keyword(function_call.args["keyword"])
+                            else: tool_result = "システムエラー: Tasksサービスに接続されていません。"
 
-                        # 実行結果をリストに蓄積
                         function_responses.append(
                             types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)})
                         )
 
-                    # すべての実行結果をまとめてAIに返す
                     contents.append(types.Content(role="user", parts=function_responses))
                     
                     response_final = await self.gemini_client.aio.models.generate_content(
