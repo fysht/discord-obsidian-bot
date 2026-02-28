@@ -282,7 +282,7 @@ class PartnerCog(commands.Cog):
 
                 history = await self._build_conversation_context_rest(message.channel, message.id, limit=10)
                 
-                input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type,"fileUri": gemini_file.name}})
+                input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type,"fileUri": f"https://generativelanguage.googleapis.com/v1beta/{gemini_file.name}"}})
                 history.append({"role": "user", "parts": input_parts})
                 
                 payload = {
