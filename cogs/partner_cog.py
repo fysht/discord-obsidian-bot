@@ -137,10 +137,8 @@ class PartnerCog(commands.Cog):
             logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    # ★ 修正: current_msg_id を受け取り、現在送信したメッセージは履歴から除外して二重投稿を防ぐ
     async def _build_conversation_context(self, channel, current_msg_id: int, limit=30):
         messages = []
-        # 現在のメッセージを除外するため、limitに1を足して取得する
         async for msg in channel.history(limit=limit + 1, oldest_first=False):
             if msg.id == current_msg_id: continue
             if msg.content.startswith("/"): continue
@@ -227,7 +225,7 @@ class PartnerCog(commands.Cog):
                         pdf_file_id = await self.drive_service.find_file(service, pdf_folder_id, pdf_file_name)
                         
                         if pdf_file_id:
-                            status_msg = await message.channel.send("📚 Google Driveに本のPDFデータを発見したよ！今から内容をAIの頭脳に読み込むから、数秒だけ待ってね...")
+                            status_msg = await message.channel.send("📚 Google Driveに本のPDFデータを発見したよ！今から内容をAIの頭脳に読み込むから、少し待ってね...")
                             try:
                                 local_pdf_path = f"temp_{pdf_file_id}.pdf"
                                 success = await self.drive_service.download_file(service, pdf_file_id, local_pdf_path)
@@ -235,9 +233,22 @@ class PartnerCog(commands.Cog):
                                     uploaded_file = await asyncio.to_thread(
                                         self.gemini_client.files.upload, file=local_pdf_path
                                     )
+                                    
+                                    # ★ 追加: Gemini側でファイルの処理(ACTIVE)が終わるまで待機する
+                                    await status_msg.edit(content="📚 PDFをAIに送信中... 脳内で解析しているからちょっと待ってね！(数秒〜数十秒かかります)")
+                                    
+                                    while True:
+                                        file_info = await asyncio.to_thread(self.gemini_client.files.get, name=uploaded_file.name)
+                                        if file_info.state.name == "ACTIVE":
+                                            break
+                                        elif file_info.state.name == "FAILED":
+                                            raise Exception("Gemini APIでのPDF解析に失敗しました。")
+                                        await asyncio.sleep(2)
+
                                     self.pdf_cache[book_title] = uploaded_file
                                     gemini_file = uploaded_file
-                                    os.remove(local_pdf_path)
+                                    if os.path.exists(local_pdf_path):
+                                        os.remove(local_pdf_path)
                                     await status_msg.edit(content="📚 読み込み完了！この本の内容を踏まえてなんでも聞いてね！")
                                 else:
                                     await status_msg.edit(content="💦 PDFのダウンロードに失敗しちゃったみたい。")
@@ -245,7 +256,6 @@ class PartnerCog(commands.Cog):
                                 logging.error(f"PDF Upload Error: {e}")
                                 await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
 
-            # --- ★ 修正: 英語オンリーのミラーリングと添削を強制するシステムプロンプト ---
             system_prompt = f"""
             あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、同時に頼れる英会話の先生でもあります。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。長々とした返信は不要で、短いやり取りを複数回続けるイメージを持っています。
             **現在時刻:** {now_str} (JST)
@@ -303,7 +313,6 @@ class PartnerCog(commands.Cog):
             else:
                 use_model = "gemini-2.5-flash"
                 
-            # ★ 修正: 呼び出し時に現在のメッセージIDを渡し、二重投稿による混乱を防ぐ
             contents = await self._build_conversation_context(message.channel, message.id, limit=10)
             contents.append(types.Content(role="user", parts=input_parts))
 
