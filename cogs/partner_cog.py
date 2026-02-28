@@ -5,7 +5,8 @@ from google.genai import types
 import logging
 import datetime
 import asyncio
-import aiohttp # ★ 追加: 直接通信用
+import aiohttp
+import json # ★ 追加: ペイロードのログ出力用
 
 from config import JST
 
@@ -20,7 +21,7 @@ class PartnerCog(commands.Cog):
         self.calendar_service = bot.calendar_service
         self.tasks_service = getattr(bot, 'tasks_service', None)
         self.gemini_client = bot.gemini_client
-        self.gemini_api_key = os.getenv("GEMINI_API_KEY") # ★ 追加: 直接通信用APIキー
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
         
         self.pdf_cache = {}
 
@@ -147,10 +148,11 @@ class PartnerCog(commands.Cog):
             if msg.author.bot and msg.author.id != self.bot.user.id: continue
             if msg.content.startswith("📚 "): continue
             
+            # ★ Geminiの仕様通り、AIのロールは "model" を使用する
             role = "model" if msg.author.id == self.bot.user.id else "user"
             text = msg.content
             if msg.attachments: text += " [メディア送信]"
-            messages.append({"role": role, "parts": [{"text": text}]}) # ★ 変更: API直接送信用に辞書形式で構築
+            messages.append({"role": role, "parts": [{"text": text}]})
         return list(reversed(messages))
 
     async def _show_interim_summary(self, message: discord.Message):
@@ -202,10 +204,9 @@ class PartnerCog(commands.Cog):
             return
 
         input_parts = []
-        if text: input_parts.append({"text": text}) # ★ 変更: API直接送信用に辞書形式で構築
+        if text: input_parts.append({"text": text})
         for att in message.attachments:
             if att.content_type and att.content_type.startswith(('image/', 'audio/')):
-                # ★ 画像等は今回は省略（PDFとの競合を避けるため、テキストのみとする）
                 pass
                 
         if not input_parts: return
@@ -259,23 +260,25 @@ class PartnerCog(commands.Cog):
                                 logging.error(f"PDF Upload Error: {e}")
                                 await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
 
-            # --- ★ 変更: 読書スレッドと日常スレッドで処理のルートを完全に分ける ---
             if gemini_file:
-                # 読書スレッド (SDKを捨てて直接REST APIを叩く)
                 system_prompt = f"""あなたはユーザー（{self.user_name}）の専属読書メンターです。提供されたPDFデータに基づき、ユーザーの質問や壁打ちに対して示唆に富む回答を提供してください。
 現在時刻: {now_str} (JST)
 1. 専門的でありながら親しみやすいトーンで話してください。
 2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。"""
 
                 history = await self._build_conversation_context(message.channel, message.id, limit=10)
-                # 今回のユーザーメッセージにPDFのURIデータを追加
-                input_parts.insert(0, {"file_data": {"mime_type": gemini_file.mime_type, "file_uri": gemini_file.uri}})
+                
+                input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type, "fileUri": gemini_file.uri}})
                 history.append({"role": "user", "parts": input_parts})
                 
+                # ★ 修正: systemInstruction のキャメルケース対応
                 payload = {
-                    "system_instruction": {"parts": [{"text": system_prompt}]},
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
                     "contents": history
                 }
+                
+                # ★ デバッグ用: ペイロードの構造をログに出力
+                logging.info(f"REST API Payload: {json.dumps(payload, ensure_ascii=False)}")
 
                 try:
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key={self.gemini_api_key}"
@@ -287,14 +290,13 @@ class PartnerCog(commands.Cog):
                                 await message.channel.send(reply_text.strip())
                             else:
                                 error_data = await resp.text()
-                                logging.error(f"REST API Error: {error_data}")
+                                logging.error(f"REST API Error Details: {error_data}")
                                 await message.channel.send("ごめんね、本の読み込みでちょっとエラーが起きちゃったみたい💦")
                 except Exception as e:
                     logging.error(f"PartnerCog REST API 通信エラー: {e}")
                     await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
 
             else:
-                # 日常スレッド (これまで通りSDKとToolsを使う)
                 system_prompt = f"""あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、頼れる英会話の先生です。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。
 現在時刻: {now_str} (JST)
 1. ユーザーが日本語で話しかけた場合は日本語のみで返信し、英語で話しかけた場合は完全に英語のみで返信してください。
@@ -315,12 +317,10 @@ class PartnerCog(commands.Cog):
                     ])
                 ]
 
-                # SDK用の形式に履歴を再構築
                 sdk_contents = []
                 for msg in await self._build_conversation_context(message.channel, message.id, limit=10):
                     sdk_contents.append(types.Content(role=msg["role"], parts=[types.Part.from_text(text=msg["parts"][0]["text"])]))
                 
-                # 今回の入力（テキスト）を追加
                 sdk_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
                 try:
