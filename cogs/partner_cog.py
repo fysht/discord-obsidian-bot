@@ -140,7 +140,6 @@ class PartnerCog(commands.Cog):
             logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    # ★ 修正: SDK用の履歴取得関数（ロールは "model"）
     async def _build_conversation_context_sdk(self, channel, current_msg_id: int, limit=30):
         messages = []
         async for msg in channel.history(limit=limit + 1, oldest_first=False):
@@ -155,7 +154,6 @@ class PartnerCog(commands.Cog):
             messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
         return list(reversed(messages))
 
-    # ★ 修正: REST API用の履歴取得関数（ロールは "assistant"）
     async def _build_conversation_context_rest(self, channel, current_msg_id: int, limit=30):
         messages = []
         async for msg in channel.history(limit=limit + 1, oldest_first=False):
@@ -282,10 +280,10 @@ class PartnerCog(commands.Cog):
 1. 専門的でありながら親しみやすいトーンで話してください。
 2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。"""
 
-                # ★ REST専用の履歴取得関数を使用（ロールは assistant）
                 history = await self._build_conversation_context_rest(message.channel, message.id, limit=10)
                 
-                input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type, "fileUri": gemini_file.uri}})
+                # ★ 修正: REST APIの仕様に合わせ、URLではなくリソース名（name）を渡す
+                input_parts.insert(0, {"fileData": {"mimeType": gemini_file.mime_type, "fileUri": gemini_file.name}})
                 history.append({"role": "user", "parts": input_parts})
                 
                 payload = {
@@ -333,10 +331,8 @@ class PartnerCog(commands.Cog):
                     ])
                 ]
 
-                # ★ SDK専用の履歴取得関数を使用（ロールは model）
                 sdk_contents = await self._build_conversation_context_sdk(message.channel, message.id, limit=10)
                 
-                # 今回の入力（テキスト）をPart形式で追加
                 input_parts_sdk = [types.Part.from_text(text=text)]
                 sdk_contents.append(types.Content(role="user", parts=input_parts_sdk))
 
