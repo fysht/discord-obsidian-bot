@@ -1,219 +1,169 @@
 import os
-import asyncio
 import logging
+import datetime
+from datetime import timedelta
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
-import random
-from datetime import time, datetime
-
 from google.genai import types
 
-# --- リファクタリング: インポート整理と定数化 ---
 from config import JST
-from utils.obsidian_utils import update_section
 
-MORNING_SAKUBUN_TIME = time(hour=8, minute=0, tzinfo=JST)
-EVENING_SAKUBUN_TIME = time(hour=21, minute=0, tzinfo=JST)
-SAKUBUN_FILE_NAME = "瞬間英作文リスト.md"
-ENGLISH_LOG_FOLDER = "English Learning"
-
-class EnglishLearningCog(commands.Cog, name="EnglishLearning"):
+class EnglishLearningCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.channel_id = int(os.getenv("ENGLISH_LEARNING_CHANNEL_ID", 0))
+        # 英語学習用のチャンネルID（設定されていなければ通常のメモチャンネルを使用）
+        self.channel_id = int(os.getenv("ENGLISH_LEARNING_CHANNEL_ID") or os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
-        # --- リファクタリング: Bot本体のサービスを使い回す ---
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
-        
-        self.chat_sessions = {} # {user_id: [Content objects...]}
-        self.sakubun_questions = []
-        self.is_ready = bool(self.drive_folder_id and self.channel_id)
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if self.is_ready:
-            await self._load_sakubun_questions()
-            self.morning_sakubun_task.start()
-            self.evening_sakubun_task.start()
+        if not self.midnight_vocab_extraction.is_running():
+            self.midnight_vocab_extraction.start()
+        if not self.daily_english_quiz.is_running():
+            self.daily_english_quiz.start()
 
-    async def _load_sakubun_questions(self):
+    def cog_unload(self):
+        self.midnight_vocab_extraction.cancel()
+        self.daily_english_quiz.cancel()
+
+    async def _get_log_content(self, date_obj: datetime.date) -> str:
+        """指定した日付の裏ログ(YYYY-MM-DD_EN.md)を取得する"""
+        service = self.drive_service.get_service()
+        if not service: return ""
+
+        base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+        if not base_folder_id: return ""
+        logs_folder_id = await self.drive_service.find_file(service, base_folder_id, "Logs")
+        if not logs_folder_id: return ""
+
+        date_str = date_obj.strftime('%Y-%m-%d')
+        file_name = f"{date_str}_EN.md"
+        
+        f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
+        if f_id:
+            try: return await self.drive_service.read_text_file(service, f_id)
+            except: return ""
+        return ""
+
+    async def _save_vocabulary(self, vocab_text: str):
+        """抽出した単語帳データをVocabulary.mdに追記する"""
         service = self.drive_service.get_service()
         if not service: return
-        
-        study_folder = await self.drive_service.find_file(service, self.drive_folder_id, "Study")
-        target_folder = study_folder if study_folder else self.drive_folder_id
-        
-        file_id = await self.drive_service.find_file(service, target_folder, SAKUBUN_FILE_NAME)
-        if file_id:
-            try:
-                content = await self.drive_service.read_text_file(service, file_id)
-                questions = []
-                for line in content.split('\n'):
-                    line = line.strip()
-                    if line.startswith('-'):
-                        clean_line = line.lstrip('- ').strip()
-                        if "::" in clean_line:
-                            q_part = clean_line.split("::")[0].strip()
-                            questions.append(q_part)
-                        else:
-                            questions.append(clean_line)
-                
-                if questions:
-                    self.sakubun_questions = questions
-                    logging.info(f"Loaded {len(questions)} sakubun questions.")
-            except Exception as e:
-                logging.error(f"Error loading sakubun questions: {e}")
 
-    # --- Tasks ---
-    @tasks.loop(time=MORNING_SAKUBUN_TIME)
-    async def morning_sakubun_task(self):
-        await self._send_random_question("☀️ 朝の瞬間英作文")
+        base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+        if not base_folder_id:
+            base_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "EnglishLearning")
 
-    @tasks.loop(time=EVENING_SAKUBUN_TIME)
-    async def evening_sakubun_task(self):
-        await self._send_random_question("🌙 夜の瞬間英作文")
+        file_name = "Vocabulary.md"
+        f_id = await self.drive_service.find_file(service, base_folder_id, file_name)
 
-    async def _send_random_question(self, title):
-        if not self.sakubun_questions: return
+        now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
+        append_text = f"\n### {now_str}\n{vocab_text}\n"
+
+        if f_id:
+            content = await self.drive_service.read_text_file(service, f_id)
+            if not content.endswith('\n'): content += '\n'
+            content += append_text
+            await self.drive_service.update_text(service, f_id, content)
+        else:
+            header = "# 📓 My Vocabulary List\n日常の思考から抽出した自分専用の単語帳です。\n\n"
+            await self.drive_service.upload_text(service, base_folder_id, file_name, header + append_text)
+
+    @tasks.loop(time=datetime.time(hour=23, minute=50, tzinfo=JST))
+    async def midnight_vocab_extraction(self):
+        """毎晩23:50にその日のログから重要単語を抽出して単語帳を作成"""
         channel = self.bot.get_channel(self.channel_id)
         if not channel: return
 
-        question = random.choice(self.sakubun_questions)
-        embed = discord.Embed(title=title, description=f"**{question}**\n\n(英語に翻訳して送信してください)", color=discord.Color.green())
-        await channel.send(embed=embed)
-
-    # --- Commands ---
-    @app_commands.command(name="english", description="AIと英会話を開始します")
-    async def english(self, interaction: discord.Interaction):
-        if interaction.channel_id != self.channel_id:
-            await interaction.response.send_message(f"<#{self.channel_id}> で実行してください。", ephemeral=True)
-            return
+        today = datetime.datetime.now(JST).date()
+        log_content = await self._get_log_content(today)
         
-        user_id = interaction.user.id
-        self.chat_sessions[user_id] = [] # 履歴初期化 (list of Content dicts)
-        
-        await interaction.response.send_message("Let's start English conversation! 🇺🇸\n(Type `end` or `finish` to stop and save the log.)")
-
-    @commands.Cog.listener()
-    async def on_message(self, message: discord.Message):
-        if message.author.bot or message.channel.id != self.channel_id: return
-        
-        user_id = message.author.id
-        if user_id in self.chat_sessions:
-            content = message.content.strip()
-            
-            if content.lower() in ["end", "finish", "quit", "終了"]:
-                await message.channel.send("Conversation ended. Saving log...")
-                await self._finish_session(message.author)
-                return
-
-            self.chat_sessions[user_id].append(
-                types.Content(role="user", parts=[types.Part.from_text(text=content)])
-            )
-            
-            async with message.channel.typing():
-                try:
-                    if self.gemini_client:
-                        response = await self.gemini_client.aio.models.generate_content(
-                            model='gemini-2.0-flash',
-                            contents=self.chat_sessions[user_id]
-                        )
-                        ai_text = response.text
-                        
-                        self.chat_sessions[user_id].append(
-                            types.Content(role="model", parts=[types.Part.from_text(text=ai_text)])
-                        )
-                        await message.channel.send(ai_text)
-                    else:
-                        await message.channel.send("AI Client not initialized.")
-                except Exception as e:
-                    await message.channel.send(f"⚠️ Error: {e}")
-
-    async def _finish_session(self, user):
-        user_id = user.id
-        history = self.chat_sessions.get(user_id, [])
-        if not history:
-            del self.chat_sessions[user_id]
-            return
-
-        full_text = ""
-        for h in history:
-            role = h.role
-            text = h.parts[0].text if h.parts else ""
-            full_text += f"{role}: {text}\n"
+        if not log_content or "## 💬 English Log" not in log_content:
+            return # 今日のログがなければスキップ
 
         prompt = f"""
-        以下の英会話ログを分析し、以下の項目を出力してください。
-        1. **Summary**: 会話の内容の要約 (日本語)
-        2. **Corrections**: ユーザーの英語の誤りと、より自然な表現の提案 (箇条書き)
-        3. **Advice**: 今後の学習アドバイス
+あなたはプロの英語コーチです。以下の「今日のユーザーの英語思考ログ」を分析し、ユーザーが今後も日常的に使いそうな「重要な英単語やフレーズ」を3〜5個抽出してください。
+出力はMarkdownの表形式のみとしてください。（挨拶や解説は不要です）
 
-        --- Log ---
-        {full_text}
-        """
+【表のフォーマット】
+| 英語 (English) | 日本語 (Japanese) | ユーザーの文脈に合わせた例文 (Example) |
+|---|---|---|
+| (単語) | (意味) | (例文) |
+
+【今日のログ】
+{log_content}
+"""
         try:
-            if self.gemini_client:
-                res = await self.gemini_client.aio.models.generate_content(
-                    model='gemini-2.5-pro',
-                    contents=prompt
-                )
-                review = res.text
-            else:
-                review = "AI Error"
-        except: 
-            review = "Review generation failed."
-
-        await self._save_chat_log_to_obsidian(user, history, review)
-        
-        del self.chat_sessions[user_id]
-        
-        embed = discord.Embed(title="📝 Conversation Review", description=review[:4000], color=discord.Color.blue())
-        channel = self.bot.get_channel(self.channel_id)
-        if channel: await channel.send(f"{user.mention}", embed=embed)
-
-    async def _save_chat_log_to_obsidian(self, user, history, review):
-        service = self.drive_service.get_service()
-        if not service: return
-
-        now = datetime.now(JST)
-        date_str = now.strftime('%Y-%m-%d')
-        filename = f"{now.strftime('%Y%m%d%H%M%S')}-Chat_{user.display_name}.md"
-        
-        log_parts = []
-        for h in history:
-            role = "You" if h.role == "user" else "AI"
-            text = h.parts[0].text if h.parts else ""
-            log_parts.append(f"- **{role}:** {text}")
-        
-        content = f"# English Chat Log\n\n[[{date_str}]]\n\n## Review\n{review}\n\n## Transcript\n" + "\n".join(log_parts)
-        
-        log_folder = await self.drive_service.find_file(service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
-        if not log_folder:
-            log_folder = await self.drive_service.create_folder(service, self.drive_folder_id, ENGLISH_LOG_FOLDER)
-        
-        await self.drive_service.upload_text(service, log_folder, filename, content)
-
-        daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
-        if daily_folder:
-            d_file = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
-            cur = ""
-            if d_file:
-                cur = await self.drive_service.read_text_file(service, d_file)
-            else:
-                cur = f"# Daily Note {date_str}\n"
-
-            new = update_section(cur, f"- [[{ENGLISH_LOG_FOLDER}/{filename}|English Chat]]", "## English Logs")
+            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
+            vocab_table = response.text.strip()
             
-            if d_file:
-                await self.drive_service.update_text(service, d_file, new)
-            else:
-                await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new)
+            await self._save_vocabulary(vocab_table)
+            
+            partner_cog = self.bot.get_cog("PartnerCog")
+            if partner_cog:
+                context = f"今日の単語帳を抽出しました。\n{vocab_table}"
+                instruction = "「今日の単語帳まとめておいたよ！」と短く報告し、抽出した単語の中で一番面白そうなもの、または役立ちそうなものを1つだけピックアップしてLINEのように短く紹介して。"
+                await partner_cog.generate_and_send_routine_message(context, instruction)
 
-async def setup(bot):
-    if int(os.getenv("ENGLISH_LEARNING_CHANNEL_ID", 0)) == 0:
-        logging.error("EnglishLearningCog: ENGLISH_LEARNING_CHANNEL_ID not set.")
-        return
+        except Exception as e:
+            logging.error(f"Vocabulary Extraction Error: {e}")
+
+    @tasks.loop(time=[datetime.time(hour=7, minute=30, tzinfo=JST), datetime.time(hour=21, minute=0, tzinfo=JST)])
+    async def daily_english_quiz(self):
+        """朝と夜に、過去のログ（忘却曲線）から瞬間英作文を出題"""
+        channel = self.bot.get_channel(self.channel_id)
+        if not channel: return
+
+        today = datetime.datetime.now(JST).date()
+        target_dates = [today - timedelta(days=1), today - timedelta(days=3), today - timedelta(days=7)]
+        
+        past_logs = []
+        for d in target_dates:
+            content = await self._get_log_content(d)
+            if content:
+                # ログの中から日本語部分([JA])だけを簡易的に抽出
+                lines = content.split('\n')
+                ja_lines = [line.replace('- [JA]', '').strip() for line in lines if '- [JA]' in line]
+                if ja_lines:
+                    past_logs.append(f"【{d.strftime('%Y-%m-%d')} のつぶやき】\n" + "\n".join(ja_lines))
+
+        if not past_logs:
+            return # 過去ログがまだ溜まっていなければスキップ
+
+        logs_text = "\n\n".join(past_logs)
+        
+        prompt = f"""
+あなたはユーザーの親密なパートナー（20代女性）であり、頼れる英語の先生です。LINEのような温かみのあるタメ口で話してください。
+以下のデータは、ユーザーが過去（昨日、3日前、1週間前）にDiscordでつぶやいた日本語のメモです。
+
+これらの中から「日常会話でパッと言えると役立ちそうなフレーズ」を1〜2個選び、ユーザーに「瞬間英作文クイズ」を出題してください。
+（例：「そういえば〇日前、『〜〜』って言ってたけど、これ今なら英語でなんて言う？」）
+※正解は書かず、ユーザーに答えさせるようにしてください。長文は避け、LINEのメッセージのように簡潔にすること。
+
+【過去のつぶやきデータ】
+{logs_text}
+"""
+        try:
+            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+            await channel.send(response.text.strip())
+        except Exception as e:
+            logging.error(f"English Quiz Error: {e}")
+
+    @app_commands.command(name="test_vocab", description="【テスト用】今日の英語ログから単語帳を生成します。")
+    async def test_vocab(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)
+        await self.midnight_vocab_extraction()
+        await interaction.followup.send("✅ 単語帳の生成タスクをテスト実行しました！")
+
+    @app_commands.command(name="test_quiz", description="【テスト用】過去のログから瞬間英作文クイズを出題します。")
+    async def test_quiz(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)
+        await self.daily_english_quiz()
+        await interaction.followup.send("✅ クイズ出題タスクをテスト実行しました！")
+
+async def setup(bot: commands.Bot):
     await bot.add_cog(EnglishLearningCog(bot))

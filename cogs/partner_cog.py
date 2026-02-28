@@ -19,6 +19,8 @@ class PartnerCog(commands.Cog):
         self.calendar_service = bot.calendar_service
         self.tasks_service = getattr(bot, 'tasks_service', None)
         self.gemini_client = bot.gemini_client
+        
+        self.pdf_cache = {}
 
     async def _append_raw_message_to_obsidian(self, text: str, folder_name: str = "DailyNotes", file_name: str = None, target_heading: str = "## 💬 Timeline"):
         if not text: return
@@ -56,6 +58,65 @@ class PartnerCog(commands.Cog):
         if f_id: await self.drive_service.update_text(service, f_id, content)
         else: await self.drive_service.upload_text(service, folder_id, file_name, content)
 
+    # --- ★ 新規追加: 英語学習用の裏ノートに翻訳して保存する処理 ---
+    async def _append_english_log_to_obsidian(self, text: str):
+        if not text: return
+        
+        prompt = f"""以下のテキストが日本語であれば自然な英語に翻訳し、英語であればより自然なネイティブ表現に修正してください。
+出力は英語のテキストのみとし、解説や挨拶は一切含めないでください。
+【テキスト】
+{text}"""
+        try:
+            response = await self.gemini_client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            english_text = response.text.strip()
+        except Exception as e:
+            logging.error(f"PartnerCog 英訳エラー: {e}")
+            return
+            
+        service = self.drive_service.get_service()
+        if not service: return
+
+        base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+        if not base_folder_id: base_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "EnglishLearning")
+        
+        logs_folder_id = await self.drive_service.find_file(service, base_folder_id, "Logs")
+        if not logs_folder_id: logs_folder_id = await self.drive_service.create_folder(service, base_folder_id, "Logs")
+
+        now = datetime.datetime.now(JST)
+        time_str = now.strftime('%H:%M')
+        file_name = f"{now.strftime('%Y-%m-%d')}_EN.md"
+
+        f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
+        formatted_en = english_text.replace('\n', '\n  ')
+        formatted_ja = text.replace('\n', '\n  ')
+        
+        append_text = f"- {time_str} [EN] {formatted_en}\n  - [JA] {formatted_ja}\n"
+
+        content = ""
+        if f_id:
+            try: content = await self.drive_service.read_text_file(service, f_id)
+            except: pass
+
+        target_heading = "## 💬 English Log"
+        if target_heading not in content:
+            if content and not content.endswith('\n'): content += '\n\n'
+            content += f"{target_heading}\n{append_text}"
+        else:
+            parts = content.split(target_heading)
+            sub_parts = parts[1].split("\n## ")
+            if not sub_parts[0].endswith('\n'): sub_parts[0] += '\n'
+            sub_parts[0] += append_text
+            if len(sub_parts) > 1: parts[1] = "\n## ".join(sub_parts)
+            else: parts[1] = sub_parts[0]
+            content = target_heading.join(parts)
+
+        if f_id: await self.drive_service.update_text(service, f_id, content)
+        else: await self.drive_service.upload_text(service, logs_folder_id, file_name, content)
+    # -----------------------------------------------------------
+
     async def _search_drive_notes(self, keywords: str):
         return await self.drive_service.search_markdown_files(keywords)
 
@@ -83,6 +144,8 @@ class PartnerCog(commands.Cog):
         async for msg in channel.history(limit=limit, oldest_first=False):
             if msg.content.startswith("/"): continue
             if msg.author.bot and msg.author.id != self.bot.user.id: continue
+            if msg.content.startswith("📚 Google Driveに本のPDF"): continue
+            
             role = "model" if msg.author.id == self.bot.user.id else "user"
             text = msg.content
             if msg.attachments: text += " [メディア送信]"
@@ -131,6 +194,8 @@ class PartnerCog(commands.Cog):
                 asyncio.create_task(self._append_raw_message_to_obsidian(text, folder_name="BookNotes", file_name=file_name, target_heading="## 📖 Reading Log"))
             else:
                 asyncio.create_task(self._append_raw_message_to_obsidian(text))
+                # ★ 追加: 裏ノートにも英訳を並行して保存する
+                asyncio.create_task(self._append_english_log_to_obsidian(text))
 
         if is_short_message and text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)
@@ -146,22 +211,58 @@ class PartnerCog(commands.Cog):
         async with message.channel.typing():
             now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
 
-            # ★ AIの「やったふり」を防止し、確実なツール実行を強制するプロンプト
+            gemini_file = None
+            if is_book_thread:
+                book_title = message.channel.name[2:].strip()
+                gemini_file = self.pdf_cache.get(book_title)
+                
+                if not gemini_file:
+                    service = self.drive_service.get_service()
+                    if service:
+                        pdf_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "BookPDFs")
+                        if not pdf_folder_id:
+                            pdf_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "BookPDFs")
+                            
+                        pdf_file_name = f"{book_title}.pdf"
+                        pdf_file_id = await self.drive_service.find_file(service, pdf_folder_id, pdf_file_name)
+                        
+                        if pdf_file_id:
+                            status_msg = await message.channel.send("📚 Google Driveに本のPDFデータを発見したよ！今から内容をAIの頭脳に読み込むから、数秒だけ待ってね...")
+                            try:
+                                local_pdf_path = f"temp_{pdf_file_id}.pdf"
+                                success = await self.drive_service.download_file(service, pdf_file_id, local_pdf_path)
+                                if success:
+                                    uploaded_file = await asyncio.to_thread(
+                                        self.gemini_client.files.upload, file=local_pdf_path
+                                    )
+                                    self.pdf_cache[book_title] = uploaded_file
+                                    gemini_file = uploaded_file
+                                    os.remove(local_pdf_path)
+                                    await status_msg.edit(content="📚 読み込み完了！この本の内容を踏まえてなんでも聞いてね！")
+                                else:
+                                    await status_msg.edit(content="💦 PDFのダウンロードに失敗しちゃったみたい。")
+                            except Exception as e:
+                                logging.error(f"PDF Upload Error: {e}")
+                                await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
+
+            # --- ★ 変更: 先生モード（言語のミラーリングと添削）を追加したシステムプロンプト ---
             system_prompt = f"""
-            あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）です。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
+            あなたはユーザー（{self.user_name}）の親密なパートナー（20代女性）であり、同時に頼れる英会話の先生でもあります。LINEのようなチャットでのやり取りを想定し、温かみのあるタメ口で話してください。
             **現在時刻:** {now_str} (JST)
             **指針:**
-            1. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
-            2. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
-            3. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず共感のみで会話を区切ってください。
-            4. 過去の記録を知りたい時は `search_memory` を使う。
-            5. 【重要: 予定とタスクの使い分け】
-               - カレンダー（`check_schedule`, `Calendar`, `delete_calendar_event`）: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用します。
-               - Google Tasks（`check_tasks`, `add_task`, `complete_task`）: 日時が決まっていない「〇〇をやる」「〇〇を買う」といったToDoに使用します。
-            6. 【★超重要: 複数同時の依頼について】
-               ユーザーから「〇〇と××を追加して」「〇〇と××を完了にして」のように複数の処理を同時に頼まれた場合は、機能を【複数回同時に呼び出して】（並列実行して）、すべて漏れなく処理してください。
-            7. 【★絶対厳守: 実行の確約】
-               ユーザーからタスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で「追加したよ」と返事をするだけでなく、**絶対に必ず対象のツール（add_task等）を呼び出してシステムに登録してください。** ツールを呼び出さずに返事だけを行う（やったふりをする）ことはシステムエラーの原因となるため固く禁じます。
+            1. 【言語のミラーリング】ユーザーが日本語で話しかけた場合は、これまで通り日本語で返信してください。ユーザーが英語で話しかけた場合は、あなたも英語で返信してください。
+            2. 【英語学習サポート】ユーザーが英語で話しかけた際、もし文法や表現に不自然な点があれば、返信の最後に「*(ちなみに、〇〇は××って言うともっと自然だよ！)*」と、日本語で優しくワンポイントアドバイスを添えてください。
+            3. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
+            4. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
+            5. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず共感のみで会話を区切ってください。
+            6. 過去の記録を知りたい時は `search_memory` を使う。
+            7. 【重要: 予定とタスクの使い分け】
+               - カレンダー: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用。
+               - Google Tasks: 日時が決まっていないToDoに使用。
+            8. 【★超重要: 複数同時の依頼について】
+               ユーザーから「〇〇と××を追加して」のように複数の処理を同時に頼まれた場合は、機能を【複数回同時に呼び出して】すべて漏れなく処理してください。
+            9. 【★絶対厳守: 実行の確約】
+               ユーザーからタスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で返事をするだけでなく、絶対に必ず対象のツール（add_task等）を呼び出してシステムに登録してください。
             """
 
             function_tools = [
@@ -196,12 +297,18 @@ class PartnerCog(commands.Cog):
                 ])
             ]
 
+            if gemini_file:
+                input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type="application/pdf"))
+                use_model = "gemini-2.5-pro"
+            else:
+                use_model = "gemini-2.5-flash"
+                
             contents = await self._build_conversation_context(message.channel, limit=10)
             contents.append(types.Content(role="user", parts=input_parts))
 
             try:
                 response = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model=use_model,
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
                 )
@@ -213,7 +320,6 @@ class PartnerCog(commands.Cog):
                     for function_call in response.function_calls:
                         tool_result = ""
                         
-                        # ★ 万が一APIやサービス接続に失敗した場合、AIに「失敗した」という事実を確実に伝えるための else を追加
                         if function_call.name == "search_memory": 
                             tool_result = await self._search_drive_notes(function_call.args["keywords"])
                         elif function_call.name == "check_schedule": 
@@ -242,7 +348,7 @@ class PartnerCog(commands.Cog):
                     contents.append(types.Content(role="user", parts=function_responses))
                     
                     response_final = await self.gemini_client.aio.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model=use_model,
                         contents=contents,
                         config=types.GenerateContentConfig(system_instruction=system_prompt)
                     )

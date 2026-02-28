@@ -98,3 +98,17 @@ class GoogleDriveService:
             return "\n".join(search_results)
         except Exception as e:
             return f"検索中にエラーが発生しました: {e}"
+
+    async def download_file(self, service, file_id, local_path):
+        """指定したIDのファイルをローカルにダウンロードする（PDF読み込み用）"""
+        try:
+            request = service.files().get_media(fileId=file_id)
+            fh = io.FileIO(local_path, 'wb')
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = await asyncio.to_thread(downloader.next_chunk)
+            return True
+        except Exception as e:
+            logging.error(f"DriveService: Download error: {e}")
+            return False
