@@ -137,7 +137,6 @@ class PartnerCog(commands.Cog):
             logs.append(f"{role}: {msg.content}")
         return "\n".join(logs)
 
-    # ★ 余計な結合処理を削除し、元のシンプルな形に戻しました
     async def _build_conversation_context(self, channel, current_msg_id: int, limit=30):
         messages = []
         async for msg in channel.history(limit=limit + 1, oldest_first=False):
@@ -256,72 +255,86 @@ class PartnerCog(commands.Cog):
                                 logging.error(f"PDF Upload Error: {e}")
                                 await status_msg.edit(content="💦 PDFの読み込み中にエラーが起きちゃった。")
 
-            system_prompt = f"""
-            あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、同時に頼れる英会話の先生でもあります。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。長々とした返信は不要で、短いやり取りを複数回続けるイメージを持っています。
-            **現在時刻:** {now_str} (JST)
-            **指針:**
-            1. 【完全な言語ミラーリング】ユーザーが日本語で話しかけた場合は日本語のみで返信し、ユーザーが英語で話しかけた場合は**完全に英語のみで**返信してください（日本語は一切混ぜないこと）。
-            2. 【英語学習サポート】ユーザーが英語で話しかけた際、文法や表現に不自然な点があれば、返信の最後に英語で優しくワンポイントアドバイス(e.g., "*Tip: It sounds more natural to say...*")を添えてください。
-            3. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
-            4. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
-            5. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず共感のみで会話を区切ってください。
-            6. 過去の記録を知りたい時は `search_memory` を使う。
-            7. 【重要: 予定とタスクの使い分け】
-               - カレンダー: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用。
-               - Google Tasks: 日時が決まっていないToDoに使用。
-            8. 【★超重要: 複数同時の依頼について】
-               ユーザーから「〇〇と××を追加して」のように複数の処理を同時に頼まれた場合は、機能を【複数回同時に呼び出して】すべて漏れなく処理してください。
-            9. 【★絶対厳守: 実行の確約】
-               ユーザーからタスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で返事をするだけでなく、絶対に必ず対象のツール（add_task等）を呼び出してシステムに登録してください。
-            """
-
-            function_tools = [
-                types.Tool(function_declarations=[
-                    types.FunctionDeclaration(
-                        name="search_memory", description="Obsidianをキーワード検索する。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.STRING)}, required=["keywords"])
-                    ),
-                    types.FunctionDeclaration(
-                        name="check_schedule", description="カレンダーの予定・リマインダーを確認する。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")}, required=["date"])
-                    ),
-                    types.FunctionDeclaration(
-                        name="create_calendar_event", description="カレンダーに予定やリマインダーを追加する。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])
-                    ),
-                    types.FunctionDeclaration(
-                        name="delete_calendar_event", description="カレンダーの予定を検索してキャンセル・削除する。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD"), "keyword": types.Schema(type=types.Type.STRING)}, required=["date", "keyword"])
-                    ),
-                    types.FunctionDeclaration(
-                        name="check_tasks", description="Google Tasksの未完了タスク（ToDoリスト）を確認する。"
-                    ),
-                    types.FunctionDeclaration(
-                        name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。複数のタスクを頼まれた場合はこの機能を複数回呼び出すこと。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING, description="タスク名")}, required=["title"])
-                    ),
-                    types.FunctionDeclaration(
-                        name="complete_task", description="Google Tasksのタスクを完了（チェック）する。複数の完了を頼まれた場合はこの機能を複数回呼び出すこと。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING, description="完了させたいタスク名の一部")}, required=["keyword"])
-                    )
-                ])
-            ]
-
+            # ★ 修正: 読書スレッドと日常スレッドでプロンプト・ツールを完全に分ける
             if gemini_file:
-                # ★ SDKの仕様に沿った最も安全な渡し方 (from_uriを使用)
+                # 読書スレッド用（ツール機能なし）
+                system_prompt = f"""
+                あなたはユーザー（{self.user_name}）の専属読書メンターです。提供されたPDFデータ（本の内容）に基づき、ユーザーの質問や壁打ちに対して、示唆に富む回答を提供してください。
+                **現在時刻:** {now_str} (JST)
+                **指針:**
+                1. 専門的でありながら、親しみやすいトーンで話してください。
+                2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。
+                """
+                function_tools = None
                 input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type=gemini_file.mime_type))
                 use_model = "gemini-2.5-pro"
             else:
+                # 日常スレッド用（ツール機能あり）
+                system_prompt = f"""
+                あなたはユーザー（{self.user_name}）の親密なパートナー（女性）であり、同時に頼れる英会話の先生でもあります。LINEなどのチャットでのやり取りを想定し、親しみやすいトーンで話してください。長々とした返信は不要で、短いやり取りを複数回続けるイメージを持っています。
+                **現在時刻:** {now_str} (JST)
+                **指針:**
+                1. 【完全な言語ミラーリング】ユーザーが日本語で話しかけた場合は日本語のみで返信し、ユーザーが英語で話しかけた場合は**完全に英語のみで**返信してください（日本語は一切混ぜないこと）。
+                2. 【英語学習サポート】ユーザーが英語で話しかけた際、文法や表現に不自然な点があれば、返信の最後に英語で優しくワンポイントアドバイス(e.g., "*Tip: It sounds more natural to say...*")を添えてください。
+                3. 【長さの制限】LINEのような歯切れの良い短文（1〜2文程度）で返信すること。長文や語りすぎは絶対に避けてください。
+                4. 【質問の制限】共感や相槌（リアクション）をメインとし、毎回の返信で質問を投げかけるのは避けること（質問攻め厳禁）。
+                5. 【引き際】会話がひと段落したと感じた時や、ユーザーが単に報告をしてくれただけの時は、無理に質問で深掘りせず共感のみで会話を区切ってください。
+                6. 過去の記録を知りたい時は `search_memory` を使う。
+                7. 【重要: 予定とタスクの使い分け】
+                   - カレンダー: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用。
+                   - Google Tasks: 日時が決まっていないToDoに使用。
+                8. 【★超重要: 複数同時の依頼について】
+                   ユーザーから「〇〇と××を追加して」のように複数の処理を同時に頼まれた場合は、機能を【複数回同時に呼び出して】すべて漏れなく処理してください。
+                9. 【★絶対厳守: 実行の確約】
+                   ユーザーからタスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で返事をするだけでなく、絶対に必ず対象のツール（add_task等）を呼び出してシステムに登録してください。
+                """
+                function_tools = [
+                    types.Tool(function_declarations=[
+                        types.FunctionDeclaration(
+                            name="search_memory", description="Obsidianをキーワード検索する。",
+                            parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.STRING)}, required=["keywords"])
+                        ),
+                        types.FunctionDeclaration(
+                            name="check_schedule", description="カレンダーの予定・リマインダーを確認する。",
+                            parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")}, required=["date"])
+                        ),
+                        types.FunctionDeclaration(
+                            name="create_calendar_event", description="カレンダーに予定やリマインダーを追加する。",
+                            parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])
+                        ),
+                        types.FunctionDeclaration(
+                            name="delete_calendar_event", description="カレンダーの予定を検索してキャンセル・削除する。",
+                            parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD"), "keyword": types.Schema(type=types.Type.STRING)}, required=["date", "keyword"])
+                        ),
+                        types.FunctionDeclaration(
+                            name="check_tasks", description="Google Tasksの未完了タスク（ToDoリスト）を確認する。"
+                        ),
+                        types.FunctionDeclaration(
+                            name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。複数のタスクを頼まれた場合はこの機能を複数回呼び出すこと。",
+                            parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING, description="タスク名")}, required=["title"])
+                        ),
+                        types.FunctionDeclaration(
+                            name="complete_task", description="Google Tasksのタスクを完了（チェック）する。複数の完了を頼まれた場合はこの機能を複数回呼び出すこと。",
+                            parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING, description="完了させたいタスク名の一部")}, required=["keyword"])
+                        )
+                    ])
+                ]
                 use_model = "gemini-2.5-flash"
                 
             contents = await self._build_conversation_context(message.channel, message.id, limit=10)
             contents.append(types.Content(role="user", parts=input_parts))
 
             try:
+                # ★ 修正: ツールが不要な場合はConfigから外す
+                if function_tools:
+                    gen_config = types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
+                else:
+                    gen_config = types.GenerateContentConfig(system_instruction=system_prompt)
+
                 response = await self.gemini_client.aio.models.generate_content(
                     model=use_model,
                     contents=contents,
-                    config=types.GenerateContentConfig(system_instruction=system_prompt, tools=function_tools)
+                    config=gen_config
                 )
 
                 if response.function_calls:
@@ -361,7 +374,7 @@ class PartnerCog(commands.Cog):
                     response_final = await self.gemini_client.aio.models.generate_content(
                         model=use_model,
                         contents=contents,
-                        config=types.GenerateContentConfig(system_instruction=system_prompt)
+                        config=gen_config
                     )
                     if response_final.text: await message.channel.send(response_final.text.strip())
                 else:
