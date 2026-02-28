@@ -9,7 +9,6 @@ import discord
 from discord.ext import commands, tasks
 from google.genai import types
 
-# --- リファクタリング: 定数のクリーンなインポート ---
 from config import JST
 
 class DailyOrganizeCog(commands.Cog):
@@ -18,7 +17,6 @@ class DailyOrganizeCog(commands.Cog):
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
-        # --- リファクタリング: Bot本体のサービスを利用 ---
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
         self.tasks_service = getattr(bot, 'tasks_service', None)
@@ -58,25 +56,6 @@ class DailyOrganizeCog(commands.Cog):
                         if valid_temps: max_t, min_t = int(max(valid_temps)), int(min(valid_temps))
         except: pass
 
-        fitbit_stats = {}
-        fitbit_cog = self.bot.get_cog("FitbitCog")
-        if fitbit_cog and hasattr(fitbit_cog, 'fitbit_client'):
-            client = fitbit_cog.fitbit_client
-            target_date = datetime.datetime.now(JST).date()
-            try:
-                sleep_data = await client.get_sleep_data(target_date)
-                if sleep_data and 'summary' in sleep_data: fitbit_stats['sleep_minutes'] = sleep_data['summary'].get('totalMinutesAsleep', 0)
-                act_data = await client.get_activity_summary(target_date)
-                if act_data and 'summary' in act_data:
-                    s = act_data['summary']
-                    fitbit_stats['steps'] = s.get('steps', 0)
-                    fitbit_stats['calories'] = s.get('caloriesOut', 0)
-                    distances = s.get('distances', [])
-                    fitbit_stats['distance'] = next((d['distance'] for d in distances if d['activity'] == 'total'), 0)
-                    fitbit_stats['floors'] = s.get('floors', 0)
-                    fitbit_stats['resting_hr'] = s.get('restingHeartRate', 'N/A')
-            except: pass
-
         location_log_text = "（記録なし）"
         service = self.drive_service.get_service()
         if service:
@@ -96,10 +75,10 @@ class DailyOrganizeCog(commands.Cog):
         if log_text.strip():
             prompt = f"""今日の会話ログを整理し、JSON形式で出力してください。
 【指示】
-1. メモの文末はすべて「である調（〜である、〜だ）」で統一すること。
-2. ログの中から「User（私）」の投稿内容のみを抽出し、AIの発言内容は一切メモに含めないでください。
+1. 1日のジャーナルと箇条書きのメモの文末はすべて「である調（〜である、〜だ）」で統一すること。
+2. ログの中から「User（私）」の投稿内容のみを抽出し、AIの発言内容は一切メモに含めないこと。
 3. 私自身が書いたメモとして整理すること。
-4. 情報の整理はするが、要約や大幅な削除はしないこと。
+4. 箇条書きのメモは可能な限り私の投稿をすべて拾うこととし、整理はしますが、要約や大幅な削除は絶対にしないでください。
 5. 全体の内容を振り返る短い日記を「journal」として作成してください。【今日の移動記録】がある場合はそれも踏まえて書いてください。
 6. 【最重要】「next_actions」には、会話内で明示的に「タスクに追加して」と依頼した事柄や、以下の【現在の未完了タスク】に既に登録されている内容は **絶対に含めない** でください。会話の中でふと呟いた潜在的なアクションのみを抽出してください。見つからない場合は空配列 [] にしてください。
 
@@ -131,7 +110,7 @@ class DailyOrganizeCog(commands.Cog):
                     result.update(res_data)
             except Exception as e: logging.error(f"DailyOrganize: JSON Error: {e}")
 
-        result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t, **fitbit_stats}
+        result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t}
         await self._execute_organization(result, today_str)
         
         if result.get('next_actions') and self.tasks_service:
@@ -154,26 +133,38 @@ class DailyOrganizeCog(commands.Cog):
         if not daily_folder: daily_folder = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
             
         f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
-        meta = data.get('meta', {})
-        frontmatter = "---\n" + f"date: {date_str}\n" + f"weather: {meta.get('weather', 'N/A')}\n" + f"temp_max: {meta.get('temp_max', 'N/A')}\n" + f"temp_min: {meta.get('temp_min', 'N/A')}\n"
-        if 'steps' in meta: frontmatter += f"steps: {meta['steps']}\n"
-        if 'calories' in meta: frontmatter += f"calories: {meta['calories']}\n"
-        if 'distance' in meta: frontmatter += f"distance: {meta['distance']}\n"
-        if 'floors' in meta: frontmatter += f"floors: {meta['floors']}\n"
-        if 'resting_hr' in meta: frontmatter += f"resting_hr: {meta['resting_hr']}\n"
-        if 'sleep_minutes' in meta: frontmatter += f"sleep_time: {meta['sleep_minutes']}\n"
-        frontmatter += "---\n\n"
         
+        existing_fm = {}
         current_body = f"# Daily Note {date_str}\n"
+        
         if f_id:
             try:
                 raw_content = await self.drive_service.read_text_file(service, f_id)
                 if raw_content.startswith("---"):
                     parts = raw_content.split("---", 2)
-                    if len(parts) >= 3: current_body = parts[2].strip()
-                    else: current_body = raw_content
-                else: current_body = raw_content
+                    if len(parts) >= 3: 
+                        fm_text = parts[1]
+                        current_body = parts[2].strip()
+                        # ★ 既存のフロントマターをすべて保護（保持）する
+                        for line in fm_text.splitlines():
+                            if ':' in line:
+                                k, v = line.split(':', 1)
+                                existing_fm[k.strip()] = v.strip()
+                    else:
+                        current_body = raw_content
+                else: 
+                    current_body = raw_content
             except: pass
+
+        # ★ 天気などのメタデータだけを追加（既存データは消さない）
+        meta = data.get('meta', {})
+        existing_fm['date'] = date_str
+        if meta.get('weather') != 'N/A': existing_fm['weather'] = meta.get('weather')
+        if meta.get('temp_max') != 'N/A': existing_fm['temp_max'] = meta.get('temp_max')
+        if meta.get('temp_min') != 'N/A': existing_fm['temp_min'] = meta.get('temp_min')
+        
+        fm_lines = [f"{k}: {v}" for k, v in existing_fm.items()]
+        frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
 
         updates = []
         if data.get('journal'): updates.append(f"## 📔 Daily Journal\n{data['journal']}")
