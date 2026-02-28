@@ -308,7 +308,7 @@ class PartnerCog(commands.Cog):
             ]
 
             if gemini_file:
-                input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type="application/pdf"))
+                input_parts.insert(0, gemini_file)
                 use_model = "gemini-2.5-pro"
             else:
                 use_model = "gemini-2.5-flash"
