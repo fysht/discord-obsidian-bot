@@ -265,9 +265,9 @@ class PartnerCog(commands.Cog):
                 2. ユーザーの仕事や日常生活にどう活かせるか、具体例を交えてアドバイスしてください。
                 """
                 function_tools = None
-                
-                # ★ 修正: types.Part.from_uri の引数を `uri` に変更
-                input_parts.insert(0, types.Part.from_uri(uri=gemini_file.uri, mime_type=gemini_file.mime_type))
+
+                # ★ 修正: 元の正しい引数名 'file_uri' に戻す
+                input_parts.insert(0, types.Part.from_uri(file_uri=gemini_file.uri, mime_type=gemini_file.mime_type))
                 use_model = "gemini-2.5-pro"
             else:
                 system_prompt = f"""
