@@ -13,7 +13,7 @@ class EnglishLearningCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # 英語学習用のチャンネルID（設定されていなければ通常のメモチャンネルを使用）
-        self.channel_id = int(os.getenv("ENGLISH_LEARNING_CHANNEL_ID") or os.getenv("MEMO_CHANNEL_ID", 0))
+        self.channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
         self.drive_service = bot.drive_service
