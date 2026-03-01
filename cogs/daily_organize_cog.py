@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 from google.genai import types
 
 from config import JST
+from utils.obsidian_utils import update_section, update_frontmatter
 
 class DailyOrganizeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -134,54 +135,42 @@ class DailyOrganizeCog(commands.Cog):
             
         f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
         
-        existing_fm = {}
-        current_body = f"# Daily Note {date_str}\n"
-        
+        content = f"# Daily Note {date_str}\n"
         if f_id:
             try:
                 raw_content = await self.drive_service.read_text_file(service, f_id)
-                if raw_content.startswith("---"):
-                    parts = raw_content.split("---", 2)
-                    if len(parts) >= 3: 
-                        fm_text = parts[1]
-                        current_body = parts[2].strip()
-                        # ★ 既存のフロントマターをすべて保護（保持）する
-                        for line in fm_text.splitlines():
-                            if ':' in line:
-                                k, v = line.split(':', 1)
-                                existing_fm[k.strip()] = v.strip()
-                    else:
-                        current_body = raw_content
-                else: 
-                    current_body = raw_content
+                if raw_content:
+                    content = raw_content
             except: pass
 
-        # ★ 天気などのメタデータだけを追加（既存データは消さない）
+        # 1. フロントマター（プロパティ）の更新
         meta = data.get('meta', {})
-        existing_fm['date'] = date_str
-        if meta.get('weather') != 'N/A': existing_fm['weather'] = meta.get('weather')
-        if meta.get('temp_max') != 'N/A': existing_fm['temp_max'] = meta.get('temp_max')
-        if meta.get('temp_min') != 'N/A': existing_fm['temp_min'] = meta.get('temp_min')
-        
-        fm_lines = [f"{k}: {v}" for k, v in existing_fm.items()]
-        frontmatter = "---\n" + "\n".join(fm_lines) + "\n---\n\n"
+        updates_fm = {'date': date_str}
+        if meta.get('weather') != 'N/A': updates_fm['weather'] = meta.get('weather')
+        if meta.get('temp_max') != 'N/A': updates_fm['temp_max'] = meta.get('temp_max')
+        if meta.get('temp_min') != 'N/A': updates_fm['temp_min'] = meta.get('temp_min')
+        content = update_frontmatter(content, updates_fm)
 
-        updates = []
-        if data.get('journal'): updates.append(f"## 📔 Daily Journal\n{data['journal']}")
+        # 2. 各セクションの更新（空白行や順序は utils が自動調整）
+        if data.get('journal'):
+            content = update_section(content, data['journal'], "## 📔 Daily Journal")
+            
         if data.get('events') and len(data['events']) > 0:
             events_text = "\n".join(data['events']) if isinstance(data['events'], list) else str(data['events'])
-            updates.append(f"## 📝 Events & Actions\n{events_text}")
+            content = update_section(content, events_text, "## 📝 Events & Actions")
+            
         if data.get('insights') and len(data['insights']) > 0:
             insights_text = "\n".join(data['insights']) if isinstance(data['insights'], list) else str(data['insights'])
-            updates.append(f"## 💡 Insights & Thoughts\n{insights_text}")
+            content = update_section(content, insights_text, "## 💡 Insights & Thoughts")
+            
         if data.get('next_actions') and len(data['next_actions']) > 0:
             actions_text = "\n".join(data['next_actions']) if isinstance(data['next_actions'], list) else str(data['next_actions'])
-            updates.append(f"## ➡️ Next Actions\n{actions_text}")
-
-        new_content = frontmatter + current_body + "\n\n" + "\n\n".join(updates)
+            content = update_section(content, actions_text, "## ➡️ Next Actions")
         
-        if f_id: await self.drive_service.update_text(service, f_id, new_content)
-        else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new_content)
+        if f_id: 
+            await self.drive_service.update_text(service, f_id, content)
+        else: 
+            await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", content)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DailyOrganizeCog(bot))

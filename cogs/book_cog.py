@@ -60,7 +60,8 @@ class BookCog(commands.Cog):
             f_id = await self.drive_service.find_file(service, book_folder_id, file_name)
             if not f_id:
                 now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-                content = f"---\ntitle: {safe_title}\ndate: {now_str}\ntags: [book]\n---\n\n# {safe_title}\n\n## 📝 要約・学び\n\n\n## 💬 読書ログ\n\n"
+                # ★ 修正: 見出しをデイリーノートに合わせて英語化
+                content = f"---\ntitle: {safe_title}\ndate: {now_str}\ntags: [book]\n---\n\n# {safe_title}\n\n## 📝 Summary & Learning\n\n\n## 📖 Reading Log\n\n"
                 await self.drive_service.upload_text(service, book_folder_id, file_name, content)
 
         msg = await message.reply(f"📚 『{safe_title}』の読書ノートを作成したよ！\nこのスレッドでメモや感想を書いてね。")
@@ -97,11 +98,12 @@ class BookCog(commands.Cog):
             await interaction.followup.send("ノートの読み込みに失敗したよ。")
             return
 
-        log_heading = "## 💬 読書ログ"
-        summary_heading = "## 📝 要約・学び"
+        # ★ 修正: スプリット（分割）の基準となる文字列を英語見出しに変更
+        log_heading = "## 📖 Reading Log"
+        summary_heading = "## 📝 Summary & Learning"
         
         if log_heading not in content or summary_heading not in content:
-            await interaction.followup.send("ノートの形式が正しくないみたい（見出しが見つかりません）。")
+            await interaction.followup.send("ノートの形式が正しくないみたい（見出しが見つかりません）。古い日本語見出しのノートを使っている可能性があります。")
             return
 
         parts = content.split(log_heading)
@@ -112,14 +114,15 @@ class BookCog(commands.Cog):
             await interaction.followup.send("まだ読書ログがないみたいだよ！")
             return
 
+        # ★ 修正: AIに出力させる見出しも英語に統一
         prompt = f"""
         あなたは優秀な編集者です。以下の「読書ログ（ユーザーのメモやAIとの会話）」を読み込み、構造化された美しいまとめを作成してください。
         
         【出力ルール】
         - 以下の3つの見出し（Markdownの h3）を必ず含め、箇条書きで簡潔に整理すること。
-          ### 📌 重要な引用・ハイライト
-          ### 💡 気づき・学び
-          ### 🤖 AIの解説・用語メモ
+          ### 📌 Quotes & Highlights
+          ### 💡 Insights & Learnings
+          ### 🤖 AI Notes & Glossary
         - 余計な前置きや後書き（「まとめました」など）は一切出力せず、指定した見出しの内容のみを出力すること。
 
         【読書ログ】
@@ -134,7 +137,7 @@ class BookCog(commands.Cog):
             
             await self.drive_service.update_text(service, f_id, new_content)
             
-            await interaction.followup.send("✨ 読書ノートの「要約・学び」セクションを綺麗に整理してObsidianに保存したよ！")
+            await interaction.followup.send("✨ 読書ノートの「Summary & Learning」セクションを綺麗に整理してObsidianに保存したよ！")
 
         except Exception as e:
             await interaction.followup.send(f"AIの要約中にエラーが発生したよ💦: {e}")

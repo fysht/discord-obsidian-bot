@@ -2,6 +2,7 @@ import os
 import logging
 import datetime
 import xml.etree.ElementTree as ET
+import asyncio
 
 import discord
 from discord.ext import commands, tasks

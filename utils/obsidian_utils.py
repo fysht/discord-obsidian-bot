@@ -28,145 +28,116 @@ SECTION_ORDER = [
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
     """
     Obsidianのデイリーノート内で、定義された順序に基づいてセクションの内容を更新または新規追加する共通関数。
-    
-    Args:
-        current_content (str): 現在のノートの全内容
-        text_to_add (str): 追加または更新するテキスト (見出しを含まない内容のみ)
-        section_header (str): 対象となるセクションの見出し (例: "## 💬 Timeline")
-
-    Returns:
-        str: 更新後のノートの全内容
+    ノート全体をパースして再構築することで、セクション間の空白行を統一し、項目内の不要な空白行を削除します。
     """
-    lines = current_content.split('\n')
-    original_lines = list(lines) # 参照用
+    # 1. フロントマターと本文を分離
+    frontmatter = ""
+    body = current_content
+    match = re.search(r'^(---\n.*?\n---)(.*)', current_content, re.DOTALL)
+    if match:
+        frontmatter = match.group(1).strip()
+        body = match.group(2)
 
-    # 1. ターゲットのセクションが既に存在するか検索 (大文字小文字/空白無視)
-    header_index = -1
-    normalized_target_header = section_header.strip().lstrip('#').strip().lower()
-    
-    for i, line in enumerate(lines):
-        # 行が "## " で始まり、かつ中身が一致するか確認
-        if line.strip().startswith('##'):
-            normalized_line_header = line.strip().lstrip('#').strip().lower()
-            if normalized_line_header == normalized_target_header:
-                header_index = i
-                break
-    
-    # --- ケースA: セクションが既に存在する場合 -> 追記 ---
-    if header_index != -1:
-        # 見出しの次の行から探索し、次の見出し(##)の手前、またはファイル末尾に追加位置を決める
-        insert_index = header_index + 1
-        while insert_index < len(lines):
-            line = lines[insert_index].strip()
-            if line.startswith('## '):
-                break
-            insert_index += 1
-        
-        # 挿入 (直前が空行でなければ空行を入れて読みやすくする)
-        if insert_index > 0 and lines[insert_index-1].strip() != "":
-            lines.insert(insert_index, "")
-            insert_index += 1
-        
-        lines.insert(insert_index, text_to_add)
-        return "\n".join(lines)
+    # 2. 本文をセクション（見出し）ごとにパース
+    lines = body.split('\n')
+    preamble = []
+    sections = {}
+    current_section = None
 
-    # --- ケースB: セクションが存在しない場合 -> 新規作成して挿入 ---
-    else:
-        # 新しいセクションブロックを作成（前後に空行を入れて視認性を確保）
-        new_section_block = f"\n{section_header}\n{text_to_add}\n"
-        
-        # 現在のファイルに含まれる既存セクションの位置を特定
-        existing_indices = {} # {"## Planning": 行番号, ...}
-        for i, line in enumerate(original_lines):
-            clean_line = line.strip()
-            if clean_line in SECTION_ORDER:
-                existing_indices[clean_line] = i
-        
-        # 新しいセクションの理想的な順序インデックスを取得
-        try:
-            target_order_idx = SECTION_ORDER.index(section_header)
-        except ValueError:
-             # 定義にない見出しの場合は、ログを出して末尾に追加
-             logging.warning(f"utils: '{section_header}' はSECTION_ORDERに未定義です。末尾に追加します。")
-             return current_content.strip() + f"\n\n{section_header}\n{text_to_add}"
-
-        # 挿入位置の決定ロジック:
-        # 「自分の本来の位置より『後ろ』にあるべきセクション」のうち、
-        # 現在のファイル内に存在する『一番最初』のものを見つけ、その直前に割り込ませる。
-        insert_before_line_index = -1
-        
-        for i in range(target_order_idx + 1, len(SECTION_ORDER)):
-            next_header = SECTION_ORDER[i]
-            if next_header in existing_indices:
-                insert_before_line_index = existing_indices[next_header]
-                break
-        
-        if insert_before_line_index != -1:
-            # 見つかったセクションの前に挿入
-            lines.insert(insert_before_line_index, new_section_block.strip())
-            # 挿入箇所の前後に空行を確保
-            if insert_before_line_index > 0 and lines[insert_before_line_index-1].strip() != "":
-                 lines.insert(insert_before_line_index, "")
-            
-            # 挿入したブロックの後ろにも空行が必要なら追加（次の見出しとの間）
-            return "\n".join(lines)
-        
+    for line in lines:
+        if line.startswith('## '):
+            current_section = line.strip()
+            if current_section not in sections:
+                sections[current_section] = []
         else:
-            # 後ろにあるべきセクションがファイル内に一つもない場合 -> 
-            # 「自分の本来の位置より『前』にあるべきセクション」を探すまでもなく、
-            # ファイルの末尾に追加すれば順序は守られる。
-            return current_content.strip() + f"\n\n{section_header}\n{text_to_add}"
+            if current_section:
+                sections[current_section].append(line)
+            else:
+                preamble.append(line)
+
+    # 3. 指定されたセクションにテキストを追加
+    if section_header not in sections:
+        sections[section_header] = []
+    
+    # 追加するテキスト自体に含まれる連続する空白行も事前に圧縮
+    clean_text_to_add = re.sub(r'\n\s*\n', '\n', text_to_add.strip())
+    if clean_text_to_add:
+        sections[section_header].append(clean_text_to_add)
+
+    # 4. ノート全体を美しいフォーマットで再構築
+    output_blocks = []
+    
+    # フロントマターがあれば追加
+    if frontmatter:
+        output_blocks.append(frontmatter)
+        
+    # 見出し前のテキスト（# タイトル など）があれば追加
+    preamble_text = "\n".join(preamble).strip()
+    # 連続する空白行を圧縮
+    preamble_text = re.sub(r'\n\s*\n', '\n', preamble_text)
+    if preamble_text:
+        output_blocks.append(preamble_text)
+        
+    # 定義された順序（SECTION_ORDER）に従ってセクションを配置
+    added_sections = set()
+    for header in SECTION_ORDER:
+        if header in sections:
+            # セクション内の行を結合し、連続する空白行を1つに圧縮（項目内の空白行をなくす）
+            raw_content = "\n".join(sections[header]).strip()
+            clean_content = re.sub(r'\n\s*\n', '\n', raw_content)
+            
+            # 見出しと中身を結合したブロックを作成
+            if clean_content:
+                output_blocks.append(f"{header}\n{clean_content}")
+            else:
+                output_blocks.append(f"{header}")
+            added_sections.add(header)
+            
+    # SECTION_ORDERに未定義の未知のセクションがあれば末尾に配置
+    for header, content_lines in sections.items():
+        if header not in added_sections:
+            raw_content = "\n".join(content_lines).strip()
+            clean_content = re.sub(r'\n\s*\n', '\n', raw_content)
+            
+            if clean_content:
+                output_blocks.append(f"{header}\n{clean_content}")
+            else:
+                output_blocks.append(f"{header}")
+
+    # 各ブロック（フロントマター、タイトル、各見出しセクション）を「必ず1つの空白行（\n\n）」で繋いで出力
+    return "\n\n".join(output_blocks) + "\n"
 
 def update_frontmatter(content: str, updates: dict) -> str:
     """
     ObsidianのYAMLフロントマター(Properties)を更新または新規作成する関数。
-    
-    Args:
-        content (str): ノートの全文
-        updates (dict): 更新したいキーと値の辞書。
-                        値がリストの場合はYAMLのリスト形式で出力します。
-                        値がNoneの場合はキーを削除しません(上書き動作)。
-    Returns:
-        str: 更新後のノート全文
     """
-    # フロントマターの検出 (^--- ... ---)
     match = re.search(r'^---\n(.*?)\n---', content, re.DOTALL)
     
     new_lines = []
     
     if match:
-        # 既存フロントマターがある場合
         frontmatter_raw = match.group(1)
-        body = content[match.end():] # ---の後ろ全て
+        body = content[match.end():] 
         
-        # 既存行を解析して更新対象は除外、それ以外は保持
         current_lines = frontmatter_raw.split('\n')
-        
-        # リストのパース状態管理
         skip_mode = False
         
         for line in current_lines:
-            # 前の行で処理済みキーのリスト項目だった場合はスキップ
             if skip_mode:
-                # リスト項目(インデント付きorハイフン)ならスキップ
                 if line.strip().startswith('-') or (line.startswith(' ') and ':' not in line):
                     continue
                 else:
                     skip_mode = False
             
-            # キーの検出 (例: "weather: ...")
-            # 行頭から始まり、コロンを含むものをキーとみなす
             key_match = re.match(r'^([^:\s]+):', line)
             if key_match:
                 key = key_match.group(1).strip()
                 if key in updates:
-                    # 更新対象のキーなので、ここには出力せず、あとで新しい値を出力する
-                    skip_mode = True # リストなどの場合、後続行をスキップさせる
+                    skip_mode = True 
                     continue
             
             new_lines.append(line)
         
-        # 更新・新規キーの追加
         for k, v in updates.items():
             if isinstance(v, list):
                 new_lines.append(f"{k}:")
@@ -175,11 +146,9 @@ def update_frontmatter(content: str, updates: dict) -> str:
             else:
                 new_lines.append(f"{k}: {v}")
         
-        # 再構築
         return f"---\n" + "\n".join(new_lines) + "\n---" + body
 
     else:
-        # フロントマターがない場合、新規作成
         new_lines.append("---")
         for k, v in updates.items():
             if isinstance(v, list):
