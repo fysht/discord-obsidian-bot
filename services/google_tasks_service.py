@@ -3,18 +3,17 @@ import logging
 import asyncio
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
-from config import TOKEN_FILE, SCOPES
 
 class GoogleTasksService:
-    def __init__(self):
-        pass
+    # ★ 修正: 初期化時に creds を受け取るように変更
+    def __init__(self, creds):
+        self.creds = creds
 
     def get_service(self):
-        if os.path.exists(TOKEN_FILE):
+        # ★ 修正: ファイルからではなく、受け取った creds を使って構築
+        if self.creds:
             try:
-                creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-                if creds and creds.valid:
-                    return build('tasks', 'v1', credentials=creds)
+                return build('tasks', 'v1', credentials=self.creds)
             except Exception as e:
                 logging.error(f"Tasks API Auth Error: {e}")
         return None

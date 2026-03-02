@@ -73,8 +73,12 @@ class MyBot(commands.Bot):
             self.calendar_service = None
             logging.warning("カレンダー用の認証情報がありません。")
             
-        # --- ★追加：GoogleTasksServiceの生成 ---
-        self.tasks_service = GoogleTasksService()
+        # --- ★修正：GoogleTasksServiceの生成 (credsを渡す) ---
+        if self.drive_service and hasattr(self.drive_service, 'creds') and self.drive_service.creds:
+            self.tasks_service = GoogleTasksService(self.drive_service.creds)
+        else:
+            self.tasks_service = None
+            logging.warning("タスク用の認証情報がありません。")
             
         # --- Geminiクライアントの生成 ---
         api_key = os.getenv("GEMINI_API_KEY")

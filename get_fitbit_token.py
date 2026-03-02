@@ -24,7 +24,7 @@ def main():
         return
 
     # 2. 認証URLの生成
-    auth_url = f"https://www.fitbit.com/oauth2/authorize?client_id={CLIENT_ID}&response_type=code&scope=activity%20sleep"
+    auth_url = f"https://www.fitbit.com/oauth2/authorize?client_id={CLIENT_ID}&response_type=code&scope=activity%20heartrate%20location%20nutrition%20profile%20settings%20sleep%20social%20weight"
     print("【ステップ1】ブラウザの「新しい空のタブ」を開き、以下のURLを貼り付けてアクセスしてください。")
     print("-" * 60)
     print(auth_url)

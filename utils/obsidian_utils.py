@@ -111,6 +111,13 @@ def update_frontmatter(content: str, updates: dict) -> str:
     """
     ObsidianのYAMLフロントマター(Properties)を更新または新規作成する関数。
     """
+    # ★ 修正: 安全装置として、値が空の辞書 {} だった場合はアップデート対象から除外する
+    clean_updates = {}
+    for k, v in updates.items():
+        if isinstance(v, dict) and not v: # 値が空の辞書の場合
+            continue
+        clean_updates[k] = v
+
     match = re.search(r'^---\n(.*?)\n---', content, re.DOTALL)
     
     new_lines = []
@@ -132,13 +139,13 @@ def update_frontmatter(content: str, updates: dict) -> str:
             key_match = re.match(r'^([^:\s]+):', line)
             if key_match:
                 key = key_match.group(1).strip()
-                if key in updates:
+                if key in clean_updates:
                     skip_mode = True 
                     continue
             
             new_lines.append(line)
         
-        for k, v in updates.items():
+        for k, v in clean_updates.items():
             if isinstance(v, list):
                 new_lines.append(f"{k}:")
                 for item in v:
@@ -150,7 +157,7 @@ def update_frontmatter(content: str, updates: dict) -> str:
 
     else:
         new_lines.append("---")
-        for k, v in updates.items():
+        for k, v in clean_updates.items():
             if isinstance(v, list):
                 new_lines.append(f"{k}:")
                 for item in v:
