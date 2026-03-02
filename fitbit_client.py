@@ -6,8 +6,6 @@ import time
 from typing import Optional, Dict, Any
 import aiohttp
 import base64
-import io
-from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 class FitbitClient:
     def __init__(self, client_id: str, client_secret: str, drive_service, drive_folder_id: str, user_id: str = "-"):
@@ -19,72 +17,78 @@ class FitbitClient:
         self.drive_folder_id = drive_folder_id
         self.token_file_name = "fitbit_refresh_token.txt"
 
-        # ★追加：トークンの使い回し（キャッシュ）と同時実行防止の仕組み
         self._cached_access_token = None
         self._token_expires_at = 0
         self._token_lock = asyncio.Lock()
 
-    async def _find_file(self, parent_id, name):
-        loop = asyncio.get_running_loop()
-        try:
-            res = await loop.run_in_executor(None, lambda: self.drive_service.files().list(q=f"'{parent_id}' in parents and name = '{name}' and trashed = false", fields="files(id)").execute())
-            files = res.get('files', [])
-            return files[0]['id'] if files else None
-        except: return None
-
     async def _get_latest_refresh_token(self) -> str:
-        f_id = await self._find_file(self.drive_folder_id, self.token_file_name)
+        # ★修正: drive_service の安全なラッパーメソッドを使用
+        service = self.drive_service.get_service()
+        if not service:
+            return os.getenv("FITBIT_REFRESH_TOKEN", "")
+
+        f_id = await self.drive_service.find_file(service, self.drive_folder_id, self.token_file_name)
         if f_id:
             try:
-                loop = asyncio.get_running_loop()
-                request = self.drive_service.files().get_media(fileId=f_id)
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, request)
-                done = False
-                while not done:
-                    _, done = await loop.run_in_executor(None, downloader.next_chunk)
-                return fh.getvalue().decode('utf-8').strip()
+                # DriveServiceのメソッドを使ってテキストとして読み込む
+                content = await self.drive_service.read_text_file(service, f_id)
+                if content:
+                    return content.strip()
             except Exception as e:
                 logging.error(f"Driveからのトークン読み込みに失敗: {e}")
-        return os.getenv("FITBIT_REFRESH_TOKEN")
+        
+        # Driveから取得できなかった場合は環境変数から
+        return os.getenv("FITBIT_REFRESH_TOKEN", "")
 
     async def _save_new_refresh_token(self, new_token: str):
-        loop = asyncio.get_running_loop()
-        f_id = await self._find_file(self.drive_folder_id, self.token_file_name)
-        media = MediaIoBaseUpload(io.BytesIO(new_token.encode('utf-8')), mimetype='text/plain')
+        # ★修正: drive_service の安全なラッパーメソッドを使用
+        service = self.drive_service.get_service()
+        if not service:
+            logging.error("Driveサービスがないため、新しいトークンを保存できません。")
+            return
+
+        f_id = await self.drive_service.find_file(service, self.drive_folder_id, self.token_file_name)
         try:
             if f_id:
-                await loop.run_in_executor(None, lambda: self.drive_service.files().update(fileId=f_id, media_body=media).execute())
+                # 既存ファイルがあれば上書き更新
+                await self.drive_service.update_text(service, f_id, new_token)
             else:
-                await loop.run_in_executor(None, lambda: self.drive_service.files().create(body={'name': self.token_file_name, 'parents': [self.drive_folder_id]}, media_body=media).execute())
+                # なければ新規作成
+                await self.drive_service.upload_text(service, self.drive_folder_id, self.token_file_name, new_token)
+            logging.info("🎉 新しいFitbitリフレッシュトークンをGoogle Driveに保存しました。")
         except Exception as e:
             logging.error(f"Driveへのトークン保存に失敗: {e}")
 
     async def _get_access_token(self) -> Optional[str]:
-        # すでに有効なアクセストークンがあれば使い回す（有効期限内かチェック）
         if self._cached_access_token and time.time() < self._token_expires_at:
             return self._cached_access_token
 
-        # トークン取得処理が複数同時に走らないように順番待ち（ロック）させる
         async with self._token_lock:
-            # 待っている間に別の処理がトークンを取得してくれていたら、それを使う
             if self._cached_access_token and time.time() < self._token_expires_at:
                 return self._cached_access_token
 
             url = "https://api.fitbit.com/oauth2/token"
             auth_header = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
             headers = {"Authorization": f"Basic {auth_header}", "Content-Type": "application/x-www-form-urlencoded"}
+            
             current_refresh_token = await self._get_latest_refresh_token()
+            if not current_refresh_token:
+                logging.error("🚨 リフレッシュトークンが取得できませんでした。")
+                return None
+
             payload = {"grant_type": "refresh_token", "refresh_token": current_refresh_token}
             
             async with self.session.post(url, headers=headers, data=payload) as resp:
                 response_json = await resp.json()
                 if resp.status == 200:
-                    # 成功したらアクセストークンをメモリに保存（余裕を持って7時間で破棄設定）
                     self._cached_access_token = response_json.get("access_token")
                     self._token_expires_at = time.time() + (7 * 3600)
                     
-                    await self._save_new_refresh_token(response_json.get("refresh_token"))
+                    # 成功したら直ちにGoogle Driveへ新しいリフレッシュトークンを保存
+                    new_refresh_token = response_json.get("refresh_token")
+                    if new_refresh_token:
+                        await self._save_new_refresh_token(new_refresh_token)
+                    
                     return self._cached_access_token
                 else:
                     logging.error(f"🚨 トークン取得エラー ({resp.status}): {response_json}")
