@@ -6,10 +6,9 @@ import logging
 import datetime
 import asyncio
 
-# --- リファクタリング: 新しい FitbitService と定数のインポート ---
-from fitbit_service import FitbitService
 from config import JST
 from prompts import PROMPT_FITBIT_MORNING, PROMPT_FITBIT_MORNING_NO_DATA, PROMPT_FITBIT_EVENING
+from services.fitbit_service import FitbitService  # ★修正: services. を追加
 
 class FitbitCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -18,7 +17,6 @@ class FitbitCog(commands.Cog):
         self.drive_service = bot.drive_service
         
         if self.drive_service:
-            # 新しい FitbitService で初期化
             self.fitbit_service = FitbitService(
                 drive_service=self.drive_service,
                 client_id=os.getenv("FITBIT_CLIENT_ID"),
@@ -41,10 +39,9 @@ class FitbitCog(commands.Cog):
         if not raw_sleep_data or 'sleep' not in raw_sleep_data or not raw_sleep_data['sleep']:
             return None
         
-        # メインの睡眠データを抽出
         main_sleep = next((s for s in raw_sleep_data['sleep'] if s.get('isMainSleep')), raw_sleep_data['sleep'][0])
         return {
-            'sleep_score': main_sleep.get('efficiency', 0), # 簡略化してefficiencyをスコア代わりに使用
+            'sleep_score': main_sleep.get('efficiency', 0), 
             'minutesAsleep': main_sleep.get('minutesAsleep', 0)
         }
 
@@ -53,7 +50,6 @@ class FitbitCog(commands.Cog):
         if not self.is_ready: return
         target_date = datetime.datetime.now(JST).date()
         
-        # 新しい FitbitService を使ってデータ取得
         raw_sleep_data = await self.fitbit_service.get_sleep_data(target_date)
         sleep_summary = self._process_sleep_data(raw_sleep_data)
         
@@ -82,14 +78,12 @@ class FitbitCog(commands.Cog):
         if not self.is_ready: return
         target_date = datetime.datetime.now(JST).date()
         
-        # 新しい FitbitService を使ってデータ取得
         raw_sleep_data, activity_data = await asyncio.gather(
             self.fitbit_service.get_sleep_data(target_date),
             self.fitbit_service.get_activity_summary(target_date)
         )
         sleep_summary = self._process_sleep_data(raw_sleep_data)
         
-        # Obsidian書き込み用の stats 辞書を作成
         stats = {}
         if sleep_summary:
             stats['Sleep Score'] = sleep_summary.get('sleep_score', 'N/A')
@@ -105,7 +99,6 @@ class FitbitCog(commands.Cog):
             stats['Steps'] = 'N/A'
             stats['Calories'] = 'N/A'
 
-        # 新しい FitbitService の Obsidian 書き込みメソッドを呼び出し
         await self.fitbit_service.update_daily_note_with_stats(target_date, stats)
         
         partner_cog = self.bot.get_cog("PartnerCog")

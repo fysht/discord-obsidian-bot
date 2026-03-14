@@ -11,7 +11,7 @@ from google.genai import types
 from config import JST
 from utils.obsidian_utils import update_section, update_frontmatter
 from prompts import PROMPT_DAILY_ORGANIZE
-from info_service import InfoService
+from services.info_service import InfoService  # ★修正: services. を追加
 
 class DailyOrganizeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -46,7 +46,6 @@ class DailyOrganizeCog(commands.Cog):
 
         log_text = await partner_cog.fetch_todays_chat_log(channel)
         
-        # InfoServiceを使って天気を取得
         weather, max_t, min_t = await self.info_service.get_weather()
 
         location_log_text = "（記録なし）"

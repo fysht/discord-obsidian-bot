@@ -254,6 +254,17 @@ class PartnerCog(commands.Cog):
                             },
                             required=["habit_name"]
                         )
+                    ),
+                    types.FunctionDeclaration(
+                        name="delete_habit",
+                        description="ユーザーが特定の習慣（例：筋トレ、読書など）をやめる、またはリストから削除してほしいと頼んだ際に、その習慣を削除する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "habit_name": types.Schema(type=types.Type.STRING, description="削除したい習慣の名前")
+                            },
+                            required=["habit_name"]
+                        )
                     )
                 ])
             ]
@@ -320,6 +331,12 @@ class PartnerCog(commands.Cog):
                             habit_cog = self.bot.get_cog("HabitCog")
                             if habit_cog:
                                 tool_result = await habit_cog.complete_habit(function_call.args["habit_name"])
+                            else:
+                                tool_result = "システムエラー: HabitCogが見つかりません。"
+                        elif function_call.name == "delete_habit":
+                            habit_cog = self.bot.get_cog("HabitCog")
+                            if habit_cog:
+                                tool_result = await habit_cog.delete_habit(function_call.args["habit_name"])
                             else:
                                 tool_result = "システムエラー: HabitCogが見つかりません。"
 

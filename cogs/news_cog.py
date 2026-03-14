@@ -8,7 +8,7 @@ from discord.ext import commands, tasks
 
 from config import JST
 from prompts import PROMPT_ROUTINE_MORNING
-from info_service import InfoService
+from services.info_service import InfoService  # ★修正: services. を追加
 
 class NewsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -16,7 +16,7 @@ class NewsCog(commands.Cog):
         self.location_name = os.getenv("LOCATION_NAME", "岡山")
         
         self.calendar_service = getattr(bot, 'calendar_service', None)
-        self.tasks_service = getattr(bot, 'tasks_service', None)  # Google Tasks サービスを追加
+        self.tasks_service = getattr(bot, 'tasks_service', None)
         self.gemini_client = bot.gemini_client
         self.info_service = getattr(bot, 'info_service', InfoService())
 
@@ -30,12 +30,11 @@ class NewsCog(commands.Cog):
         if not channel: return
 
         try:
-            # InfoServiceを使って天気とニュースを取得
             weather_task = asyncio.create_task(self.info_service.get_weather())
             news_task = asyncio.create_task(self.info_service.get_news(limit=3))
 
             weather_data = await weather_task
-            weather_text = weather_data[0] # (weather_text, max_t, min_t) の1つ目
+            weather_text = weather_data[0] 
             
             news_list = await news_task
             news_text = "\n".join([f"・{news}" for news in news_list]) if news_list else "ニュースの取得に失敗しました。"
@@ -43,12 +42,10 @@ class NewsCog(commands.Cog):
             today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
             schedule_text = await self.calendar_service.list_events_for_date(today_str) if self.calendar_service else "カレンダーに接続できません。"
             
-            # 未完了タスクの取得を追加
             tasks_text = await self.tasks_service.get_uncompleted_tasks() if self.tasks_service else "タスクAPIに接続できません。"
 
             recent_log = await partner_cog.fetch_todays_chat_log(channel) if channel else ""
 
-            # context_data にタスク情報を追加
             context_data = (
                 f"【今日の予定】\n{schedule_text}\n\n"
                 f"【現在の未完了タスク】\n{tasks_text}\n\n"

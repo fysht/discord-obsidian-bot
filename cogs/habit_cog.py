@@ -57,7 +57,6 @@ class HabitCog(commands.Cog):
                 break
         
         if not target_habit:
-            # 存在しない場合は新規作成してしまう
             existing_ids = [int(h['id']) for h in data['habits']]
             new_id = str(max(existing_ids) + 1) if existing_ids else "1"
             target_habit = {"id": new_id, "name": habit_name_or_keyword}
@@ -71,14 +70,29 @@ class HabitCog(commands.Cog):
             data['logs'][today_str].append(h_id)
             await self._save_data(data)
             
-            # Obsidianのフロントマターを同期
             await self._sync_to_obsidian(today_str, data)
             
-            # 連続日数を計算
             streak = self._calculate_streak(data, h_id, today_str)
             return f"習慣「{target_habit['name']}」を完了にしました！（現在 {streak} 日連続達成中！）"
         else:
             return f"習慣「{target_habit['name']}」は既に今日完了しています。"
+
+    async def delete_habit(self, habit_name_or_keyword: str):
+        """指定された習慣をリストから削除する"""
+        data = await self._load_data()
+        
+        target_habit = None
+        for h in data['habits']:
+            if habit_name_or_keyword.lower() in h['name'].lower():
+                target_habit = h
+                break
+        
+        if target_habit:
+            data['habits'].remove(target_habit)
+            await self._save_data(data)
+            return f"習慣リストから「{target_habit['name']}」を完全に削除しました！"
+        else:
+            return f"リストの中に「{habit_name_or_keyword}」に一致する習慣は見つかりませんでした。"
 
     async def get_incomplete_habits(self):
         """今日の未完了の習慣リストを取得する"""
