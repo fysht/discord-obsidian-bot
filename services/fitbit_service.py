@@ -1,5 +1,4 @@
 import os
-import json
 import base64
 import datetime
 import logging
@@ -7,9 +6,10 @@ import asyncio
 import re
 import aiohttp
 
-from config import JST, BOT_FOLDER
+from config import JST
 
-TOKEN_FILE_NAME = "fitbit_token.json"
+# ★以前のシンプルで確実なテキストファイル方式に戻しました
+TOKEN_FILE_NAME = "fitbit_refresh_token.txt"
 
 class FitbitService:
     def __init__(self, drive_service, client_id, client_secret, initial_refresh_token, user_id="-"):
@@ -30,13 +30,12 @@ class FitbitService:
         service = self.drive_service.get_service()
         if not service: return
         try:
-            b_folder = await self.drive_service.find_file(service, self.drive_service.folder_id, BOT_FOLDER)
-            if b_folder:
-                f_id = await self.drive_service.find_file(service, b_folder, TOKEN_FILE_NAME)
-                if f_id:
-                    content = await self.drive_service.read_text_file(service, f_id)
-                    data = json.loads(content)
-                    self.refresh_token = data.get("refresh_token", self.refresh_token)
+            # ★ルートフォルダから直接テキストファイルを読み込む
+            f_id = await self.drive_service.find_file(service, self.drive_service.folder_id, TOKEN_FILE_NAME)
+            if f_id:
+                content = await self.drive_service.read_text_file(service, f_id)
+                if content:
+                    self.refresh_token = content.strip()
         except Exception as e:
             logging.error(f"Fitbit Token Load Error: {e}")
 
@@ -45,15 +44,13 @@ class FitbitService:
         service = self.drive_service.get_service()
         if not service: return
         try:
-            b_folder = await self.drive_service.find_file(service, self.drive_service.folder_id, BOT_FOLDER)
-            if not b_folder:
-                b_folder = await self.drive_service.create_folder(service, self.drive_service.folder_id, BOT_FOLDER)
-            data = json.dumps({"refresh_token": new_refresh_token}, indent=2)
-            f_id = await self.drive_service.find_file(service, b_folder, TOKEN_FILE_NAME)
+            # ★ルートフォルダに直接テキストとして保存する
+            f_id = await self.drive_service.find_file(service, self.drive_service.folder_id, TOKEN_FILE_NAME)
             if f_id:
-                await self.drive_service.update_text(service, f_id, data, mime_type='application/json')
+                await self.drive_service.update_text(service, f_id, new_refresh_token)
             else:
-                await self.drive_service.upload_text(service, b_folder, TOKEN_FILE_NAME, data)
+                await self.drive_service.upload_text(service, self.drive_service.folder_id, TOKEN_FILE_NAME, new_refresh_token)
+            logging.info("🎉 新しいFitbitリフレッシュトークンをGoogle Driveに保存しました。")
         except Exception as e:
             logging.error(f"Fitbit Token Save Error: {e}")
 
@@ -79,7 +76,6 @@ class FitbitService:
                     await self._save_token(new_refresh)
                     return True
                 else:
-                    # ★修正: 失敗した時にFitbitからのエラー詳細をログに出力する
                     error_text = await resp.text()
                     logging.error(f"[Fitbit Token Error] Status: {resp.status}, Body: {error_text}")
                     return False
@@ -120,7 +116,6 @@ class FitbitService:
                     stats['active_minutes_very'] = s.get('veryActiveMinutes', 0)
                     stats['active_minutes_fairly'] = s.get('fairlyActiveMinutes', 0)
                 else:
-                    # ★修正: 活動データの取得に失敗した時のログ
                     error_text = await resp.text()
                     logging.error(f"[Fitbit Activity Error] Status: {resp.status}, Body: {error_text}")
         except Exception as e:
@@ -152,7 +147,6 @@ class FitbitService:
                         
                         stats['sleep_score'] = self._calculate_sleep_score(total_asleep, total_in_bed, deep_min, rem_min, wake_min)
                 else:
-                    # ★修正: 睡眠データの取得に失敗した時のログ
                     error_text = await resp.text()
                     logging.error(f"[Fitbit Sleep Error] Status: {resp.status}, Body: {error_text}")
         except Exception as e:
