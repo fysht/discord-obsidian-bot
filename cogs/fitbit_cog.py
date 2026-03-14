@@ -33,12 +33,15 @@ class FitbitCog(commands.Cog):
         if hours > 0: return f"{hours}時間{mins}分"
         return f"{mins}分"
 
-    @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
-    async def sleep_report(self):
+    async def send_sleep_report(self, date_str: str = None):
         if not self.is_ready: return
-        target_date = datetime.datetime.now(JST).date()
         
-        # ★修正: 新しい fitbit_service の get_stats() を使用
+        if date_str:
+            try: target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError: target_date = datetime.datetime.now(JST).date()
+        else:
+            target_date = datetime.datetime.now(JST).date()
+            
         stats = await self.fitbit_service.get_stats(target_date)
         
         partner_cog = self.bot.get_cog("PartnerCog")
@@ -50,29 +53,33 @@ class FitbitCog(commands.Cog):
         if channel:
             today_log = await partner_cog.fetch_todays_chat_log(channel)
 
+        date_display = f"{target_date.strftime('%Y年%m月%d日')}の" if date_str else "今日の"
+
         if not stats or 'sleep_score' not in stats:
-            context_data = f"今日の睡眠データ：まだ同期されていません\n【最近の会話ログ】\n{today_log}"
+            context_data = f"{date_display}睡眠データ：まだ同期されていないか、データがありません。\n【最近の会話ログ】\n{today_log}"
             instruction = PROMPT_FITBIT_MORNING_NO_DATA
         else:
             sleep_score = stats.get('sleep_score', 0)
             sleep_time = self._format_minutes(stats.get('total_sleep_minutes', 0))
-            context_data = f"【昨晩の睡眠データ】\nスコア: {sleep_score}\n合計睡眠時間: {sleep_time}\n【最近の会話ログ】\n{today_log}"
+            context_data = f"【{date_display}睡眠データ】\nスコア: {sleep_score}\n合計睡眠時間: {sleep_time}\n【最近の会話ログ】\n{today_log}"
             instruction = PROMPT_FITBIT_MORNING
         
         await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
-    @tasks.loop(time=datetime.time(hour=22, minute=15, tzinfo=JST))
-    async def full_health_report(self):
+    async def send_full_health_report(self, date_str: str = None):
         if not self.is_ready: return
-        target_date = datetime.datetime.now(JST).date()
         
-        # ★修正: 新しい fitbit_service の get_stats() を使用
+        if date_str:
+            try: target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError: target_date = datetime.datetime.now(JST).date()
+        else:
+            target_date = datetime.datetime.now(JST).date()
+            
         stats = await self.fitbit_service.get_stats(target_date)
         
         if not stats:
-            stats = {} # 取得失敗時も空の辞書で処理を続行
+            stats = {} 
             
-        # ★修正: 取得した stats 辞書をそのまま update_daily_note_with_stats に渡す
         await self.fitbit_service.update_daily_note_with_stats(target_date, stats)
         
         partner_cog = self.bot.get_cog("PartnerCog")
@@ -86,24 +93,35 @@ class FitbitCog(commands.Cog):
         sleep_text = f"スコア: {sleep_score}, 睡眠時間: {sleep_time}"
         activity_text = f"歩数: {steps}歩, 消費: {calories}kcal"
         
-        context_data = f"【本日の睡眠】\n{sleep_text}\n【本日の活動】\n{activity_text}"
+        date_display = f"{target_date.strftime('%Y年%m月%d日')}の" if date_str else "本日の"
+        context_data = f"【{date_display}睡眠】\n{sleep_text}\n【{date_display}活動】\n{activity_text}"
         
         await partner_cog.generate_and_send_routine_message(context_data, PROMPT_FITBIT_EVENING)
 
+    # --- 自動タスク（毎日の定期実行） ---
+    @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
+    async def sleep_report_loop(self):
+        await self.send_sleep_report()
+
+    @tasks.loop(time=datetime.time(hour=22, minute=15, tzinfo=JST))
+    async def full_health_report_loop(self):
+        await self.send_full_health_report()
+
+    # --- 手動コマンド ---
     @app_commands.command(name="fitbit_morning", description="今日の睡眠レポートを手動で取得し、パートナーに報告させます。")
     async def get_morning_report(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False)
-        await self.sleep_report()
+        await self.send_sleep_report()
         await interaction.followup.send("✅ 朝の睡眠レポート処理を手動で実行しました！")
 
     @app_commands.command(name="fitbit_evening", description="今日の健康総合レポートを手動で取得し、パートナーに報告させます。")
     async def get_evening_report(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False)
-        await self.full_health_report()
+        await self.send_full_health_report()
         await interaction.followup.send("✅ 夜の健康総合レポート処理を手動で実行しました！")
 
-    @sleep_report.before_loop
-    @full_health_report.before_loop
+    @sleep_report_loop.before_loop
+    @full_health_report_loop.before_loop
     async def before_tasks(self):
         await self.bot.wait_until_ready()
 

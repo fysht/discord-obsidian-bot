@@ -254,14 +254,25 @@ class PartnerCog(commands.Cog):
                         description="ユーザーが特定の習慣をリストから削除してほしいと頼んだ際に削除する。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])
                     ),
-                    # ▼ 追加: Fitbitと英語クイズ用のツール
                     types.FunctionDeclaration(
                         name="report_sleep",
-                        description="ユーザーが「昨日の睡眠データ教えて」「睡眠レポートを出して」など、朝の睡眠記録を確認したい時に呼び出す。"
+                        description="ユーザーが「昨日の睡眠データ教えて」「〇月〇日の睡眠レポートを出して」など、指定した日付の睡眠記録を確認したい時に呼び出す。日付指定がない場合は今日とする。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")
+                            }
+                        )
                     ),
                     types.FunctionDeclaration(
                         name="report_health",
-                        description="ユーザーが「今日の歩数は？」「Fitbitデータ教えて」「健康レポート出して」など、1日の活動データを確認したい時に呼び出す。"
+                        description="ユーザーが「昨日の歩数は？」「〇月〇日の健康レポート出して」など、指定した日付の活動データを確認したい時に呼び出す。日付指定がない場合は今日とする。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")
+                            }
+                        )
                     ),
                     types.FunctionDeclaration(
                         name="give_english_quiz",
@@ -340,20 +351,20 @@ class PartnerCog(commands.Cog):
                                 tool_result = await habit_cog.delete_habit(function_call.args["habit_name"])
                             else:
                                 tool_result = "システムエラー: HabitCogが見つかりません。"
-                                
-                        # ▼ 追加: Fitbitと英語クイズの実行ロジック
                         elif function_call.name == "report_sleep":
                             fitbit_cog = self.bot.get_cog("FitbitCog")
                             if fitbit_cog:
-                                asyncio.create_task(fitbit_cog.sleep_report())
-                                tool_result = "睡眠レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
+                                target_date_str = function_call.args.get("date")
+                                asyncio.create_task(fitbit_cog.send_sleep_report(target_date_str))
+                                tool_result = f"{target_date_str or '今日'}の睡眠レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
                             else:
                                 tool_result = "システムエラー: FitbitCogが見つかりません。"
                         elif function_call.name == "report_health":
                             fitbit_cog = self.bot.get_cog("FitbitCog")
                             if fitbit_cog:
-                                asyncio.create_task(fitbit_cog.full_health_report())
-                                tool_result = "健康レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
+                                target_date_str = function_call.args.get("date")
+                                asyncio.create_task(fitbit_cog.send_full_health_report(target_date_str))
+                                tool_result = f"{target_date_str or '今日'}の健康レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
                             else:
                                 tool_result = "システムエラー: FitbitCogが見つかりません。"
                         elif function_call.name == "give_english_quiz":
@@ -383,5 +394,5 @@ class PartnerCog(commands.Cog):
                 logging.error(f"PartnerCog 会話生成エラー: {e}")
                 await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
 
-async def setup(bot: commands.Bot):
-    await bot.add_cog(PartnerCog(bot))
+    async def setup(bot: commands.Bot):
+        await bot.add_cog(PartnerCog(bot))
