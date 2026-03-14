@@ -79,8 +79,12 @@ class FitbitService:
                     await self._save_token(new_refresh)
                     return True
                 else:
+                    # ★修正: 失敗した時にFitbitからのエラー詳細をログに出力する
+                    error_text = await resp.text()
+                    logging.error(f"[Fitbit Token Error] Status: {resp.status}, Body: {error_text}")
                     return False
         except Exception as e:
+            logging.error(f"[Fitbit Token Exception] {e}")
             return False
 
     def _calculate_sleep_score(self, total_asleep_min, total_in_bed_min, deep_min, rem_min, wake_min) -> int:
@@ -115,8 +119,12 @@ class FitbitService:
                     stats['distance_km'] = next((d['distance'] for d in s.get('distances', []) if d['activity'] == 'total'), 0)
                     stats['active_minutes_very'] = s.get('veryActiveMinutes', 0)
                     stats['active_minutes_fairly'] = s.get('fairlyActiveMinutes', 0)
+                else:
+                    # ★修正: 活動データの取得に失敗した時のログ
+                    error_text = await resp.text()
+                    logging.error(f"[Fitbit Activity Error] Status: {resp.status}, Body: {error_text}")
         except Exception as e:
-            logging.error(f"Fitbit Activity Error: {e}")
+            logging.error(f"Fitbit Activity Exception: {e}")
 
         # 2. Sleepデータの取得
         try:
@@ -143,8 +151,12 @@ class FitbitService:
                         stats['light_sleep_minutes'] = light_min
                         
                         stats['sleep_score'] = self._calculate_sleep_score(total_asleep, total_in_bed, deep_min, rem_min, wake_min)
+                else:
+                    # ★修正: 睡眠データの取得に失敗した時のログ
+                    error_text = await resp.text()
+                    logging.error(f"[Fitbit Sleep Error] Status: {resp.status}, Body: {error_text}")
         except Exception as e:
-            logging.error(f"Fitbit Sleep Error: {e}")
+            logging.error(f"Fitbit Sleep Exception: {e}")
 
         return stats
 
