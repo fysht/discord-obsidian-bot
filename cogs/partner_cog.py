@@ -224,16 +224,16 @@ class PartnerCog(commands.Cog):
                         parameters=types.Schema(type=types.Type.OBJECT, properties={})
                     ),
                     types.FunctionDeclaration(
-                        name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。複数のタスクを頼まれた場合はこの機能を複数回呼び出すこと。",
+                        name="add_task", description="Google Tasks（ToDoリスト）に新しいタスクを追加する。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING, description="タスク名")}, required=["title"])
                     ),
                     types.FunctionDeclaration(
-                        name="complete_task", description="Google Tasksのタスクを完了（チェック）する。複数の完了を頼まれた場合はこの機能を複数回呼び出すこと。",
+                        name="complete_task", description="Google Tasksのタスクを完了（チェック）する。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING, description="完了させたいタスク名の一部")}, required=["keyword"])
                     ),
                     types.FunctionDeclaration(
                         name="record_stock_trade",
-                        description="ユーザーが株を買った、売った、または気になっていると発言した際に、銘柄と理由を投資ノートに記録する。",
+                        description="ユーザーが株の銘柄について発言した際に、銘柄と理由を投資ノートに記録する。",
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
                             properties={
@@ -246,25 +246,26 @@ class PartnerCog(commands.Cog):
                     ),
                     types.FunctionDeclaration(
                         name="record_habit",
-                        description="ユーザーが習慣（例：筋トレ、読書、作業など）を完了したと報告した際に、その習慣を記録する。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "habit_name": types.Schema(type=types.Type.STRING, description="完了した習慣の名前（例: 筋トレ, 読書）")
-                            },
-                            required=["habit_name"]
-                        )
+                        description="ユーザーが習慣（例：筋トレ、読書など）を完了したと報告した際に記録する。",
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])
                     ),
                     types.FunctionDeclaration(
                         name="delete_habit",
-                        description="ユーザーが特定の習慣（例：筋トレ、読書など）をやめる、またはリストから削除してほしいと頼んだ際に、その習慣を削除する。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "habit_name": types.Schema(type=types.Type.STRING, description="削除したい習慣の名前")
-                            },
-                            required=["habit_name"]
-                        )
+                        description="ユーザーが特定の習慣をリストから削除してほしいと頼んだ際に削除する。",
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])
+                    ),
+                    # ▼ 追加: Fitbitと英語クイズ用のツール
+                    types.FunctionDeclaration(
+                        name="report_sleep",
+                        description="ユーザーが「昨日の睡眠データ教えて」「睡眠レポートを出して」など、朝の睡眠記録を確認したい時に呼び出す。"
+                    ),
+                    types.FunctionDeclaration(
+                        name="report_health",
+                        description="ユーザーが「今日の歩数は？」「Fitbitデータ教えて」「健康レポート出して」など、1日の活動データを確認したい時に呼び出す。"
+                    ),
+                    types.FunctionDeclaration(
+                        name="give_english_quiz",
+                        description="ユーザーが「英語のクイズ出して」「瞬間英作文やりたい」と頼んだ時に呼び出す。"
                     )
                 ])
             ]
@@ -339,6 +340,29 @@ class PartnerCog(commands.Cog):
                                 tool_result = await habit_cog.delete_habit(function_call.args["habit_name"])
                             else:
                                 tool_result = "システムエラー: HabitCogが見つかりません。"
+                                
+                        # ▼ 追加: Fitbitと英語クイズの実行ロジック
+                        elif function_call.name == "report_sleep":
+                            fitbit_cog = self.bot.get_cog("FitbitCog")
+                            if fitbit_cog:
+                                asyncio.create_task(fitbit_cog.sleep_report())
+                                tool_result = "睡眠レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
+                            else:
+                                tool_result = "システムエラー: FitbitCogが見つかりません。"
+                        elif function_call.name == "report_health":
+                            fitbit_cog = self.bot.get_cog("FitbitCog")
+                            if fitbit_cog:
+                                asyncio.create_task(fitbit_cog.full_health_report())
+                                tool_result = "健康レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
+                            else:
+                                tool_result = "システムエラー: FitbitCogが見つかりません。"
+                        elif function_call.name == "give_english_quiz":
+                            en_cog = self.bot.get_cog("EnglishLearningCog")
+                            if en_cog:
+                                asyncio.create_task(en_cog.daily_english_quiz())
+                                tool_result = "英語クイズの生成を開始しました。別メッセージとしてすぐに送信されます。"
+                            else:
+                                tool_result = "システムエラー: EnglishLearningCogが見つかりません。"
 
                         function_responses.append(
                             types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)})
