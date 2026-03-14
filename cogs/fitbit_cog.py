@@ -4,16 +4,14 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import logging
 import datetime
-import asyncio
 
 from config import JST
 from prompts import PROMPT_FITBIT_MORNING, PROMPT_FITBIT_MORNING_NO_DATA, PROMPT_FITBIT_EVENING
-from services.fitbit_service import FitbitService  # ★修正: services. を追加
+from services.fitbit_service import FitbitService
 
 class FitbitCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.drive_service = bot.drive_service
         
         if self.drive_service:
@@ -35,23 +33,13 @@ class FitbitCog(commands.Cog):
         if hours > 0: return f"{hours}時間{mins}分"
         return f"{mins}分"
 
-    def _process_sleep_data(self, raw_sleep_data: dict) -> dict:
-        if not raw_sleep_data or 'sleep' not in raw_sleep_data or not raw_sleep_data['sleep']:
-            return None
-        
-        main_sleep = next((s for s in raw_sleep_data['sleep'] if s.get('isMainSleep')), raw_sleep_data['sleep'][0])
-        return {
-            'sleep_score': main_sleep.get('efficiency', 0), 
-            'minutesAsleep': main_sleep.get('minutesAsleep', 0)
-        }
-
     @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
     async def sleep_report(self):
         if not self.is_ready: return
         target_date = datetime.datetime.now(JST).date()
         
-        raw_sleep_data = await self.fitbit_service.get_sleep_data(target_date)
-        sleep_summary = self._process_sleep_data(raw_sleep_data)
+        # ★修正: 新しい fitbit_service の get_stats() を使用
+        stats = await self.fitbit_service.get_stats(target_date)
         
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog: return
@@ -62,12 +50,12 @@ class FitbitCog(commands.Cog):
         if channel:
             today_log = await partner_cog.fetch_todays_chat_log(channel)
 
-        if not sleep_summary:
+        if not stats or 'sleep_score' not in stats:
             context_data = f"今日の睡眠データ：まだ同期されていません\n【最近の会話ログ】\n{today_log}"
             instruction = PROMPT_FITBIT_MORNING_NO_DATA
         else:
-            sleep_score = sleep_summary.get('sleep_score', 0)
-            sleep_time = self._format_minutes(sleep_summary.get('minutesAsleep', 0))
+            sleep_score = stats.get('sleep_score', 0)
+            sleep_time = self._format_minutes(stats.get('total_sleep_minutes', 0))
             context_data = f"【昨晩の睡眠データ】\nスコア: {sleep_score}\n合計睡眠時間: {sleep_time}\n【最近の会話ログ】\n{today_log}"
             instruction = PROMPT_FITBIT_MORNING
         
@@ -78,34 +66,25 @@ class FitbitCog(commands.Cog):
         if not self.is_ready: return
         target_date = datetime.datetime.now(JST).date()
         
-        raw_sleep_data, activity_data = await asyncio.gather(
-            self.fitbit_service.get_sleep_data(target_date),
-            self.fitbit_service.get_activity_summary(target_date)
-        )
-        sleep_summary = self._process_sleep_data(raw_sleep_data)
+        # ★修正: 新しい fitbit_service の get_stats() を使用
+        stats = await self.fitbit_service.get_stats(target_date)
         
-        stats = {}
-        if sleep_summary:
-            stats['Sleep Score'] = sleep_summary.get('sleep_score', 'N/A')
-            stats['Time Asleep'] = self._format_minutes(sleep_summary.get('minutesAsleep', 0))
-        else:
-            stats['Sleep Score'] = 'N/A'
-            stats['Time Asleep'] = 'N/A'
-
-        if activity_data and 'summary' in activity_data:
-            stats['Steps'] = activity_data['summary'].get('steps', 'N/A')
-            stats['Calories'] = activity_data['summary'].get('caloriesOut', 'N/A')
-        else:
-            stats['Steps'] = 'N/A'
-            stats['Calories'] = 'N/A'
-
+        if not stats:
+            stats = {} # 取得失敗時も空の辞書で処理を続行
+            
+        # ★修正: 取得した stats 辞書をそのまま update_daily_note_with_stats に渡す
         await self.fitbit_service.update_daily_note_with_stats(target_date, stats)
         
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog: return
         
-        sleep_text = f"スコア: {stats['Sleep Score']}, 睡眠時間: {stats['Time Asleep']}"
-        activity_text = f"歩数: {stats['Steps']}歩, 消費: {stats['Calories']}kcal"
+        sleep_score = stats.get('sleep_score', 'N/A')
+        sleep_time = self._format_minutes(stats.get('total_sleep_minutes', 0)) if stats.get('total_sleep_minutes') else 'N/A'
+        steps = stats.get('steps', 'N/A')
+        calories = stats.get('calories_out', 'N/A')
+        
+        sleep_text = f"スコア: {sleep_score}, 睡眠時間: {sleep_time}"
+        activity_text = f"歩数: {steps}歩, 消費: {calories}kcal"
         
         context_data = f"【本日の睡眠】\n{sleep_text}\n【本日の活動】\n{activity_text}"
         
