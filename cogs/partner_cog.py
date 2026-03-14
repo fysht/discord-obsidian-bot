@@ -8,6 +8,7 @@ import asyncio
 
 from config import JST
 from utils.obsidian_utils import update_section
+from prompts import get_system_prompt, PROMPT_INTERIM_SUMMARY
 
 class PartnerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -120,8 +121,11 @@ class PartnerCog(commands.Cog):
     async def generate_and_send_routine_message(self, context_data: str, instruction: str):
         channel = self.bot.get_channel(self.memo_channel_id)
         if not channel: return
-        system_prompt = "あなたは私を日々サポートする親密なパートナーの女性です。LINEでのやり取りを想定し、短いやり取りを複数回続けるイメージで温かみのあるタメ口で話してください。長々とした返信は不要です。"
-        prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}\n- 事務的にならず自然な会話で、前置きは不要。長文は絶対に避け、1〜2文程度の短いメッセージにすること。"
+        
+        now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
+        system_prompt = get_system_prompt(self.user_name, now_str)
+        
+        prompt = f"{system_prompt}\n以下のデータを元にDiscordで話しかけて。\n【データ】\n{context_data}\n【指示】\n{instruction}"
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             await channel.send(response.text.strip())
@@ -155,19 +159,8 @@ class PartnerCog(commands.Cog):
             if not logs:
                 await message.reply("今日はまだ何も話してないね！")
                 return
-            prompt = f"""あなたは私の優秀なパートナーです。今日のここまでの会話ログを整理して、箇条書きのメモを作成して。
-【指示】
-1. メモの文末はすべて「である調（〜である、〜だ）」で統一すること。
-2. ログの中から「User（私）」の投稿内容のみを抽出し、AIの発言内容は一切メモに含めないでください。
-3. 私自身が書いたメモとして整理すること。
-4. 情報の整理はするが、要約や大幅な削除はしないこと。
-
-【出力構成】
-・📝 Events & Actions
-・💡 Insights & Thoughts
-・➡️ Next Actions
-最後に一言、親密なタメ口でポジティブな言葉を添えて。
-{logs}"""
+            
+            prompt = f"{PROMPT_INTERIM_SUMMARY}\n\n{logs}"
             try:
                 response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
                 await message.reply(f"今のところこんな感じ！👇\n\n{response.text.strip()}")
@@ -206,29 +199,7 @@ class PartnerCog(commands.Cog):
 
         async with message.channel.typing():
             now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
-
-            # ★ 修正: システムプロンプトを大幅に改修し、短文・文脈・時刻の認識を強化
-            system_prompt = f"""
-            あなたはユーザー（{self.user_name}）をサポートする親密なパートナー（女性）です。LINEなどのチャットでのやり取りを想定し、親しみやすいタメ口で話してください。
-            
-            **【現在時刻と状況の認識（超重要）】**
-            現在時刻は **{now_str} (JST)** です。
-            - 挨拶をする場合は、**必ずこの時刻（朝・昼・夜・深夜）に合ったもの**にしてください。（例: 夜なら「こんばんは」「お疲れ様」、朝なら「おはよう」）
-            - 過去の会話ログ（文脈）を踏まえ、会話の続きであれば不自然な挨拶は省略してください。
-            
-            **【返答スタイル（絶対厳守）】**
-            1. **【超・短文強制】** LINEのように、1回の返信は**必ず1〜2文程度の極めて短いもの**にしてください。長々とした説明、箇条書き、AI特有の冗長な語り口は「絶対に」避けてください。
-            2. **【共感と相槌ファースト】** ユーザーの言葉をまず受け止め、共感してください。聞かれてもいないのに深掘りする質問を毎回投げかけないでください。（質問攻め厳禁）
-            3. **【完全な言語ミラーリング】** ユーザーが日本語で話しかけた場合は日本語のみで、英語で話しかけた場合は**完全に英語のみ**で返信してください（日本語を混ぜない）。
-            4. **【英語学習サポート】** ユーザーが英語で話しかけた際、文法等に不自然な点があれば、返信の最後に英語で優しく1文だけワンポイントアドバイス(e.g., "*Tip: It sounds more natural to say...*")を添えてください。
-            5. **【英語クイズの採点】** 直近の会話ログから、あなたが英語のクイズを出している文脈であれば、今回のユーザーの発言はその「解答」です。短く採点し、正解/不正解や自然な表現を優しく伝えてください。
-
-            **【ツール利用のルール】**
-            - カレンダー: 日時が決まっているスケジュールや、「〇時に教えて」というリマインダーに使用。
-            - Google Tasks: 日時が決まっていないToDoに使用。
-            - 複数依頼: 「〇〇と××を追加して」などの場合は、ツールを**複数回同時に呼び出して**すべて処理してください。
-            - 実行の確約: タスクや予定の「追加」「完了」「削除」を依頼された場合は、口頭で返事をするだけでなく、**絶対に該当のツールを呼び出して**システムに登録してください。
-            """
+            system_prompt = get_system_prompt(self.user_name, now_str)
 
             function_tools = [
                 types.Tool(function_declarations=[
@@ -259,6 +230,30 @@ class PartnerCog(commands.Cog):
                     types.FunctionDeclaration(
                         name="complete_task", description="Google Tasksのタスクを完了（チェック）する。複数の完了を頼まれた場合はこの機能を複数回呼び出すこと。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING, description="完了させたいタスク名の一部")}, required=["keyword"])
+                    ),
+                    types.FunctionDeclaration(
+                        name="record_stock_trade",
+                        description="ユーザーが株を買った、売った、または気になっていると発言した際に、銘柄と理由を投資ノートに記録する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "code": types.Schema(type=types.Type.STRING, description="銘柄コード（例: 7203, AAPL）"),
+                                "name": types.Schema(type=types.Type.STRING, description="銘柄名（例: トヨタ, Apple）"),
+                                "memo": types.Schema(type=types.Type.STRING, description="エントリー理由や目標、ユーザーのコメントなど")
+                            },
+                            required=["code", "name", "memo"]
+                        )
+                    ),
+                    types.FunctionDeclaration(
+                        name="record_habit",
+                        description="ユーザーが習慣（例：筋トレ、読書、作業など）を完了したと報告した際に、その習慣を記録する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "habit_name": types.Schema(type=types.Type.STRING, description="完了した習慣の名前（例: 筋トレ, 読書）")
+                            },
+                            required=["habit_name"]
+                        )
                     )
                 ])
             ]
@@ -302,6 +297,31 @@ class PartnerCog(commands.Cog):
                         elif function_call.name == "complete_task":
                             if self.tasks_service: tool_result = await self.tasks_service.complete_task_by_keyword(function_call.args["keyword"])
                             else: tool_result = "システムエラー: Tasksサービスに接続されていません。"
+                        elif function_call.name == "record_stock_trade":
+                            code = function_call.args["code"].upper()
+                            name = function_call.args["name"]
+                            memo = function_call.args["memo"]
+                            stock_cog = self.bot.get_cog("StockCog")
+                            
+                            if stock_cog:
+                                file_id = await stock_cog._find_stock_note_id(code)
+                                if file_id:
+                                    await stock_cog._append_memo_to_note(file_id, memo)
+                                    tool_result = f"既存の銘柄ノート（{name}）にメモを追記しました。"
+                                else:
+                                    filename = f"{code}_{name}.md"
+                                    now = datetime.datetime.now(JST)
+                                    note_content = f"---\ncode: \"{code}\"\nname: \"{name}\"\nstatus: \"Watching\"\ncreated: {now.isoformat()}\ntags: [stock, investment]\n---\n# {name} ({code})\n## Logs\n- {now.strftime('%Y-%m-%d %H:%M')} {memo}\n## Review\n"
+                                    await stock_cog._save_file(filename, note_content)
+                                    tool_result = f"新しい銘柄ノート（{name}）を作成し、メモを記録しました。"
+                            else:
+                                tool_result = "システムエラー: StockCogが見つかりません。"
+                        elif function_call.name == "record_habit":
+                            habit_cog = self.bot.get_cog("HabitCog")
+                            if habit_cog:
+                                tool_result = await habit_cog.complete_habit(function_call.args["habit_name"])
+                            else:
+                                tool_result = "システムエラー: HabitCogが見つかりません。"
 
                         function_responses.append(
                             types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)})

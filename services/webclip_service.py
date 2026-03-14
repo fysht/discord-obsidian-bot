@@ -8,7 +8,7 @@ import json
 
 from config import JST
 from web_parser import parse_url_with_readability
-from utils.obsidian_utils import update_section  # ★ 追加: デイリーノート更新用
+from utils.obsidian_utils import update_section  # デイリーノート更新用
 
 class WebClipService:
     def __init__(self, drive_service, gemini_client):
@@ -43,6 +43,14 @@ class WebClipService:
         if text and '材料' in text and '作り方' in text: return True
         return False
 
+    # ★ 追加: Googleマップかどうかの判定メソッド
+    def _is_google_maps(self, url):
+        map_domains = [
+            'google.com/maps', 'goo.gl/maps', 'maps.app.goo.gl', 
+            'http://googleusercontent.com/maps.google.com'
+        ]
+        return any(domain in url for domain in map_domains)
+
     async def _get_fallback_title(self, url):
         try:
             async with aiohttp.ClientSession() as session:
@@ -57,6 +65,7 @@ class WebClipService:
 
     async def process_url(self, url, message_content, trigger_message_obj):
         is_youtube = "youtube.com" in url or "youtu.be" in url
+        is_map = self._is_google_maps(url) # ★ マップ判定
         title = "Untitled"
         raw_text = ""
         author_name = ""
@@ -69,6 +78,11 @@ class WebClipService:
             else:
                 try: title, _ = await parse_url_with_readability(url)
                 except: title = "YouTube Video"
+        elif is_map:
+            # マップの場合は本文の解析をスキップし、タイトルのみ取得
+            title = await self._get_fallback_title(url)
+            if not title or title == "Untitled":
+                title = "Google Maps Location"
         else:
             try:
                 title, raw_text = await asyncio.wait_for(parse_url_with_readability(url), timeout=60.0)
@@ -86,17 +100,22 @@ class WebClipService:
         check_text = raw_text if not is_youtube else (title + " " + message_content)
         is_recipe = self._is_recipe(title, url, check_text)
 
-        if is_recipe:
-            folder_name = "Recipes"
-            content_type_label = "Recipe"
-            section_header = "## 🍳 Recipes"
-        elif is_youtube:
+        # ★ 修正: 保存先フォルダとラベルの分岐にマップを追加
+        if is_youtube:
             folder_name = "YouTube"
-            content_type_label = "YouTube"
+            content_type_label = "📺 YouTube"
             section_header = "## 📺 YouTube"
+        elif is_map:
+            folder_name = "Places"
+            content_type_label = "📍 場所（マップ）"
+            section_header = "## 🔗 WebClips" # デイリーノート上ではWebClipsにまとめる
+        elif is_recipe:
+            folder_name = "Recipes"
+            content_type_label = "🍳 レシピ"
+            section_header = "## 🍳 Recipes"
         else:
             folder_name = "WebClips"
-            content_type_label = "WebClip"
+            content_type_label = "🔗 WebClip"
             section_header = "## 🔗 WebClips"
 
         now = datetime.datetime.now(JST)
@@ -111,19 +130,18 @@ class WebClipService:
         note_section = f"## 💬 Note\n{user_comment}\n\n" if user_comment else ""
 
         final_content = ""
-        summary_text = ""
         
+        # ★ 保存するノート内容の分岐
         if is_youtube:
             final_content = (f"- **URL:** {url}\n- **Channel:** {author_name}\n- **Saved at:** {now}\n\n"
                              f"{note_section}---\n[[{daily_note_date}]]")
-            summary_text = f"YouTube動画を保存しました: {title}"
+        elif is_map:
+            final_content = (f"- **Google Maps:** <{url}>\n- **Saved at:** {now}\n\n"
+                             f"{note_section}---\n[[{daily_note_date}]]")
         else:
             if len(raw_text) < 10: raw_text = "※本文の自動取得ができなかったページです。\n"
             final_content = (f"- **Source:** <{url}>\n- **Saved at:** {now}\n\n"
                              f"{note_section}---\n\n[[{daily_note_date}]]\n\n{raw_text}")
-            summary_text = f"Web記事を保存しました: {title}"
-            
-        if is_recipe: summary_text = f"レシピを保存しました: {title}"
 
         service = self.drive_service.get_service()
         if not service:
@@ -137,7 +155,7 @@ class WebClipService:
             # クリップ本体を保存
             await self.drive_service.upload_text(service, folder_id, filename, final_content)
 
-            # ---- ★ 修正: デイリーノートへのリンク追記処理 ----
+            # ---- デイリーノートへのリンク追記処理 ----
             link_str = f"- [[{folder_name}/{filename_no_ext}|{title}]]"
             
             daily_folder_id = await self.drive_service.find_file(service, self.drive_service.folder_id, "DailyNotes")
@@ -159,8 +177,14 @@ class WebClipService:
                 await self.drive_service.upload_text(service, daily_folder_id, daily_file_name, updated_note_content)
             # ---- 修正ここまで ----
 
-            await trigger_message_obj.reply(f"✅ {content_type_label}を保存しました。\n📂 `{folder_name}/{filename}`")
-            return {"title": title, "summary": summary_text, "type": content_type_label}
+            # ★ 修正: 直接返信するのではなく、パートナーAIに渡すための辞書データを返す
+            return {
+                "success": True,
+                "type": content_type_label,
+                "title": title,
+                "folder": folder_name,
+                "file": filename
+            }
             
         except Exception as e:
             logging.error(f"WebClip: Save Error: {e}")

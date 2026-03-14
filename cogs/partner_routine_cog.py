@@ -6,43 +6,40 @@ import logging
 import datetime
 from datetime import timedelta
 
-# --- リファクタリング: 定数のクリーンなインポート ---
 from config import JST
+from prompts import PROMPT_ROUTINE_INACTIVITY, PROMPT_ROUTINE_NIGHTLY, PROMPT_WEEKEND_STOCK_REVIEW, PROMPT_HABIT_CHECK
 
 class PartnerRoutineCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        # --- リファクタリング: Bot本体のサービスを利用 ---
         self.gemini_client = bot.gemini_client
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # カレンダーAPIへの移行に伴い、reminder_check_task は不要になったため削除済
         if not self.inactivity_check_task.is_running(): self.inactivity_check_task.start()
         if not self.nightly_reflection_task.is_running(): self.nightly_reflection_task.start()
+        if not self.weekend_stock_review_task.is_running(): self.weekend_stock_review_task.start()
+        if not self.habit_check_task.is_running(): self.habit_check_task.start()
 
     def cog_unload(self):
         self.inactivity_check_task.cancel()
         self.nightly_reflection_task.cancel()
+        self.weekend_stock_review_task.cancel()
+        self.habit_check_task.cancel()
 
     @tasks.loop(minutes=15)
     async def inactivity_check_task(self):
         partner_cog = self.bot.get_cog("PartnerCog")
         
-        # 旧 task_service への依存を排除。partner_cog に持たせた last_interaction を参照
         if not partner_cog or not hasattr(partner_cog, 'last_interaction'): return
 
         now = datetime.datetime.now(JST)
         diff = now - partner_cog.last_interaction
         
-        # 6時間以上経過＆日中の場合のみ話しかける
         if diff > timedelta(hours=6) and 9 <= now.hour <= 21:
             context_data = "ユーザーは数時間何も発言していません。"
-            instruction = "「お疲れ様！」「生きてる〜？」など、少し寂しそうにしつつ、相手の状況を軽く伺う短いメッセージを1つだけ送って。絶対に質問攻めにはしないこと。"
-            await partner_cog.generate_and_send_routine_message(context_data, instruction)
-            
-            # 話しかけたので最終会話時間を更新
+            await partner_cog.generate_and_send_routine_message(context_data, PROMPT_ROUTINE_INACTIVITY)
             partner_cog.last_interaction = now
 
     @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
@@ -53,23 +50,42 @@ class PartnerRoutineCog(commands.Cog):
 
         today_log = await partner_cog.fetch_todays_chat_log(channel)
         
-        prompt = f"""
-        あなたは私を日々サポートする、20代女性の親密なパートナーです。温かみのあるタメ口で話してください。
-        現在22時です。以下の「今日の会話ログ全体」を踏まえて、今日の私の活動内容に寄り添った、1日の振り返りを促す質問を【1つだけ】投げかけてください。
-        長文は厳禁。LINEのメッセージのように簡潔にすること。
-
-        【今日の会話ログ】
-        {today_log if today_log.strip() else "今日は特に会話がありませんでした。"}
-        """
+        prompt = f"{PROMPT_ROUTINE_NIGHTLY}\n\n【今日の会話ログ】\n{today_log if today_log.strip() else '今日は特に会話がありませんでした。'}"
+        
         try:
             if self.gemini_client:
                 response = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-pro", contents=prompt,
-                    config=types.GenerateContentConfig(system_instruction="あなたは20代女性の親密なパートナーです。")
+                    model="gemini-2.5-pro", contents=prompt
                 )
                 await channel.send(response.text.strip())
         except Exception as e: 
             logging.error(f"Nightly Reflection Error: {e}")
+
+    @tasks.loop(time=datetime.time(hour=20, minute=0, tzinfo=JST))
+    async def weekend_stock_review_task(self):
+        if datetime.datetime.now(JST).weekday() != 4:
+            return
+
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog: return
+
+        context_data = "今週の株式市場が閉まりました。週末です。"
+        await partner_cog.generate_and_send_routine_message(context_data, PROMPT_WEEKEND_STOCK_REVIEW)
+
+    @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
+    async def habit_check_task(self):
+        partner_cog = self.bot.get_cog("PartnerCog")
+        habit_cog = self.bot.get_cog("HabitCog")
+        if not partner_cog or not habit_cog: return
+
+        incomplete_habits = await habit_cog.get_incomplete_habits()
+        
+        if incomplete_habits:
+            context_data = "【今日の未完了の習慣】\n" + "\n".join([f"- {h}" for h in incomplete_habits])
+        else:
+            context_data = "今日の習慣はすべて完了しています！"
+            
+        await partner_cog.generate_and_send_routine_message(context_data, PROMPT_HABIT_CHECK)
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(PartnerRoutineCog(bot))

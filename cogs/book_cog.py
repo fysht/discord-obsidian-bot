@@ -9,6 +9,7 @@ import asyncio
 
 # --- リファクタリング: 定数の共通化 ---
 from config import JST
+from prompts import PROMPT_BOOK_SUMMARY  # ★追加: 共通プロンプトの読み込み
 
 class BookCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -60,7 +61,6 @@ class BookCog(commands.Cog):
             f_id = await self.drive_service.find_file(service, book_folder_id, file_name)
             if not f_id:
                 now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-                # ★ 修正: 見出しをデイリーノートに合わせて英語化
                 content = f"---\ntitle: {safe_title}\ndate: {now_str}\ntags: [book]\n---\n\n# {safe_title}\n\n## 📝 Summary & Learning\n\n\n## 📖 Reading Log\n\n"
                 await self.drive_service.upload_text(service, book_folder_id, file_name, content)
 
@@ -98,7 +98,6 @@ class BookCog(commands.Cog):
             await interaction.followup.send("ノートの読み込みに失敗したよ。")
             return
 
-        # ★ 修正: スプリット（分割）の基準となる文字列を英語見出しに変更
         log_heading = "## 📖 Reading Log"
         summary_heading = "## 📝 Summary & Learning"
         
@@ -114,20 +113,8 @@ class BookCog(commands.Cog):
             await interaction.followup.send("まだ読書ログがないみたいだよ！")
             return
 
-        # ★ 修正: AIに出力させる見出しも英語に統一
-        prompt = f"""
-        あなたは優秀な編集者です。以下の「読書ログ（ユーザーのメモやAIとの会話）」を読み込み、構造化された美しいまとめを作成してください。
-        
-        【出力ルール】
-        - 以下の3つの見出し（Markdownの h3）を必ず含め、箇条書きで簡潔に整理すること。
-          ### 📌 Quotes & Highlights
-          ### 💡 Insights & Learnings
-          ### 🤖 AI Notes & Glossary
-        - 余計な前置きや後書き（「まとめました」など）は一切出力せず、指定した見出しの内容のみを出力すること。
-
-        【読書ログ】
-        {raw_log}
-        """
+        # ★ 修正: 共通プロンプトに差し替え
+        prompt = f"{PROMPT_BOOK_SUMMARY}\n\n【読書ログ】\n{raw_log}"
 
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)

@@ -16,6 +16,7 @@ from googleapiclient.http import MediaIoBaseDownload
 # --- リファクタリング: 定数とユーティリティのクリーンなインポート ---
 from config import JST
 from utils.obsidian_utils import update_section
+from prompts import PROMPT_LOCATION_SYNC  # ★追加
 
 DATE_REGEX = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
@@ -249,8 +250,8 @@ class LocationLogCog(commands.Cog):
                 partner_cog = self.bot.get_cog("PartnerCog")
                 if partner_cog:
                     context = f"ロケーション履歴を同期した日付: {dates_str}"
-                    instruction = "ロケーション履歴（GPSの移動記録）の解析と保存が終わったことを報告して。LINEみたいなタメ口で、1〜2文で短くね。「お疲れ様！」などの労いも入れて。"
-                    await partner_cog.generate_and_send_routine_message(context, instruction)
+                    # ★ 修正: 共通プロンプトを使用
+                    await partner_cog.generate_and_send_routine_message(context, PROMPT_LOCATION_SYNC)
                 else:
                     await channel.send(f"📍 {dates_str} の移動記録を保存したよ！")
 

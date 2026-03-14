@@ -4,10 +4,9 @@ import os
 import re
 import logging
 
-# Servicesの読み込み (DriveServiceのインポートは不要になりました)
 from services.webclip_service import WebClipService
+from prompts import PROMPT_URL_RECEPTION # ★ 追加
 
-# 一般的なURLを抽出する正規表現
 URL_REGEX = re.compile(r'https?://[^\s]+')
 
 class ReceptionCog(commands.Cog):
@@ -17,13 +16,8 @@ class ReceptionCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        
-        # ---------------------------------------------------------
-        # ★ 変更点: main.py で作成された統合サービスを受け取る
-        # ---------------------------------------------------------
         self.drive_service = bot.drive_service
         
-        # ※WebClipService側の仕様を変更しないよう、とりあえずAPIキーはここで渡しておきます
         gemini_api_key = os.getenv("GEMINI_API_KEY")
         self.webclip_service = WebClipService(self.drive_service, gemini_api_key)
 
@@ -32,31 +26,30 @@ class ReceptionCog(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        # Bot自身のメッセージや、メモチャンネル以外は無視
-        if message.author.bot:
-            return
-        
-        if message.channel.id != self.memo_channel_id:
+        if message.author.bot or message.channel.id != self.memo_channel_id:
             return
 
-        # メッセージの中にURLが含まれているかチェック
         match = URL_REGEX.search(message.content)
         if match:
             url = match.group(0)
             logging.info(f"[ReceptionCog] URLを検知し、処理を開始します: {url}")
-            
-            # 処理中のリアクションを付ける
             await message.add_reaction('⏳')
             
             try:
-                # WebClipServiceにURLを渡して即時処理
+                # WebClipServiceにURLを渡して処理
                 result = await self.webclip_service.process_url(url, message.content, message)
-                
-                # 処理が終了したら⏳リアクションを外す
                 await message.remove_reaction('⏳', self.bot.user)
                 
+                # ★ 追加: 処理結果を受け取り、パートナーに会話させる
+                if isinstance(result, dict):
+                    partner_cog = self.bot.get_cog("PartnerCog")
+                    if partner_cog:
+                        prompt_text = PROMPT_URL_RECEPTION.format(url_type=result.get('type', 'Webページ'), title=result.get('title', ''))
+                        context_data = f"【保存したURLの情報】\n種類: {result.get('type')}\nタイトル: {result.get('title')}\n保存先: {result.get('folder')}/{result.get('file')}"
+                        await partner_cog.generate_and_send_routine_message(context_data, prompt_text)
+                
             except Exception as e:
-                logging.error(f"[ReceptionCog] URL処理中にエラーが発生しました: {e}", exc_info=True)
+                logging.error(f"[ReceptionCog] 処理エラー: {e}", exc_info=True)
                 await message.remove_reaction('⏳', self.bot.user)
                 await message.add_reaction('❌')
 

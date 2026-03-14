@@ -8,6 +8,7 @@ from discord import app_commands
 from google.genai import types
 
 from config import JST
+from prompts import PROMPT_VOCAB_EXTRACTION, PROMPT_ENGLISH_QUIZ  # ★追加
 
 class EnglishLearningCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -106,8 +107,8 @@ class EnglishLearningCog(commands.Cog):
             partner_cog = self.bot.get_cog("PartnerCog")
             if partner_cog:
                 context = f"今日の単語帳を抽出しました。\n{vocab_table}"
-                instruction = "「今日の単語帳まとめておいたよ！」と短く報告し、抽出した単語の中で一番面白そうなもの、または役立ちそうなものを1つだけピックアップしてLINEのように短く紹介して。"
-                await partner_cog.generate_and_send_routine_message(context, instruction)
+                # ★ 修正: 共通プロンプトを使用
+                await partner_cog.generate_and_send_routine_message(context, PROMPT_VOCAB_EXTRACTION)
 
         except Exception as e:
             logging.error(f"Vocabulary Extraction Error: {e}")
@@ -136,17 +137,9 @@ class EnglishLearningCog(commands.Cog):
 
         logs_text = "\n\n".join(past_logs)
         
-        prompt = f"""
-あなたはユーザーの親密なパートナー（20代女性）であり、頼れる英語の先生です。LINEのような温かみのあるタメ口で話してください。
-以下のデータは、ユーザーが過去（昨日、3日前、1週間前）にDiscordでつぶやいた日本語のメモです。
-
-これらの中から「日常会話でパッと言えると役立ちそうなフレーズ」を1〜2個選び、ユーザーに「瞬間英作文クイズ」を出題してください。
-（例：「そういえば〇日前、『〜〜』って言ってたけど、これ今なら英語でなんて言う？」）
-※正解は書かず、ユーザーに答えさせるようにしてください。長文は避け、LINEのメッセージのように簡潔にすること。
-
-【過去のつぶやきデータ】
-{logs_text}
-"""
+        # ★ 修正: 共通プロンプトを使用
+        prompt = f"{PROMPT_ENGLISH_QUIZ}\n\n【過去のつぶやきデータ】\n{logs_text}"
+        
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
             await channel.send(response.text.strip())
