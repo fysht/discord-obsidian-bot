@@ -394,5 +394,5 @@ class PartnerCog(commands.Cog):
                 logging.error(f"PartnerCog 会話生成エラー: {e}")
                 await message.channel.send("ごめんね、ちょっと今考え込んでて…もう一回お願いできる？💦")
 
-    async def setup(bot: commands.Bot):
-        await bot.add_cog(PartnerCog(bot))
+async def setup(bot: commands.Bot):
+    await bot.add_cog(PartnerCog(bot))
