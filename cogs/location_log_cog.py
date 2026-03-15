@@ -13,10 +13,9 @@ import googlemaps
 from geopy.distance import great_circle
 from googleapiclient.http import MediaIoBaseDownload
 
-# --- リファクタリング: 定数とユーティリティのクリーンなインポート ---
 from config import JST
 from utils.obsidian_utils import update_section
-from prompts import PROMPT_LOCATION_SYNC  # ★追加
+from prompts import PROMPT_LOCATION_SYNC
 
 DATE_REGEX = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
@@ -40,10 +39,7 @@ class LocationLogCog(commands.Cog):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        
-        # --- リファクタリング: Bot本体のサービスを利用 ---
         self.drive_service = bot.drive_service
-        
         self.home_coordinates = self._parse_coordinates(os.getenv("HOME_COORDINATES"))
         self.work_coordinates = self._parse_coordinates(os.getenv("WORK_COORDINATES"))
         self.exclude_radius_meters = int(os.getenv("EXCLUDE_RADIUS_METERS", 500))
@@ -209,6 +205,29 @@ class LocationLogCog(commands.Cog):
             
         return True
 
+    # ★ 追加: AIツールから直接呼び出せる同期メソッド
+    async def perform_manual_sync(self, target_date: str) -> str:
+        if not DATE_REGEX.match(target_date): return "❌ 日付の形式が正しくありません。(例: 2026-02-15)"
+        loop = asyncio.get_running_loop()
+        service = self.drive_service.get_service()
+        if not service: return "Google Driveに接続できませんでした。"
+        
+        timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
+        if not timeline_folder_id: return "Timelineフォルダが見つかりません。"
+        
+        latest_file = await loop.run_in_executor(None, self._get_latest_timeline_json, service, timeline_folder_id)
+        if not latest_file: return "タイムラインのJSONファイルが見つかりません。"
+        
+        try: data = await loop.run_in_executor(None, self._read_json, service, latest_file['id'])
+        except Exception as e: return f"JSON読み込みエラー: {e}"
+        
+        logs_by_date = self._extract_logs_from_json(data, target_dates={target_date})
+        if not logs_by_date or target_date not in logs_by_date:
+            return f"⚠️ `{latest_file['name']}` 内に **{target_date}** の移動データが見つかりませんでした。"
+            
+        await self._write_to_obsidian(target_date, logs_by_date[target_date], force=True)
+        return f"✅ **{target_date}** の移動記録をObsidianに同期しました！"
+
     @tasks.loop(time=time(hour=23, minute=50, tzinfo=JST))
     async def process_timeline_json(self):
         logging.info("タイムラインJSONの自動処理を開始します。")
@@ -250,7 +269,6 @@ class LocationLogCog(commands.Cog):
                 partner_cog = self.bot.get_cog("PartnerCog")
                 if partner_cog:
                     context = f"ロケーション履歴を同期した日付: {dates_str}"
-                    # ★ 修正: 共通プロンプトを使用
                     await partner_cog.generate_and_send_routine_message(context, PROMPT_LOCATION_SYNC)
                 else:
                     await channel.send(f"📍 {dates_str} の移動記録を保存したよ！")
@@ -259,32 +277,8 @@ class LocationLogCog(commands.Cog):
     @app_commands.describe(target_date="同期したい日付 (例: 2026-02-15)")
     async def sync_location_manual(self, interaction: discord.Interaction, target_date: str):
         await interaction.response.defer(ephemeral=False)
-        
-        if not DATE_REGEX.match(target_date):
-            await interaction.followup.send("❌ 日付の形式が正しくありません。(例: 2026-02-15)")
-            return
-
-        loop = asyncio.get_running_loop()
-        service = self.drive_service.get_service()
-        if not service: return
-
-        timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
-        if not timeline_folder_id: return
-
-        latest_file = await loop.run_in_executor(None, self._get_latest_timeline_json, service, timeline_folder_id)
-        if not latest_file: return
-
-        try: data = await loop.run_in_executor(None, self._read_json, service, latest_file['id'])
-        except Exception as e: return
-
-        logs_by_date = self._extract_logs_from_json(data, target_dates={target_date})
-        
-        if not logs_by_date or target_date not in logs_by_date:
-            await interaction.followup.send(f"⚠️ `{latest_file['name']}` 内に **{target_date}** の移動データが見つからなかったよ💦")
-            return
-
-        await self._write_to_obsidian(target_date, logs_by_date[target_date], force=True)
-        await interaction.followup.send(f"✅ **{target_date}** の移動記録を手動で同期しておいたよ！\n(参照ファイル: `{latest_file['name']}`)")
+        result = await self.perform_manual_sync(target_date)
+        await interaction.followup.send(result)
 
     @process_timeline_json.before_loop
     async def before_process(self):
