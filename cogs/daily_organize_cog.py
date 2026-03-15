@@ -11,7 +11,7 @@ from google.genai import types
 from config import JST
 from utils.obsidian_utils import update_section, update_frontmatter
 from prompts import PROMPT_DAILY_ORGANIZE
-from services.info_service import InfoService  # ★修正: services. を追加
+from services.info_service import InfoService
 
 class DailyOrganizeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -80,11 +80,20 @@ class DailyOrganizeCog(commands.Cog):
         result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t}
         await self._execute_organization(result, today_str)
         
+        # ★ ここを修正: リスト名（仕事/プライベート）を受け取ってGoogle Tasksへ登録
         if result.get('next_actions') and self.tasks_service:
-            clean_actions = [re.sub(r'^-\s*', '', act).strip() for act in result['next_actions']]
-            for act in clean_actions:
-                if act:
-                    try: await self.tasks_service.add_task(title=act)
+            for act_data in result['next_actions']:
+                if isinstance(act_data, str):
+                    act_title = re.sub(r'^-\s*', '', act_data).strip()
+                    list_name = None
+                elif isinstance(act_data, dict):
+                    act_title = act_data.get('title', '').strip()
+                    list_name = act_data.get('list')
+                else:
+                    continue
+                
+                if act_title:
+                    try: await self.tasks_service.add_task(title=act_title, list_name=list_name)
                     except Exception as e: logging.error(f"Google Tasks自動登録エラー: {e}")
 
         send_msg = result.get('message', '（今日の会話とデータをノートにまとめたよ🌙 今日も一日お疲れ様、おやすみ！）')
@@ -116,7 +125,19 @@ class DailyOrganizeCog(commands.Cog):
         if data.get('journal'): content = update_section(content, data['journal'], "## 📔 Daily Journal")
         if data.get('events') and len(data['events']) > 0: content = update_section(content, "\n".join(data['events']) if isinstance(data['events'], list) else str(data['events']), "## 📝 Events & Actions")
         if data.get('insights') and len(data['insights']) > 0: content = update_section(content, "\n".join(data['insights']) if isinstance(data['insights'], list) else str(data['insights']), "## 💡 Insights & Thoughts")
-        if data.get('next_actions') and len(data['next_actions']) > 0: content = update_section(content, "\n".join(data['next_actions']) if isinstance(data['next_actions'], list) else str(data['next_actions']), "## ➡️ Next Actions")
+        
+        # ★ ここも修正: Obsidianのノートにも「[仕事] 〇〇する」と分かりやすく書き込む処理
+        if data.get('next_actions') and len(data['next_actions']) > 0:
+            formatted_actions = []
+            for act in data['next_actions']:
+                if isinstance(act, str):
+                    formatted_actions.append(act if act.startswith('-') else f"- {act}")
+                elif isinstance(act, dict):
+                    title = act.get('title', '')
+                    lst = act.get('list', '')
+                    prefix = f"[{lst}] " if lst else ""
+                    formatted_actions.append(f"- {prefix}{title}")
+            content = update_section(content, "\n".join(formatted_actions), "## ➡️ Next Actions")
         
         if f_id: await self.drive_service.update_text(service, f_id, content)
         else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", content)
