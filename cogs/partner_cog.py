@@ -14,7 +14,8 @@ class PartnerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
-        self.user_name = "あなた"
+        # ここも「ゆうすけ」に固定します
+        self.user_name = "ゆうすけ"
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
         self.drive_service = bot.drive_service
@@ -173,7 +174,8 @@ class PartnerCog(commands.Cog):
         is_book_thread = isinstance(message.channel, discord.Thread) and message.channel.name.startswith("📖 ")
         if message.channel.id != self.memo_channel_id and not is_book_thread: return
 
-        self.user_name = message.author.display_name
+        # 名前のブレを防ぐため、常に「ゆうすけ」を使います
+        self.user_name = "ゆうすけ"
         text = message.content.strip()
         is_short_message = len(text) < 30
 
@@ -244,39 +246,63 @@ class PartnerCog(commands.Cog):
                             required=["code", "name", "memo"]
                         )
                     ),
+                    # ▼ 修正: 習慣の記録（頻度の追加と厳格化）
                     types.FunctionDeclaration(
                         name="record_habit",
-                        description="ユーザーが習慣（例：筋トレ、読書など）を完了したと報告した際に記録する。",
-                        parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])
+                        description="ユーザーが習慣（例：筋トレ、週1回の掃除など）を「完了した」「やった」と明示的に報告した際に記録する。予定や会話の流れでは呼び出さないこと。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT, 
+                            properties={
+                                "habit_name": types.Schema(type=types.Type.STRING, description="習慣の名前"),
+                                "frequency_days": types.Schema(type=types.Type.INTEGER, description="習慣の頻度（日数）。毎日は1、週1回は7。指定がなければ1。")
+                            }, 
+                            required=["habit_name"]
+                        )
                     ),
                     types.FunctionDeclaration(
                         name="delete_habit",
                         description="ユーザーが特定の習慣をリストから削除してほしいと頼んだ際に削除する。",
                         parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])
                     ),
+                    # ▼ 追加: 習慣の一覧取得
+                    types.FunctionDeclaration(
+                        name="list_habits",
+                        description="現在登録されている習慣と、その頻度の一覧を取得する。"
+                    ),
                     types.FunctionDeclaration(
                         name="report_sleep",
-                        description="ユーザーが「昨日の睡眠データ教えて」「〇月〇日の睡眠レポートを出して」など、指定した日付の睡眠記録を確認したい時に呼び出す。日付指定がない場合は今日とする。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")
-                            }
-                        )
+                        description="ユーザーが指定した日付の睡眠記録を確認したい時に呼び出す。日付指定がない場合は今日とする。",
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")})
                     ),
                     types.FunctionDeclaration(
                         name="report_health",
-                        description="ユーザーが「昨日の歩数は？」「〇月〇日の健康レポート出して」など、指定した日付の活動データを確認したい時に呼び出す。日付指定がない場合は今日とする。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")
-                            }
-                        )
+                        description="ユーザーが指定した日付の活動データ（歩数など）を確認したい時に呼び出す。日付指定がない場合は今日とする。",
+                        parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")})
                     ),
                     types.FunctionDeclaration(
                         name="give_english_quiz",
                         description="ユーザーが「英語のクイズ出して」「瞬間英作文やりたい」と頼んだ時に呼び出す。"
+                    ),
+                    types.FunctionDeclaration(
+                        name="sync_location",
+                        description="過去のロケーション履歴（タイムライン）を指定した日付で同期し、Obsidianに保存する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "date": types.Schema(type=types.Type.STRING, description="同期したい日付（YYYY-MM-DD）")
+                            },
+                            required=["date"]
+                        )
+                    ),
+                    types.FunctionDeclaration(
+                        name="summarize_book",
+                        description="現在読んでいる本の読書ログをAIが整理し、ノートの要約を更新する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "book_title": types.Schema(type=types.Type.STRING, description="要約したい本のタイトル。省略時は現在のスレッドの本。")
+                            }
+                        )
                     )
                 ])
             ]
@@ -339,12 +365,24 @@ class PartnerCog(commands.Cog):
                                     tool_result = f"新しい銘柄ノート（{name}）を作成し、メモを記録しました。"
                             else:
                                 tool_result = "システムエラー: StockCogが見つかりません。"
+                                
+                        # ▼ 修正: 習慣の完了処理（頻度も受け取る）
                         elif function_call.name == "record_habit":
                             habit_cog = self.bot.get_cog("HabitCog")
                             if habit_cog:
-                                tool_result = await habit_cog.complete_habit(function_call.args["habit_name"])
+                                freq = int(function_call.args.get("frequency_days", 1))
+                                tool_result = await habit_cog.complete_habit(function_call.args["habit_name"], freq)
                             else:
                                 tool_result = "システムエラー: HabitCogが見つかりません。"
+                                
+                        # ▼ 追加: 習慣の一覧表示
+                        elif function_call.name == "list_habits":
+                            habit_cog = self.bot.get_cog("HabitCog")
+                            if habit_cog:
+                                tool_result = await habit_cog.list_habits()
+                            else:
+                                tool_result = "システムエラー: HabitCogが見つかりません。"
+                                
                         elif function_call.name == "delete_habit":
                             habit_cog = self.bot.get_cog("HabitCog")
                             if habit_cog:
@@ -374,6 +412,28 @@ class PartnerCog(commands.Cog):
                                 tool_result = "英語クイズの生成を開始しました。別メッセージとしてすぐに送信されます。"
                             else:
                                 tool_result = "システムエラー: EnglishLearningCogが見つかりません。"
+                        elif function_call.name == "sync_location":
+                            target_date = function_call.args["date"]
+                            loc_cog = self.bot.get_cog("LocationLogCog")
+                            if loc_cog:
+                                tool_result = await loc_cog.perform_manual_sync(target_date)
+                            else:
+                                tool_result = "システムエラー: LocationLogCogが見つかりません。"
+                        elif function_call.name == "summarize_book":
+                            book_title = function_call.args.get("book_title")
+                            if not book_title:
+                                if isinstance(message.channel, discord.Thread) and message.channel.name.startswith("📖 "):
+                                    book_title = message.channel.name[2:].strip()
+                                else:
+                                    tool_result = "エラー: 本のタイトルが指定されていないか、読書スレッド内ではありません。"
+                            
+                            if book_title:
+                                book_cog = self.bot.get_cog("BookCog")
+                                if book_cog:
+                                    asyncio.create_task(book_cog.perform_summarize(book_title))
+                                    tool_result = f"『{book_title}』の要約処理を開始しました！完了まで少しお待ちください。"
+                                else:
+                                    tool_result = "システムエラー: BookCogが見つかりません。"
 
                         function_responses.append(
                             types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)})
