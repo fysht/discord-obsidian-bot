@@ -7,8 +7,8 @@ import re
 import aiohttp
 
 from config import JST
+from utils.obsidian_utils import update_section
 
-# ★以前のシンプルで確実なテキストファイル方式に戻しました
 TOKEN_FILE_NAME = "fitbit_refresh_token.txt"
 
 class FitbitService:
@@ -30,7 +30,6 @@ class FitbitService:
         service = self.drive_service.get_service()
         if not service: return
         try:
-            # ★ルートフォルダから直接テキストファイルを読み込む
             f_id = await self.drive_service.find_file(service, self.drive_service.folder_id, TOKEN_FILE_NAME)
             if f_id:
                 content = await self.drive_service.read_text_file(service, f_id)
@@ -44,7 +43,6 @@ class FitbitService:
         service = self.drive_service.get_service()
         if not service: return
         try:
-            # ★ルートフォルダに直接テキストとして保存する
             f_id = await self.drive_service.find_file(service, self.drive_service.folder_id, TOKEN_FILE_NAME)
             if f_id:
                 await self.drive_service.update_text(service, f_id, new_refresh_token)
@@ -95,6 +93,15 @@ class FitbitService:
         restoration_score = 25 if restlessness_percentage <= 5 else 22 if restlessness_percentage <= 10 else 18 if restlessness_percentage <= 15 else 14 if restlessness_percentage <= 20 else 10
         return min(100, round(duration_score + quality_score + restoration_score))
 
+    def _format_minutes(self, minutes):
+        if not minutes: return "0分"
+        try:
+            mins = int(minutes)
+        except ValueError:
+            return "0分"
+        h, m = divmod(mins, 60)
+        return f"{h}時間{m}分" if h > 0 else f"{m}分"
+
     async def get_stats(self, date_obj):
         if not await self._refresh_access_token(): return None
         date_str = date_obj.strftime("%Y-%m-%d")
@@ -102,7 +109,7 @@ class FitbitService:
         headers = {"Authorization": f"Bearer {self.access_token}"}
         stats = {}
         
-        # 1. Activityデータの取得
+        # 1. Activityデータの取得（詳細データ追加）
         try:
             url = f"https://api.fitbit.com/1/user/{self.user_id}/activities/date/{date_str}.json"
             async with session.get(url, headers=headers) as resp:
@@ -115,13 +122,25 @@ class FitbitService:
                     stats['distance_km'] = next((d['distance'] for d in s.get('distances', []) if d['activity'] == 'total'), 0)
                     stats['active_minutes_very'] = s.get('veryActiveMinutes', 0)
                     stats['active_minutes_fairly'] = s.get('fairlyActiveMinutes', 0)
+                    stats['active_minutes_lightly'] = s.get('lightlyActiveMinutes', 0)
+                    stats['sedentary_minutes'] = s.get('sedentaryMinutes', 0)
+                    
+                    # 心拍数ゾーンの抽出
+                    raw_hr_zones = s.get('heartRateZones', [])
+                    if isinstance(raw_hr_zones, list):
+                        for z in raw_hr_zones:
+                            name = z.get('name')
+                            mins = z.get('minutes', 0)
+                            if name == 'Fat Burn': stats['hr_zone_fat_burn_minutes'] = mins
+                            elif name == 'Cardio': stats['hr_zone_cardio_minutes'] = mins
+                            elif name == 'Peak': stats['hr_zone_peak_minutes'] = mins
                 else:
                     error_text = await resp.text()
                     logging.error(f"[Fitbit Activity Error] Status: {resp.status}, Body: {error_text}")
         except Exception as e:
             logging.error(f"Fitbit Activity Exception: {e}")
 
-        # 2. Sleepデータの取得
+        # 2. Sleepデータの取得（詳細データ追加）
         try:
             url = f"https://api.fitbit.com/1.2/user/{self.user_id}/sleep/date/{date_str}.json"
             async with session.get(url, headers=headers) as resp:
@@ -144,6 +163,7 @@ class FitbitService:
                         stats['deep_sleep_minutes'] = deep_min
                         stats['rem_sleep_minutes'] = rem_min
                         stats['light_sleep_minutes'] = light_min
+                        stats['wake_sleep_minutes'] = wake_min
                         
                         stats['sleep_score'] = self._calculate_sleep_score(total_asleep, total_in_bed, deep_min, rem_min, wake_min)
                 else:
@@ -154,7 +174,8 @@ class FitbitService:
 
         return stats
 
-    def _update_frontmatter(self, content, stats):
+    def _update_note_content(self, content, stats):
+        # 1. フロントマターの解析
         frontmatter_pattern = r"^---\n(.*?)\n---"
         match = re.search(frontmatter_pattern, content, re.DOTALL)
         
@@ -172,9 +193,10 @@ class FitbitService:
             
         update_keys = [
             'sleep_score', 'total_sleep_minutes', 'time_in_bed_minutes',
-            'deep_sleep_minutes', 'rem_sleep_minutes', 'light_sleep_minutes',
+            'deep_sleep_minutes', 'rem_sleep_minutes', 'light_sleep_minutes', 'wake_sleep_minutes',
             'steps', 'distance_km', 'calories_out', 'resting_heart_rate',
-            'active_minutes_very', 'active_minutes_fairly'
+            'active_minutes_very', 'active_minutes_fairly', 'active_minutes_lightly', 'sedentary_minutes',
+            'hr_zone_fat_burn_minutes', 'hr_zone_cardio_minutes', 'hr_zone_peak_minutes'
         ]
         
         for k in update_keys:
@@ -183,13 +205,48 @@ class FitbitService:
 
         new_fm_lines = [f"{k}: {v}" for k, v in fm_map.items()]
         
-        section_header = "## 📊 Health Stats"
-        stats_md = "\n".join([f"- **{k}**: {v}" for k, v in stats.items()])
-        
-        if section_header not in body:
-             body += f"\n\n{section_header}\n{stats_md}"
-        
-        return f"---\n" + "\n".join(new_fm_lines) + "\n---\n" + body.lstrip()
+        # 2. 本文（Body）用のリッチフォーマット作成
+        metrics_sections = []
+        if 'sleep_score' in stats:
+            sleep_text = (
+                f"#### 🌙 Sleep\n"
+                f"- **Score:** {stats.get('sleep_score', 'N/A')} / 100\n"
+                f"- **Total Sleep:** {self._format_minutes(stats.get('total_sleep_minutes', 0))}\n"
+                f"- **Time in Bed:** {self._format_minutes(stats.get('time_in_bed_minutes', 0))}\n"
+                f"- **Stages:** Deep {self._format_minutes(stats.get('deep_sleep_minutes', 0))}, "
+                f"REM {self._format_minutes(stats.get('rem_sleep_minutes', 0))}, "
+                f"Light {self._format_minutes(stats.get('light_sleep_minutes', 0))}, "
+                f"Wake {self._format_minutes(stats.get('wake_sleep_minutes', 0))}"
+            )
+            metrics_sections.append(sleep_text)
+
+        if 'steps' in stats:
+            activity_text = (
+                f"#### 🏃‍♂️ Activity\n"
+                f"- **Steps:** {stats.get('steps', 'N/A')} steps\n"
+                f"- **Distance:** {stats.get('distance_km', 'N/A')} km\n"
+                f"- **Calories Out:** {stats.get('calories_out', 'N/A')} kcal\n"
+                f"- **Active Minutes:** {self._format_minutes(stats.get('active_minutes_fairly', 0) + stats.get('active_minutes_very', 0))}"
+            )
+            metrics_sections.append(activity_text)
+            
+            if any(k in stats for k in ['resting_heart_rate', 'hr_zone_fat_burn_minutes']):
+                heart_rate_text = (
+                    f"#### ❤️ Heart Rate\n"
+                    f"- **Resting Heart Rate:** {stats.get('resting_heart_rate', 'N/A')} bpm\n"
+                    f"- **Fat Burn:** {self._format_minutes(stats.get('hr_zone_fat_burn_minutes', 0))}\n"
+                    f"- **Cardio:** {self._format_minutes(stats.get('hr_zone_cardio_minutes', 0))}\n"
+                    f"- **Peak:** {self._format_minutes(stats.get('hr_zone_peak_minutes', 0))}"
+                )
+                metrics_sections.append(heart_rate_text)
+
+        # 3. 本文の更新
+        if metrics_sections:
+            new_body = update_section(body.strip(), "\n\n".join(metrics_sections), "## 📊 Health Metrics")
+        else:
+            new_body = body
+
+        return f"---\n" + "\n".join(new_fm_lines) + "\n---\n\n" + new_body.lstrip()
 
     async def update_daily_note_with_stats(self, date_obj, stats):
         service = self.drive_service.get_service()
@@ -205,7 +262,7 @@ class FitbitService:
         if f_id:
             content = await self.drive_service.read_text_file(service, f_id)
         
-        new_content = self._update_frontmatter(content, stats)
+        new_content = self._update_note_content(content, stats)
         
         if f_id:
             await self.drive_service.update_text(service, f_id, new_content)
