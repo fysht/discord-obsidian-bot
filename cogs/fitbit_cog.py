@@ -27,6 +27,15 @@ class FitbitCog(commands.Cog):
             self.is_ready = False
             logging.error("FitbitCog: Driveサービスが初期化されていません。")
 
+        # ★修正: 定期実行（タイマー）のスイッチをオンにする処理を追加
+        self.sleep_report_loop.start()
+        self.full_health_report_loop.start()
+
+    # ★修正: Bot停止時にタイマーを安全に切る処理を追加
+    def cog_unload(self):
+        self.sleep_report_loop.cancel()
+        self.full_health_report_loop.cancel()
+
     def _format_minutes(self, total_minutes: int) -> str:
         if not total_minutes: return "0分"
         hours, mins = divmod(total_minutes, 60)

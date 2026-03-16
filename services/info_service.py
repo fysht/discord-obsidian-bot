@@ -18,14 +18,21 @@ class InfoService:
                         weather_text = time_series[0]["areas"][0]["weathers"][0]
                         weather_text = weather_text.replace("　", " ") # 見やすく整形
                         
-                        temps = data[1]["timeSeries"][1]["areas"][0].get("temps", [])
-                        max_t = temps[1] if len(temps) > 1 else "N/A"
-                        min_t = temps[0] if len(temps) > 0 else "N/A"
+                        # ★修正: 気温のキー名を気象庁の実際の仕様（tempsMax, tempsMin）に合わせる
+                        weekly_areas = data[1]["timeSeries"][1]["areas"][0]
+                        temps_max = weekly_areas.get("tempsMax", [])
+                        temps_min = weekly_areas.get("tempsMin", [])
                         
-                        return f"{weather_text} (最高: {max_t}℃ / 最低: {min_t}℃)", max_t, min_t
+                        max_t = temps_max[0] if len(temps_max) > 0 and temps_max[0] else "N/A"
+                        min_t = temps_min[0] if len(temps_min) > 0 and temps_min[0] else "N/A"
+                        
+                        # ★修正: ObsidianのYAMLエラーを防ぐため、全体をダブルクォーテーションで囲む
+                        weather_value = f'"{weather_text} (最高: {max_t}℃ / 最低: {min_t}℃)"'
+                        
+                        return weather_value, max_t, min_t
         except Exception as e:
             logging.error(f"Weather Fetch Error: {e}")
-        return "天気情報の取得に失敗しました", "N/A", "N/A"
+        return '"天気情報の取得に失敗しました"', "N/A", "N/A"
 
     async def get_news(self, limit=3):
         """Yahoo!ニュースのRSSからタイトルと本物のURLを取得"""
