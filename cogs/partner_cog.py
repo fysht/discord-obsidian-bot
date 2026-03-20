@@ -5,7 +5,7 @@ from google.genai import types
 import logging
 import datetime
 import asyncio
-import random # ★追加
+import random
 
 from config import JST
 from utils.obsidian_utils import update_section
@@ -23,14 +23,11 @@ class PartnerCog(commands.Cog):
         self.tasks_service = getattr(bot, 'tasks_service', None)
         self.gemini_client = bot.gemini_client
         
-        # ★追加: コア・メモリー（取扱説明書）のキャッシュ
         self.user_manual_cache = ""
         self.last_manual_fetch = None
 
-    # ★追加: 取扱説明書をGoogle Driveからこっそり読み込む処理
     async def _get_user_manual(self):
         now = datetime.datetime.now()
-        # 1時間以内ならキャッシュを再利用（API節約と高速化）
         if self.last_manual_fetch and (now - self.last_manual_fetch).total_seconds() < 3600:
             return self.user_manual_cache
 
@@ -146,7 +143,6 @@ class PartnerCog(commands.Cog):
             recent_messages.append(f"{role}: {msg.content}")
         recent_log = "\n".join(reversed(recent_messages))
         
-        # ★追加: コア・メモリーを取得してプロンプトに渡す
         user_manual = await self._get_user_manual()
         now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
         system_prompt = get_system_prompt(self.user_name, now_str, user_manual)
@@ -172,7 +168,6 @@ class PartnerCog(commands.Cog):
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             
-            # ★追加: タイピングの「間（ま）」を作る
             reply_text = response.text.strip()
             delay = min(len(reply_text) * random.uniform(0.04, 0.08), 4.0)
             async with channel.typing():
@@ -244,9 +239,7 @@ class PartnerCog(commands.Cog):
                 input_parts.append(types.Part.from_bytes(data=await att.read(), mime_type=att.content_type))
         if not input_parts: return
 
-        # ここではタイピングインジケーターを出さず、処理を走らせる
         now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
-        # ★追加: コア・メモリーを取得してプロンプトに渡す
         user_manual = await self._get_user_manual()
         system_prompt = get_system_prompt(self.user_name, now_str, user_manual)
 
@@ -321,6 +314,18 @@ class PartnerCog(commands.Cog):
                     name="report_health", description="ユーザーが指定した日付の活動データ（歩数など）を確認したい時に呼び出す。日付指定がない場合は今日とする。",
                     parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")})
                 ),
+                # ★追加: 過去のFitbitデータを一括同期するツール
+                types.FunctionDeclaration(
+                    name="sync_past_fitbit",
+                    description="ユーザーが「過去のFitbitデータ（睡眠や活動）を〇日分まとめて取得して・同期して」と頼んだ時に呼び出す。",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "days": types.Schema(type=types.Type.INTEGER, description="さかのぼる日数。最大30。（例: 1週間分なら 7）")
+                        },
+                        required=["days"]
+                    )
+                ),
                 types.FunctionDeclaration(
                     name="give_english_quiz", description="ユーザーが「英語のクイズ出して」「瞬間英作文やりたい」と頼んだ時に呼び出す。"
                 ),
@@ -340,7 +345,6 @@ class PartnerCog(commands.Cog):
         contents.append(types.Content(role="user", parts=input_parts))
 
         try:
-            # 考える時間（ツール実行など）はバックグラウンドで処理
             response = await self.gemini_client.aio.models.generate_content(
                 model=use_model,
                 contents=contents,
@@ -426,6 +430,16 @@ class PartnerCog(commands.Cog):
                             asyncio.create_task(fitbit_cog.send_full_health_report(target_date_str))
                             tool_result = f"{target_date_str or '今日'}の健康レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
                         else: tool_result = "システムエラー: FitbitCogが見つかりません。"
+                        
+                    # ★追加: バックグラウンドでFitbitの過去データを一括取得する
+                    elif function_call.name == "sync_past_fitbit":
+                        days = int(function_call.args.get("days", 7))
+                        fitbit_cog = self.bot.get_cog("FitbitCog")
+                        if fitbit_cog:
+                            asyncio.create_task(fitbit_cog.perform_batch_sync_and_notify(days, message.channel))
+                            tool_result = f"過去{days}日分のFitbitデータの一括同期処理を裏側（バックグラウンド）で開始しました。完了次第、AIから自発的に専用の完了メッセージが送信されます。あなたはユーザーに「今から裏でまとめて取ってくるから、少し待っててね！」と短く明るく伝えてください。"
+                        else: tool_result = "システムエラー: FitbitCogが見つかりません。"
+                        
                     elif function_call.name == "give_english_quiz":
                         en_cog = self.bot.get_cog("EnglishLearningCog")
                         if en_cog:
@@ -460,7 +474,6 @@ class PartnerCog(commands.Cog):
                     model=use_model, contents=contents, config=types.GenerateContentConfig(system_instruction=system_prompt)
                 )
                 
-                # ★追加: 本文送信時にタイピングの間（ま）を入れる
                 if response_final.text:
                     reply_text = response_final.text.strip()
                     delay = min(len(reply_text) * random.uniform(0.04, 0.08), 4.0)

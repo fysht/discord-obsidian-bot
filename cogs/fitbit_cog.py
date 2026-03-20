@@ -4,6 +4,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import logging
 import datetime
+import asyncio
 
 from config import JST
 from prompts import PROMPT_FITBIT_MORNING, PROMPT_FITBIT_MORNING_NO_DATA, PROMPT_FITBIT_EVENING
@@ -27,11 +28,9 @@ class FitbitCog(commands.Cog):
             self.is_ready = False
             logging.error("FitbitCog: Driveサービスが初期化されていません。")
 
-        # ★修正: 定期実行（タイマー）のスイッチをオンにする処理を追加
         self.sleep_report_loop.start()
         self.full_health_report_loop.start()
 
-    # ★修正: Bot停止時にタイマーを安全に切る処理を追加
     def cog_unload(self):
         self.sleep_report_loop.cancel()
         self.full_health_report_loop.cancel()
@@ -107,6 +106,50 @@ class FitbitCog(commands.Cog):
         
         await partner_cog.generate_and_send_routine_message(context_data, PROMPT_FITBIT_EVENING)
 
+    # ==========================================
+    # ★新規追加: 裏側で一括同期して報告する処理
+    # ==========================================
+    async def perform_batch_sync_and_notify(self, days: int, channel: discord.TextChannel):
+        if not self.is_ready: return
+        if days < 1: days = 1
+        if days > 30: days = 30 # 最大30日に制限
+
+        today = datetime.datetime.now(JST).date()
+        success_dates = []
+        error_dates = []
+
+        # 過去から順番にデータを取りに行く
+        for i in range(days, 0, -1):
+            target_date = today - datetime.timedelta(days=i)
+            date_str = target_date.strftime("%Y-%m-%d")
+            
+            try:
+                stats = await self.fitbit_service.get_stats(target_date)
+                if not stats: stats = {} 
+                success = await self.fitbit_service.update_daily_note_with_stats(target_date, stats)
+                
+                if success: success_dates.append(date_str)
+                else: error_dates.append(date_str)
+                
+                # API制限を回避するため1秒休む
+                await asyncio.sleep(1)
+            except Exception as e:
+                logging.error(f"Fitbit Batch Sync Error for {date_str}: {e}")
+                error_dates.append(date_str)
+
+        # 取得が終わったら、パートナーAIに報告用メッセージを作らせる
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if partner_cog and channel:
+            result_msg = f"要求された日数: 過去{days}日分\n"
+            if success_dates: result_msg += f"成功した期間: {success_dates[0]} 〜 {success_dates[-1]} ({len(success_dates)}日分)\n"
+            if error_dates: result_msg += f"失敗した日付: {', '.join(error_dates)}\n"
+            
+            context_data = f"【過去データの一括同期 完了レポート】\n{result_msg}"
+            instruction = f"Fitbitの過去データ（{days}日分）の一括同期作業が裏側で完了したことを、ユーザーにLINEのように明るく報告してください。「終わったよ！」という報告と、何日分成功したかを簡潔に伝えてください。質問などは不要です。"
+            
+            await partner_cog.generate_and_send_routine_message(context_data, instruction)
+
+
     # --- 自動タスク（毎日の定期実行） ---
     @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
     async def sleep_report_loop(self):
@@ -116,7 +159,7 @@ class FitbitCog(commands.Cog):
     async def full_health_report_loop(self):
         await self.send_full_health_report()
 
-    # --- 手動コマンド ---
+    # --- 手動コマンド（念のための個別取得用） ---
     @app_commands.command(name="fitbit_morning", description="今日の睡眠レポートを手動で取得し、パートナーに報告させます。")
     async def get_morning_report(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=False)
