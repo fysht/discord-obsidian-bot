@@ -18,15 +18,20 @@ class InfoService:
                         weather_text = time_series[0]["areas"][0]["weathers"][0]
                         weather_text = weather_text.replace("　", " ") # 見やすく整形
                         
-                        # ★修正: 気温のキー名を気象庁の実際の仕様（tempsMax, tempsMin）に合わせる
+                        # 気温のリストを取得
                         weekly_areas = data[1]["timeSeries"][1]["areas"][0]
                         temps_max = weekly_areas.get("tempsMax", [])
                         temps_min = weekly_areas.get("tempsMin", [])
                         
-                        max_t = temps_max[0] if len(temps_max) > 0 and temps_max[0] else "N/A"
-                        min_t = temps_min[0] if len(temps_min) > 0 and temps_min[0] else "N/A"
+                        # ★修正: 空っぽのデータ("")をスキップして、数字が入っているものだけを抽出する
+                        valid_max = [t for t in temps_max if t.strip()]
+                        valid_min = [t for t in temps_min if t.strip()]
                         
-                        # ★修正: ObsidianのYAMLエラーを防ぐため、全体をダブルクォーテーションで囲む
+                        # 一番最初に見つかった有効な数字をセット（見つからなければN/A）
+                        max_t = valid_max[0] if valid_max else "N/A"
+                        min_t = valid_min[0] if valid_min else "N/A"
+                        
+                        # ObsidianのYAMLエラーを防ぐため、全体をダブルクォーテーションで囲む
                         weather_value = f'"{weather_text} (最高: {max_t}℃ / 最低: {min_t}℃)"'
                         
                         return weather_value, max_t, min_t

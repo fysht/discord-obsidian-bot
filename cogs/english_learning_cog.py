@@ -8,12 +8,11 @@ from discord import app_commands
 from google.genai import types
 
 from config import JST
-from prompts import PROMPT_VOCAB_EXTRACTION, PROMPT_ENGLISH_QUIZ  # ★追加
+from prompts import PROMPT_VOCAB_EXTRACTION
 
 class EnglishLearningCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # 英語学習用のチャンネルID（設定されていなければ通常のメモチャンネルを使用）
         self.channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         
@@ -84,7 +83,7 @@ class EnglishLearningCog(commands.Cog):
         log_content = await self._get_log_content(today)
         
         if not log_content or "## 💬 English Log" not in log_content:
-            return # 今日のログがなければスキップ
+            return
 
         prompt = f"""
 あなたはプロの英語コーチです。以下の「今日のユーザーの英語思考ログ」を分析し、ユーザーが今後も日常的に使いそうな「重要な英単語やフレーズ」を3〜5個抽出してください。
@@ -107,44 +106,42 @@ class EnglishLearningCog(commands.Cog):
             partner_cog = self.bot.get_cog("PartnerCog")
             if partner_cog:
                 context = f"今日の単語帳を抽出しました。\n{vocab_table}"
-                # ★ 修正: 共通プロンプトを使用
                 await partner_cog.generate_and_send_routine_message(context, PROMPT_VOCAB_EXTRACTION)
 
         except Exception as e:
             logging.error(f"Vocabulary Extraction Error: {e}")
 
+    # ==========================================
+    # ★大改造: 今日のリアルな会話からクイズを作る
+    # ==========================================
     @tasks.loop(time=[datetime.time(hour=7, minute=30, tzinfo=JST), datetime.time(hour=21, minute=0, tzinfo=JST)])
     async def daily_english_quiz(self):
-        """朝と夜に、過去のログ（忘却曲線）から瞬間英作文を出題"""
         channel = self.bot.get_channel(self.channel_id)
         if not channel: return
-
-        today = datetime.datetime.now(JST).date()
-        target_dates = [today - timedelta(days=1), today - timedelta(days=3), today - timedelta(days=7)]
         
-        past_logs = []
-        for d in target_dates:
-            content = await self._get_log_content(d)
-            if content:
-                # ログの中から日本語部分([JA])だけを簡易的に抽出
-                lines = content.split('\n')
-                ja_lines = [line.replace('- [JA]', '').strip() for line in lines if '- [JA]' in line]
-                if ja_lines:
-                    past_logs.append(f"【{d.strftime('%Y-%m-%d')} のつぶやき】\n" + "\n".join(ja_lines))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog: return
 
-        if not past_logs:
-            return # 過去ログがまだ溜まっていなければスキップ
+        # 過去のリアルな会話を直近50件取得して、ユーザーの発言だけを抽出
+        recent_user_msgs = []
+        async for msg in channel.history(limit=50):
+            if msg.author.id != self.bot.user.id and not msg.content.startswith("/"):
+                recent_user_msgs.append(msg.content)
+                
+        if not recent_user_msgs:
+            recent_text = "（最近の会話なし）"
+        else:
+            # AIが読み込みすぎないように最新の20件程度に絞る
+            recent_text = "\n".join(recent_user_msgs[:20])
 
-        logs_text = "\n\n".join(past_logs)
+        context_data = f"【最近のユーザーの発言（クイズの素材）】\n{recent_text}"
         
-        # ★ 修正: 共通プロンプトを使用
-        prompt = f"{PROMPT_ENGLISH_QUIZ}\n\n【過去のつぶやきデータ】\n{logs_text}"
+        # PartnerCog側で空気を読んで出題させる指示
+        instruction = """上記の【最近のユーザーの発言】の中で使われている言葉や、日常の出来事をピックアップして、自然な日常会話で役立つ「瞬間英作文クイズ」を1つだけ出題してください。
+正解は言わずに答えさせる形式にしてください。
+※定時報告感は出さず、会話の流れから急にクイズを思いついたような、ポップな感じで出題してください！"""
         
-        try:
-            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
-            await channel.send(response.text.strip())
-        except Exception as e:
-            logging.error(f"English Quiz Error: {e}")
+        await partner_cog.generate_and_send_routine_message(context_data, instruction)
 
     @app_commands.command(name="test_vocab", description="【テスト用】今日の英語ログから単語帳を生成します。")
     async def test_vocab(self, interaction: discord.Interaction):
