@@ -6,16 +6,11 @@ import aiohttp
 import re
 import asyncio
 import logging
+from google.genai import types # ★追加: ツール呼び出し用
 
 from config import JST
-from utils.obsidian_utils import update_section  # ★追加: ノートへの追記用
-from prompts import (
-    PROMPT_BOOK_SUMMARY, 
-    PROMPT_BOOK_AUTHOR, 
-    PROMPT_BOOK_QUIZ, 
-    PROMPT_BOOK_ACTION,
-    PROMPT_BOOK_CHAT
-)
+from utils.obsidian_utils import update_section
+from prompts import PROMPT_BOOK_SUMMARY, PROMPT_BOOK_CHAT
 
 class BookCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -50,43 +45,49 @@ class BookCog(commands.Cog):
             # Obsidian（Drive）から読書ノートの内容を全読み込みする
             note_content = await self._read_book_note(book_title)
             if not note_content:
-                return # ノートが見つからない場合は何もしない
+                return 
 
-            # 会話内容（キーワード）による機能の自動振り分け
-            if "要約" in text or "まとめ" in text:
-                async with message.channel.typing():
-                    result = await self.perform_summarize(book_title)
-                    await message.reply(result)
-                return
+            # ★変更: キーワード検知をなくし、プロンプトとツール設定を準備
+            prompt = f"{PROMPT_BOOK_CHAT}\n\n【読書ノートのテキスト】\n{note_content}\n\n【私の発言】\n{text}"
 
-            prompt_template = None
-            if any(keyword in text for keyword in ["クイズ", "問題", "テスト"]):
-                prompt_template = PROMPT_BOOK_QUIZ
-            elif any(keyword in text for keyword in ["著者", "作者", "ペルソナ"]):
-                prompt_template = PROMPT_BOOK_AUTHOR
-            elif any(keyword in text for keyword in ["アクション", "行動", "日常", "活か"]):
-                prompt_template = PROMPT_BOOK_ACTION
-            else:
-                prompt_template = f"{PROMPT_BOOK_CHAT}\n\n【私の発言・質問】\n{text}"
+            # Geminiに持たせる「ノート更新ツール」の定義
+            summarize_tool = types.Tool(
+                function_declarations=[
+                    types.FunctionDeclaration(
+                        name="summarize_book_note",
+                        description="これまでの読書ログを整理し、Obsidianの読書ノートを更新・上書き保存します。ユーザーが「ノートを更新して」と明示した、または確認に対してYESと答えた場合のみ使用します。"
+                    )
+                ]
+            )
 
-            # Gemini APIを呼び出して返信
-            prompt = f"{prompt_template}\n\n【読書ノートのテキスト】\n{note_content}"
             async with message.channel.typing():
                 try:
+                    # ツールを持たせてAPIを呼び出し
                     response = await self.gemini_client.aio.models.generate_content(
-                        model="gemini-2.5-pro", contents=prompt
+                        model="gemini-2.5-pro", 
+                        contents=prompt,
+                        config=types.GenerateContentConfig(tools=[summarize_tool])
                     )
+                    
+                    # ツールが呼び出された（ノート更新と判断した）場合
+                    if response.function_calls:
+                        for fc in response.function_calls:
+                            if fc.name == "summarize_book_note":
+                                result_msg = await self.perform_summarize(book_title)
+                                await message.reply(result_msg)
+                                return # ここで終了（ログには追記しない）
+
+                    # 通常のチャットの返信の場合
                     ai_reply = response.text.strip()
                     await message.reply(ai_reply)
                     
-                    # ★追加: ユーザーの発言とAIの回答をセットにしてObsidianに記録する
+                    # ユーザーの発言とAIの回答をセットにしてObsidianに記録する
                     await self._append_qa_to_log(book_title, text, ai_reply)
                     
                 except Exception as e:
                     logging.error(f"Book Chat Error: {e}")
                     await message.reply("ごめんね、AIの処理中にエラーが発生しちゃった💦")
 
-    # ★追加: 読書ログに会話を追記するメソッド
     async def _append_qa_to_log(self, book_title: str, user_text: str, ai_text: str):
         service = self.drive_service.get_service()
         if not service: return
@@ -103,7 +104,6 @@ class BookCog(commands.Cog):
         
         time_str = datetime.datetime.now(JST).strftime('%H:%M')
         
-        # 改行があってもリスト表示が崩れないようにインデントを調整
         user_formatted = user_text.replace('\n', '\n    ')
         ai_formatted = ai_text.replace('\n', '\n        ')
         
@@ -141,7 +141,7 @@ class BookCog(commands.Cog):
 
         msg = await message.reply(f"📚 『{safe_title}』の読書ノートを作成したよ！\nこのスレッドでメモや感想を書いてね。")
         thread = await msg.create_thread(name=f"📖 {safe_title}", auto_archive_duration=10080)
-        await thread.send("ここが読書ルームだよ！\nノートの一番下にある「## 📄 Book Text」の所に本のテキストを貼り付けたら、私に「要約して」「クイズ出して」って話しかけてみてね！")
+        await thread.send("ここが読書ルームだよ！\nノートの一番下にある「## 📄 Book Text」の所に本のテキストを貼り付けたら、自由に話しかけてね！")
 
     async def _read_book_note(self, book_title: str) -> str:
         file_name = f"{book_title}.md"
