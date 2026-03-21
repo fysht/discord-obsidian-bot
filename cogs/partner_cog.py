@@ -209,21 +209,17 @@ class PartnerCog(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot: return
-        is_book_thread = isinstance(message.channel, discord.Thread) and message.channel.name.startswith("📖 ")
-        if message.channel.id != self.memo_channel_id and not is_book_thread: return
+        
+        # ★変更: 読書スレッドの処理は BookCog に任せるため、ここではメインチャンネルのみ処理する
+        if message.channel.id != self.memo_channel_id: return
 
         self.user_name = "ゆうすけ"
         text = message.content.strip()
         is_short_message = len(text) < 30
 
         if text and not text.startswith('/'):
-            if is_book_thread:
-                book_title = message.channel.name[2:].strip()
-                file_name = f"{book_title}.md"
-                asyncio.create_task(self._append_raw_message_to_obsidian(text, folder_name="BookNotes", file_name=file_name))
-            else:
-                asyncio.create_task(self._append_raw_message_to_obsidian(text))
-                asyncio.create_task(self._append_english_log_to_obsidian(text))
+            asyncio.create_task(self._append_raw_message_to_obsidian(text))
+            asyncio.create_task(self._append_english_log_to_obsidian(text))
 
         if is_short_message and text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)

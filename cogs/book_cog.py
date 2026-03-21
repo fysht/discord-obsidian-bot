@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 from config import JST
+from utils.obsidian_utils import update_section  # ★追加: ノートへの追記用
 from prompts import (
     PROMPT_BOOK_SUMMARY, 
     PROMPT_BOOK_AUTHOR, 
@@ -75,10 +76,41 @@ class BookCog(commands.Cog):
                     response = await self.gemini_client.aio.models.generate_content(
                         model="gemini-2.5-pro", contents=prompt
                     )
-                    await message.reply(response.text.strip())
+                    ai_reply = response.text.strip()
+                    await message.reply(ai_reply)
+                    
+                    # ★追加: ユーザーの発言とAIの回答をセットにしてObsidianに記録する
+                    await self._append_qa_to_log(book_title, text, ai_reply)
+                    
                 except Exception as e:
                     logging.error(f"Book Chat Error: {e}")
                     await message.reply("ごめんね、AIの処理中にエラーが発生しちゃった💦")
+
+    # ★追加: 読書ログに会話を追記するメソッド
+    async def _append_qa_to_log(self, book_title: str, user_text: str, ai_text: str):
+        service = self.drive_service.get_service()
+        if not service: return
+        
+        book_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "BookNotes")
+        if not book_folder_id: return
+        
+        file_name = f"{book_title}.md"
+        f_id = await self.drive_service.find_file(service, book_folder_id, file_name)
+        if not f_id: return
+        
+        content = await self.drive_service.read_text_file(service, f_id)
+        if not content: return
+        
+        time_str = datetime.datetime.now(JST).strftime('%H:%M')
+        
+        # 改行があってもリスト表示が崩れないようにインデントを調整
+        user_formatted = user_text.replace('\n', '\n    ')
+        ai_formatted = ai_text.replace('\n', '\n        ')
+        
+        log_entry = f"- **{time_str}** 👤 {user_formatted}\n    - 🤖 {ai_formatted}"
+        
+        new_content = update_section(content, log_entry, "## 📖 Reading Log")
+        await self.drive_service.update_text(service, f_id, new_content)
 
     async def process_book_link(self, message: discord.Message, url: str):
         title = "名称未設定の本"
@@ -104,7 +136,6 @@ class BookCog(commands.Cog):
             f_id = await self.drive_service.find_file(service, book_folder_id, file_name)
             if not f_id:
                 now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
-                # ★追加: 本文貼り付け用のセクションを作成
                 content = f"---\ntitle: {safe_title}\ndate: {now_str}\ntags: [book]\n---\n\n# {safe_title}\n\n## 📝 Summary & Learning\n\n\n## 📖 Reading Log\n\n\n## 📄 Book Text\nここに書籍のテキストデータを貼り付けてね！\n"
                 await self.drive_service.upload_text(service, book_folder_id, file_name, content)
 
@@ -150,7 +181,6 @@ class BookCog(commands.Cog):
         top_half = parts[0].split(summary_heading)[0] 
         raw_log_section = parts[1]
         
-        # ★追加: 本文（Book Text）が要約対象に含まれないように切り離す
         if text_heading in raw_log_section:
             log_parts = raw_log_section.split(text_heading)
             raw_log = log_parts[0].strip()
@@ -165,7 +195,6 @@ class BookCog(commands.Cog):
         try:
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             summary_text = response.text.strip()
-            # 切り離した本文（Book Text）を最後に戻す
             new_content = f"{top_half}{summary_heading}\n{summary_text}\n\n\n{log_heading}\n{raw_log}\n{book_text_section}"
             await self.drive_service.update_text(service, f_id, new_content)
             return f"✨ 『{book_title}』の読書ノートを綺麗に要約して保存したよ！"
