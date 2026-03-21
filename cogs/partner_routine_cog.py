@@ -5,10 +5,9 @@ from google.genai import types
 import logging
 import datetime
 from datetime import timedelta
-import random # ★追加
+import random
 
 from config import JST
-# ★変更: PROMPT_SPONTANEOUS_CHAT を追加
 from prompts import PROMPT_ROUTINE_INACTIVITY, PROMPT_ROUTINE_NIGHTLY, PROMPT_WEEKEND_STOCK_REVIEW, PROMPT_HABIT_CHECK, PROMPT_ROUTINE_MORNING, PROMPT_SPONTANEOUS_CHAT
 from services.info_service import InfoService
 
@@ -19,6 +18,8 @@ class PartnerRoutineCog(commands.Cog):
         self.gemini_client = bot.gemini_client
         
         self.tasks_service = getattr(bot, 'tasks_service', None)
+        # ★ 追加: カレンダーサービスを取得できるように設定
+        self.calendar_service = getattr(bot, 'calendar_service', None)
         self.info_service = getattr(bot, 'info_service', InfoService())
 
     @commands.Cog.listener()
@@ -29,7 +30,6 @@ class PartnerRoutineCog(commands.Cog):
         if not self.habit_check_task.is_running(): self.habit_check_task.start()
         if not self.morning_routine_task.is_running(): self.morning_routine_task.start()
         
-        # ★追加: 新しい2つのタスクを起動
         if not self.spontaneous_message_task.is_running(): self.spontaneous_message_task.start()
         if not self.update_manual_task.is_running(): self.update_manual_task.start()
 
@@ -43,7 +43,7 @@ class PartnerRoutineCog(commands.Cog):
         self.update_manual_task.cancel()
 
     # ==========================================
-    # ★新規追加: 毎晩23:45に「取扱説明書」を自動更新
+    # 毎晩23:45に「取扱説明書」を自動更新
     # ==========================================
     @tasks.loop(time=datetime.time(hour=23, minute=45, tzinfo=JST))
     async def update_manual_task(self):
@@ -89,7 +89,7 @@ class PartnerRoutineCog(commands.Cog):
             logging.error(f"Manual Update Error: {e}")
 
     # ==========================================
-    # ★新規追加: 記憶を使った「完全な気まぐれ発言」
+    # 記憶を使った「完全な気まぐれ発言」
     # ==========================================
     @tasks.loop(hours=1)
     async def spontaneous_message_task(self):
@@ -120,6 +120,12 @@ class PartnerRoutineCog(commands.Cog):
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog: return
 
+        # ★ 追加: 今日のカレンダーの予定を取得
+        schedule_text = "（予定を取得できませんでした）"
+        if self.calendar_service:
+            today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
+            schedule_text = await self.calendar_service.list_events_for_date(today_str)
+
         tasks_text = "（タスク情報を取得できませんでした）"
         if self.tasks_service:
             tasks_text = await self.tasks_service.get_uncompleted_tasks()
@@ -132,7 +138,8 @@ class PartnerRoutineCog(commands.Cog):
 
         news_text = "\n".join(news_list) if news_list else "（ニュースを取得できませんでした）"
 
-        context_data = f"【未完了のタスク】\n{tasks_text}\n\n【今日の天気】\n{weather}\n\n【ニュース】\n{news_text}"
+        # ★ 変更: context_data に【今日の予定】を結合
+        context_data = f"【今日の予定】\n{schedule_text}\n\n【未完了のタスク】\n{tasks_text}\n\n【今日の天気】\n{weather}\n\n【ニュース】\n{news_text}"
         await partner_cog.generate_and_send_routine_message(context_data, PROMPT_ROUTINE_MORNING)
 
     @tasks.loop(minutes=15)

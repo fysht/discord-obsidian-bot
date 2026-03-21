@@ -169,9 +169,6 @@ class PartnerCog(commands.Cog):
             response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
             
             reply_text = response.text.strip()
-            delay = min(len(reply_text) * random.uniform(0.04, 0.08), 4.0)
-            async with channel.typing():
-                await asyncio.sleep(delay)
                 
             await channel.send(reply_text)
         except Exception as e: logging.error(f"PartnerCog 定期メッセージ生成エラー: {e}")
@@ -476,16 +473,10 @@ class PartnerCog(commands.Cog):
                 
                 if response_final.text:
                     reply_text = response_final.text.strip()
-                    delay = min(len(reply_text) * random.uniform(0.04, 0.08), 4.0)
-                    async with message.channel.typing():
-                        await asyncio.sleep(delay)
                     await message.channel.send(reply_text)
             else:
                 if response.text:
                     reply_text = response.text.strip()
-                    delay = min(len(reply_text) * random.uniform(0.04, 0.08), 4.0)
-                    async with message.channel.typing():
-                        await asyncio.sleep(delay)
                     await message.channel.send(reply_text)
 
         except Exception as e:
