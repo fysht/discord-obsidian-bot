@@ -173,14 +173,27 @@ class PartnerCog(commands.Cog):
             await channel.send(reply_text)
         except Exception as e: logging.error(f"PartnerCog 定期メッセージ生成エラー: {e}")
 
-    async def fetch_todays_chat_log(self, channel):
+    async def fetch_todays_chat_log(self, channel: discord.TextChannel) -> str:
         today_start = datetime.datetime.now(JST).replace(hour=0, minute=0, second=0, microsecond=0)
-        logs = []
-        async for msg in channel.history(after=today_start, limit=None, oldest_first=True):
-            if msg.content.startswith("/"): continue
-            role = "AI" if msg.author.id == self.bot.user.id else "User"
-            logs.append(f"{role}: {msg.content}")
-        return "\n".join(logs)
+        today_end = today_start + datetime.timedelta(days=1)
+        
+        log_lines = []
+        async for msg in channel.history(limit=500, after=today_start, before=today_end, oldest_first=True):
+            time_str = msg.created_at.astimezone(JST).strftime('%H:%M')
+            
+            if msg.author.bot:
+                # ★追加：【自動記録】から始まるBotの発言は「システム記録」としてログに含める
+                if msg.content.startswith("【自動記録】"):
+                    clean_content = msg.content.replace("【自動記録】", "").strip()
+                    log_lines.append(f"{time_str} [システム記録]: {clean_content}")
+                continue
+            
+            text = msg.content.strip()
+            if not text or text.startswith('/'): continue
+            
+            log_lines.append(f"{time_str} [私]: {text}")
+            
+        return "\n".join(log_lines)
 
     async def _build_conversation_context(self, channel, current_msg_id: int, limit=30):
         messages = []

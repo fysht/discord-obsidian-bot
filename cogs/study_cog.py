@@ -4,7 +4,7 @@ from discord.ext import commands
 import datetime
 import asyncio
 import logging
-from google.genai import types # ★ツール呼び出し用に追加
+from google.genai import types
 
 from config import JST
 from utils.obsidian_utils import update_section
@@ -13,11 +13,12 @@ from prompts import PROMPT_STUDY_CHAT
 class StudyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        # ★ メモチャンネルではなく、学習専用チャンネルのIDを読み込む
         self.study_channel_id = int(os.getenv("STUDY_CHANNEL_ID", 0))
+        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0)) # メモチャンネルのID
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
+        self.notified_today = set() # 1日1回の通知管理用
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -68,7 +69,7 @@ class StudyCog(commands.Cog):
                                 await self._create_study_thread(message, subject_name)
                                 return
                     
-                    # ツールが呼ばれなかった場合（「がんばるぞー」等のただのつぶやき）
+                    # ツールが呼ばれなかった場合
                     if response.text:
                         await message.reply(response.text.strip())
 
@@ -79,7 +80,7 @@ class StudyCog(commands.Cog):
 
 
         # ==========================================
-        # 2. 学習スレッド内でのチャット処理（変更なし）
+        # 2. 学習スレッド内でのチャット処理
         # ==========================================
         if isinstance(message.channel, discord.Thread) and message.channel.name.startswith("✍️ "):
             text = message.content.strip()
@@ -100,7 +101,18 @@ class StudyCog(commands.Cog):
                     ai_reply = response.text.strip()
                     await message.reply(ai_reply)
                     
+                    # ログの追記
                     await self._append_qa_to_study_log(subject_name, text, ai_reply)
+                    
+                    # 1日1回だけメインのメモチャンネルに自動記録を送信する
+                    now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
+                    cache_key = f"{now_str}_{subject_name}"
+                    if cache_key not in self.notified_today:
+                        self.notified_today.add(cache_key)
+                        if self.memo_channel_id != 0:
+                            memo_channel = self.bot.get_channel(self.memo_channel_id)
+                            if memo_channel:
+                                await memo_channel.send(f"【自動記録】✍️ 本日、『{subject_name}』の学習・過去問演習を行いました。")
                     
                 except Exception as e:
                     logging.error(f"Study Chat Error: {e}")
