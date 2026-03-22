@@ -102,8 +102,8 @@ class StudyCog(commands.Cog):
 
             contents.append(types.Content(role="user", parts=input_parts))
 
-            # 弱点ノート保存ツール
-            save_weakness_tool = types.Tool(
+            # ★修正: ツールを2つ（弱点保存、まとめ保存）定義する
+            study_tools = types.Tool(
                 function_declarations=[
                     types.FunctionDeclaration(
                         name="save_weakness_note",
@@ -122,6 +122,20 @@ class StudyCog(commands.Cog):
                             },
                             "required": ["question_and_answer", "user_reason"]
                         }
+                    ),
+                    types.FunctionDeclaration(
+                        name="save_set_summary",
+                        description="5問セット終了時に、そのセットで学習した重要ポイントのまとめを学習ログノートに保存します。",
+                        parameters={
+                            "type": "OBJECT",
+                            "properties": {
+                                "summary_text": {
+                                    "type": "STRING",
+                                    "description": "保存するまとめの内容（箇条書き）"
+                                }
+                            },
+                            "required": ["summary_text"]
+                        }
                     )
                 ]
             )
@@ -133,21 +147,26 @@ class StudyCog(commands.Cog):
                         contents=contents,
                         config=types.GenerateContentConfig(
                             system_instruction=system_prompt,
-                            tools=[save_weakness_tool]
+                            tools=[study_tools]
                         )
                     )
                     
                     ai_reply = response.text.strip() if response.text else ""
                     
-                    # ツールが呼ばれた場合（弱点ノートへの保存）
+                    # ツールが呼ばれた場合の処理
                     if response.function_calls:
                         for fc in response.function_calls:
                             if fc.name == "save_weakness_note":
                                 q_and_a = fc.args.get("question_and_answer", "")
                                 reason = fc.args.get("user_reason", "")
                                 await self._append_weakness_note(subject_name, q_and_a, reason)
-                                if not ai_reply:
-                                    ai_reply = "📝 弱点ノートにゆうすけの言葉でしっかり保存しておいたよ！復習バッチリだね！次も続ける？"
+                            
+                            elif fc.name == "save_set_summary":
+                                summary = fc.args.get("summary_text", "")
+                                await self._append_summary_to_log(subject_name, summary)
+                                
+                        if not ai_reply:
+                            ai_reply = "📝 学習ログの更新と保存が完了したよ！"
 
                     if ai_reply:
                         await message.reply(ai_reply)
@@ -225,6 +244,7 @@ class StudyCog(commands.Cog):
                 
         return combined_data if combined_data else None
 
+    # ★修正: 初期ファイル生成時に Set Summaries の見出しを追加
     async def _append_qa_to_study_log(self, subject_name: str, user_text: str, ai_text: str):
         service = self.drive_service.get_service()
         if not service: return
@@ -240,11 +260,14 @@ class StudyCog(commands.Cog):
         time_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
         
         if not f_id:
-            content = f"---\ntitle: {subject_name} 学習ログ\ndate: {now_str}\ntags: [study_log]\n---\n\n# {subject_name} 学習ログ\n\n## 📝 Study Log\n\n"
+            content = f"---\ntitle: {subject_name} 学習ログ\ndate: {now_str}\ntags: [study_log]\n---\n\n# {subject_name} 学習ログ\n\n## 💡 Set Summaries\n\n## 📝 Study Log\n\n"
             f_id = await self.drive_service.upload_text(service, logs_folder_id, file_name, content)
             content_to_update = content
         else:
             content_to_update = await self.drive_service.read_text_file(service, f_id)
+            # 古いファイルの場合、Set Summaries 見出しがなければ追加する処理（簡易版）
+            if "## 💡 Set Summaries" not in content_to_update:
+                content_to_update = content_to_update.replace("## 📝 Study Log", "## 💡 Set Summaries\n\n## 📝 Study Log")
             
         if not content_to_update: return
         
@@ -256,8 +279,32 @@ class StudyCog(commands.Cog):
         new_content = update_section(content_to_update, log_entry, "## 📝 Study Log")
         await self.drive_service.update_text(service, f_id, new_content)
 
+    # ★新規追加: 5問セットのまとめを保存するメソッド
+    async def _append_summary_to_log(self, subject_name: str, summary_text: str):
+        service = self.drive_service.get_service()
+        if not service: return
+        
+        logs_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "StudyLogs")
+        if not logs_folder_id: return
+        
+        file_name = f"{subject_name}_学習ログ.md"
+        f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
+        if not f_id: return
+        
+        content_to_update = await self.drive_service.read_text_file(service, f_id)
+        if not content_to_update: return
+        
+        now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
+        
+        # summary_text が改行を含んでいる場合はインデントを揃える
+        formatted_summary = summary_text.replace('\n', '\n    ')
+        
+        log_entry = f"- **{now_str} のまとめ**\n    {formatted_summary}"
+        
+        new_content = update_section(content_to_update, log_entry, "## 💡 Set Summaries")
+        await self.drive_service.update_text(service, f_id, new_content)
+
     async def _append_weakness_note(self, subject_name: str, q_and_a: str, user_reason: str):
-        """弱点ノートに間違えた問題とユーザーの言葉を保存する"""
         service = self.drive_service.get_service()
         if not service: return
         
