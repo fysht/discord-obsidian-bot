@@ -107,7 +107,7 @@ class StudyCog(commands.Cog):
             async with message.channel.typing():
                 try:
                     response = await self.gemini_client.aio.models.generate_content(
-                        model="gemini-1.5-pro",
+                        model="gemini-2.5-pro",
                         contents=contents,
                         config=types.GenerateContentConfig(system_instruction=system_prompt)
                     )
