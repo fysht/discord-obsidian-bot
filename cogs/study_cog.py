@@ -14,11 +14,11 @@ class StudyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.study_channel_id = int(os.getenv("STUDY_CHANNEL_ID", 0))
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0)) # メモチャンネルのID
+        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
-        self.notified_today = set() # 1日1回の通知管理用
+        self.notified_today = set()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -31,7 +31,6 @@ class StudyCog(commands.Cog):
         if message.channel.id == self.study_channel_id and not isinstance(message.channel, discord.Thread):
             text = message.content.strip()
 
-            # AIに持たせる「科目名を抽出してスレッドを作る」ツール
             extract_tool = types.Tool(
                 function_declarations=[
                     types.FunctionDeclaration(
@@ -56,12 +55,11 @@ class StudyCog(commands.Cog):
             async with message.channel.typing():
                 try:
                     response = await self.gemini_client.aio.models.generate_content(
-                        model="gemini-2.5-pro",
+                        model="gemini-1.5-pro",
                         contents=prompt,
                         config=types.GenerateContentConfig(tools=[extract_tool])
                     )
 
-                    # ツールが呼び出された（科目名が分かった）場合
                     if response.function_calls:
                         for fc in response.function_calls:
                             if fc.name == "create_study_thread":
@@ -69,7 +67,6 @@ class StudyCog(commands.Cog):
                                 await self._create_study_thread(message, subject_name)
                                 return
                     
-                    # ツールが呼ばれなかった場合
                     if response.text:
                         await message.reply(response.text.strip())
 
@@ -91,17 +88,32 @@ class StudyCog(commands.Cog):
                 await message.reply(f"ごめんね、Obsidianの `StudyData` フォルダの中に「{subject_name}」のテキストや過去問のデータが見つからなかったよ💦")
                 return
 
-            prompt = f"{PROMPT_STUDY_CHAT}\n\n{study_data}\n\n【私の発言・回答】\n{text}"
+            # ★修正: 会話履歴（コンテキスト）を構築してAIに記憶を持たせる
+            system_prompt = f"{PROMPT_STUDY_CHAT}\n\n{study_data}"
+            contents = await self._build_conversation_context(message.channel, message.id, limit=10)
+            
+            input_parts = []
+            if text: input_parts.append(types.Part.from_text(text=text))
+            for att in message.attachments:
+                if att.content_type and att.content_type.startswith(('image/', 'audio/')):
+                    input_parts.append(types.Part.from_bytes(data=await att.read(), mime_type=att.content_type))
+            
+            if not input_parts and not contents:
+                return
+
+            # 最新の発言を追加
+            contents.append(types.Content(role="user", parts=input_parts))
 
             async with message.channel.typing():
                 try:
                     response = await self.gemini_client.aio.models.generate_content(
-                        model="gemini-2.5-pro", contents=prompt
+                        model="gemini-1.5-pro",
+                        contents=contents,
+                        config=types.GenerateContentConfig(system_instruction=system_prompt)
                     )
                     ai_reply = response.text.strip()
                     await message.reply(ai_reply)
                     
-                    # ログの追記
                     await self._append_qa_to_study_log(subject_name, text, ai_reply)
                     
                     # 1日1回だけメインのメモチャンネルに自動記録を送信する
@@ -121,8 +133,20 @@ class StudyCog(commands.Cog):
     # ==========================================
     # 内部処理メソッド
     # ==========================================
+    async def _build_conversation_context(self, channel, current_msg_id: int, limit=10):
+        """直近の会話履歴を取得し、AIの短期記憶を構築する"""
+        messages = []
+        async for msg in channel.history(limit=limit + 1, oldest_first=False):
+            if msg.id == current_msg_id: continue
+            if msg.content.startswith("/"): continue
+            if msg.author.bot and msg.author.id != self.bot.user.id: continue
+            role = "model" if msg.author.id == self.bot.user.id else "user"
+            text_content = msg.content
+            if msg.attachments: text_content += " [メディア送信]"
+            messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text_content)]))
+        return list(reversed(messages))
+
     async def _create_study_thread(self, message: discord.Message, subject_name: str):
-        """スレッドを実際に作成する処理"""
         service = self.drive_service.get_service()
         if service:
             study_data_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "StudyData")
@@ -131,7 +155,7 @@ class StudyCog(commands.Cog):
         
         msg = await message.reply(f"✍️ 『{subject_name}』の学習を開始するよ！\nObsidianの `StudyData` フォルダに `{subject_name}_テキスト.md` と `{subject_name}_過去問.md` を入れておいてね。")
         thread = await msg.create_thread(name=f"✍️ {subject_name}", auto_archive_duration=10080)
-        await thread.send("ここが学習ルームだよ！\n「この過去問解説して！」「応用問題出して！」「先生役やるから採点して！」みたいに自由に話しかけてね。")
+        await thread.send("ここが学習ルームだよ！\n「過去問から問題出して！」「応用問題出して！」「先生役やるから採点して！」みたいに自由に話しかけてね。")
 
     async def _read_study_data(self, subject_name: str) -> str:
         service = self.drive_service.get_service()
@@ -165,14 +189,15 @@ class StudyCog(commands.Cog):
         if not logs_folder_id: 
             logs_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "StudyLogs")
         
-        file_name = f"{subject_name}_学習ログ.md"
+        # ★修正: ファイル名と見出しを英語表記に統一
+        file_name = f"{subject_name}_StudyLog.md"
         f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
         
         now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
         time_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
         
         if not f_id:
-            content = f"---\ntitle: {subject_name} 学習ログ\ndate: {now_str}\ntags: [study_log]\n---\n\n# {subject_name} 学習ログ\n\n## 📝 学習タイムライン\n\n"
+            content = f"---\ntitle: {subject_name} Study Log\ndate: {now_str}\ntags: [study_log]\n---\n\n# {subject_name} Study Log\n\n## 📝 Study Log\n\n"
             f_id = await self.drive_service.upload_text(service, logs_folder_id, file_name, content)
             content_to_update = content
         else:
@@ -185,7 +210,7 @@ class StudyCog(commands.Cog):
         
         log_entry = f"- **{time_str}** 👤 {user_formatted}\n    - 🤖 {ai_formatted}"
         
-        new_content = update_section(content_to_update, log_entry, "## 📝 学習タイムライン")
+        new_content = update_section(content_to_update, log_entry, "## 📝 Study Log")
         await self.drive_service.update_text(service, f_id, new_content)
 
 async def setup(bot: commands.Bot):
