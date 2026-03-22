@@ -55,7 +55,7 @@ class StudyCog(commands.Cog):
             async with message.channel.typing():
                 try:
                     response = await self.gemini_client.aio.models.generate_content(
-                        model="gemini-1.5-pro",
+                        model="gemini-2.5-pro",
                         contents=prompt,
                         config=types.GenerateContentConfig(tools=[extract_tool])
                     )
@@ -88,8 +88,9 @@ class StudyCog(commands.Cog):
                 await message.reply(f"ごめんね、Obsidianの `StudyData` フォルダの中に「{subject_name}」のテキストや過去問のデータが見つからなかったよ💦")
                 return
 
-            # ★修正: 会話履歴（コンテキスト）を構築してAIに記憶を持たせる
-            system_prompt = f"{PROMPT_STUDY_CHAT}\n\n{study_data}"
+            # 会話履歴（コンテキスト）を構築してAIに記憶を持たせる
+            # 巨大なデータを先に配置し、一番最後にプロンプト（人格やルール）を置いて忘れさせないようにする
+            system_prompt = f"【参照用学習データ】\n{study_data}\n\n================\n{PROMPT_STUDY_CHAT}"
             contents = await self._build_conversation_context(message.channel, message.id, limit=10)
             
             input_parts = []
@@ -189,15 +190,16 @@ class StudyCog(commands.Cog):
         if not logs_folder_id: 
             logs_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "StudyLogs")
         
-        # ★修正: ファイル名と見出しを英語表記に統一
-        file_name = f"{subject_name}_StudyLog.md"
+        # ファイル名は日本語
+        file_name = f"{subject_name}_学習ログ.md"
         f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
         
         now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
         time_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
         
         if not f_id:
-            content = f"---\ntitle: {subject_name} Study Log\ndate: {now_str}\ntags: [study_log]\n---\n\n# {subject_name} Study Log\n\n## 📝 Study Log\n\n"
+            # 中の項目は英語（Study Log）に統一
+            content = f"---\ntitle: {subject_name} 学習ログ\ndate: {now_str}\ntags: [study_log]\n---\n\n# {subject_name} 学習ログ\n\n## 📝 Study Log\n\n"
             f_id = await self.drive_service.upload_text(service, logs_folder_id, file_name, content)
             content_to_update = content
         else:
@@ -210,6 +212,7 @@ class StudyCog(commands.Cog):
         
         log_entry = f"- **{time_str}** 👤 {user_formatted}\n    - 🤖 {ai_formatted}"
         
+        # 追記先の見出しも英語（Study Log）に
         new_content = update_section(content_to_update, log_entry, "## 📝 Study Log")
         await self.drive_service.update_text(service, f_id, new_content)
 
