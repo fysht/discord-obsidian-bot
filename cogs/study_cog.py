@@ -88,8 +88,6 @@ class StudyCog(commands.Cog):
                 await message.reply(f"ごめんね、Obsidianの `StudyData` フォルダの中に「{subject_name}」のテキストや過去問のデータが見つからなかったよ💦")
                 return
 
-            # 会話履歴（コンテキスト）を構築してAIに記憶を持たせる
-            # 巨大なデータを先に配置し、一番最後にプロンプト（人格やルール）を置いて忘れさせないようにする
             system_prompt = f"【参照用学習データ】\n{study_data}\n\n================\n{PROMPT_STUDY_CHAT}"
             contents = await self._build_conversation_context(message.channel, message.id, limit=10)
             
@@ -102,22 +100,59 @@ class StudyCog(commands.Cog):
             if not input_parts and not contents:
                 return
 
-            # 最新の発言を追加
             contents.append(types.Content(role="user", parts=input_parts))
+
+            # 弱点ノート保存ツール
+            save_weakness_tool = types.Tool(
+                function_declarations=[
+                    types.FunctionDeclaration(
+                        name="save_weakness_note",
+                        description="ユーザーが自分の言葉で間違えた理由を説明した後、その内容を弱点ノートに保存します。",
+                        parameters={
+                            "type": "OBJECT",
+                            "properties": {
+                                "question_and_answer": {
+                                    "type": "STRING",
+                                    "description": "間違えた問題と正解の内容"
+                                },
+                                "user_reason": {
+                                    "type": "STRING",
+                                    "description": "ユーザーが自分の言葉で説明した間違えた理由や覚え方"
+                                }
+                            },
+                            "required": ["question_and_answer", "user_reason"]
+                        }
+                    )
+                ]
+            )
 
             async with message.channel.typing():
                 try:
                     response = await self.gemini_client.aio.models.generate_content(
                         model="gemini-2.5-pro",
                         contents=contents,
-                        config=types.GenerateContentConfig(system_instruction=system_prompt)
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_prompt,
+                            tools=[save_weakness_tool]
+                        )
                     )
-                    ai_reply = response.text.strip()
-                    await message.reply(ai_reply)
                     
-                    await self._append_qa_to_study_log(subject_name, text, ai_reply)
+                    ai_reply = response.text.strip() if response.text else ""
                     
-                    # 1日1回だけメインのメモチャンネルに自動記録を送信する
+                    # ツールが呼ばれた場合（弱点ノートへの保存）
+                    if response.function_calls:
+                        for fc in response.function_calls:
+                            if fc.name == "save_weakness_note":
+                                q_and_a = fc.args.get("question_and_answer", "")
+                                reason = fc.args.get("user_reason", "")
+                                await self._append_weakness_note(subject_name, q_and_a, reason)
+                                if not ai_reply:
+                                    ai_reply = "📝 弱点ノートにゆうすけの言葉でしっかり保存しておいたよ！復習バッチリだね！次も続ける？"
+
+                    if ai_reply:
+                        await message.reply(ai_reply)
+                        await self._append_qa_to_study_log(subject_name, text, ai_reply)
+                    
                     now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
                     cache_key = f"{now_str}_{subject_name}"
                     if cache_key not in self.notified_today:
@@ -135,7 +170,6 @@ class StudyCog(commands.Cog):
     # 内部処理メソッド
     # ==========================================
     async def _build_conversation_context(self, channel, current_msg_id: int, limit=10):
-        """直近の会話履歴を取得し、AIの短期記憶を構築する"""
         messages = []
         async for msg in channel.history(limit=limit + 1, oldest_first=False):
             if msg.id == current_msg_id: continue
@@ -156,7 +190,7 @@ class StudyCog(commands.Cog):
         
         msg = await message.reply(f"✍️ 『{subject_name}』の学習を開始するよ！\nObsidianの `StudyData` フォルダに `{subject_name}_テキスト.md` と `{subject_name}_過去問.md` を入れておいてね。")
         thread = await msg.create_thread(name=f"✍️ {subject_name}", auto_archive_duration=10080)
-        await thread.send("ここが学習ルームだよ！\n「過去問から問題出して！」「応用問題出して！」「先生役やるから採点して！」みたいに自由に話しかけてね。")
+        await thread.send("ここが学習ルームだよ！\n「過去問から問題出して！」「応用問題出して！」みたいに自由に話しかけてね。")
 
     async def _read_study_data(self, subject_name: str) -> str:
         service = self.drive_service.get_service()
@@ -179,6 +213,15 @@ class StudyCog(commands.Cog):
         if exam_f_id:
             exam_content = await self.drive_service.read_text_file(service, exam_f_id)
             if exam_content: combined_data += f"【過去問データ：{subject_name}】\n{exam_content}\n\n"
+
+        # 弱点ノートも読み込んで復習に活かす
+        logs_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "StudyLogs")
+        if logs_folder_id:
+            weakness_file_name = f"{subject_name}_弱点ノート.md"
+            weakness_f_id = await self.drive_service.find_file(service, logs_folder_id, weakness_file_name)
+            if weakness_f_id:
+                weakness_content = await self.drive_service.read_text_file(service, weakness_f_id)
+                if weakness_content: combined_data += f"【弱点ノート（過去に間違えてメモした内容）：{subject_name}】\n{weakness_content}\n\n"
                 
         return combined_data if combined_data else None
 
@@ -190,7 +233,6 @@ class StudyCog(commands.Cog):
         if not logs_folder_id: 
             logs_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "StudyLogs")
         
-        # ファイル名は日本語
         file_name = f"{subject_name}_学習ログ.md"
         f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
         
@@ -198,7 +240,6 @@ class StudyCog(commands.Cog):
         time_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
         
         if not f_id:
-            # 中の項目は英語（Study Log）に統一
             content = f"---\ntitle: {subject_name} 学習ログ\ndate: {now_str}\ntags: [study_log]\n---\n\n# {subject_name} 学習ログ\n\n## 📝 Study Log\n\n"
             f_id = await self.drive_service.upload_text(service, logs_folder_id, file_name, content)
             content_to_update = content
@@ -212,8 +253,35 @@ class StudyCog(commands.Cog):
         
         log_entry = f"- **{time_str}** 👤 {user_formatted}\n    - 🤖 {ai_formatted}"
         
-        # 追記先の見出しも英語（Study Log）に
         new_content = update_section(content_to_update, log_entry, "## 📝 Study Log")
+        await self.drive_service.update_text(service, f_id, new_content)
+
+    async def _append_weakness_note(self, subject_name: str, q_and_a: str, user_reason: str):
+        """弱点ノートに間違えた問題とユーザーの言葉を保存する"""
+        service = self.drive_service.get_service()
+        if not service: return
+        
+        logs_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "StudyLogs")
+        if not logs_folder_id: 
+            logs_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "StudyLogs")
+        
+        file_name = f"{subject_name}_弱点ノート.md"
+        f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
+        
+        now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
+        
+        if not f_id:
+            content = f"---\ntitle: {subject_name} 弱点ノート\ndate: {now_str}\ntags: [weakness_note]\n---\n\n# {subject_name} 弱点ノート\n\n## 🚨 Weakness Log\n\n"
+            f_id = await self.drive_service.upload_text(service, logs_folder_id, file_name, content)
+            content_to_update = content
+        else:
+            content_to_update = await self.drive_service.read_text_file(service, f_id)
+            
+        if not content_to_update: return
+        
+        log_entry = f"- **{now_str} 追加**\n    - ❓ **問題**: {q_and_a}\n    - 💡 **自分のメモ**: {user_reason}"
+        
+        new_content = update_section(content_to_update, log_entry, "## 🚨 Weakness Log")
         await self.drive_service.update_text(service, f_id, new_content)
 
 async def setup(bot: commands.Bot):
