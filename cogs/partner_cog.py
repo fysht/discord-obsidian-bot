@@ -166,7 +166,8 @@ class PartnerCog(commands.Cog):
 {instruction}
 """
         try:
-            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
+            # コスト削減のため、ルーティン生成も flash モデルに変更
+            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
             
             reply_text = response.text.strip()
                 
@@ -182,7 +183,6 @@ class PartnerCog(commands.Cog):
             time_str = msg.created_at.astimezone(JST).strftime('%H:%M')
             
             if msg.author.bot:
-                # ★追加：【自動記録】から始まるBotの発言は「システム記録」としてログに含める
                 if msg.content.startswith("【自動記録】"):
                     clean_content = msg.content.replace("【自動記録】", "").strip()
                     log_lines.append(f"{time_str} [システム記録]: {clean_content}")
@@ -215,7 +215,8 @@ class PartnerCog(commands.Cog):
                 return
             prompt = f"{PROMPT_INTERIM_SUMMARY}\n\n{logs}"
             try:
-                response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
+                # コスト削減のため flash モデルに変更
+                response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
                 await message.reply(f"今のところこんな感じ！👇\n\n{response.text.strip()}")
             except Exception as e: await message.reply(f"ごめんね、エラーが出ちゃった💦 ({e})")
 
@@ -223,7 +224,6 @@ class PartnerCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot: return
         
-        # ★変更: 読書スレッドの処理は BookCog に任せるため、ここではメインチャンネルのみ処理する
         if message.channel.id != self.memo_channel_id: return
 
         self.user_name = "ゆうすけ"
@@ -320,7 +320,6 @@ class PartnerCog(commands.Cog):
                     name="report_health", description="ユーザーが指定した日付の活動データ（歩数など）を確認したい時に呼び出す。日付指定がない場合は今日とする。",
                     parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="確認したい日付（YYYY-MM-DD）。省略時は今日。")})
                 ),
-                # ★追加: 過去のFitbitデータを一括同期するツール
                 types.FunctionDeclaration(
                     name="sync_past_fitbit",
                     description="ユーザーが「過去のFitbitデータ（睡眠や活動）を〇日分まとめて取得して・同期して」と頼んだ時に呼び出す。",
@@ -339,13 +338,36 @@ class PartnerCog(commands.Cog):
                     name="sync_location", description="過去のロケーション履歴（タイムライン）を指定した日付で同期し、Obsidianに保存する。",
                     parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="同期したい日付（YYYY-MM-DD）")}, required=["date"])
                 ),
+                # ★追加1: 学習ノート記録用ツール
                 types.FunctionDeclaration(
-                    name="summarize_book", description="現在読んでいる本の読書ログをAIが整理し、ノートの要約を更新する。",
-                    parameters=types.Schema(type=types.Type.OBJECT, properties={"book_title": types.Schema(type=types.Type.STRING, description="要約したい本のタイトル。省略時は現在のスレッドの本。")})
+                    name="record_study_note",
+                    description="ユーザーが学習した内容（NotebookLMからのまとめなど）をノートに記録・保存したいと言った際に呼び出す。",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "subject": types.Schema(type=types.Type.STRING, description="科目名やテーマ（例：民法、会社法など）"),
+                            "memo": types.Schema(type=types.Type.STRING, description="記録する学習内容のテキストデータ")
+                        },
+                        required=["subject", "memo"]
+                    )
+                ),
+                # ★追加2: 読書ノート記録用ツール
+                types.FunctionDeclaration(
+                    name="record_book_note",
+                    description="ユーザーが読書メモや本の要約をノートに記録・保存したいと言った際に呼び出す。",
+                    parameters=types.Schema(
+                        type=types.Type.OBJECT,
+                        properties={
+                            "book_title": types.Schema(type=types.Type.STRING, description="本のタイトル"),
+                            "memo": types.Schema(type=types.Type.STRING, description="記録する読書メモのテキストデータ")
+                        },
+                        required=["book_title", "memo"]
+                    )
                 )
             ])
         ]
 
+        # 常に一番安価なモデルを使用
         use_model = "gemini-2.5-flash"
         contents = await self._build_conversation_context(message.channel, message.id, limit=10)
         contents.append(types.Content(role="user", parts=input_parts))
@@ -437,7 +459,6 @@ class PartnerCog(commands.Cog):
                             tool_result = f"{target_date_str or '今日'}の健康レポートの取得と解析を開始しました。別メッセージとしてすぐに送信されます。"
                         else: tool_result = "システムエラー: FitbitCogが見つかりません。"
                         
-                    # ★追加: バックグラウンドでFitbitの過去データを一括取得する
                     elif function_call.name == "sync_past_fitbit":
                         days = int(function_call.args.get("days", 7))
                         fitbit_cog = self.bot.get_cog("FitbitCog")
@@ -457,19 +478,27 @@ class PartnerCog(commands.Cog):
                         loc_cog = self.bot.get_cog("LocationLogCog")
                         if loc_cog: tool_result = await loc_cog.perform_manual_sync(target_date)
                         else: tool_result = "システムエラー: LocationLogCogが見つかりません。"
-                    elif function_call.name == "summarize_book":
-                        book_title = function_call.args.get("book_title")
-                        if not book_title:
-                            if isinstance(message.channel, discord.Thread) and message.channel.name.startswith("📖 "):
-                                book_title = message.channel.name[2:].strip()
-                            else:
-                                tool_result = "エラー: 本のタイトルが指定されていないか、読書スレッド内ではありません。"
-                        if book_title:
-                            book_cog = self.bot.get_cog("BookCog")
-                            if book_cog:
-                                asyncio.create_task(book_cog.perform_summarize(book_title))
-                                tool_result = f"『{book_title}』の要約処理を開始しました！完了まで少しお待ちください。"
-                            else: tool_result = "システムエラー: BookCogが見つかりません。"
+                    
+                    # ★追加: 学習・読書ノート処理
+                    elif function_call.name == "record_study_note":
+                        subject = function_call.args["subject"]
+                        memo = function_call.args["memo"]
+                        study_cog = self.bot.get_cog("StudyCog")
+                        if study_cog:
+                            await study_cog.append_study_memo(subject, memo)
+                            tool_result = f"学習ノート（{subject}）に内容をバッチリ保存しました。"
+                        else:
+                            tool_result = "システムエラー: StudyCogが見つかりません。"
+
+                    elif function_call.name == "record_book_note":
+                        book_title = function_call.args["book_title"]
+                        memo = function_call.args["memo"]
+                        book_cog = self.bot.get_cog("BookCog")
+                        if book_cog:
+                            await book_cog.append_book_memo(book_title, memo)
+                            tool_result = f"読書ノート（{book_title}）にメモを保存しました。"
+                        else:
+                            tool_result = "システムエラー: BookCogが見つかりません。"
 
                     function_responses.append(
                         types.Part.from_function_response(name=function_call.name, response={"result": str(tool_result)})

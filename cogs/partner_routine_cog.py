@@ -64,7 +64,7 @@ class PartnerRoutineCog(commands.Cog):
         try:
             logging.info("【UserManual】取扱説明書の自動更新を開始します...")
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-pro", contents=prompt
+                model="gemini-2.5-flash", contents=prompt
             )
             new_manual = response.text.strip()
             
@@ -168,7 +168,7 @@ class PartnerRoutineCog(commands.Cog):
         try:
             if self.gemini_client:
                 response = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-pro", contents=prompt
+                    model="gemini-2.5-flash", contents=prompt
                 )
                 await channel.send(response.text.strip())
         except Exception as e: 

@@ -98,7 +98,7 @@ class EnglishLearningCog(commands.Cog):
 {log_content}
 """
         try:
-            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-pro", contents=prompt)
+            response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
             vocab_table = response.text.strip()
             
             await self._save_vocabulary(vocab_table)
