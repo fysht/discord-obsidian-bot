@@ -86,3 +86,55 @@ async def parse_url_with_readability(url: str) -> tuple[str | None, str | None]:
     except Exception as e:
         logging.error(f"PlaywrightによるURL解析エラー: {url} -> {e}")
         return "No Title Found", f"（ページの解析中にエラーが発生しました: {e}）"
+
+
+async def fetch_maps_info(url: str) -> tuple[str, str]:
+    """Playwrightを使ってGoogle Mapsのタイトルと説明を抽出する"""
+    try:
+        await _ensure_browser_installed()
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            try:
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    locale="ja-JP",
+                )
+                page = await context.new_page()
+                await page.goto(url, timeout=45000, wait_until="domcontentloaded")
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=5000)
+                except Exception:
+                    pass
+
+                og_title = await page.evaluate(
+                    "() => { const meta = document.querySelector('meta[property=\"og:title\"]'); return meta ? meta.content : null; }"
+                )
+                og_desc = await page.evaluate(
+                    "() => { const meta = document.querySelector('meta[property=\"og:description\"]'); return meta ? meta.content : null; }"
+                )
+                page_title = await page.title()
+
+                title = og_title or page_title
+                desc = og_desc or ""
+
+                if title:
+                    title = (
+                        title.replace(" - Google マップ", "")
+                        .replace(" - Google Maps", "")
+                        .strip()
+                    )
+
+                return title, desc
+            finally:
+                await browser.close()
+    except Exception as e:
+        logging.error(f"Playwrightによるマップ解析エラー: {url} -> {e}")
+        return "Google Maps Location", ""

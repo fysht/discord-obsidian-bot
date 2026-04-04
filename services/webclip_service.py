@@ -5,7 +5,7 @@ import logging
 import aiohttp
 
 from config import JST
-from web_parser import parse_url_with_readability
+from web_parser import parse_url_with_readability, fetch_maps_info
 from utils.obsidian_utils import update_section  # デイリーノート更新用
 
 
@@ -93,6 +93,7 @@ class WebClipService:
         title = "Untitled"
         raw_text = ""
         author_name = ""
+        map_desc = ""
 
         if is_youtube:
             yt_info = await self.get_youtube_info(url)
@@ -105,8 +106,8 @@ class WebClipService:
                 except Exception:
                     title = "YouTube Video"
         elif is_map:
-            # マップの場合は本文の解析をスキップし、タイトルのみ取得
-            title = await self._get_fallback_title(url)
+            # Playwrightを使ってメタ情報を取得
+            title, map_desc = await fetch_maps_info(url)
             if not title or title == "Untitled":
                 title = "Google Maps Location"
         else:
@@ -168,7 +169,10 @@ class WebClipService:
             )
         elif is_map:
             final_content = (
-                f"- **Google Maps:** <{url}>\n- **Saved at:** {now}\n\n"
+                f"- **Google Maps:** <{url}>\n"
+                f"- **Place:** {title}\n"
+                f"- **Info:** {map_desc}\n"
+                f"- **Saved at:** {now}\n\n"
                 f"{note_section}---\n[[{daily_note_date}]]"
             )
         else:
