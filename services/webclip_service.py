@@ -87,9 +87,9 @@ class WebClipService:
             logging.error(f"Fallback Title Fetch Error: {e}")
         return "Untitled"
 
-    async def process_url(self, url, message_content, trigger_message_obj):
+    async def parse_url_info(self, url, message_content=""):
         is_youtube = "youtube.com" in url or "youtu.be" in url
-        is_map = self._is_google_maps(url)  # ★ マップ判定
+        is_map = self._is_google_maps(url)
         title = "Untitled"
         raw_text = ""
         author_name = ""
@@ -106,7 +106,6 @@ class WebClipService:
                 except Exception:
                     title = "YouTube Video"
         elif is_map:
-            # Playwrightを使ってメタ情報を取得
             title, map_desc = await fetch_maps_info(url)
             if not title or title == "Untitled":
                 title = "Google Maps Location"
@@ -129,7 +128,6 @@ class WebClipService:
         check_text = raw_text if not is_youtube else (title + " " + message_content)
         is_recipe = self._is_recipe(title, url, check_text)
 
-        # ★ 修正: 保存先フォルダとラベルの分岐にマップを追加
         if is_youtube:
             folder_name = "YouTube"
             content_type_label = "📺 YouTube"
@@ -137,7 +135,7 @@ class WebClipService:
         elif is_map:
             folder_name = "Places"
             content_type_label = "📍 場所（マップ）"
-            section_header = "## 🔗 WebClips"  # デイリーノート上ではWebClipsにまとめる
+            section_header = "## 🔗 WebClips"
         elif is_recipe:
             folder_name = "Recipes"
             content_type_label = "🍳 レシピ"
@@ -146,6 +144,34 @@ class WebClipService:
             folder_name = "WebClips"
             content_type_label = "🔗 WebClip"
             section_header = "## 🔗 WebClips"
+
+        return {
+            "url": url,
+            "is_youtube": is_youtube,
+            "is_map": is_map,
+            "is_recipe": is_recipe,
+            "title": title,
+            "raw_text": raw_text,
+            "author_name": author_name,
+            "map_desc": map_desc,
+            "folder_name": folder_name,
+            "content_type_label": content_type_label,
+            "section_header": section_header,
+        }
+
+    async def save_parsed_info(
+        self, parsed_info, user_message_obj=None, user_comment=""
+    ):
+        url = parsed_info["url"]
+        is_youtube = parsed_info["is_youtube"]
+        is_map = parsed_info["is_map"]
+        title = parsed_info["title"]
+        raw_text = parsed_info["raw_text"]
+        author_name = parsed_info["author_name"]
+        map_desc = parsed_info["map_desc"]
+        folder_name = parsed_info["folder_name"]
+        content_type_label = parsed_info["content_type_label"]
+        section_header = parsed_info["section_header"]
 
         now = datetime.datetime.now(JST)
         timestamp = now.strftime("%Y%m%d%H%M%S")
@@ -156,12 +182,12 @@ class WebClipService:
 
         filename = f"{timestamp}-{safe_title}.md"
         filename_no_ext = f"{timestamp}-{safe_title}"
-        user_comment = message_content.replace(url, "").strip()
+
+        user_comment = user_comment.replace(url, "").strip()
         note_section = f"## 💬 Note\n{user_comment}\n\n" if user_comment else ""
 
         final_content = ""
 
-        # ★ 保存するノート内容の分岐
         if is_youtube:
             final_content = (
                 f"- **URL:** {url}\n- **Channel:** {author_name}\n- **Saved at:** {now}\n\n"
@@ -185,7 +211,8 @@ class WebClipService:
 
         service = self.drive_service.get_service()
         if not service:
-            await trigger_message_obj.add_reaction("❌")
+            if user_message_obj:
+                await user_message_obj.add_reaction("❌")
             return None
 
         try:
@@ -197,12 +224,10 @@ class WebClipService:
                     service, self.drive_service.folder_id, folder_name
                 )
 
-            # クリップ本体を保存
             await self.drive_service.upload_text(
                 service, folder_id, filename, final_content
             )
 
-            # ---- デイリーノートへのリンク追記処理 ----
             link_str = f"- [[{folder_name}/{filename_no_ext}|{title}]]"
 
             daily_folder_id = await self.drive_service.find_file(
@@ -238,9 +263,7 @@ class WebClipService:
                 await self.drive_service.upload_text(
                     service, daily_folder_id, daily_file_name, updated_note_content
                 )
-            # ---- 修正ここまで ----
 
-            # ★ 修正: 直接返信するのではなく、パートナーAIに渡すための辞書データを返す
             return {
                 "success": True,
                 "type": content_type_label,
@@ -251,5 +274,11 @@ class WebClipService:
 
         except Exception as e:
             logging.error(f"WebClip: Save Error: {e}")
-            await trigger_message_obj.add_reaction("❌")
+            if user_message_obj:
+                await user_message_obj.add_reaction("❌")
             return None
+
+    # 互換性のための既存メソッド
+    async def process_url(self, url, message_content, trigger_message_obj):
+        parsed = await self.parse_url_info(url, message_content)
+        return await self.save_parsed_info(parsed, trigger_message_obj, message_content)
