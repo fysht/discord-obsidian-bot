@@ -5,34 +5,39 @@ from google.oauth2.credentials import Credentials
 import logging
 
 # --- 設定 ---
-CREDENTIALS_FILE = 'credentials.json'
-TOKEN_FILE = 'token.json'
+CREDENTIALS_FILE = "credentials.json"
+TOKEN_FILE = "token.json"
 
 # --- スコープ設定 ---
 # 現在のBotに必要なDriveとCalendarとTasksの権限のみに絞っています
 SCOPES = [
-    'https://www.googleapis.com/auth/calendar',
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/tasks'
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/tasks",
 ]
 # --- ここまで ---
+
 
 def main():
     """
     Googleの認証フローを実行し、token.jsonを生成・更新します。
     """
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
+    )
     creds = None
-    
+
     # 既存のトークンファイルがある場合
     if os.path.exists(TOKEN_FILE):
         try:
             creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
             logging.info(f"{TOKEN_FILE} を読み込みました。")
         except ValueError:
-             # スコープが変更された場合などはここに来る可能性がある
-             logging.warning(f"既存の {TOKEN_FILE} のスコープが不足しているか不一致のため、再認証を行います。")
-             creds = None
+            # スコープが変更された場合などはここに来る可能性がある
+            logging.warning(
+                f"既存の {TOKEN_FILE} のスコープが不足しているか不一致のため、再認証を行います。"
+            )
+            creds = None
         except Exception as e:
             logging.warning(f"既存の {TOKEN_FILE} の読み込みに失敗しました: {e}")
             creds = None
@@ -46,36 +51,45 @@ def main():
                 logging.info("トークンのリフレッシュに成功しました。")
             except Exception as e:
                 logging.warning(f"トークンのリフレッシュに失敗しました: {e}")
-                creds = None # リフレッシュ失敗時は新規取得へ
-        
+                creds = None  # リフレッシュ失敗時は新規取得へ
+
         if not creds:
             logging.info("新しい認証フローを開始します。ブラウザで認証してください...")
             if not os.path.exists(CREDENTIALS_FILE):
-                 logging.error(f"{CREDENTIALS_FILE} が見つかりません。Google Cloud Consoleからダウンロードして配置してください。")
-                 return
-            
+                logging.error(
+                    f"{CREDENTIALS_FILE} が見つかりません。Google Cloud Consoleからダウンロードして配置してください。"
+                )
+                return
+
             try:
-                flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    CREDENTIALS_FILE, SCOPES
+                )
                 # ポートを 8080 に固定して確実につなぐ
                 creds = flow.run_local_server(port=8080)
             except Exception as e:
-                 logging.error(f"認証フローの実行中にエラーが発生しました: {e}")
-                 return
+                logging.error(f"認証フローの実行中にエラーが発生しました: {e}")
+                return
 
     # 認証情報の保存
     if creds:
         # スコープの確認ログ
         logging.info(f"取得/更新された認証情報のスコープ: {creds.scopes}")
-        
+
         try:
-            with open(TOKEN_FILE, 'w') as token:
+            with open(TOKEN_FILE, "w") as token:
                 token.write(creds.to_json())
             logging.info(f"'{TOKEN_FILE}' が正常に作成・更新されました。")
-            logging.info("--> このファイルの中身をRenderの環境変数 'GOOGLE_TOKEN_JSON' に設定してください。")
+            logging.info(
+                "--> このファイルの中身をRenderの環境変数 'GOOGLE_TOKEN_JSON' に設定してください。"
+            )
         except Exception as e:
             logging.error(f"ファイル書き込みエラー: {e}")
     else:
-         logging.error("認証情報の取得に失敗したため、token.json は更新されませんでした。")
+        logging.error(
+            "認証情報の取得に失敗したため、token.json は更新されませんでした。"
+        )
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

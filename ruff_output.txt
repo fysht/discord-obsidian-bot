@@ -1,0 +1,2747 @@
+﻿F401 [*] `logging` imported but unused
+ --> cogs\book_cog.py:5:8
+  |
+3 | from discord.ext import commands
+4 | import datetime
+5 | import logging
+  |        ^^^^^^^
+6 | import re
+7 | import asyncio
+  |
+help: Remove unused import: `logging`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\book_cog.py:22:30
+   |
+20 |     @commands.Cog.listener()
+21 |     async def on_message(self, message: discord.Message):
+22 |         if message.author.bot: return
+   |                              ^
+23 |         
+24 |         # Amazon繝ｪ繝ｳ繧ｯ縺九ｉ縺ｮ閾ｪ蜍輔せ繝ｬ繝・ラ菴懈・讖溯・縺ｮ縺ｿ谿九☆
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\book_cog.py:43:25
+   |
+41 |                     if match:
+42 |                         title = match.group(1).replace("Amazon.co.jp:", "").replace("Amazon.co.jp :", "").strip()
+43 |         except Exception: pass 
+   |                         ^
+44 |         await self._create_book_thread_manual(message, title)
+   |
+
+F841 Local variable `msg` is assigned to but never used
+  --> cogs\book_cog.py:61:9
+   |
+59 |                 await self.drive_service.upload_text(service, book_folder_id, file_name, content)
+60 |
+61 |         msg = await message.reply(f"答 縲施safe_title}縲上・隱ｭ譖ｸ繝弱・繝医ｒ菴懈・縺励◆繧茨ｼ・)
+   |         ^^^
+62 |
+63 |     async def append_book_memo(self, book_title: str, memo: str):
+   |
+help: Remove assignment to unused variable `msg`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\book_cog.py:66:23
+   |
+64 |         """AI繝代・繝医リ繝ｼ縺九ｉ蜻ｼ縺ｳ蜃ｺ縺輔ｌ繧区嶌險倬未謨ｰ"""
+65 |         service = self.drive_service.get_service()
+66 |         if not service: return False
+   |                       ^
+67 |
+68 |         book_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "BookNotes")
+   |
+
+F401 [*] `discord` imported but unused
+ --> cogs\daily_organize_cog.py:7:8
+  |
+5 | import re
+6 |
+7 | import discord
+  |        ^^^^^^^
+8 | from discord.ext import commands, tasks
+9 | from google.genai import types
+  |
+help: Remove unused import: `discord`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\daily_organize_cog.py:39:42
+   |
+37 |         channel = self.bot.get_channel(self.memo_channel_id)
+38 |         partner_cog = self.bot.get_cog("PartnerCog")
+39 |         if not channel or not partner_cog: return
+   |                                          ^
+40 |
+41 |         today_str = datetime.datetime.now(JST).strftime('%Y-%m-%d')
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\daily_organize_cog.py:63:42
+   |
+61 |                         if match and match.group(1).strip():
+62 |                             location_log_text = match.group(1).strip()
+63 |                     except Exception as e: logging.error(f"DailyOrganize: Location read error: {e}")
+   |                                          ^
+64 |
+65 |         result = {"journal": "", "events": [], "insights": [], "next_actions": [], "message": "・井ｻ頑律縺ｮ莨夊ｩｱ縺ｨ繝・・繧ｿ繧偵ヮ繝ｼ繝医↓縺ｾ縺ｨ繧√◆繧・                  窶ｦ
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\daily_organize_cog.py:78:34
+   |
+76 |                     res_data = json.loads(response.text)
+77 |                     result.update(res_data)
+78 |             except Exception as e: logging.error(f"DailyOrganize: JSON Error: {e}")
+   |                                  ^
+79 |
+80 |         result['meta'] = {'weather': weather, 'temp_max': max_t, 'temp_min': min_t}
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\daily_organize_cog.py:96:24
+   |
+95 |                 if act_title:
+96 |                     try: await self.tasks_service.add_task(title=act_title, list_name=list_name)
+   |                        ^
+97 |                     except Exception as e: logging.error(f"Google Tasks閾ｪ蜍慕匳骭ｲ繧ｨ繝ｩ繝ｼ: {e}")
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\daily_organize_cog.py:97:42
+   |
+95 |                 if act_title:
+96 |                     try: await self.tasks_service.add_task(title=act_title, list_name=list_name)
+97 |                     except Exception as e: logging.error(f"Google Tasks閾ｪ蜍慕匳骭ｲ繧ｨ繝ｩ繝ｼ: {e}")
+   |                                          ^
+98 |
+99 |         send_msg = result.get('message', '・井ｻ頑律縺ｮ莨夊ｩｱ縺ｨ繝・・繧ｿ繧偵ヮ繝ｼ繝医↓縺ｾ縺ｨ繧√◆繧芋沍・莉頑律繧ゆｸ譌･縺顔夢繧梧ｧ倥√♀繧・☆縺ｿ・・ｼ・)
+   |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:104:23
+    |
+102 |     async def _execute_organization(self, data, date_str):
+103 |         service = self.drive_service.get_service()
+104 |         if not service: return
+    |                       ^
+105 |
+106 |         daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:107:28
+    |
+106 |         daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+107 |         if not daily_folder: daily_folder = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
+    |                            ^
+108 |             
+109 |         f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:115:31
+    |
+113 |             try:
+114 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+115 |                 if raw_content: content = raw_content
+    |                               ^
+116 |             except: pass
+    |
+
+E722 Do not use bare `except`
+   --> cogs\daily_organize_cog.py:116:13
+    |
+114 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+115 |                 if raw_content: content = raw_content
+116 |             except: pass
+    |             ^^^^^^
+117 |
+118 |         meta = data.get('meta', {})
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:116:19
+    |
+114 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+115 |                 if raw_content: content = raw_content
+116 |             except: pass
+    |                   ^
+117 |
+118 |         meta = data.get('meta', {})
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:120:40
+    |
+118 |         meta = data.get('meta', {})
+119 |         updates_fm = {'date': date_str}
+120 |         if meta.get('weather') != 'N/A': updates_fm['weather'] = meta.get('weather')
+    |                                        ^
+121 |         if meta.get('temp_max') != 'N/A': updates_fm['temp_max'] = meta.get('temp_max')
+122 |         if meta.get('temp_min') != 'N/A': updates_fm['temp_min'] = meta.get('temp_min')
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:121:41
+    |
+119 |         updates_fm = {'date': date_str}
+120 |         if meta.get('weather') != 'N/A': updates_fm['weather'] = meta.get('weather')
+121 |         if meta.get('temp_max') != 'N/A': updates_fm['temp_max'] = meta.get('temp_max')
+    |                                         ^
+122 |         if meta.get('temp_min') != 'N/A': updates_fm['temp_min'] = meta.get('temp_min')
+123 |         content = update_frontmatter(content, updates_fm)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:122:41
+    |
+120 |         if meta.get('weather') != 'N/A': updates_fm['weather'] = meta.get('weather')
+121 |         if meta.get('temp_max') != 'N/A': updates_fm['temp_max'] = meta.get('temp_max')
+122 |         if meta.get('temp_min') != 'N/A': updates_fm['temp_min'] = meta.get('temp_min')
+    |                                         ^
+123 |         content = update_frontmatter(content, updates_fm)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:125:31
+    |
+123 |         content = update_frontmatter(content, updates_fm)
+124 |
+125 |         if data.get('journal'): content = update_section(content, data['journal'], "## 灯 Daily Journal")
+    |                               ^
+126 |         if data.get('events') and len(data['events']) > 0: content = update_section(content, "\n".join(data['events']) if isinstance(窶ｦ
+127 |         if data.get('insights') and len(data['insights']) > 0: content = update_section(content, "\n".join(data['insights']) if isins窶ｦ
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:126:58
+    |
+125 | 窶ｦ     if data.get('journal'): content = update_section(content, data['journal'], "## 灯 Daily Journal")
+126 | 窶ｦ     if data.get('events') and len(data['events']) > 0: content = update_section(content, "\n".join(data['events']) if isinstance(da窶ｦ
+    |                                                        ^
+127 | 窶ｦ     if data.get('insights') and len(data['insights']) > 0: content = update_section(content, "\n".join(data['insights']) if isinsta窶ｦ
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:127:62
+    |
+125 | 窶ｦ     if data.get('journal'): content = update_section(content, data['journal'], "## 灯 Daily Journal")
+126 | 窶ｦ     if data.get('events') and len(data['events']) > 0: content = update_section(content, "\n".join(data['events']) if isinstance(da窶ｦ
+127 | 窶ｦ     if data.get('insights') and len(data['insights']) > 0: content = update_section(content, "\n".join(data['insights']) if isinsta窶ｦ
+    |                                                            ^
+128 | 窶ｦ     
+129 | 窶ｦ     # 笘・縺薙％繧ゆｿｮ豁｣: Obsidian縺ｮ繝弱・繝医↓繧ゅ啓莉穂ｺ犠 縲・・☆繧九阪→蛻・°繧翫ｄ縺吶￥譖ｸ縺崎ｾｼ繧蜃ｦ逅・    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:142:16
+    |
+140 |             content = update_section(content, "\n".join(formatted_actions), "## 筐｡・・Next Actions")
+141 |         
+142 |         if f_id: await self.drive_service.update_text(service, f_id, content)
+    |                ^
+143 |         else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", content)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\daily_organize_cog.py:143:13
+    |
+142 |         if f_id: await self.drive_service.update_text(service, f_id, content)
+143 |         else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", content)
+    |             ^
+144 |
+145 | async def setup(bot: commands.Bot):
+    |
+
+F401 [*] `datetime.timedelta` imported but unused
+ --> cogs\english_learning_cog.py:4:22
+  |
+2 | import logging
+3 | import datetime
+4 | from datetime import timedelta
+  |                      ^^^^^^^^^
+5 | import discord
+6 | from discord.ext import commands, tasks
+  |
+help: Remove unused import: `datetime.timedelta`
+
+F401 [*] `google.genai.types` imported but unused
+  --> cogs\english_learning_cog.py:8:26
+   |
+ 6 | from discord.ext import commands, tasks
+ 7 | from discord import app_commands
+ 8 | from google.genai import types
+   |                          ^^^^^
+ 9 |
+10 | from config import JST
+   |
+help: Remove unused import: `google.genai.types`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:36:23
+   |
+34 |         """謖・ｮ壹＠縺滓律莉倥・陬上Ο繧ｰ(YYYY-MM-DD_EN.md)繧貞叙蠕励☆繧・""
+35 |         service = self.drive_service.get_service()
+36 |         if not service: return ""
+   |                       ^
+37 |
+38 |         base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:39:30
+   |
+38 |         base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+39 |         if not base_folder_id: return ""
+   |                              ^
+40 |         logs_folder_id = await self.drive_service.find_file(service, base_folder_id, "Logs")
+41 |         if not logs_folder_id: return ""
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:41:30
+   |
+39 |         if not base_folder_id: return ""
+40 |         logs_folder_id = await self.drive_service.find_file(service, base_folder_id, "Logs")
+41 |         if not logs_folder_id: return ""
+   |                              ^
+42 |
+43 |         date_str = date_obj.strftime('%Y-%m-%d')
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:48:16
+   |
+46 |         f_id = await self.drive_service.find_file(service, logs_folder_id, file_name)
+47 |         if f_id:
+48 |             try: return await self.drive_service.read_text_file(service, f_id)
+   |                ^
+49 |             except: return ""
+50 |         return ""
+   |
+
+E722 Do not use bare `except`
+  --> cogs\english_learning_cog.py:49:13
+   |
+47 |         if f_id:
+48 |             try: return await self.drive_service.read_text_file(service, f_id)
+49 |             except: return ""
+   |             ^^^^^^
+50 |         return ""
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:49:19
+   |
+47 |         if f_id:
+48 |             try: return await self.drive_service.read_text_file(service, f_id)
+49 |             except: return ""
+   |                   ^
+50 |         return ""
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:55:23
+   |
+53 |         """謚ｽ蜃ｺ縺励◆蜊倩ｪ槫ｸｳ繝・・繧ｿ繧歎ocabulary.md縺ｫ霑ｽ險倥☆繧・""
+54 |         service = self.drive_service.get_service()
+55 |         if not service: return
+   |                       ^
+56 |
+57 |         base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:69:42
+   |
+67 |         if f_id:
+68 |             content = await self.drive_service.read_text_file(service, f_id)
+69 |             if not content.endswith('\n'): content += '\n'
+   |                                          ^
+70 |             content += append_text
+71 |             await self.drive_service.update_text(service, f_id, content)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\english_learning_cog.py:80:23
+   |
+78 |         """豈取勦23:50縺ｫ縺昴・譌･縺ｮ繝ｭ繧ｰ縺九ｉ驥崎ｦ∝腰隱槭ｒ謚ｽ蜃ｺ縺励※蜊倩ｪ槫ｸｳ繧剃ｽ懈・"""
+79 |         channel = self.bot.get_channel(self.channel_id)
+80 |         if not channel: return
+   |                       ^
+81 |
+82 |         today = datetime.datetime.now(JST).date()
+   |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\english_learning_cog.py:120:23
+    |
+118 |     async def daily_english_quiz(self):
+119 |         channel = self.bot.get_channel(self.channel_id)
+120 |         if not channel: return
+    |                       ^
+121 |         
+122 |         partner_cog = self.bot.get_cog("PartnerCog")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\english_learning_cog.py:123:27
+    |
+122 |         partner_cog = self.bot.get_cog("PartnerCog")
+123 |         if not partner_cog: return
+    |                           ^
+124 |
+125 |         # 驕主悉縺ｮ繝ｪ繧｢繝ｫ縺ｪ莨夊ｩｱ繧堤峩霑・0莉ｶ蜿門ｾ励＠縺ｦ縲√Θ繝ｼ繧ｶ繝ｼ縺ｮ逋ｺ險縺縺代ｒ謚ｽ蜃ｺ
+    |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:39:29
+   |
+38 |     def _format_minutes(self, total_minutes: int) -> str:
+39 |         if not total_minutes: return "0蛻・
+   |                             ^
+40 |         hours, mins = divmod(total_minutes, 60)
+41 |         if hours > 0: return f"{hours}譎る俣{mins}蛻・
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:41:21
+   |
+39 |         if not total_minutes: return "0蛻・
+40 |         hours, mins = divmod(total_minutes, 60)
+41 |         if hours > 0: return f"{hours}譎る俣{mins}蛻・
+   |                     ^
+42 |         return f"{mins}蛻・
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:45:29
+   |
+44 |     async def send_sleep_report(self, date_str: str = None):
+45 |         if not self.is_ready: return
+   |                             ^
+46 |         
+47 |         if date_str:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:48:16
+   |
+47 |         if date_str:
+48 |             try: target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+   |                ^
+49 |             except ValueError: target_date = datetime.datetime.now(JST).date()
+50 |         else:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:49:30
+   |
+47 |         if date_str:
+48 |             try: target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+49 |             except ValueError: target_date = datetime.datetime.now(JST).date()
+   |                              ^
+50 |         else:
+51 |             target_date = datetime.datetime.now(JST).date()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:56:27
+   |
+55 |         partner_cog = self.bot.get_cog("PartnerCog")
+56 |         if not partner_cog: return
+   |                           ^
+57 |
+58 |         memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:78:29
+   |
+77 |     async def send_full_health_report(self, date_str: str = None):
+78 |         if not self.is_ready: return
+   |                             ^
+79 |         
+80 |         if date_str:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:81:16
+   |
+80 |         if date_str:
+81 |             try: target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+   |                ^
+82 |             except ValueError: target_date = datetime.datetime.now(JST).date()
+83 |         else:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:82:30
+   |
+80 |         if date_str:
+81 |             try: target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+82 |             except ValueError: target_date = datetime.datetime.now(JST).date()
+   |                              ^
+83 |         else:
+84 |             target_date = datetime.datetime.now(JST).date()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\fitbit_cog.py:94:27
+   |
+93 |         partner_cog = self.bot.get_cog("PartnerCog")
+94 |         if not partner_cog: return
+   |                           ^
+95 |         
+96 |         sleep_score = stats.get('sleep_score', 'N/A')
+   |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:113:29
+    |
+111 |     # ==========================================
+112 |     async def perform_batch_sync_and_notify(self, days: int, channel: discord.TextChannel):
+113 |         if not self.is_ready: return
+    |                             ^
+114 |         if days < 1: days = 1
+115 |         if days > 30: days = 30 # 譛螟ｧ30譌･縺ｫ蛻ｶ髯・    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:114:20
+    |
+112 |     async def perform_batch_sync_and_notify(self, days: int, channel: discord.TextChannel):
+113 |         if not self.is_ready: return
+114 |         if days < 1: days = 1
+    |                    ^
+115 |         if days > 30: days = 30 # 譛螟ｧ30譌･縺ｫ蛻ｶ髯・    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:115:21
+    |
+113 |         if not self.is_ready: return
+114 |         if days < 1: days = 1
+115 |         if days > 30: days = 30 # 譛螟ｧ30譌･縺ｫ蛻ｶ髯・    |                     ^
+116 |
+117 |         today = datetime.datetime.now(JST).date()
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:128:29
+    |
+126 |             try:
+127 |                 stats = await self.fitbit_service.get_stats(target_date)
+128 |                 if not stats: stats = {} 
+    |                             ^
+129 |                 success = await self.fitbit_service.update_daily_note_with_stats(target_date, stats)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:131:27
+    |
+129 |                 success = await self.fitbit_service.update_daily_note_with_stats(target_date, stats)
+130 |                 
+131 |                 if success: success_dates.append(date_str)
+    |                           ^
+132 |                 else: error_dates.append(date_str)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:132:21
+    |
+131 |                 if success: success_dates.append(date_str)
+132 |                 else: error_dates.append(date_str)
+    |                     ^
+133 |                 
+134 |                 # API蛻ｶ髯舌ｒ蝗樣∩縺吶ｋ縺溘ａ1遘剃ｼ代・
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:144:29
+    |
+142 | 窶ｦ     if partner_cog and channel:
+143 | 窶ｦ         result_msg = f"隕∵ｱゅ＆繧後◆譌･謨ｰ: 驕主悉{days}譌･蛻・n"
+144 | 窶ｦ         if success_dates: result_msg += f"謌仙粥縺励◆譛滄俣: {success_dates[0]} 縲・{success_dates[-1]} ({len(success_dates)}譌･蛻・\n"
+    |                           ^
+145 | 窶ｦ         if error_dates: result_msg += f"螟ｱ謨励＠縺滓律莉・ {', '.join(error_dates)}\n"
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\fitbit_cog.py:145:27
+    |
+143 | 窶ｦ     result_msg = f"隕∵ｱゅ＆繧後◆譌･謨ｰ: 驕主悉{days}譌･蛻・n"
+144 | 窶ｦ     if success_dates: result_msg += f"謌仙粥縺励◆譛滄俣: {success_dates[0]} 縲・{success_dates[-1]} ({len(success_dates)}譌･蛻・\n"
+145 | 窶ｦ     if error_dates: result_msg += f"螟ｱ謨励＠縺滓律莉・ {', '.join(error_dates)}\n"
+    |                     ^
+146 | 窶ｦ     
+147 | 窶ｦ     context_data = f"縲宣℃蜴ｻ繝・・繧ｿ縺ｮ荳諡ｬ蜷梧悄 螳御ｺ・Ξ繝昴・繝医曾n{result_msg}"
+    |
+
+F401 [*] `asyncio` imported but unused
+ --> cogs\habit_cog.py:5:8
+  |
+3 | import logging
+4 | from datetime import datetime, time, timedelta
+5 | import asyncio
+  |        ^^^^^^^
+6 | import re
+7 | import discord
+  |
+help: Remove unused import: `asyncio`
+
+F401 [*] `discord` imported but unused
+ --> cogs\habit_cog.py:7:8
+  |
+5 | import asyncio
+6 | import re
+7 | import discord
+  |        ^^^^^^^
+8 | from discord.ext import commands, tasks
+  |
+help: Remove unused import: `discord`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:29:23
+   |
+27 |     async def _load_data(self):
+28 |         service = self.drive_service.get_service()
+29 |         if not service: return {"habits": [], "logs": {}}
+   |                       ^
+30 |         b_folder = await self.drive_service.find_file(service, self.drive_folder_id, BOT_FOLDER)
+31 |         if not b_folder:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:35:16
+   |
+33 |         f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
+34 |         if f_id:
+35 |             try: return json.loads(await self.drive_service.read_text_file(service, f_id))
+   |                ^
+36 |             except: pass
+37 |         return {"habits": [], "logs": {}}
+   |
+
+E722 Do not use bare `except`
+  --> cogs\habit_cog.py:36:13
+   |
+34 |         if f_id:
+35 |             try: return json.loads(await self.drive_service.read_text_file(service, f_id))
+36 |             except: pass
+   |             ^^^^^^
+37 |         return {"habits": [], "logs": {}}
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:36:19
+   |
+34 |         if f_id:
+35 |             try: return json.loads(await self.drive_service.read_text_file(service, f_id))
+36 |             except: pass
+   |                   ^
+37 |         return {"habits": [], "logs": {}}
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:41:23
+   |
+39 |     async def _save_data(self, data):
+40 |         service = self.drive_service.get_service()
+41 |         if not service: return
+   |                       ^
+42 |         b_folder = await self.drive_service.find_file(service, self.drive_folder_id, BOT_FOLDER)
+43 |         f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:45:16
+   |
+43 |         f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
+44 |         content = json.dumps(data, ensure_ascii=False, indent=2)
+45 |         if f_id: await self.drive_service.update_text(service, f_id, content)
+   |                ^
+46 |         else: await self.drive_service.upload_text(service, b_folder, HABIT_DATA_FILE, content)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:46:13
+   |
+44 |         content = json.dumps(data, ensure_ascii=False, indent=2)
+45 |         if f_id: await self.drive_service.update_text(service, f_id, content)
+46 |         else: await self.drive_service.upload_text(service, b_folder, HABIT_DATA_FILE, content)
+   |             ^
+47 |
+48 |     async def complete_habit(self, habit_name_or_keyword: str, frequency_days: int = 1):
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:66:41
+   |
+65 |         h_id = target_habit['id']
+66 |         if today_str not in data['logs']: data['logs'][today_str] = []
+   |                                         ^
+67 |         
+68 |         if h_id not in data['logs'][today_str]:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:82:80
+   |
+80 |     async def sync_habits_loop(self):
+81 |         """繧ｫ繝ｬ繝ｳ繝繝ｼ荳翫〒螳御ｺ・＠縺溘ち繧ｹ繧ｯ繧定｣丞・縺ｧ讀懃衍縺励※隍偵ａ繧九Ν繝ｼ繝・""
+82 |         if not hasattr(self.bot, 'tasks_service') or not self.bot.tasks_service: return
+   |                                                                                ^
+83 |         try:
+84 |             completed_titles = await self.bot.tasks_service.get_completed_tasks_today(list_name="鄙呈・")
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:85:36
+   |
+83 |         try:
+84 |             completed_titles = await self.bot.tasks_service.get_completed_tasks_today(list_name="鄙呈・")
+85 |             if not completed_titles: return
+   |                                    ^
+86 |
+87 |             data = await self._load_data()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\habit_cog.py:89:45
+   |
+87 |             data = await self._load_data()
+88 |             today_str = datetime.now(JST).strftime('%Y-%m-%d')
+89 |             if today_str not in data['logs']: data['logs'][today_str] = []
+   |                                             ^
+90 |
+91 |             newly_completed = []
+   |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\habit_cog.py:125:80
+    |
+123 |         """1譌･縺ｮ邨ゅｏ繧翫↓Tasks縺ｮ螳御ｺ・憾豕√ｒ譛邨ゅメ繧ｧ繝・け縺励＾bsidian縺ｫ遒ｺ螳溘↓譖ｸ縺崎ｾｼ繧"""
+124 |         logging.info("螟懊・鄙呈・譛邨ゅメ繧ｧ繝・け繧帝幕蟋九＠縺ｾ縺吶・)
+125 |         if not hasattr(self.bot, 'tasks_service') or not self.bot.tasks_service: return
+    |                                                                                ^
+126 |         try:
+127 |             completed_titles = await self.bot.tasks_service.get_completed_tasks_today(list_name="鄙呈・")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\habit_cog.py:130:45
+    |
+128 |             data = await self._load_data()
+129 |             today_str = datetime.now(JST).strftime('%Y-%m-%d')
+130 |             if today_str not in data['logs']: data['logs'][today_str] = []
+    |                                             ^
+131 |
+132 |             if completed_titles:
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\habit_cog.py:160:34
+    |
+158 |     async def list_habits(self):
+159 |         data = await self._load_data()
+160 |         if not data.get('habits'): return "迴ｾ蝨ｨ逋ｻ骭ｲ縺輔ｌ縺ｦ縺・ｋ鄙呈・縺ｯ縺ゅｊ縺ｾ縺帙ｓ縲・
+    |                                  ^
+161 |         lines = []
+162 |         for h in data['habits']:
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\habit_cog.py:189:21
+    |
+187 |                     streak += 1
+188 |                     current_date -= timedelta(days=1)
+189 |                 else: break
+    |                     ^
+190 |             return f"迴ｾ蝨ｨ {streak} 譌･騾｣邯夐＃謌蝉ｸｭ"
+191 |         else:
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\habit_cog.py:198:23
+    |
+196 |         """繝・う繝ｪ繝ｼ繝弱・繝医・繝輔Ο繝ｳ繝医・繧ｿ繝ｼ繧堤峩謗･譖ｴ譁ｰ縺吶ｋ"""
+197 |         service = self.drive_service.get_service()
+198 |         if not service: return
+    |                       ^
+199 |         daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+200 |         if not daily_folder: 
+    |
+
+F541 [*] f-string without any placeholders
+   --> cogs\habit_cog.py:232:23
+    |
+231 |         new_fm_lines = [f"{k}: {v}" for k, v in fm_map.items()]
+232 |         new_content = f"---\n" + "\n".join(new_fm_lines) + "\n---\n" + body.lstrip()
+    |                       ^^^^^^^^
+233 |         
+234 |         if f_id:
+    |
+help: Remove extraneous `f` prefix
+
+E701 Multiple statements on one line (colon)
+  --> cogs\location_log_cog.py:55:26
+   |
+54 |     def _get_place_name_from_id(self, place_id: str) -> str:
+55 |         if not self.gmaps: return f"蝣ｴ謇ID: {place_id}"
+   |                          ^
+56 |         try:
+57 |             place_details = self.gmaps.place(place_id=place_id, language='ja')
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\location_log_cog.py:65:25
+   |
+64 |     def _parse_coordinates(self, coord_str: str | None) -> tuple[float, float] | None:
+65 |         if not coord_str: return None
+   |                         ^
+66 |         try:
+67 |             lat, lon = map(float, coord_str.split(','))
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\location_log_cog.py:69:39
+   |
+67 |             lat, lon = map(float, coord_str.split(','))
+68 |             return (lat, lon)
+69 |         except (ValueError, TypeError): return None
+   |                                       ^
+70 |
+71 |     def _format_duration(self, duration_seconds: float) -> str:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\location_log_cog.py:73:23
+   |
+71 |     def _format_duration(self, duration_seconds: float) -> str:
+72 |         minutes = int(duration_seconds / 60)
+73 |         if minutes < 1: return "1蛻・悴貅"
+   |                       ^
+74 |         hours, minutes = divmod(minutes, 60)
+75 |         if hours > 0: return f"{hours}譎る俣{minutes}蛻・
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\location_log_cog.py:75:21
+   |
+73 |         if minutes < 1: return "1蛻・悴貅"
+74 |         hours, minutes = divmod(minutes, 60)
+75 |         if hours > 0: return f"{hours}譎る俣{minutes}蛻・
+   |                     ^
+76 |         return f"{minutes}蛻・
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\location_log_cog.py:83:39
+   |
+81 |                 ts_str = ts_str[::-1].replace(':', '', 1)[::-1]
+82 |             return datetime.fromisoformat(ts_str)
+83 |         except (ValueError, TypeError): return None
+   |                                       ^
+84 |
+85 |     def _find_folder_in_root(self, service, name):
+   |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:109:23
+    |
+107 |         downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
+108 |         done = False
+109 |         while not done: _, done = downloader.next_chunk()
+    |                       ^
+110 |         return json.loads(fh.getvalue().decode('utf-8'))
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:114:24
+    |
+112 |     def _extract_logs_from_json(self, data: dict, target_dates: set[str] = None) -> dict:
+113 |         segments = data.get("semanticSegments", [])
+114 |         if not segments: return None
+    |                        ^
+115 |
+116 |         events_by_date = {}
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:120:46
+    |
+118 |             start_time = self._parse_iso_timestamp(seg.get("startTime", ''))
+119 |             end_time = self._parse_iso_timestamp(seg.get("endTime", ''))
+120 |             if not start_time or not end_time: continue
+    |                                              ^
+121 |
+122 |             event_date = start_time.astimezone(JST).date()
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:125:61
+    |
+123 |             date_str = event_date.strftime('%Y-%m-%d')
+124 |
+125 |             if target_dates and date_str not in target_dates: continue
+    |                                                             ^
+126 |
+127 |             events_by_date.setdefault(date_str, [])
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:135:35
+    |
+133 |                 top_candidate = visit_data.get("topCandidate", {})
+134 |                 lat_lng_str = top_candidate.get("placeLocation", {}).get("latLng")
+135 |                 if not lat_lng_str: continue
+    |                                   ^
+136 |                 try:
+137 |                     lat_str, lon_str = lat_lng_str.replace('ﾂｰ', '').split(',')
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:139:48
+    |
+137 |                     lat_str, lon_str = lat_lng_str.replace('ﾂｰ', '').split(',')
+138 |                     place_coords = (float(lat_str), float(lon_str.strip()))
+139 |                 except (ValueError, IndexError): continue
+    |                                                ^
+140 |                 
+141 |                 place_name = "荳肴・縺ｪ蝣ｴ謇"
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:143:28
+    |
+141 | 窶ｦ     place_name = "荳肴・縺ｪ蝣ｴ謇"
+142 | 窶ｦ     place_id = top_candidate.get('placeId')
+143 | 窶ｦ     if place_id: place_name = self._get_place_name_from_id(place_id)
+    |                  ^
+144 | 窶ｦ     
+145 | 窶ｦ     if self.home_coordinates and great_circle(place_coords, self.home_coordinates).meters < self.exclude_radius_meters: place_name 窶ｦ
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:145:131
+    |
+143 | 窶ｦ     if place_id: place_name = self._get_place_name_from_id(place_id)
+144 | 窶ｦ     
+145 | 窶ｦ     if self.home_coordinates and great_circle(place_coords, self.home_coordinates).meters < self.exclude_radius_meters: place_name 窶ｦ
+    |                                                                                                                         ^
+146 | 窶ｦ     elif self.work_coordinates and great_circle(place_coords, self.work_coordinates).meters < self.exclude_radius_meters: place_nam窶ｦ
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:146:133
+    |
+145 | 窶ｦ     if self.home_coordinates and great_circle(place_coords, self.home_coordinates).meters < self.exclude_radius_meters: place_name 窶ｦ
+146 | 窶ｦ     elif self.work_coordinates and great_circle(place_coords, self.work_coordinates).meters < self.exclude_radius_meters: place_nam窶ｦ
+    |                                                                                                                           ^
+147 | 窶ｦ     
+148 | 窶ｦ     event.update({"type": "stay", "name": place_name, "duration": duration_formatted})
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:160:26
+    |
+158 |         logs_by_date = {}
+159 |         for d_str, events in sorted(events_by_date.items()):
+160 |             if not events: continue
+    |                          ^
+161 |             sorted_events = sorted(events, key=lambda x: x['start'])
+162 |             log_entries, last_place = [], None
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:167:46
+    |
+165 | 窶ｦ     start_str_jst = event['start'].astimezone(JST).strftime('%H:%M')
+166 | 窶ｦ     if event['type'] == 'stay':
+167 | 窶ｦ         if last_place is not None: log_entries.append(f"- **{start_str_jst}** {event['name']}縺ｫ蛻ｰ逹")
+    |                                    ^
+168 | 窶ｦ         log_entries.append(f"- **{start_str_jst} - {event['end'].astimezone(JST).strftime('%H:%M')}** ({event['duration']}) 貊槫惠: {e 窶ｦ
+169 | 窶ｦ         last_place = event['name']
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:171:34
+    |
+169 | 窶ｦ         last_place = event['name']
+170 | 窶ｦ     elif event['type'] == 'move':
+171 | 窶ｦ         if last_place: log_entries.append(f"- **{start_str_jst}** {last_place}繧貞・逋ｺ")
+    |                        ^
+172 | 窶ｦ         log_entries.append(f"- **{start_str_jst} - {event['end'].astimezone(JST).strftime('%H:%M')}** ({event['duration']}) {event[窶ｦ
+173 | 窶ｦ         last_place = None
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:181:23
+    |
+179 |     async def _write_to_obsidian(self, date_str: str, log_text: str, force: bool = False) -> bool:
+180 |         service = self.drive_service.get_service()
+181 |         if not service: return False
+    |                       ^
+182 |
+183 |         daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:193:34
+    |
+191 |             try:
+192 |                 cur = await self.drive_service.read_text_file(service, daily_file)
+193 |             except Exception as e: logging.error(f"繝輔ぃ繧､繝ｫ隱ｭ縺ｿ霎ｼ縺ｿ繧ｨ繝ｩ繝ｼ: {e}")
+    |                                  ^
+194 |
+195 |         if not force and re.search(r'## 桃 Location History\s*-', cur):
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:203:22
+    |
+201 |         new = update_section(cur, log_text, "## 桃 Location History")
+202 |         
+203 |         if daily_file: await self.drive_service.update_text(service, daily_file, new)
+    |                      ^
+204 |         else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:204:13
+    |
+203 |         if daily_file: await self.drive_service.update_text(service, daily_file, new)
+204 |         else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new)
+    |             ^
+205 |             
+206 |         return True
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:210:45
+    |
+208 |     # 笘・霑ｽ蜉: AI繝・・繝ｫ縺九ｉ逶ｴ謗･蜻ｼ縺ｳ蜃ｺ縺帙ｋ蜷梧悄繝｡繧ｽ繝・ラ
+209 |     async def perform_manual_sync(self, target_date: str) -> str:
+210 |         if not DATE_REGEX.match(target_date): return "笶・譌･莉倥・蠖｢蠑上′豁｣縺励￥縺ゅｊ縺ｾ縺帙ｓ縲・萓・ 2026-02-15)"
+    |                                             ^
+211 |         loop = asyncio.get_running_loop()
+212 |         service = self.drive_service.get_service()
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:213:23
+    |
+211 |         loop = asyncio.get_running_loop()
+212 |         service = self.drive_service.get_service()
+213 |         if not service: return "Google Drive縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縺ｧ縺励◆縲・
+    |                       ^
+214 |         
+215 |         timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:216:34
+    |
+215 |         timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
+216 |         if not timeline_folder_id: return "Timeline繝輔か繝ｫ繝縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |                                  ^
+217 |         
+218 |         latest_file = await loop.run_in_executor(None, self._get_latest_timeline_json, service, timeline_folder_id)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:219:27
+    |
+218 |         latest_file = await loop.run_in_executor(None, self._get_latest_timeline_json, service, timeline_folder_id)
+219 |         if not latest_file: return "繧ｿ繧､繝繝ｩ繧､繝ｳ縺ｮJSON繝輔ぃ繧､繝ｫ縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |                           ^
+220 |         
+221 |         try: data = await loop.run_in_executor(None, self._read_json, service, latest_file['id'])
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:221:12
+    |
+219 |         if not latest_file: return "繧ｿ繧､繝繝ｩ繧､繝ｳ縺ｮJSON繝輔ぃ繧､繝ｫ縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+220 |         
+221 |         try: data = await loop.run_in_executor(None, self._read_json, service, latest_file['id'])
+    |            ^
+222 |         except Exception as e: return f"JSON隱ｭ縺ｿ霎ｼ縺ｿ繧ｨ繝ｩ繝ｼ: {e}"
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:222:30
+    |
+221 |         try: data = await loop.run_in_executor(None, self._read_json, service, latest_file['id'])
+222 |         except Exception as e: return f"JSON隱ｭ縺ｿ霎ｼ縺ｿ繧ｨ繝ｩ繝ｼ: {e}"
+    |                              ^
+223 |         
+224 |         logs_by_date = self._extract_logs_from_json(data, target_dates={target_date})
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:236:23
+    |
+234 |         loop = asyncio.get_running_loop()
+235 |         service = self.drive_service.get_service()
+236 |         if not service: return
+    |                       ^
+237 |
+238 |         channel = self.bot.get_channel(self.memo_channel_id)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:240:34
+    |
+238 |         channel = self.bot.get_channel(self.memo_channel_id)
+239 |         timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
+240 |         if not timeline_folder_id: return
+    |                                  ^
+241 |
+242 |         json_files = await loop.run_in_executor(None, self._get_unprocessed_json, service, timeline_folder_id)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:243:26
+    |
+242 |         json_files = await loop.run_in_executor(None, self._get_unprocessed_json, service, timeline_folder_id)
+243 |         if not json_files: return 
+    |                          ^
+244 |
+245 |         lookback_days = 7
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:253:16
+    |
+251 |             file_name = file_info['name']
+252 |             
+253 |             try: data = await loop.run_in_executor(None, self._read_json, service, file_id)
+    |                ^
+254 |             except Exception as e: continue
+    |
+
+F841 [*] Local variable `e` is assigned to but never used
+   --> cogs\location_log_cog.py:254:33
+    |
+253 |             try: data = await loop.run_in_executor(None, self._read_json, service, file_id)
+254 |             except Exception as e: continue
+    |                                 ^
+255 |
+256 |             logs_by_date = self._extract_logs_from_json(data, target_dates=target_dates)
+    |
+help: Remove assignment to unused variable `e`
+
+E701 Multiple statements on one line (colon)
+   --> cogs\location_log_cog.py:254:34
+    |
+253 |             try: data = await loop.run_in_executor(None, self._read_json, service, file_id)
+254 |             except Exception as e: continue
+    |                                  ^
+255 |
+256 |             logs_by_date = self._extract_logs_from_json(data, target_dates=target_dates)
+    |
+
+F401 [*] `random` imported but unused
+  --> cogs\partner_cog.py:8:8
+   |
+ 6 | import datetime
+ 7 | import asyncio
+ 8 | import random
+   |        ^^^^^^
+ 9 |
+10 | from config import JST
+   |
+help: Remove unused import: `random`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:35:23
+   |
+34 |         service = self.drive_service.get_service()
+35 |         if not service: return ""
+   |                       ^
+36 |         try:
+37 |             folder_id = await self.drive_service.find_file(service, self.drive_folder_id, ".bot")
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:38:29
+   |
+36 |         try:
+37 |             folder_id = await self.drive_service.find_file(service, self.drive_folder_id, ".bot")
+38 |             if not folder_id: return ""
+   |                             ^
+39 |             file_id = await self.drive_service.find_file(service, folder_id, "UserManual.md")
+40 |             if file_id:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:50:20
+   |
+49 |     async def _append_raw_message_to_obsidian(self, text: str, folder_name: str = "DailyNotes", file_name: str = None, target_heading:窶ｦ
+50 |         if not text: return
+   |                    ^
+51 |         service = self.drive_service.get_service()
+52 |         if not service: return
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:52:23
+   |
+50 |         if not text: return
+51 |         service = self.drive_service.get_service()
+52 |         if not service: return
+   |                       ^
+53 |
+54 |         folder_id = await self.drive_service.find_file(service, self.drive_folder_id, folder_name)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:55:25
+   |
+54 |         folder_id = await self.drive_service.find_file(service, self.drive_folder_id, folder_name)
+55 |         if not folder_id: folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, folder_name)
+   |                         ^
+56 |
+57 |         now = datetime.datetime.now(JST)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:59:25
+   |
+57 |         now = datetime.datetime.now(JST)
+58 |         time_str = now.strftime('%H:%M')
+59 |         if not file_name: file_name = f"{now.strftime('%Y-%m-%d')}.md"
+   |                         ^
+60 |
+61 |         f_id = await self.drive_service.find_file(service, folder_id, file_name)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:76:31
+   |
+74 |             try: 
+75 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+76 |                 if raw_content: content = raw_content
+   |                               ^
+77 |             except: pass
+   |
+
+E722 Do not use bare `except`
+  --> cogs\partner_cog.py:77:13
+   |
+75 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+76 |                 if raw_content: content = raw_content
+77 |             except: pass
+   |             ^^^^^^
+78 |
+79 |         new_content = update_section(content, append_text, target_heading)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:77:19
+   |
+75 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+76 |                 if raw_content: content = raw_content
+77 |             except: pass
+   |                   ^
+78 |
+79 |         new_content = update_section(content, append_text, target_heading)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:81:16
+   |
+79 |         new_content = update_section(content, append_text, target_heading)
+80 |
+81 |         if f_id: await self.drive_service.update_text(service, f_id, new_content)
+   |                ^
+82 |         else: await self.drive_service.upload_text(service, folder_id, file_name, new_content)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:82:13
+   |
+81 |         if f_id: await self.drive_service.update_text(service, f_id, new_content)
+82 |         else: await self.drive_service.upload_text(service, folder_id, file_name, new_content)
+   |             ^
+83 |
+84 |     async def _append_english_log_to_obsidian(self, text: str):
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_cog.py:85:20
+   |
+84 |     async def _append_english_log_to_obsidian(self, text: str):
+85 |         if not text: return
+   |                    ^
+86 |         prompt = f"""莉･荳九・繝・く繧ｹ繝医′譌･譛ｬ隱槭〒縺ゅｌ縺ｰ閾ｪ辟ｶ縺ｪ闍ｱ隱槭↓鄙ｻ險ｳ縺励∬恭隱槭〒縺ゅｌ縺ｰ繧医ｊ閾ｪ辟ｶ縺ｪ繝阪う繝・ぅ繝冶｡ｨ迴ｾ縺ｫ菫ｮ豁｣縺励※縺上□縺輔＞縲・87 | 蜃ｺ蜉帙・闍ｱ隱槭・繝・く繧ｹ繝医・縺ｿ縺ｨ縺励∬ｧ｣隱ｬ繧・肩諡ｶ縺ｯ荳蛻・性繧√↑縺・〒縺上□縺輔＞縲・   |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:98:23
+    |
+ 97 |         service = self.drive_service.get_service()
+ 98 |         if not service: return
+    |                       ^
+ 99 |
+100 |         base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:101:30
+    |
+100 | 窶ｦ     base_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "EnglishLearning")
+101 | 窶ｦ     if not base_folder_id: base_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "EnglishLearning")
+    |                            ^
+102 | 窶ｦ     
+103 | 窶ｦ     logs_folder_id = await self.drive_service.find_file(service, base_folder_id, "Logs")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:104:30
+    |
+103 |         logs_folder_id = await self.drive_service.find_file(service, base_folder_id, "Logs")
+104 |         if not logs_folder_id: logs_folder_id = await self.drive_service.create_folder(service, base_folder_id, "Logs")
+    |                              ^
+105 |
+106 |         now = datetime.datetime.now(JST)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:116:29
+    |
+115 |         formatted_en = en_lines[0]
+116 |         if len(en_lines) > 1: formatted_en += "\n" + "\n".join([f"    {line}" for line in en_lines[1:]])
+    |                             ^
+117 |             
+118 |         formatted_ja = ja_lines[0]
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:119:29
+    |
+118 |         formatted_ja = ja_lines[0]
+119 |         if len(ja_lines) > 1: formatted_ja += "\n" + "\n".join([f"      {line}" for line in ja_lines[1:]])
+    |                             ^
+120 |
+121 |         append_text = f"- {time_str} [EN] {formatted_en}\n  - [JA] {formatted_ja}"
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:126:31
+    |
+124 |             try: 
+125 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+126 |                 if raw_content: content = raw_content
+    |                               ^
+127 |             except: pass
+    |
+
+E722 Do not use bare `except`
+   --> cogs\partner_cog.py:127:13
+    |
+125 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+126 |                 if raw_content: content = raw_content
+127 |             except: pass
+    |             ^^^^^^
+128 |
+129 |         new_content = update_section(content, append_text, "## 町 English Log")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:127:19
+    |
+125 |                 raw_content = await self.drive_service.read_text_file(service, f_id)
+126 |                 if raw_content: content = raw_content
+127 |             except: pass
+    |                   ^
+128 |
+129 |         new_content = update_section(content, append_text, "## 町 English Log")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:130:16
+    |
+129 |         new_content = update_section(content, append_text, "## 町 English Log")
+130 |         if f_id: await self.drive_service.update_text(service, f_id, new_content)
+    |                ^
+131 |         else: await self.drive_service.upload_text(service, logs_folder_id, file_name, new_content)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:131:13
+    |
+129 |         new_content = update_section(content, append_text, "## 町 English Log")
+130 |         if f_id: await self.drive_service.update_text(service, f_id, new_content)
+131 |         else: await self.drive_service.upload_text(service, logs_folder_id, file_name, new_content)
+    |             ^
+132 |
+133 |     async def _search_drive_notes(self, keywords: str):
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:138:23
+    |
+136 |     async def generate_and_send_routine_message(self, context_data: str, instruction: str):
+137 |         channel = self.bot.get_channel(self.memo_channel_id)
+138 |         if not channel: return
+    |                       ^
+139 |         
+140 |         recent_messages = []
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:175:30
+    |
+174 |             await channel.send(reply_text)
+175 |         except Exception as e: logging.error(f"PartnerCog 螳壽悄繝｡繝・そ繝ｼ繧ｸ逕滓・繧ｨ繝ｩ繝ｼ: {e}")
+    |                              ^
+176 |
+177 |     async def fetch_todays_chat_log(self, channel: discord.TextChannel) -> str:
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:192:48
+    |
+191 |             text = msg.content.strip()
+192 |             if not text or text.startswith('/'): continue
+    |                                                ^
+193 |             
+194 |             log_lines.append(f"{time_str} [遘‐: {text}")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:201:40
+    |
+199 |         messages = []
+200 |         async for msg in channel.history(limit=limit + 1, oldest_first=False):
+201 |             if msg.id == current_msg_id: continue
+    |                                        ^
+202 |             if msg.content.startswith("/"): continue
+203 |             if msg.author.bot and msg.author.id != self.bot.user.id: continue
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:202:43
+    |
+200 |         async for msg in channel.history(limit=limit + 1, oldest_first=False):
+201 |             if msg.id == current_msg_id: continue
+202 |             if msg.content.startswith("/"): continue
+    |                                           ^
+203 |             if msg.author.bot and msg.author.id != self.bot.user.id: continue
+204 |             role = "model" if msg.author.id == self.bot.user.id else "user"
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:203:68
+    |
+201 |             if msg.id == current_msg_id: continue
+202 |             if msg.content.startswith("/"): continue
+203 |             if msg.author.bot and msg.author.id != self.bot.user.id: continue
+    |                                                                    ^
+204 |             role = "model" if msg.author.id == self.bot.user.id else "user"
+205 |             text = msg.content
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:206:31
+    |
+204 |             role = "model" if msg.author.id == self.bot.user.id else "user"
+205 |             text = msg.content
+206 |             if msg.attachments: text += " [繝｡繝・ぅ繧｢騾∽ｿ｡]"
+    |                               ^
+207 |             messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
+208 |         return list(reversed(messages))
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:221:34
+    |
+219 |                 response = await self.gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+220 |                 await message.reply(f"莉翫・縺ｨ縺薙ｍ縺薙ｓ縺ｪ諢溘§・Å汨Ⅸn\n{response.text.strip()}")
+221 |             except Exception as e: await message.reply(f"縺斐ａ繧薙・縲√お繝ｩ繝ｼ縺悟・縺｡繧・▲縺溟汳ｦ ({e})")
+    |                                  ^
+222 |
+223 |     @commands.Cog.listener()
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:225:30
+    |
+223 |     @commands.Cog.listener()
+224 |     async def on_message(self, message: discord.Message):
+225 |         if message.author.bot: return
+    |                              ^
+226 |         
+227 |         if message.channel.id != self.memo_channel_id: return
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:227:54
+    |
+225 |         if message.author.bot: return
+226 |         
+227 |         if message.channel.id != self.memo_channel_id: return
+    |                                                      ^
+228 |
+229 |         self.user_name = "繧・≧縺吶￠"
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:242:16
+    |
+241 |         input_parts = []
+242 |         if text: input_parts.append(types.Part.from_text(text=text))
+    |                ^
+243 |         for att in message.attachments:
+244 |             if att.content_type and att.content_type.startswith(('image/', 'audio/')):
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:246:27
+    |
+244 |             if att.content_type and att.content_type.startswith(('image/', 'audio/')):
+245 |                 input_parts.append(types.Part.from_bytes(data=await att.read(), mime_type=att.content_type))
+246 |         if not input_parts: return
+    |                           ^
+247 |
+248 |         now_str = datetime.datetime.now(JST).strftime('%Y-%m-%d %H:%M')
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:391:49
+    |
+389 | 窶ｦ         tool_result = await self._search_drive_notes(function_call.args["keywords"])
+390 | 窶ｦ     elif function_call.name == "check_schedule": 
+391 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"])
+    |                                   ^
+392 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+393 | 窶ｦ     elif function_call.name == "create_calendar_event": 
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:392:29
+    |
+390 | 窶ｦ     elif function_call.name == "check_schedule": 
+391 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.list_events_for_date(function_call.args["date"])
+392 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+    |               ^
+393 | 窶ｦ     elif function_call.name == "create_calendar_event": 
+394 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_ca窶ｦ
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:394:49
+    |
+392 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+393 | 窶ｦ     elif function_call.name == "create_calendar_event": 
+394 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_ca窶ｦ
+    |                                   ^
+395 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+396 | 窶ｦ     elif function_call.name == "delete_calendar_event":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:395:29
+    |
+393 | 窶ｦ     elif function_call.name == "create_calendar_event": 
+394 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.create_event(function_call.args["summary"], function_ca窶ｦ
+395 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+    |               ^
+396 | 窶ｦ     elif function_call.name == "delete_calendar_event":
+397 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], fun窶ｦ
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:397:49
+    |
+395 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+396 | 窶ｦ     elif function_call.name == "delete_calendar_event":
+397 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], fun窶ｦ
+    |                                   ^
+398 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+399 | 窶ｦ     elif function_call.name == "check_tasks":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:398:29
+    |
+396 | 窶ｦ     elif function_call.name == "delete_calendar_event":
+397 | 窶ｦ         if self.calendar_service: tool_result = await self.calendar_service.delete_event_by_keyword(function_call.args["date"], fun窶ｦ
+398 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+    |               ^
+399 | 窶ｦ     elif function_call.name == "check_tasks":
+400 | 窶ｦ         list_name = function_call.args.get("list_name")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:401:46
+    |
+399 |                     elif function_call.name == "check_tasks":
+400 |                         list_name = function_call.args.get("list_name")
+401 |                         if self.tasks_service: tool_result = await self.tasks_service.get_uncompleted_tasks(list_name)
+    |                                              ^
+402 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: Tasks繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+403 |                     elif function_call.name == "add_task":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:402:29
+    |
+400 |                         list_name = function_call.args.get("list_name")
+401 |                         if self.tasks_service: tool_result = await self.tasks_service.get_uncompleted_tasks(list_name)
+402 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: Tasks繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+    |                             ^
+403 |                     elif function_call.name == "add_task":
+404 |                         title = function_call.args["title"]
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:406:46
+    |
+404 |                         title = function_call.args["title"]
+405 |                         list_name = function_call.args.get("list_name")
+406 |                         if self.tasks_service: tool_result = await self.tasks_service.add_task(title, list_name=list_name)
+    |                                              ^
+407 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: Tasks繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+408 |                     elif function_call.name == "complete_task":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:407:29
+    |
+405 |                         list_name = function_call.args.get("list_name")
+406 |                         if self.tasks_service: tool_result = await self.tasks_service.add_task(title, list_name=list_name)
+407 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: Tasks繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+    |                             ^
+408 |                     elif function_call.name == "complete_task":
+409 |                         keyword = function_call.args["keyword"]
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:411:46
+    |
+409 | 窶ｦ     keyword = function_call.args["keyword"]
+410 | 窶ｦ     list_name = function_call.args.get("list_name")
+411 | 窶ｦ     if self.tasks_service: tool_result = await self.tasks_service.complete_task_by_keyword(keyword, list_name=list_name)
+    |                            ^
+412 | 窶ｦ     else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: Tasks繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:412:29
+    |
+410 | 窶ｦ         list_name = function_call.args.get("list_name")
+411 | 窶ｦ         if self.tasks_service: tool_result = await self.tasks_service.complete_task_by_keyword(keyword, list_name=list_name)
+412 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: Tasks繧ｵ繝ｼ繝薙せ縺ｫ謗･邯壹＆繧後※縺・∪縺帙ｓ縲・
+    |               ^
+413 | 窶ｦ         
+414 | 窶ｦ     elif function_call.name == "record_stock_trade":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:441:37
+    |
+439 |                     elif function_call.name == "list_habits":
+440 |                         habit_cog = self.bot.get_cog("HabitCog")
+441 |                         if habit_cog: tool_result = await habit_cog.list_habits()
+    |                                     ^
+442 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: HabitCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+443 |                     elif function_call.name == "delete_habit":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:442:29
+    |
+440 |                         habit_cog = self.bot.get_cog("HabitCog")
+441 |                         if habit_cog: tool_result = await habit_cog.list_habits()
+442 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: HabitCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |                             ^
+443 |                     elif function_call.name == "delete_habit":
+444 |                         habit_cog = self.bot.get_cog("HabitCog")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:445:37
+    |
+443 |                     elif function_call.name == "delete_habit":
+444 |                         habit_cog = self.bot.get_cog("HabitCog")
+445 |                         if habit_cog: tool_result = await habit_cog.delete_habit(function_call.args["habit_name"])
+    |                                     ^
+446 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: HabitCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+447 |                     elif function_call.name == "report_sleep":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:446:29
+    |
+444 |                         habit_cog = self.bot.get_cog("HabitCog")
+445 |                         if habit_cog: tool_result = await habit_cog.delete_habit(function_call.args["habit_name"])
+446 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: HabitCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |                             ^
+447 |                     elif function_call.name == "report_sleep":
+448 |                         fitbit_cog = self.bot.get_cog("FitbitCog")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:453:29
+    |
+451 | 窶ｦ             asyncio.create_task(fitbit_cog.send_sleep_report(target_date_str))
+452 | 窶ｦ             tool_result = f"{target_date_str or '莉頑律'}縺ｮ逹｡逵繝ｬ繝昴・繝医・蜿門ｾ励→隗｣譫舌ｒ髢句ｧ九＠縺ｾ縺励◆縲ょ挨繝｡繝・そ繝ｼ繧ｸ縺ｨ縺励※縺吶＄縺ｫ騾∽ｿ｡縺輔ｌ縺ｾ                                       窶ｦ
+453 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: FitbitCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |               ^
+454 | 窶ｦ     elif function_call.name == "report_health":
+455 | 窶ｦ         fitbit_cog = self.bot.get_cog("FitbitCog")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:460:29
+    |
+458 | 窶ｦ             asyncio.create_task(fitbit_cog.send_full_health_report(target_date_str))
+459 | 窶ｦ             tool_result = f"{target_date_str or '莉頑律'}縺ｮ蛛･蠎ｷ繝ｬ繝昴・繝医・蜿門ｾ励→隗｣譫舌ｒ髢句ｧ九＠縺ｾ縺励◆縲ょ挨繝｡繝・そ繝ｼ繧ｸ縺ｨ縺励※縺吶＄縺ｫ騾∽ｿ｡縺輔ｌ縺ｾ                                       窶ｦ
+460 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: FitbitCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |               ^
+461 | 窶ｦ         
+462 | 窶ｦ     elif function_call.name == "sync_past_fitbit":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:468:29
+    |
+466 | 窶ｦ             asyncio.create_task(fitbit_cog.perform_batch_sync_and_notify(days, message.channel))
+467 | 窶ｦ             tool_result = f"驕主悉{days}譌･蛻・・Fitbit繝・・繧ｿ縺ｮ荳諡ｬ蜷梧悄蜃ｦ逅・ｒ陬丞・・医ヰ繝・け繧ｰ繝ｩ繧ｦ繝ｳ繝会ｼ峨〒髢句ｧ九＠縺ｾ縺励◆縲ょｮ御ｺ・ｬ｡隨ｬ縲、I縺九ｉ閾ｪ逋ｺ                                            窶ｦ
+468 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: FitbitCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |               ^
+469 | 窶ｦ         
+470 | 窶ｦ     elif function_call.name == "give_english_quiz":
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:475:29
+    |
+473 | 窶ｦ             asyncio.create_task(en_cog.daily_english_quiz())
+474 | 窶ｦ             tool_result = "闍ｱ隱槭け繧､繧ｺ縺ｮ逕滓・繧帝幕蟋九＠縺ｾ縺励◆縲ょ挨繝｡繝・そ繝ｼ繧ｸ縺ｨ縺励※縺吶＄縺ｫ騾∽ｿ｡縺輔ｌ縺ｾ縺吶・
+475 | 窶ｦ         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: EnglishLearningCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |               ^
+476 | 窶ｦ     elif function_call.name == "sync_location":
+477 | 窶ｦ         target_date = function_call.args["date"]
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:479:35
+    |
+477 |                         target_date = function_call.args["date"]
+478 |                         loc_cog = self.bot.get_cog("LocationLogCog")
+479 |                         if loc_cog: tool_result = await loc_cog.perform_manual_sync(target_date)
+    |                                   ^
+480 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: LocationLogCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_cog.py:480:29
+    |
+478 |                         loc_cog = self.bot.get_cog("LocationLogCog")
+479 |                         if loc_cog: tool_result = await loc_cog.perform_manual_sync(target_date)
+480 |                         else: tool_result = "繧ｷ繧ｹ繝・Β繧ｨ繝ｩ繝ｼ: LocationLogCog縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ縲・
+    |                             ^
+481 |                     
+482 |                     # 笘・ｿｽ蜉: 蟄ｦ鄙偵・隱ｭ譖ｸ繝弱・繝亥・逅・    |
+
+F401 [*] `discord` imported but unused
+ --> cogs\partner_routine_cog.py:2:8
+  |
+1 | import os
+2 | import discord
+  |        ^^^^^^^
+3 | from discord.ext import commands, tasks
+4 | from google.genai import types
+  |
+help: Remove unused import: `discord`
+
+F401 [*] `google.genai.types` imported but unused
+ --> cogs\partner_routine_cog.py:4:26
+  |
+2 | import discord
+3 | from discord.ext import commands, tasks
+4 | from google.genai import types
+  |                          ^^^^^
+5 | import logging
+6 | import datetime
+  |
+help: Remove unused import: `google.genai.types`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:27:55
+   |
+25 |     @commands.Cog.listener()
+26 |     async def on_ready(self):
+27 |         if not self.inactivity_check_task.is_running(): self.inactivity_check_task.start()
+   |                                                       ^
+28 |         if not self.nightly_reflection_task.is_running(): self.nightly_reflection_task.start()
+29 |         if not self.weekend_stock_review_task.is_running(): self.weekend_stock_review_task.start()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:28:57
+   |
+26 |     async def on_ready(self):
+27 |         if not self.inactivity_check_task.is_running(): self.inactivity_check_task.start()
+28 |         if not self.nightly_reflection_task.is_running(): self.nightly_reflection_task.start()
+   |                                                         ^
+29 |         if not self.weekend_stock_review_task.is_running(): self.weekend_stock_review_task.start()
+30 |         if not self.habit_check_task.is_running(): self.habit_check_task.start()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:29:59
+   |
+27 |         if not self.inactivity_check_task.is_running(): self.inactivity_check_task.start()
+28 |         if not self.nightly_reflection_task.is_running(): self.nightly_reflection_task.start()
+29 |         if not self.weekend_stock_review_task.is_running(): self.weekend_stock_review_task.start()
+   |                                                           ^
+30 |         if not self.habit_check_task.is_running(): self.habit_check_task.start()
+31 |         if not self.morning_routine_task.is_running(): self.morning_routine_task.start()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:30:50
+   |
+28 |         if not self.nightly_reflection_task.is_running(): self.nightly_reflection_task.start()
+29 |         if not self.weekend_stock_review_task.is_running(): self.weekend_stock_review_task.start()
+30 |         if not self.habit_check_task.is_running(): self.habit_check_task.start()
+   |                                                  ^
+31 |         if not self.morning_routine_task.is_running(): self.morning_routine_task.start()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:31:54
+   |
+29 |         if not self.weekend_stock_review_task.is_running(): self.weekend_stock_review_task.start()
+30 |         if not self.habit_check_task.is_running(): self.habit_check_task.start()
+31 |         if not self.morning_routine_task.is_running(): self.morning_routine_task.start()
+   |                                                      ^
+32 |         
+33 |         if not self.spontaneous_message_task.is_running(): self.spontaneous_message_task.start()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:33:58
+   |
+31 |         if not self.morning_routine_task.is_running(): self.morning_routine_task.start()
+32 |         
+33 |         if not self.spontaneous_message_task.is_running(): self.spontaneous_message_task.start()
+   |                                                          ^
+34 |         if not self.update_manual_task.is_running(): self.update_manual_task.start()
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:34:52
+   |
+33 |         if not self.spontaneous_message_task.is_running(): self.spontaneous_message_task.start()
+34 |         if not self.update_manual_task.is_running(): self.update_manual_task.start()
+   |                                                    ^
+35 |
+36 |     def cog_unload(self):
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:52:42
+   |
+50 |         partner_cog = self.bot.get_cog("PartnerCog")
+51 |         channel = self.bot.get_channel(self.memo_channel_id)
+52 |         if not partner_cog or not channel: return
+   |                                          ^
+53 |
+54 |         # 莉頑律縺ｮ莨夊ｩｱ繝ｭ繧ｰ繧貞叙蠕・   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\partner_routine_cog.py:56:33
+   |
+54 |         # 莉頑律縺ｮ莨夊ｩｱ繝ｭ繧ｰ繧貞叙蠕・55 |         today_log = await partner_cog.fetch_todays_chat_log(channel)
+56 |         if not today_log.strip(): return # 莨夊ｩｱ縺後↑縺代ｌ縺ｰ繧ｹ繧ｭ繝・・
+   |                                 ^
+57 |
+58 |         # 迴ｾ蝨ｨ縺ｮ蜿匁桶隱ｬ譏取嶌繧貞叙蠕・   |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:98:37
+    |
+ 96 |         # 9譎ゅ°繧・2譎ゅ・髢薙・縺ｿ・域ｷｱ螟懊・譌ｩ譛昴・驕ｿ縺代ｋ・・ 97 |         now = datetime.datetime.now(JST)
+ 98 |         if not (9 <= now.hour <= 22): return
+    |                                     ^
+ 99 |         
+100 |         # 7%縺ｮ遒ｺ邇・〒逋ｺ蜍包ｼ・譌･縺ｫ1蝗槭≠繧九°縺ｪ縺・°遞句ｺｦ・・    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:101:34
+    |
+100 |         # 7%縺ｮ遒ｺ邇・〒逋ｺ蜍包ｼ・譌･縺ｫ1蝗槭≠繧九°縺ｪ縺・°遞句ｺｦ・・101 |         if random.random() > 0.07: return
+    |                                  ^
+102 |
+103 |         partner_cog = self.bot.get_cog("PartnerCog")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:104:27
+    |
+103 |         partner_cog = self.bot.get_cog("PartnerCog")
+104 |         if not partner_cog: return
+    |                           ^
+105 |
+106 |         # 繧ゅ＠逶ｴ霑・譎る俣莉･蜀・↓莨夊ｩｱ縺励※縺・◆繧峨√え繧ｶ縺上↑繧峨↑縺・ｈ縺・↓繧ｹ繧ｭ繝・・
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:121:27
+    |
+119 |     async def morning_routine_task(self):
+120 |         partner_cog = self.bot.get_cog("PartnerCog")
+121 |         if not partner_cog: return
+    |                           ^
+122 |
+123 |         # 笘・霑ｽ蜉: 莉頑律縺ｮ繧ｫ繝ｬ繝ｳ繝繝ｼ縺ｮ莠亥ｮ壹ｒ蜿門ｾ・    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:148:75
+    |
+146 |     async def inactivity_check_task(self):
+147 |         partner_cog = self.bot.get_cog("PartnerCog")
+148 |         if not partner_cog or not hasattr(partner_cog, 'last_interaction'): return
+    |                                                                           ^
+149 |
+150 |         now = datetime.datetime.now(JST)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:162:42
+    |
+160 |         channel = self.bot.get_channel(self.memo_channel_id)
+161 |         partner_cog = self.bot.get_cog("PartnerCog")
+162 |         if not channel or not partner_cog: return
+    |                                          ^
+163 |
+164 |         today_log = await partner_cog.fetch_todays_chat_log(channel)
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:183:27
+    |
+182 |         partner_cog = self.bot.get_cog("PartnerCog")
+183 |         if not partner_cog: return
+    |                           ^
+184 |
+185 |         context_data = "莉企ｱ縺ｮ譬ｪ蠑丞ｸょｴ縺碁哩縺ｾ繧翫∪縺励◆縲るｱ譛ｫ縺ｧ縺吶・
+    |
+
+E701 Multiple statements on one line (colon)
+   --> cogs\partner_routine_cog.py:192:44
+    |
+190 |         partner_cog = self.bot.get_cog("PartnerCog")
+191 |         habit_cog = self.bot.get_cog("HabitCog")
+192 |         if not partner_cog or not habit_cog: return
+    |                                            ^
+193 |
+194 |         incomplete_habits = await habit_cog.get_incomplete_habits()
+    |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\stock_cog.py:21:23
+   |
+19 |         """Stocks繝輔か繝ｫ繝蜀・・繝輔ぃ繧､繝ｫ荳隕ｧ繧貞叙蠕・""
+20 |         service = self.drive_service.get_service()
+21 |         if not service: return []
+   |                       ^
+22 |         
+23 |         inv_folder = await self.drive_service.find_file(service, self.drive_folder_id, INVESTMENT_FOLDER)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\stock_cog.py:24:26
+   |
+23 |         inv_folder = await self.drive_service.find_file(service, self.drive_folder_id, INVESTMENT_FOLDER)
+24 |         if not inv_folder: return []
+   |                          ^
+25 |         stk_folder = await self.drive_service.find_file(service, inv_folder, STOCKS_FOLDER)
+26 |         if not stk_folder: return []
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\stock_cog.py:26:26
+   |
+24 |         if not inv_folder: return []
+25 |         stk_folder = await self.drive_service.find_file(service, inv_folder, STOCKS_FOLDER)
+26 |         if not stk_folder: return []
+   |                          ^
+27 |
+28 |         query = f"'{stk_folder}' in parents and mimeType = 'text/markdown' and trashed = false"
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\stock_cog.py:47:23
+   |
+45 |         """譌｢蟄倥・繝弱・繝医↓繝｡繝｢繧定ｿｽ險・""
+46 |         service = self.drive_service.get_service()
+47 |         if not service: return False
+   |                       ^
+48 |
+49 |         try:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\stock_cog.py:63:23
+   |
+61 |         """譁ｰ縺励＞驫俶氛繝弱・繝医ｒ菴懈・縺励※菫晏ｭ・""
+62 |         service = self.drive_service.get_service()
+63 |         if not service: return False
+   |                       ^
+64 |
+65 |         inv_folder = await self.drive_service.find_file(service, self.drive_folder_id, INVESTMENT_FOLDER)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\stock_cog.py:66:26
+   |
+65 |         inv_folder = await self.drive_service.find_file(service, self.drive_folder_id, INVESTMENT_FOLDER)
+66 |         if not inv_folder: inv_folder = await self.drive_service.create_folder(service, self.drive_folder_id, INVESTMENT_FOLDER)
+   |                          ^
+67 |         stk_folder = await self.drive_service.find_file(service, inv_folder, STOCKS_FOLDER)
+68 |         if not stk_folder: stk_folder = await self.drive_service.create_folder(service, inv_folder, STOCKS_FOLDER)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> cogs\stock_cog.py:68:26
+   |
+66 |         if not inv_folder: inv_folder = await self.drive_service.create_folder(service, self.drive_folder_id, INVESTMENT_FOLDER)
+67 |         stk_folder = await self.drive_service.find_file(service, inv_folder, STOCKS_FOLDER)
+68 |         if not stk_folder: stk_folder = await self.drive_service.create_folder(service, inv_folder, STOCKS_FOLDER)
+   |                          ^
+69 |
+70 |         try:
+   |
+
+F401 [*] `logging` imported but unused
+ --> cogs\study_cog.py:3:8
+  |
+1 | import os
+2 | import datetime
+3 | import logging
+  |        ^^^^^^^
+4 | import discord
+5 | from discord.ext import commands
+  |
+help: Remove unused import: `logging`
+
+F401 [*] `discord` imported but unused
+ --> cogs\study_cog.py:4:8
+  |
+2 | import datetime
+3 | import logging
+4 | import discord
+  |        ^^^^^^^
+5 | from discord.ext import commands
+6 | from config import JST
+  |
+help: Remove unused import: `discord`
+
+E701 Multiple statements on one line (colon)
+  --> cogs\study_cog.py:18:23
+   |
+16 |         """AI繝代・繝医リ繝ｼ縺九ｉ蜻ｼ縺ｳ蜃ｺ縺輔ｌ繧区嶌險倬未謨ｰ"""
+17 |         service = self.drive_service.get_service()
+18 |         if not service: return False
+   |                       ^
+19 |
+20 |         logs_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "StudyLogs")
+   |
+
+F401 [*] `datetime.timezone` imported but unused
+ --> obsidian_handler.py:7:32
+  |
+5 | from pathlib import Path
+6 | from filelock import FileLock
+7 | from datetime import datetime, timezone, timedelta
+  |                                ^^^^^^^^
+8 | from dotenv import load_dotenv
+  |
+help: Remove unused import
+
+F401 [*] `datetime.timedelta` imported but unused
+ --> obsidian_handler.py:7:42
+  |
+5 | from pathlib import Path
+6 | from filelock import FileLock
+7 | from datetime import datetime, timezone, timedelta
+  |                                          ^^^^^^^^^
+8 | from dotenv import load_dotenv
+  |
+help: Remove unused import
+
+E701 Multiple statements on one line (colon)
+  --> obsidian_handler.py:63:28
+   |
+61 |                     logging.error(f"[obsidian_handler] Failed to save memo to JSON: {e}", exc_info=True)
+62 |                     if tmp_file.exists():
+63 |                         try: os.remove(tmp_file)
+   |                            ^
+64 |                         except OSError: pass
+65 |             else:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> obsidian_handler.py:64:39
+   |
+62 |                     if tmp_file.exists():
+63 |                         try: os.remove(tmp_file)
+64 |                         except OSError: pass
+   |                                       ^
+65 |             else:
+66 |                 logging.warning(f"[obsidian_handler] Memo with ID {message_id} already exists in JSON. Skipping.")
+   |
+
+F401 [*] `datetime` imported but unused
+ --> prompts.py:1:8
+  |
+1 | import datetime
+  |        ^^^^^^^^
+2 |
+3 | def get_system_prompt(user_name: str, now_str: str, user_manual: str = "") -> str:
+  |
+help: Remove unused import: `datetime`
+
+F401 [*] `os` imported but unused
+ --> services\fitbit_service.py:1:8
+  |
+1 | import os
+  |        ^^
+2 | import base64
+3 | import datetime
+  |
+help: Remove unused import: `os`
+
+F401 [*] `asyncio` imported but unused
+ --> services\fitbit_service.py:5:8
+  |
+3 | import datetime
+4 | import logging
+5 | import asyncio
+  |        ^^^^^^^
+6 | import re
+7 | import aiohttp
+  |
+help: Remove unused import: `asyncio`
+
+E701 Multiple statements on one line (colon)
+  --> services\fitbit_service.py:31:23
+   |
+29 |     async def _load_token(self):
+30 |         service = self.drive_service.get_service()
+31 |         if not service: return
+   |                       ^
+32 |         try:
+33 |             f_id = await self.drive_service.find_file(service, self.drive_service.folder_id, TOKEN_FILE_NAME)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\fitbit_service.py:44:23
+   |
+42 |         self.refresh_token = new_refresh_token
+43 |         service = self.drive_service.get_service()
+44 |         if not service: return
+   |                       ^
+45 |         try:
+46 |             f_id = await self.drive_service.find_file(service, self.drive_service.folder_id, TOKEN_FILE_NAME)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\fitbit_service.py:85:33
+   |
+84 |     def _calculate_sleep_score(self, total_asleep_min, total_in_bed_min, deep_min, rem_min, wake_min) -> int:
+85 |         if total_asleep_min == 0: return 0
+   |                                 ^
+86 |         duration_score = min(50, (total_asleep_min / 480) * 50)
+87 |         deep_percentage = (deep_min / total_asleep_min) * 100
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\fitbit_service.py:97:23
+   |
+96 |     def _format_minutes(self, minutes):
+97 |         if not minutes: return "0蛻・
+   |                       ^
+98 |         try:
+99 |             mins = int(minutes)
+   |
+
+E701 Multiple statements on one line (colon)
+   --> services\fitbit_service.py:106:50
+    |
+105 |     async def get_stats(self, date_obj):
+106 |         if not await self._refresh_access_token(): return None
+    |                                                  ^
+107 |         date_str = date_obj.strftime("%Y-%m-%d")
+108 |         session = await self._get_session()
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\fitbit_service.py:134:50
+    |
+132 | 窶ｦ                     name = z.get('name')
+133 | 窶ｦ                     mins = z.get('minutes', 0)
+134 | 窶ｦ                     if name == 'Fat Burn': stats['hr_zone_fat_burn_minutes'] = mins
+    |                                            ^
+135 | 窶ｦ                     elif name == 'Cardio': stats['hr_zone_cardio_minutes'] = mins
+136 | 窶ｦ                     elif name == 'Peak': stats['hr_zone_peak_minutes'] = mins
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\fitbit_service.py:135:50
+    |
+133 |                             mins = z.get('minutes', 0)
+134 |                             if name == 'Fat Burn': stats['hr_zone_fat_burn_minutes'] = mins
+135 |                             elif name == 'Cardio': stats['hr_zone_cardio_minutes'] = mins
+    |                                                  ^
+136 |                             elif name == 'Peak': stats['hr_zone_peak_minutes'] = mins
+137 |                 else:
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\fitbit_service.py:136:48
+    |
+134 |                             if name == 'Fat Burn': stats['hr_zone_fat_burn_minutes'] = mins
+135 |                             elif name == 'Cardio': stats['hr_zone_cardio_minutes'] = mins
+136 |                             elif name == 'Peak': stats['hr_zone_peak_minutes'] = mins
+    |                                                ^
+137 |                 else:
+138 |                     error_text = await resp.text()
+    |
+
+F541 [*] f-string without any placeholders
+   --> services\fitbit_service.py:249:16
+    |
+247 |             new_body = body
+248 |
+249 |         return f"---\n" + "\n".join(new_fm_lines) + "\n---\n\n" + new_body.lstrip()
+    |                ^^^^^^^^
+250 |
+251 |     async def update_daily_note_with_stats(self, date_obj, stats):
+    |
+help: Remove extraneous `f` prefix
+
+F401 [*] `zoneinfo` imported but unused
+ --> services\google_calendar_service.py:4:8
+  |
+2 | import logging
+3 | import datetime
+4 | import zoneinfo
+  |        ^^^^^^^^
+5 | from googleapiclient.discovery import build
+  |
+help: Remove unused import: `zoneinfo`
+
+E701 Multiple statements on one line (colon)
+  --> services\google_calendar_service.py:21:23
+   |
+19 |     async def get_upcoming_events(self, minutes=15):
+20 |         service = self.get_service()
+21 |         if not service: return []
+   |                       ^
+22 |
+23 |         now = datetime.datetime.now(JST)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_calendar_service.py:39:23
+   |
+37 |     async def list_events_for_date(self, date_str):
+38 |         service = self.get_service()
+39 |         if not service: return "繧ｨ繝ｩ繝ｼ: 繧ｫ繝ｬ繝ｳ繝繝ｼ縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縲・
+   |                       ^
+40 |
+41 |         try:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_calendar_service.py:52:26
+   |
+50 |             events = events_result.get('items', [])
+51 |             
+52 |             if not events: return f"{date_str} 縺ｮ莠亥ｮ壹・迚ｹ縺ｫ縺ｪ縺・∩縺溘＞縺繧医・
+   |                          ^
+53 |             
+54 |             result = []
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_calendar_service.py:90:23
+   |
+88 |     async def create_event(self, summary, start_time, end_time, description=""):
+89 |         service = self.get_service()
+90 |         if not service: return "繧ｫ繝ｬ繝ｳ繝繝ｼ縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縺ｧ縺励◆縲・
+   |                       ^
+91 |
+92 |         start_str = str(start_time).strip()
+   |
+
+E722 Do not use bare `except`
+   --> services\google_calendar_service.py:120:13
+    |
+118 |                     dt_end = dt_start + datetime.timedelta(days=1)
+119 |                 e_date = dt_end.strftime("%Y-%m-%d")
+120 |             except:
+    |             ^^^^^^
+121 |                 pass # 螟画鋤縺ｫ螟ｱ謨励＠縺溷ｴ蜷医・縺昴・縺ｾ縺ｾ騾√ｋ
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\google_calendar_service.py:143:23
+    |
+141 |         """繧､繝吶Φ繝・D繧呈欠螳壹＠縺ｦ莠亥ｮ壹ｒ蜑企勁縺吶ｋ"""
+142 |         service = self.get_service()
+143 |         if not service: return "繧ｫ繝ｬ繝ｳ繝繝ｼ縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縺ｧ縺励◆縲・
+    |                       ^
+144 |
+145 |         try:
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\google_calendar_service.py:157:23
+    |
+155 |         """謖・ｮ壹＠縺滓律莉倥・荳ｭ縺ｧ縲√く繝ｼ繝ｯ繝ｼ繝峨↓荳閾ｴ縺吶ｋ莠亥ｮ壹ｒ謗｢縺励※蜑企勁縺吶ｋ・・I蜷代￠・・""
+156 |         service = self.get_service()
+157 |         if not service: return "繧ｫ繝ｬ繝ｳ繝繝ｼ縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縺ｧ縺励◆縲・
+    |                       ^
+158 |         
+159 |         try:
+    |
+
+F401 [*] `utils.obsidian_utils.update_section` imported but unused
+  --> services\google_drive_service.py:9:34
+   |
+ 7 | from googleapiclient.discovery import build
+ 8 | from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+ 9 | from utils.obsidian_utils import update_section
+   |                                  ^^^^^^^^^^^^^^
+10 |
+11 | from config import TOKEN_FILE, SCOPES
+   |
+help: Remove unused import: `utils.obsidian_utils.update_section`
+
+E701 Multiple statements on one line (colon)
+  --> services\google_drive_service.py:40:26
+   |
+39 |     def get_service(self):
+40 |         if not self.creds: self._load_credentials()
+   |                          ^
+41 |         if self.creds:
+42 |             return build('drive', 'v3', credentials=self.creds)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_drive_service.py:46:25
+   |
+45 |     async def find_file(self, service, parent_id, name):
+46 |         if not parent_id: return None
+   |                         ^
+47 |         query = f"'{parent_id}' in parents and name = '{name}' and trashed = false"
+48 |         try:
+   |
+
+F841 [*] Local variable `e` is assigned to but never used
+  --> services\google_drive_service.py:52:29
+   |
+50 |             files = results.get('files', [])
+51 |             return files[0]['id'] if files else None
+52 |         except Exception as e:
+   |                             ^
+53 |             return None
+   |
+help: Remove assignment to unused variable `e`
+
+E701 Multiple statements on one line (colon)
+  --> services\google_drive_service.py:56:25
+   |
+55 |     async def create_folder(self, service, parent_id, name):
+56 |         if not parent_id: return None
+   |                         ^
+57 |         file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': 'application/vnd.google-apps.folder'}
+58 |         file = await asyncio.to_thread(lambda: service.files().create(body=file_metadata, fields='id').execute())
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_drive_service.py:63:25
+   |
+61 |     # mime_type 繧貞ｼ墓焚縺ｧ蜿励￠蜿悶ｌ繧九ｈ縺・↓諡｡蠑ｵ・・abit縺ｮJSON菫晏ｭ倡畑・・62 |     async def upload_text(self, service, parent_id, name, content, mime_type='text/markdown'):
+63 |         if not parent_id: return None
+   |                         ^
+64 |         file_metadata = {'name': name, 'parents': [parent_id], 'mimeType': mime_type}
+65 |         media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype=mime_type, resumable=True)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_drive_service.py:79:27
+   |
+77 |             downloader = MediaIoBaseDownload(fh, request)
+78 |             done = False
+79 |             while not done: _, done = await asyncio.to_thread(downloader.next_chunk)
+   |                           ^
+80 |             return fh.getvalue().decode('utf-8')
+81 |         except Exception as e:
+   |
+
+F841 [*] Local variable `e` is assigned to but never used
+  --> services\google_drive_service.py:81:29
+   |
+79 |             while not done: _, done = await asyncio.to_thread(downloader.next_chunk)
+80 |             return fh.getvalue().decode('utf-8')
+81 |         except Exception as e:
+   |                             ^
+82 |             return ""
+   |
+help: Remove assignment to unused variable `e`
+
+E701 Multiple statements on one line (colon)
+  --> services\google_drive_service.py:86:23
+   |
+84 |     async def search_markdown_files(self, keywords, limit=3):
+85 |         service = self.get_service()
+86 |         if not service: return "Drive謗･邯壹お繝ｩ繝ｼ"
+   |                       ^
+87 |         query = f"fullText contains '{keywords}' and mimeType = 'text/markdown' and trashed = false"
+88 |         try:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_drive_service.py:91:25
+   |
+89 | 窶ｦ     results = await asyncio.to_thread(lambda: service.files().list(q=query, pageSize=limit, fields="files(id, name)").execute())
+90 | 窶ｦ     files = results.get('files', [])
+91 | 窶ｦ     if not files: return f"縲鶏keywords}縲阪↓髢｢騾｣縺吶ｋ繝｡繝｢縺ｯ隕九▽縺九ｊ縺ｾ縺帙ｓ縺ｧ縺励◆縲・
+   |                   ^
+92 | 窶ｦ     
+93 | 窶ｦ     search_results = []
+   |
+
+F401 [*] `os` imported but unused
+ --> services\google_tasks_service.py:1:8
+  |
+1 | import os
+  |        ^^
+2 | import logging
+3 | import asyncio
+  |
+help: Remove unused import: `os`
+
+F401 [*] `google.oauth2.credentials.Credentials` imported but unused
+ --> services\google_tasks_service.py:6:39
+  |
+4 | import datetime
+5 | from googleapiclient.discovery import build
+6 | from google.oauth2.credentials import Credentials
+  |                                       ^^^^^^^^^^^
+7 |
+8 | class GoogleTasksService:
+  |
+help: Remove unused import: `google.oauth2.credentials.Credentials`
+
+E701 Multiple statements on one line (colon)
+  --> services\google_tasks_service.py:22:25
+   |
+20 |     async def _get_tasklist_id(self, service, list_name: str) -> str:
+21 |         """謖・ｮ壹＆繧後◆蜷榊燕縺ｮ繝ｪ繧ｹ繝・D繧貞叙蠕励☆繧九ゅ↑縺代ｌ縺ｰ繝・ヵ繧ｩ繝ｫ繝医ｒ霑斐☆"""
+22 |         if not list_name: return '@default'
+   |                         ^
+23 |         loop = asyncio.get_running_loop()
+24 |         try:
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_tasks_service.py:38:23
+   |
+36 |     async def get_uncompleted_tasks(self, list_name: str = None):
+37 |         service = self.get_service()
+38 |         if not service: return "Tasks API縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縺ｧ縺励◆縲・
+   |                       ^
+39 |         try:
+40 |             list_id = await self._get_tasklist_id(service, list_name)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_tasks_service.py:47:25
+   |
+45 |             )
+46 |             items = res.get('items', [])
+47 |             if not items: return f"縲鶏list_name or '繝・ヵ繧ｩ繝ｫ繝・}縲阪Μ繧ｹ繝医↓譛ｪ螳御ｺ・・繧ｿ繧ｹ繧ｯ縺ｯ縺ゅｊ縺ｾ縺帙ｓ縲・
+   |                         ^
+48 |             
+49 |             tasks_text = [f"- {t['title']}" for t in items]
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_tasks_service.py:56:23
+   |
+54 |     async def add_task(self, title: str, notes: str = "", list_name: str = None):
+55 |         service = self.get_service()
+56 |         if not service: return "Tasks API縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縺ｧ縺励◆縲・
+   |                       ^
+57 |         try:
+58 |             list_id = await self._get_tasklist_id(service, list_name)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_tasks_service.py:71:23
+   |
+69 |     async def complete_task_by_keyword(self, keyword: str, list_name: str = None):
+70 |         service = self.get_service()
+71 |         if not service: return "Tasks API縺ｫ謗･邯壹〒縺阪∪縺帙ｓ縺ｧ縺励◆縲・
+   |                       ^
+72 |         try:
+73 |             list_id = await self._get_tasklist_id(service, list_name)
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\google_tasks_service.py:96:23
+   |
+94 |         """莉頑律螳御ｺ・↓縺ｪ縺｣縺溘ち繧ｹ繧ｯ・医き繝ｬ繝ｳ繝繝ｼ荳翫〒繝√ぉ繝・け縺輔ｌ縺溘ｂ縺ｮ・峨ｒ蜿門ｾ励☆繧・""
+95 |         service = self.get_service()
+96 |         if not service: return []
+   |                       ^
+97 |         try:
+98 |             list_id = await self._get_tasklist_id(service, list_name)
+   |
+
+E701 Multiple statements on one line (colon)
+   --> services\google_tasks_service.py:99:59
+    |
+ 97 |         try:
+ 98 |             list_id = await self._get_tasklist_id(service, list_name)
+ 99 |             if list_id == '@default' and list_name == "鄙呈・": return [] # 髦ｲ蠕｡逧・・逅・    |                                                             ^
+100 |             
+101 |             jst = datetime.timezone(datetime.timedelta(hours=9))
+    |
+
+E722 Do not use bare `except`
+   --> services\google_tasks_service.py:119:21
+    |
+117 |                         if comp_time.astimezone(jst).date() == now.date():
+118 |                             completed_titles.append(t['title'])
+119 |                     except: pass
+    |                     ^^^^^^
+120 |             return completed_titles
+121 |         except Exception as e:
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\google_tasks_service.py:119:27
+    |
+117 |                         if comp_time.astimezone(jst).date() == now.date():
+118 |                             completed_titles.append(t['title'])
+119 |                     except: pass
+    |                           ^
+120 |             return completed_titles
+121 |         except Exception as e:
+    |
+
+F401 [*] `os` imported but unused
+ --> services\webclip_service.py:1:8
+  |
+1 | import os
+  |        ^^
+2 | import datetime
+3 | import re
+  |
+help: Remove unused import: `os`
+
+F401 [*] `json` imported but unused
+ --> services\webclip_service.py:7:8
+  |
+5 | import logging
+6 | import aiohttp
+7 | import json
+  |        ^^^^
+8 |
+9 | from config import JST
+  |
+help: Remove unused import: `json`
+
+E701 Multiple statements on one line (colon)
+  --> services\webclip_service.py:39:49
+   |
+37 |             'erecipe.woman.excite.co.jp', 'kyounoryouri.jp', 'ajinomoto.co.jp'
+38 |         ]
+39 |         if any(d in url for d in recipe_domains): return True
+   |                                                 ^
+40 |
+41 |         keywords = ['繝ｬ繧ｷ繝・, '菴懊ｊ譁ｹ', '迪ｮ遶・, 'Recipe', 'Cooking', '譚先侭', '荳九＃縺励ｉ縺・]
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\webclip_service.py:42:45
+   |
+41 |         keywords = ['繝ｬ繧ｷ繝・, '菴懊ｊ譁ｹ', '迪ｮ遶・, 'Recipe', 'Cooking', '譚先侭', '荳九＃縺励ｉ縺・]
+42 |         if any(k in title for k in keywords): return True
+   |                                             ^
+43 |         if text and '譚先侭' in text and '菴懊ｊ譁ｹ' in text: return True
+44 |         return False
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\webclip_service.py:43:51
+   |
+41 |         keywords = ['繝ｬ繧ｷ繝・, '菴懊ｊ譁ｹ', '迪ｮ遶・, 'Recipe', 'Cooking', '譚先侭', '荳九＃縺励ｉ縺・]
+42 |         if any(k in title for k in keywords): return True
+43 |         if text and '譚先侭' in text and '菴懊ｊ譁ｹ' in text: return True
+   |                                                        ^
+44 |         return False
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\webclip_service.py:62:33
+   |
+60 |                         html = await response.text()
+61 |                         match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+62 |                         if match: return match.group(1).strip()
+   |                                 ^
+63 |         except Exception as e: logging.error(f"Fallback Title Fetch Error: {e}")
+64 |         return "Untitled"
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\webclip_service.py:63:30
+   |
+61 |                         match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+62 |                         if match: return match.group(1).strip()
+63 |         except Exception as e: logging.error(f"Fallback Title Fetch Error: {e}")
+   |                              ^
+64 |         return "Untitled"
+   |
+
+E701 Multiple statements on one line (colon)
+  --> services\webclip_service.py:79:20
+   |
+77 |                 author_name = yt_info.get("author_name", "")
+78 |             else:
+79 |                 try: title, _ = await parse_url_with_readability(url)
+   |                    ^
+80 |                 except: title = "YouTube Video"
+81 |         elif is_map:
+   |
+
+E722 Do not use bare `except`
+  --> services\webclip_service.py:80:17
+   |
+78 |             else:
+79 |                 try: title, _ = await parse_url_with_readability(url)
+80 |                 except: title = "YouTube Video"
+   |                 ^^^^^^
+81 |         elif is_map:
+82 |             # 繝槭ャ繝励・蝣ｴ蜷医・譛ｬ譁・・隗｣譫舌ｒ繧ｹ繧ｭ繝・・縺励√ち繧､繝医Ν縺ｮ縺ｿ蜿門ｾ・   |
+
+E701 Multiple statements on one line (colon)
+  --> services\webclip_service.py:80:23
+   |
+78 |             else:
+79 |                 try: title, _ = await parse_url_with_readability(url)
+80 |                 except: title = "YouTube Video"
+   |                       ^
+81 |         elif is_map:
+82 |             # 繝槭ャ繝励・蝣ｴ蜷医・譛ｬ譁・・隗｣譫舌ｒ繧ｹ繧ｭ繝・・縺励√ち繧､繝医Ν縺ｮ縺ｿ蜿門ｾ・   |
+
+F541 [*] f-string without any placeholders
+   --> services\webclip_service.py:98:28
+    |
+ 96 |                 logging.error(f"WebClip: Parse Error: {e}")
+ 97 |                 title = await self._get_fallback_title(url)
+ 98 |                 raw_text = f"窶ｻ繝壹・繧ｸ縺ｮ隗｣譫蝉ｸｭ縺ｫ繧ｨ繝ｩ繝ｼ縺檎匱逕溘＠縺ｾ縺励◆縲・n"
+    |                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ 99 |
+100 |         check_text = raw_text if not is_youtube else (title + " " + message_content)
+    |
+help: Remove extraneous `f` prefix
+
+E701 Multiple statements on one line (colon)
+   --> services\webclip_service.py:125:26
+    |
+123 |         daily_note_date = now.strftime('%Y-%m-%d')
+124 |         safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
+125 |         if not safe_title: safe_title = "Untitled"
+    |                          ^
+126 |         
+127 |         filename = f"{timestamp}-{safe_title}.md"
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\webclip_service.py:142:34
+    |
+140 |                              f"{note_section}---\n[[{daily_note_date}]]")
+141 |         else:
+142 |             if len(raw_text) < 10: raw_text = "窶ｻ譛ｬ譁・・閾ｪ蜍募叙蠕励′縺ｧ縺阪↑縺九▲縺溘・繝ｼ繧ｸ縺ｧ縺吶・n"
+    |                                  ^
+143 |             final_content = (f"- **Source:** <{url}>\n- **Saved at:** {now}\n\n"
+144 |                              f"{note_section}---\n\n[[{daily_note_date}]]\n\n{raw_text}")
+    |
+
+E701 Multiple statements on one line (colon)
+   --> services\webclip_service.py:153:29
+    |
+151 |         try:
+152 |             folder_id = await self.drive_service.find_file(service, self.drive_service.folder_id, folder_name)
+153 |             if not folder_id: folder_id = await self.drive_service.create_folder(service, self.drive_service.folder_id, folder_name)
+    |                             ^
+154 |             
+155 |             # 繧ｯ繝ｪ繝・・譛ｬ菴薙ｒ菫晏ｭ・    |
+
+F401 [*] `datetime.timedelta` imported but unused
+ --> sync_worker.py:6:32
+  |
+4 | import logging
+5 | from pathlib import Path
+6 | from datetime import datetime, timedelta
+  |                                ^^^^^^^^^
+7 | from filelock import FileLock
+8 | from dotenv import load_dotenv
+  |
+help: Remove unused import: `datetime.timedelta`
+
+E722 Do not use bare `except`
+   --> sync_worker.py:182:13
+    |
+180 |             try:
+181 |                 sorted_memos = sorted([m for m in memos if m.get('id')], key=lambda m: int(m['id']))
+182 |             except:
+    |             ^^^^^^
+183 |                 sorted_memos = [m for m in memos if m.get('id')]
+    |
+
+F401 [*] `logging` imported but unused
+ --> utils\obsidian_utils.py:1:8
+  |
+1 | import logging
+  |        ^^^^^^^
+2 | import re
+  |
+help: Remove unused import: `logging`
+
+F541 [*] f-string without any placeholders
+   --> utils\obsidian_utils.py:156:16
+    |
+154 |                 new_lines.append(f"{k}: {v}")
+155 |         
+156 |         return f"---\n" + "\n".join(new_lines) + "\n---" + body
+    |                ^^^^^^^^
+157 |
+158 |     else:
+    |
+help: Remove extraneous `f` prefix
+
+E722 Do not use bare `except`
+  --> web_parser.py:56:17
+   |
+54 |                 try:
+55 |                     await page.wait_for_load_state("networkidle", timeout=5000)
+56 |                 except:
+   |                 ^^^^^^
+57 |                     pass 
+   |
+
+Found 258 errors.
+[*] 31 fixable with the `--fix` option (1 hidden fix can be enabled with the `--unsafe-fixes` option).

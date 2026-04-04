@@ -6,13 +6,15 @@ from pathlib import Path
 JST = zoneinfo.ZoneInfo("Asia/Tokyo")
 
 # Google API関連
-TOKEN_FILE = 'token.json'
+TOKEN_FILE = "token.json"
 SCOPES = [
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/calendar',
-    'https://www.googleapis.com/auth/tasks'
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/tasks",
 ]
 
 # フォルダ・ファイル設定
 BOT_FOLDER = ".bot"
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
+PENDING_MEMOS_FILE = Path(
+    os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json")
+)

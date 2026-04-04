@@ -1,0 +1,118 @@
+﻿F841 Local variable `msg` is assigned to but never used
+  --> cogs\book_cog.py:78:9
+   |
+76 |                 )
+77 |
+78 |         msg = await message.reply(f"答 縲施safe_title}縲上・隱ｭ譖ｸ繝弱・繝医ｒ菴懈・縺励◆繧茨ｼ・)
+   |         ^^^
+79 |
+80 |     async def append_book_memo(self, book_title: str, memo: str):
+   |
+help: Remove assignment to unused variable `msg`
+
+E722 Do not use bare `except`
+   --> cogs\daily_organize_cog.py:153:13
+    |
+151 |                 if raw_content:
+152 |                     content = raw_content
+153 |             except:
+    |             ^^^^^^
+154 |                 pass
+    |
+
+E722 Do not use bare `except`
+  --> cogs\english_learning_cog.py:56:13
+   |
+54 |             try:
+55 |                 return await self.drive_service.read_text_file(service, f_id)
+56 |             except:
+   |             ^^^^^^
+57 |                 return ""
+58 |         return ""
+   |
+
+E722 Do not use bare `except`
+  --> cogs\habit_cog.py:43:13
+   |
+41 |                     await self.drive_service.read_text_file(service, f_id)
+42 |                 )
+43 |             except:
+   |             ^^^^^^
+44 |                 pass
+45 |         return {"habits": [], "logs": {}}
+   |
+
+E722 Do not use bare `except`
+   --> cogs\partner_cog.py:101:13
+    |
+ 99 |                 if raw_content:
+100 |                     content = raw_content
+101 |             except:
+    |             ^^^^^^
+102 |                 pass
+    |
+
+E722 Do not use bare `except`
+   --> cogs\partner_cog.py:173:13
+    |
+171 |                 if raw_content:
+172 |                     content = raw_content
+173 |             except:
+    |             ^^^^^^
+174 |                 pass
+    |
+
+E722 Do not use bare `except`
+   --> services\google_calendar_service.py:142:13
+    |
+140 |                     dt_end = dt_start + datetime.timedelta(days=1)
+141 |                 e_date = dt_end.strftime("%Y-%m-%d")
+142 |             except:
+    |             ^^^^^^
+143 |                 pass  # 螟画鋤縺ｫ螟ｱ謨励＠縺溷ｴ蜷医・縺昴・縺ｾ縺ｾ騾√ｋ
+    |
+
+E722 Do not use bare `except`
+   --> services\google_tasks_service.py:159:21
+    |
+157 |                         if comp_time.astimezone(jst).date() == now.date():
+158 |                             completed_titles.append(t["title"])
+159 |                     except:
+    |                     ^^^^^^
+160 |                         pass
+161 |             return completed_titles
+    |
+
+E722 Do not use bare `except`
+   --> services\webclip_service.py:105:17
+    |
+103 |                 try:
+104 |                     title, _ = await parse_url_with_readability(url)
+105 |                 except:
+    |                 ^^^^^^
+106 |                     title = "YouTube Video"
+107 |         elif is_map:
+    |
+
+E722 Do not use bare `except`
+   --> sync_worker.py:214:13
+    |
+212 |                     [m for m in memos if m.get("id")], key=lambda m: int(m["id"])
+213 |                 )
+214 |             except:
+    |             ^^^^^^
+215 |                 sorted_memos = [m for m in memos if m.get("id")]
+    |
+
+E722 Do not use bare `except`
+  --> web_parser.py:66:17
+   |
+64 |                 try:
+65 |                     await page.wait_for_load_state("networkidle", timeout=5000)
+66 |                 except:
+   |                 ^^^^^^
+67 |                     pass
+   |
+
+Found 11 errors.
+No fixes available (1 hidden fix can be enabled with the `--unsafe-fixes` option).

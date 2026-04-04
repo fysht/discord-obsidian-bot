@@ -17,7 +17,7 @@ from config import JST
 from utils.obsidian_utils import update_section
 from prompts import PROMPT_LOCATION_SYNC
 
-DATE_REGEX = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+DATE_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 ACTIVITY_TYPE_MAP = {
     "IN_PASSENGER_VEHICLE": "車での移動",
@@ -31,8 +31,9 @@ ACTIVITY_TYPE_MAP = {
     "IN_FERRY": "フェリーでの移動",
     "FLYING": "飛行機での移動",
     "STILL": "静止",
-    "UNKNOWN": "不明な移動"
+    "UNKNOWN": "不明な移動",
 }
+
 
 class LocationLogCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
@@ -44,188 +45,279 @@ class LocationLogCog(commands.Cog):
         self.work_coordinates = self._parse_coordinates(os.getenv("WORK_COORDINATES"))
         self.exclude_radius_meters = int(os.getenv("EXCLUDE_RADIUS_METERS", 500))
         self.google_places_api_key = os.getenv("GOOGLE_PLACES_API_KEY")
-        self.gmaps = googlemaps.Client(key=self.google_places_api_key) if self.google_places_api_key else None
-        
+        self.gmaps = (
+            googlemaps.Client(key=self.google_places_api_key)
+            if self.google_places_api_key
+            else None
+        )
+
         self.process_timeline_json.start()
 
     def cog_unload(self):
         self.process_timeline_json.cancel()
 
     def _get_place_name_from_id(self, place_id: str) -> str:
-        if not self.gmaps: return f"場所ID: {place_id}"
+        if not self.gmaps:
+            return f"場所ID: {place_id}"
         try:
-            place_details = self.gmaps.place(place_id=place_id, language='ja')
-            if place_details and 'result' in place_details and 'name' in place_details['result']:
-                return place_details['result']['name']
+            place_details = self.gmaps.place(place_id=place_id, language="ja")
+            if (
+                place_details
+                and "result" in place_details
+                and "name" in place_details["result"]
+            ):
+                return place_details["result"]["name"]
         except Exception as e:
             logging.error(f"Places APIからの名前取得に失敗: {e}")
         return f"場所ID: {place_id}"
 
     def _parse_coordinates(self, coord_str: str | None) -> tuple[float, float] | None:
-        if not coord_str: return None
+        if not coord_str:
+            return None
         try:
-            lat, lon = map(float, coord_str.split(','))
+            lat, lon = map(float, coord_str.split(","))
             return (lat, lon)
-        except (ValueError, TypeError): return None
+        except (ValueError, TypeError):
+            return None
 
     def _format_duration(self, duration_seconds: float) -> str:
         minutes = int(duration_seconds / 60)
-        if minutes < 1: return "1分未満"
+        if minutes < 1:
+            return "1分未満"
         hours, minutes = divmod(minutes, 60)
-        if hours > 0: return f"{hours}時間{minutes}分"
+        if hours > 0:
+            return f"{hours}時間{minutes}分"
         return f"{minutes}分"
 
     def _parse_iso_timestamp(self, ts_str: str) -> datetime | None:
         try:
-            if ts_str.count(':') == 3:
-                ts_str = ts_str[::-1].replace(':', '', 1)[::-1]
+            if ts_str.count(":") == 3:
+                ts_str = ts_str[::-1].replace(":", "", 1)[::-1]
             return datetime.fromisoformat(ts_str)
-        except (ValueError, TypeError): return None
+        except (ValueError, TypeError):
+            return None
 
     def _find_folder_in_root(self, service, name):
         query = f"'root' in parents and name = '{name}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
         res = service.files().list(q=query, fields="files(id)").execute()
-        files = res.get('files', [])
-        return files[0]['id'] if files else None
+        files = res.get("files", [])
+        return files[0]["id"] if files else None
 
     def _get_unprocessed_json(self, service, folder_id):
         query = f"'{folder_id}' in parents and name contains 'タイムライン.json' and not name contains '処理済み_' and trashed = false"
         res = service.files().list(q=query, fields="files(id, name)").execute()
-        return res.get('files', [])
+        return res.get("files", [])
 
     def _get_latest_timeline_json(self, service, folder_id):
         query = f"'{folder_id}' in parents and name contains 'タイムライン.json' and trashed = false"
-        res = service.files().list(q=query, fields="files(id, name, createdTime)", orderBy="createdTime desc").execute()
-        files = res.get('files', [])
+        res = (
+            service.files()
+            .list(
+                q=query,
+                fields="files(id, name, createdTime)",
+                orderBy="createdTime desc",
+            )
+            .execute()
+        )
+        files = res.get("files", [])
         return files[0] if files else None
 
     def _rename_file(self, service, file_id, new_name):
-        service.files().update(fileId=file_id, body={'name': new_name}).execute()
+        service.files().update(fileId=file_id, body={"name": new_name}).execute()
 
     def _read_json(self, service, file_id):
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
         done = False
-        while not done: _, done = downloader.next_chunk()
-        return json.loads(fh.getvalue().decode('utf-8'))
+        while not done:
+            _, done = downloader.next_chunk()
+        return json.loads(fh.getvalue().decode("utf-8"))
 
-    def _extract_logs_from_json(self, data: dict, target_dates: set[str] = None) -> dict:
+    def _extract_logs_from_json(
+        self, data: dict, target_dates: set[str] = None
+    ) -> dict:
         segments = data.get("semanticSegments", [])
-        if not segments: return None
+        if not segments:
+            return None
 
         events_by_date = {}
         for seg in segments:
-            start_time = self._parse_iso_timestamp(seg.get("startTime", ''))
-            end_time = self._parse_iso_timestamp(seg.get("endTime", ''))
-            if not start_time or not end_time: continue
+            start_time = self._parse_iso_timestamp(seg.get("startTime", ""))
+            end_time = self._parse_iso_timestamp(seg.get("endTime", ""))
+            if not start_time or not end_time:
+                continue
 
             event_date = start_time.astimezone(JST).date()
-            date_str = event_date.strftime('%Y-%m-%d')
+            date_str = event_date.strftime("%Y-%m-%d")
 
-            if target_dates and date_str not in target_dates: continue
+            if target_dates and date_str not in target_dates:
+                continue
 
             events_by_date.setdefault(date_str, [])
             duration_seconds = (end_time - start_time).total_seconds()
             duration_formatted = self._format_duration(duration_seconds)
             event = {"start": start_time, "end": end_time}
 
-            if (visit_data := seg.get("visit")):
+            if visit_data := seg.get("visit"):
                 top_candidate = visit_data.get("topCandidate", {})
                 lat_lng_str = top_candidate.get("placeLocation", {}).get("latLng")
-                if not lat_lng_str: continue
+                if not lat_lng_str:
+                    continue
                 try:
-                    lat_str, lon_str = lat_lng_str.replace('°', '').split(',')
+                    lat_str, lon_str = lat_lng_str.replace("°", "").split(",")
                     place_coords = (float(lat_str), float(lon_str.strip()))
-                except (ValueError, IndexError): continue
-                
+                except (ValueError, IndexError):
+                    continue
+
                 place_name = "不明な場所"
-                place_id = top_candidate.get('placeId')
-                if place_id: place_name = self._get_place_name_from_id(place_id)
-                
-                if self.home_coordinates and great_circle(place_coords, self.home_coordinates).meters < self.exclude_radius_meters: place_name = "自宅"
-                elif self.work_coordinates and great_circle(place_coords, self.work_coordinates).meters < self.exclude_radius_meters: place_name = "勤務先"
-                
-                event.update({"type": "stay", "name": place_name, "duration": duration_formatted})
+                place_id = top_candidate.get("placeId")
+                if place_id:
+                    place_name = self._get_place_name_from_id(place_id)
+
+                if (
+                    self.home_coordinates
+                    and great_circle(place_coords, self.home_coordinates).meters
+                    < self.exclude_radius_meters
+                ):
+                    place_name = "自宅"
+                elif (
+                    self.work_coordinates
+                    and great_circle(place_coords, self.work_coordinates).meters
+                    < self.exclude_radius_meters
+                ):
+                    place_name = "勤務先"
+
+                event.update(
+                    {"type": "stay", "name": place_name, "duration": duration_formatted}
+                )
                 events_by_date[date_str].append(event)
-            
-            elif (activity_data := seg.get("activity")):
-                activity_type = activity_data.get("topCandidate", {}).get("type", "UNKNOWN")
+
+            elif activity_data := seg.get("activity"):
+                activity_type = activity_data.get("topCandidate", {}).get(
+                    "type", "UNKNOWN"
+                )
                 distance_m = activity_data.get("distanceMeters", 0)
-                distance_km_str = f" (約{distance_m / 1000:.1f}km)" if distance_m > 0 else ""
-                event.update({"type": "move", "activity": ACTIVITY_TYPE_MAP.get(activity_type, "不明な移動"), "duration": duration_formatted, "distance": distance_km_str})
+                distance_km_str = (
+                    f" (約{distance_m / 1000:.1f}km)" if distance_m > 0 else ""
+                )
+                event.update(
+                    {
+                        "type": "move",
+                        "activity": ACTIVITY_TYPE_MAP.get(activity_type, "不明な移動"),
+                        "duration": duration_formatted,
+                        "distance": distance_km_str,
+                    }
+                )
                 events_by_date[date_str].append(event)
 
         logs_by_date = {}
         for d_str, events in sorted(events_by_date.items()):
-            if not events: continue
-            sorted_events = sorted(events, key=lambda x: x['start'])
+            if not events:
+                continue
+            sorted_events = sorted(events, key=lambda x: x["start"])
             log_entries, last_place = [], None
-            
+
             for event in sorted_events:
-                start_str_jst = event['start'].astimezone(JST).strftime('%H:%M')
-                if event['type'] == 'stay':
-                    if last_place is not None: log_entries.append(f"- **{start_str_jst}** {event['name']}に到着")
-                    log_entries.append(f"- **{start_str_jst} - {event['end'].astimezone(JST).strftime('%H:%M')}** ({event['duration']}) 滞在: {event['name']}")
-                    last_place = event['name']
-                elif event['type'] == 'move':
-                    if last_place: log_entries.append(f"- **{start_str_jst}** {last_place}を出発")
-                    log_entries.append(f"- **{start_str_jst} - {event['end'].astimezone(JST).strftime('%H:%M')}** ({event['duration']}) {event['activity']}{event['distance']}")
+                start_str_jst = event["start"].astimezone(JST).strftime("%H:%M")
+                if event["type"] == "stay":
+                    if last_place is not None:
+                        log_entries.append(
+                            f"- **{start_str_jst}** {event['name']}に到着"
+                        )
+                    log_entries.append(
+                        f"- **{start_str_jst} - {event['end'].astimezone(JST).strftime('%H:%M')}** ({event['duration']}) 滞在: {event['name']}"
+                    )
+                    last_place = event["name"]
+                elif event["type"] == "move":
+                    if last_place:
+                        log_entries.append(f"- **{start_str_jst}** {last_place}を出発")
+                    log_entries.append(
+                        f"- **{start_str_jst} - {event['end'].astimezone(JST).strftime('%H:%M')}** ({event['duration']}) {event['activity']}{event['distance']}"
+                    )
                     last_place = None
-            
+
             logs_by_date[d_str] = "\n".join(log_entries)
 
         return logs_by_date
 
-    async def _write_to_obsidian(self, date_str: str, log_text: str, force: bool = False) -> bool:
+    async def _write_to_obsidian(
+        self, date_str: str, log_text: str, force: bool = False
+    ) -> bool:
         service = self.drive_service.get_service()
-        if not service: return False
+        if not service:
+            return False
 
-        daily_folder = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+        daily_folder = await self.drive_service.find_file(
+            service, self.drive_folder_id, "DailyNotes"
+        )
         if not daily_folder:
-            daily_folder = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
+            daily_folder = await self.drive_service.create_folder(
+                service, self.drive_folder_id, "DailyNotes"
+            )
 
-        daily_file = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
-        
+        daily_file = await self.drive_service.find_file(
+            service, daily_folder, f"{date_str}.md"
+        )
+
         cur = ""
         if daily_file:
             try:
                 cur = await self.drive_service.read_text_file(service, daily_file)
-            except Exception as e: logging.error(f"ファイル読み込みエラー: {e}")
+            except Exception as e:
+                logging.error(f"ファイル読み込みエラー: {e}")
 
-        if not force and re.search(r'## 📍 Location History\s*-', cur):
+        if not force and re.search(r"## 📍 Location History\s*-", cur):
             return False
 
         if not cur:
             cur = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n\n## 📍 Location History\n\n"
-        
+
         new = update_section(cur, log_text, "## 📍 Location History")
-        
-        if daily_file: await self.drive_service.update_text(service, daily_file, new)
-        else: await self.drive_service.upload_text(service, daily_folder, f"{date_str}.md", new)
-            
+
+        if daily_file:
+            await self.drive_service.update_text(service, daily_file, new)
+        else:
+            await self.drive_service.upload_text(
+                service, daily_folder, f"{date_str}.md", new
+            )
+
         return True
 
     # ★ 追加: AIツールから直接呼び出せる同期メソッド
     async def perform_manual_sync(self, target_date: str) -> str:
-        if not DATE_REGEX.match(target_date): return "❌ 日付の形式が正しくありません。(例: 2026-02-15)"
+        if not DATE_REGEX.match(target_date):
+            return "❌ 日付の形式が正しくありません。(例: 2026-02-15)"
         loop = asyncio.get_running_loop()
         service = self.drive_service.get_service()
-        if not service: return "Google Driveに接続できませんでした。"
-        
-        timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
-        if not timeline_folder_id: return "Timelineフォルダが見つかりません。"
-        
-        latest_file = await loop.run_in_executor(None, self._get_latest_timeline_json, service, timeline_folder_id)
-        if not latest_file: return "タイムラインのJSONファイルが見つかりません。"
-        
-        try: data = await loop.run_in_executor(None, self._read_json, service, latest_file['id'])
-        except Exception as e: return f"JSON読み込みエラー: {e}"
-        
+        if not service:
+            return "Google Driveに接続できませんでした。"
+
+        timeline_folder_id = await loop.run_in_executor(
+            None, self._find_folder_in_root, service, "Timeline"
+        )
+        if not timeline_folder_id:
+            return "Timelineフォルダが見つかりません。"
+
+        latest_file = await loop.run_in_executor(
+            None, self._get_latest_timeline_json, service, timeline_folder_id
+        )
+        if not latest_file:
+            return "タイムラインのJSONファイルが見つかりません。"
+
+        try:
+            data = await loop.run_in_executor(
+                None, self._read_json, service, latest_file["id"]
+            )
+        except Exception as e:
+            return f"JSON読み込みエラー: {e}"
+
         logs_by_date = self._extract_logs_from_json(data, target_dates={target_date})
         if not logs_by_date or target_date not in logs_by_date:
             return f"⚠️ `{latest_file['name']}` 内に **{target_date}** の移動データが見つかりませんでした。"
-            
-        await self._write_to_obsidian(target_date, logs_by_date[target_date], force=True)
+
+        await self._write_to_obsidian(
+            target_date, logs_by_date[target_date], force=True
+        )
         return f"✅ **{target_date}** の移動記録をObsidianに同期しました！"
 
     @tasks.loop(time=time(hour=23, minute=50, tzinfo=JST))
@@ -233,25 +325,39 @@ class LocationLogCog(commands.Cog):
         logging.info("タイムラインJSONの自動処理を開始します。")
         loop = asyncio.get_running_loop()
         service = self.drive_service.get_service()
-        if not service: return
+        if not service:
+            return
 
         channel = self.bot.get_channel(self.memo_channel_id)
-        timeline_folder_id = await loop.run_in_executor(None, self._find_folder_in_root, service, "Timeline")
-        if not timeline_folder_id: return
+        timeline_folder_id = await loop.run_in_executor(
+            None, self._find_folder_in_root, service, "Timeline"
+        )
+        if not timeline_folder_id:
+            return
 
-        json_files = await loop.run_in_executor(None, self._get_unprocessed_json, service, timeline_folder_id)
-        if not json_files: return 
+        json_files = await loop.run_in_executor(
+            None, self._get_unprocessed_json, service, timeline_folder_id
+        )
+        if not json_files:
+            return
 
         lookback_days = 7
         today = datetime.now(JST).date()
-        target_dates = { (today - timedelta(days=i)).strftime('%Y-%m-%d') for i in range(lookback_days) }
+        target_dates = {
+            (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(lookback_days)
+        }
 
         for file_info in json_files:
-            file_id = file_info['id']
-            file_name = file_info['name']
-            
-            try: data = await loop.run_in_executor(None, self._read_json, service, file_id)
-            except Exception as e: continue
+            file_id = file_info["id"]
+            file_name = file_info["name"]
+
+            try:
+                data = await loop.run_in_executor(
+                    None, self._read_json, service, file_id
+                )
+            except Exception:
+                continue
 
             logs_by_date = self._extract_logs_from_json(data, target_dates=target_dates)
 
@@ -261,21 +367,34 @@ class LocationLogCog(commands.Cog):
                     if await self._write_to_obsidian(date_str, log_text, force=False):
                         processed_dates.append(date_str)
 
-            timestamp = datetime.now(JST).strftime('%Y%m%d_%H%M%S')
-            await loop.run_in_executor(None, self._rename_file, service, file_id, f"処理済み_{timestamp}_{file_name}")
-            
+            timestamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
+            await loop.run_in_executor(
+                None,
+                self._rename_file,
+                service,
+                file_id,
+                f"処理済み_{timestamp}_{file_name}",
+            )
+
             if channel and processed_dates:
                 dates_str = ", ".join(sorted(processed_dates))
                 partner_cog = self.bot.get_cog("PartnerCog")
                 if partner_cog:
                     context = f"ロケーション履歴を同期した日付: {dates_str}"
-                    await partner_cog.generate_and_send_routine_message(context, PROMPT_LOCATION_SYNC)
+                    await partner_cog.generate_and_send_routine_message(
+                        context, PROMPT_LOCATION_SYNC
+                    )
                 else:
                     await channel.send(f"📍 {dates_str} の移動記録を保存したよ！")
 
-    @app_commands.command(name="location_sync", description="過去のロケーション履歴を指定して手動で同期します。")
+    @app_commands.command(
+        name="location_sync",
+        description="過去のロケーション履歴を指定して手動で同期します。",
+    )
     @app_commands.describe(target_date="同期したい日付 (例: 2026-02-15)")
-    async def sync_location_manual(self, interaction: discord.Interaction, target_date: str):
+    async def sync_location_manual(
+        self, interaction: discord.Interaction, target_date: str
+    ):
         await interaction.response.defer(ephemeral=False)
         result = await self.perform_manual_sync(target_date)
         await interaction.followup.send(result)
@@ -284,5 +403,6 @@ class LocationLogCog(commands.Cog):
     async def before_process(self):
         await self.bot.wait_until_ready()
 
-async def setup(bot): 
+
+async def setup(bot):
     await bot.add_cog(LocationLogCog(bot))

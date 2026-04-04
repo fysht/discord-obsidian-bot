@@ -13,12 +13,15 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    stream=sys.stdout
+    stream=sys.stdout,
 )
-sys.stdout.reconfigure(encoding='utf-8')
+sys.stdout.reconfigure(encoding="utf-8")
 
 # --- 基本設定 ---
-PENDING_MEMOS_FILE = Path(os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json"))
+PENDING_MEMOS_FILE = Path(
+    os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json")
+)
+
 
 class SyncCog(commands.Cog):
     """定期的に外部の同期ワーカーを呼び出すCog"""
@@ -26,7 +29,9 @@ class SyncCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         # 親ディレクトリの sync_worker.py を指すパス
-        self.worker_path = str(Path(__file__).resolve().parent.parent / "sync_worker.py")
+        self.worker_path = str(
+            Path(__file__).resolve().parent.parent / "sync_worker.py"
+        )
         self.sync_lock = asyncio.Lock()
         self.logger = logging.getLogger(__name__)
 
@@ -47,50 +52,66 @@ class SyncCog(commands.Cog):
         ロックを使用して、多重実行を防止します。
         """
         if self.sync_lock.locked():
-            self.logger.warning("【強制同期】現在、別の同期処理が実行中のため、今回の実行はスキップします。")
+            self.logger.warning(
+                "【強制同期】現在、別の同期処理が実行中のため、今回の実行はスキップします。"
+            )
             return
 
         async with self.sync_lock:
             # ファイルが存在しない、またはサイズが0の場合はスキップ
-            if not PENDING_MEMOS_FILE.exists() or PENDING_MEMOS_FILE.stat().st_size == 0:
+            if (
+                not PENDING_MEMOS_FILE.exists()
+                or PENDING_MEMOS_FILE.stat().st_size == 0
+            ):
                 return
-            
+
             # 中身が空の配列 '[]' の場合もスキップする
             try:
-                with open(PENDING_MEMOS_FILE, 'r', encoding='utf-8') as f:
+                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
                     content = f.read().strip()
-                    if content in ('', '[]'):
+                    if content in ("", "[]"):
                         return
             except Exception:
                 pass
 
             self.logger.info("【強制同期】保留中のメモの同期処理を開始します...")
-            self.logger.info("【強制同期】未同期のメモを検出しました。同期ワーカーを呼び出します...")
-            
+            self.logger.info(
+                "【強制同期】未同期のメモを検出しました。同期ワーカーを呼び出します..."
+            )
+
             try:
                 # タイムアウト付きでサブプロセスを実行 (最大120秒)
                 proc = await asyncio.create_subprocess_exec(
-                    sys.executable, self.worker_path,
+                    sys.executable,
+                    self.worker_path,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=120
+                    )
                 except asyncio.TimeoutError:
                     proc.kill()
                     self.logger.error("【強制同期】ワーカーがタイムアウトしました。")
                     return
 
                 # sync_worker.py は標準エラー出力(stderr)にログを出すため、そちらを取得する
-                worker_logs = stderr.decode('utf-8', 'ignore').strip()
+                worker_logs = stderr.decode("utf-8", "ignore").strip()
 
                 if proc.returncode == 0:
-                    self.logger.info(f"【強制同期】ワーカーが正常に完了しました。\n--- ワーカーログ ---\n{worker_logs}\n--------------------")
+                    self.logger.info(
+                        f"【強制同期】ワーカーが正常に完了しました。\n--- ワーカーログ ---\n{worker_logs}\n--------------------"
+                    )
                 else:
-                    self.logger.error(f"【強制同期】ワーカーの実行に失敗しました (終了コード: {proc.returncode})。\n--- ワーカーエラーログ ---\n{worker_logs}\n--------------------------")
+                    self.logger.error(
+                        f"【強制同期】ワーカーの実行に失敗しました (終了コード: {proc.returncode})。\n--- ワーカーエラーログ ---\n{worker_logs}\n--------------------------"
+                    )
             except Exception as e:
-                self.logger.error(f"【強制同期】ワーカーの呼び出し処理自体に失敗しました: {e}", exc_info=True)
-
+                self.logger.error(
+                    f"【強制同期】ワーカーの呼び出し処理自体に失敗しました: {e}",
+                    exc_info=True,
+                )
 
     @tasks.loop(minutes=5)
     async def auto_sync_loop(self):
@@ -101,7 +122,9 @@ class SyncCog(commands.Cog):
     async def before_auto_sync_loop(self):
         """ループ開始前にBotの準備が整うのを待つ"""
         await self.bot.wait_until_ready()
-        self.logger.info(f"自動同期ループを開始します（間隔: 5分、監視対象: {PENDING_MEMOS_FILE}）")
+        self.logger.info(
+            f"自動同期ループを開始します（間隔: 5分、監視対象: {PENDING_MEMOS_FILE}）"
+        )
 
 
 async def setup(bot: commands.Bot):
