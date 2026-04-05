@@ -17,16 +17,7 @@ class DocumentCog(commands.Cog):
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
 
-    @commands.Cog.listener()
-    async def on_thread_create(self, thread: discord.Thread):
-        """スレッドが作成されたら、専用チャンネル内であれば最初の挨拶を行う"""
-        if self.document_channel_id == 0:
-            return
-
-        if thread.parent_id == self.document_channel_id:
-            await thread.send(
-                "新しい文書作成のスレッドだね！今回は何の文書（引継書、提案書など）を作りたい？"
-            )
+    # スレッド作成時の自動メッセージを削除し、ユーザーが最初に話しかける仕様に変更
 
     async def _build_conversation_context(
         self, thread: discord.Thread, limit: int = 30
