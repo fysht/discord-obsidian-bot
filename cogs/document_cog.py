@@ -153,3 +153,13 @@ class DocumentCog(commands.Cog):
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(DocumentCog(bot))
+            await self.drive_service.update_text(service, f_id, content)
+            return f"完成お疲れ様！\n「Documents/{file_name}」を上書き保存しといたよ！"
+        else:
+            await self.drive_service.upload_text(
+                service, base_folder_id, file_name, content
+            )
+            return f"完成お疲れ様！\n「Documents/{file_name}」としてObsidianに保存しといたよ！"
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(DocumentCog(bot))
