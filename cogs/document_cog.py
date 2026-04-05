@@ -17,7 +17,17 @@ class DocumentCog(commands.Cog):
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
 
-    # スレッド作成時の自動メッセージを削除し、ユーザーが最初に話しかける仕様に変更
+    @commands.Cog.listener()
+    async def on_thread_create(self, thread: discord.Thread):
+        """スレッドが作成されたら、AIがメッセージを検知できるように自動で参加（Join）しておく"""
+        if self.document_channel_id == 0:
+            return
+
+        if thread.parent_id == self.document_channel_id:
+            try:
+                await thread.join()
+            except Exception:
+                pass
 
     async def _build_conversation_context(
         self, thread: discord.Thread, limit: int = 30
@@ -143,16 +153,6 @@ class DocumentCog(commands.Cog):
 
         if f_id:
             # 既存は上書き（または今回は引継書などのケースのため上書きでOK）
-            await self.drive_service.update_text(service, f_id, content)
-            return f"完成お疲れ様！\n「Documents/{file_name}」を上書き保存しといたよ！"
-        else:
-            await self.drive_service.upload_text(
-                service, base_folder_id, file_name, content
-            )
-            return f"完成お疲れ様！\n「Documents/{file_name}」としてObsidianに保存しといたよ！"
-
-async def setup(bot: commands.Bot):
-    await bot.add_cog(DocumentCog(bot))
             await self.drive_service.update_text(service, f_id, content)
             return f"完成お疲れ様！\n「Documents/{file_name}」を上書き保存しといたよ！"
         else:
