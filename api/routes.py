@@ -72,7 +72,8 @@ async def chat(req: ChatRequest):
     import asyncio
     from api.database import backup_db_to_drive
     if bot.drive_service:
-        asyncio.create_task(backup_db_to_drive(bot.drive_service, bot.drive_folder_id))
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
 
     return ChatResponse(reply=reply)
 
@@ -93,6 +94,7 @@ async def dashboard():
     import re
 
     chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
     if not chat_service or not chat_service.drive_service:
         return {"tasks": [], "alter_log": "", "error": "サービス未接続"}
 
