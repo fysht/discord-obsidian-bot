@@ -7,15 +7,13 @@ from filelock import FileLock
 from datetime import datetime
 from dotenv import load_dotenv
 
-# --- 追加: config.py から JST をインポート ---
-from config import JST
+# --- 追加: config.py から設定をインポート ---
+from config import JST, PENDING_MEMOS_FILE
 
 # .envファイルから設定を読み込む
 load_dotenv()
 
-PENDING_MEMOS_FILE = Path(
-    os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json")
-)
+# PENDING_MEMOS_FILE は config.py からインポート済み
 PENDING_MEMOS_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 # ▼ 削除した部分 ▼
