@@ -15,6 +15,5 @@ SCOPES = [
 
 # フォルダ・ファイル設定
 BOT_FOLDER = ".bot"
-PENDING_MEMOS_FILE = Path(
-    os.getenv("PENDING_MEMOS_FILE", "pending_memos.json")
-)
+# Render上で環境変数が残っている問題を避けるため、強制的にローカルパスを指定します
+PENDING_MEMOS_FILE = Path("pending_memos.json")
