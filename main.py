@@ -165,8 +165,41 @@ async def main():
         return
 
     bot = MyBot()
+
+    # --- FastAPI の初期化 ---
+    import uvicorn
+    from api import app as fastapi_app
+    from api.routes import router as api_router
+    from api.database import init_db
+    from api.chat_service import ChatService
+
+    # APIルーターを登録
+    fastapi_app.include_router(api_router)
+
+    # DB初期化
+    await init_db()
+
+    # ChatServiceの初期化（Botと同じサービスインスタンスを共有）
+    chat_service = ChatService(
+        gemini_client=bot.gemini_client,
+        drive_service=bot.drive_service,
+        calendar_service=bot.calendar_service,
+        tasks_service=bot.tasks_service,
+    )
+    fastapi_app.state.chat_service = chat_service
+
+    # uvicornをasyncioで起動する設定
+    port = int(os.getenv("PORT", 10000))
+    config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
+
+    # Discord BotとFastAPIを並列で起動
+    logging.info(f"FastAPI サーバーをポート {port} で起動します...")
     try:
-        await bot.start(TOKEN)
+        await asyncio.gather(
+            bot.start(TOKEN),
+            server.serve(),
+        )
     except Exception as e:
         logging.critical(
             f"ボットの起動中に致命的なエラーが発生しました: {e}", exc_info=True
@@ -180,3 +213,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("プログラムが手動で終了されました。")
+

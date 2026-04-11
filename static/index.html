@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#1a1a2e">
+  <meta name="description" content="あなた専用のAI秘書アプリ">
+  <title>Secretary AI</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/app.css">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+</head>
+<body>
+  <!-- ログイン画面 -->
+  <div id="login-screen" class="screen active">
+    <div class="login-container">
+      <div class="login-icon">🤵‍♀️</div>
+      <h1 class="login-title">Secretary AI</h1>
+      <p class="login-subtitle">あなた専用の秘書AIアプリ</p>
+      <form id="login-form">
+        <input type="password" id="password-input" class="login-input" placeholder="パスワードを入力" autocomplete="current-password">
+        <button type="submit" class="login-btn">ログイン</button>
+      </form>
+      <p id="login-error" class="login-error"></p>
+    </div>
+  </div>
+
+  <!-- メイン画面 -->
+  <div id="main-screen" class="screen">
+    <!-- ナビゲーションバー -->
+    <header class="header">
+      <div class="header-left">
+        <div class="header-avatar">🤵‍♀️</div>
+        <div class="header-info">
+          <span class="header-name">秘書AI</span>
+          <span class="header-status" id="status-indicator">オンライン</span>
+        </div>
+      </div>
+      <nav class="header-nav">
+        <button class="nav-btn active" data-tab="chat">💬</button>
+        <button class="nav-btn" data-tab="dashboard">📊</button>
+      </nav>
+    </header>
+
+    <!-- チャット画面 -->
+    <div id="chat-tab" class="tab-content active">
+      <div id="chat-messages" class="chat-messages">
+        <div class="chat-welcome">
+          <p>秘書AIとの会話を始めましょう。</p>
+        </div>
+      </div>
+      <div class="chat-input-area">
+        <form id="chat-form">
+          <div class="input-wrapper">
+            <textarea id="message-input" placeholder="メッセージを入力..." rows="1"></textarea>
+            <button type="submit" class="send-btn" id="send-btn">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- ダッシュボード画面 -->
+    <div id="dashboard-tab" class="tab-content">
+      <div class="dashboard-container">
+        <div class="dash-card">
+          <h3 class="dash-card-title">🎯 今日のタスク</h3>
+          <div id="dash-tasks" class="dash-card-body">
+            <p class="dash-empty">読み込み中...</p>
+          </div>
+        </div>
+        <div class="dash-card">
+          <h3 class="dash-card-title">🪞 Alter Log</h3>
+          <div id="dash-alter-log" class="dash-card-body">
+            <p class="dash-empty">読み込み中...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
