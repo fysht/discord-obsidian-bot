@@ -18,9 +18,8 @@ logging.basicConfig(
 sys.stdout.reconfigure(encoding="utf-8")
 
 # --- 基本設定 ---
-PENDING_MEMOS_FILE = Path(
-    os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json")
-)
+# --- 設定インポート ---
+from config import JST, PENDING_MEMOS_FILE
 
 
 class SyncCog(commands.Cog):

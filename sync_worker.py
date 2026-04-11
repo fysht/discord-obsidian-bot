@@ -30,9 +30,8 @@ logging.basicConfig(
 )
 
 # --- 基本設定 ---
-PENDING_MEMOS_FILE = Path(
-    os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json")
-)
+# --- 設定インポート ---
+from config import JST, PENDING_MEMOS_FILE
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")  # VaultのルートフォルダID
 
 
