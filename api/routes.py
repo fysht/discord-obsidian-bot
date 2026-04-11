@@ -55,6 +55,12 @@ async def chat(req: ChatRequest):
     # AIの応答を保存
     await save_message("assistant", reply)
 
+    # Google Driveへのバックアップを非同期で実行 (ユーザーを待たせない)
+    import asyncio
+    from api.database import backup_db_to_drive
+    if chat_service.drive_service:
+        asyncio.create_task(backup_db_to_drive(chat_service.drive_service, chat_service.drive_folder_id))
+
     return ChatResponse(reply=reply)
 
 

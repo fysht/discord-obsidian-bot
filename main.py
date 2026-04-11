@@ -171,13 +171,15 @@ async def main():
     import uvicorn
     from api import app as fastapi_app
     from api.routes import router as api_router
-    from api.database import init_db
+    from api.database import init_db, restore_db_from_drive
     from api.chat_service import ChatService
 
     # APIルーターを登録
     fastapi_app.include_router(api_router)
 
-    # DB初期化
+    # DBの復元と初期化
+    if bot.drive_service and GOOGLE_DRIVE_FOLDER_ID:
+        await restore_db_from_drive(bot.drive_service, GOOGLE_DRIVE_FOLDER_ID)
     await init_db()
 
     # ChatServiceの初期化（Botと同じサービスインスタンスを共有）

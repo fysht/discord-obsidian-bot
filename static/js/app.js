@@ -17,7 +17,7 @@ function showScreen(id) {
 function formatTime(isoStr) {
   if (!isoStr) return '';
   const d = new Date(isoStr);
-  return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' });
 }
 
 async function apiFetch(path, options = {}) {
@@ -82,11 +82,14 @@ messageInput.addEventListener('input', () => {
   messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
 });
 
-// Enter で送信 (Shift+Enter で改行)
+// Enter で送信 (PCの場合のみ。スマホの場合は改行)
 messageInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    $('#chat-form').dispatchEvent(new Event('submit'));
+  // 画面幅が768px以上（PC/タブレット）の場合のみ、Enterで送信する
+  if (window.innerWidth >= 768) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      $('#chat-form').dispatchEvent(new Event('submit'));
+    }
   }
 });
 
@@ -102,7 +105,7 @@ function addMessage(role, content, timestamp) {
 
   if (role === 'assistant') {
     div.innerHTML = `
-      <div class="msg-avatar">💼</div>
+      <div class="msg-avatar"><img src="/static/icons/icon-192.png" alt="Avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"></div>
       <div>
         <div class="msg-bubble">${escapeHtml(content)}</div>
         <div class="msg-time">${timeStr}</div>
@@ -130,7 +133,7 @@ function showTyping() {
   div.className = 'message assistant';
   div.id = 'typing-msg';
   div.innerHTML = `
-    <div class="msg-avatar">💼</div>
+    <div class="msg-avatar"><img src="/static/icons/icon-192.png" alt="Avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"></div>
     <div class="typing-indicator">
       <div class="typing-dot"></div>
       <div class="typing-dot"></div>
