@@ -58,8 +58,14 @@
         </div>
       </div>
       <div class="chat-input-area">
+        <div id="action-menu" class="action-menu-popup hidden">
+          <button class="action-menu-item" onclick="sendActionCommand('今日の振り返りをしよう')">📝 今日の振り返り</button>
+          <button class="action-menu-item" onclick="sendActionCommand('明日の予定を教えて')">🗓️ 明日の予定確認</button>
+          <button class="action-menu-item" onclick="sendActionCommand('今読んでいるページをウェブクリップして')">🔗 ウェブクリップ</button>
+        </div>
         <form id="chat-form">
           <div class="input-wrapper">
+            <button type="button" class="plus-btn" id="plus-btn" onclick="toggleActionMenu()">＋</button>
             <textarea id="message-input" placeholder="メッセージを入力..." rows="1"></textarea>
             <button type="submit" class="send-btn" id="send-btn">
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>

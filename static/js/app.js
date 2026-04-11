@@ -107,13 +107,13 @@ function addMessage(role, content, timestamp) {
     div.innerHTML = `
       <div class="msg-avatar"><img src="/static/icons/icon-192.png" alt="Avatar" style="width:100%;height:100%;object-fit:cover;border-radius:50%;"></div>
       <div>
-        <div class="msg-bubble">${escapeHtml(content)}</div>
+        <div class="msg-bubble">${formatMessageText(content)}</div>
         <div class="msg-time">${timeStr}</div>
       </div>`;
   } else {
     div.innerHTML = `
       <div>
-        <div class="msg-bubble">${escapeHtml(content)}</div>
+        <div class="msg-bubble">${formatMessageText(content)}</div>
         <div class="msg-time">${timeStr}</div>
       </div>`;
   }
@@ -126,6 +126,25 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+function formatMessageText(text) {
+  let html = escapeHtml(text);
+  // [BUTTON:add_task:タスク名] のパース
+  html = html.replace(/\[BUTTON:add_task:(.+?)\]/g, (match, taskName) => {
+    return `<button class="inline-action-btn" onclick="directAddTask('${escapeHtml(taskName)}')">＋「${escapeHtml(taskName)}」をタスクに追加</button>`;
+  });
+  return html;
+}
+
+window.directAddTask = async function(taskName) {
+  try {
+    await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: taskName }) });
+    alert(`「${taskName}」をタスクに追加しました！`);
+    if ($('#dashboard-tab').classList.contains('active')) loadDashboard();
+  } catch (e) {
+    alert('追加エラー');
+  }
 }
 
 function showTyping() {
@@ -191,6 +210,32 @@ async function loadHistory() {
   }
 }
 
+// ========== Action Menu ==========
+function toggleActionMenu() {
+  const menu = $('#action-menu');
+  if (menu.classList.contains('hidden')) {
+    menu.classList.remove('hidden');
+  } else {
+    menu.classList.add('hidden');
+  }
+}
+
+// 画面外クリックでメニューを閉じる
+document.addEventListener('click', (e) => {
+  const menu = $('#action-menu');
+  const btn = $('#plus-btn');
+  if (menu && btn && !menu.contains(e.target) && !btn.contains(e.target)) {
+    menu.classList.add('hidden');
+  }
+});
+
+function sendActionCommand(cmd) {
+  const input = $('#message-input');
+  input.value = cmd;
+  $('#action-menu').classList.add('hidden');
+  $('#chat-form').dispatchEvent(new Event('submit'));
+}
+
 // ========== Dashboard ==========
 async function loadDashboard() {
   try {
@@ -199,10 +244,14 @@ async function loadDashboard() {
     // Tasks
     const tasksEl = $('#dash-tasks');
     if (data.tasks && data.tasks.length > 0) {
-      tasksEl.innerHTML = data.tasks.map(t => `
-        <div class="task-item ${t.done ? 'done' : ''}">
-          <span class="task-check">${t.done ? '✅' : '🔄'}</span>
-          <span class="task-text">${escapeHtml(t.text)}</span>
+      tasksEl.innerHTML = data.tasks.map((t, idx) => `
+        <div class="task-item ${t.done ? 'done' : ''}" data-text="${escapeHtml(t.text)}">
+          <span class="task-check" style="cursor:pointer" onclick="toggleTask('${escapeHtml(t.text)}')">${t.done ? '✅' : '🔄'}</span>
+          <span class="task-text" style="flex:1;">${escapeHtml(t.text)}</span>
+          <div class="task-actions" style="display:flex;gap:4px;">
+            <button onclick="editTask('${escapeHtml(t.text)}')" style="background:transparent;border:none;color:var(--text-secondary);cursor:pointer;">✏️</button>
+            <button onclick="deleteTask('${escapeHtml(t.text)}')" style="background:transparent;border:none;color:var(--danger);cursor:pointer;">🗑️</button>
+          </div>
         </div>
       `).join('');
     } else {
@@ -221,6 +270,32 @@ async function loadDashboard() {
   }
 }
 
+async function toggleTask(text) {
+  try {
+    await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'toggle', old_text: text }) });
+    loadDashboard();
+  } catch (e) { alert('更新エラー'); }
+}
+
+async function editTask(text) {
+  const newText = prompt('タスクを編集', text);
+  if (newText && newText !== text) {
+    try {
+      await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'update', old_text: text, new_text: newText }) });
+      loadDashboard();
+    } catch (e) { alert('更新エラー'); }
+  }
+}
+
+async function deleteTask(text) {
+  if (confirm('このタスクを削除しますか？')) {
+    try {
+      await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', old_text: text }) });
+      loadDashboard();
+    } catch (e) { alert('削除エラー'); }
+  }
+}
+
 // ========== 初期化 ==========
 window.addEventListener('DOMContentLoaded', () => {
   // Service Worker登録
@@ -234,6 +309,23 @@ window.addEventListener('DOMContentLoaded', () => {
   if (apiKey) {
     showScreen('main-screen');
     loadHistory();
+    
+    // Web Share API 等からの連携パラメータ処理
+    const params = new URLSearchParams(window.location.search);
+    const inText = params.get('text');
+    const inUrl = params.get('url');
+    if (inText || inUrl) {
+      let sharedQuery = [];
+      if (inText) sharedQuery.push(inText);
+      if (inUrl) sharedQuery.push(inUrl);
+      const inputEl = document.getElementById('message-input');
+      if (inputEl) {
+        inputEl.value = sharedQuery.join(' \n');
+        inputEl.focus();
+        // 処理済みパラメータをURLから消去してクリーンに
+        window.history.replaceState({}, document.title, "/");
+      }
+    }
   } else {
     showScreen('login-screen');
   }
