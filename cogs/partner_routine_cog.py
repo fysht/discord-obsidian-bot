@@ -64,12 +64,8 @@ class PartnerRoutineCog(commands.Cog):
         # 人間らしさのため0〜10分のランダム遅延
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
-        channel = self.bot.get_channel(self.memo_channel_id)
-        if not partner_cog or not channel:
-            return
-
-        # 今日の会話ログを取得
-        today_log = await partner_cog.fetch_todays_chat_log(channel)
+        # 今日の会話ログを取得(PWA履歴)
+        today_log = await partner_cog.fetch_todays_chat_log()
         if not today_log.strip():
             return  # 会話がなければスキップ
 
@@ -207,12 +203,12 @@ class PartnerRoutineCog(commands.Cog):
     async def nightly_reflection_task(self):
         # 人間らしさのため0〜15分のランダム遅延
         await asyncio.sleep(random.randint(0, 900))
-        channel = self.bot.get_channel(self.memo_channel_id)
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not channel or not partner_cog:
+        if not partner_cog:
             return
 
-        today_log = await partner_cog.fetch_todays_chat_log(channel)
+        # PWAの機能として取得(channelはNoneでも動くように改修済み)
+        today_log = await partner_cog.fetch_todays_chat_log()
 
         prompt = f"{PROMPT_ROUTINE_NIGHTLY}\n\n【今日の会話ログ】\n{today_log if today_log.strip() else '今日は特に会話がありませんでした。'}"
 
@@ -221,7 +217,14 @@ class PartnerRoutineCog(commands.Cog):
                 response = await self.gemini_client.aio.models.generate_content(
                     model="gemini-2.5-flash", contents=prompt
                 )
-                await channel.send(response.text.strip())
+                from api.database import save_message, backup_db_to_drive
+                import asyncio
+                
+                reply_text = response.text.strip()
+                await save_message("assistant", reply_text)
+                if partner_cog.drive_service:
+                    asyncio.create_task(backup_db_to_drive(partner_cog.drive_service, partner_cog.drive_folder_id))
+
         except Exception as e:
             logging.error(f"Nightly Reflection Error: {e}")
 

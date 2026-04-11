@@ -42,15 +42,28 @@ async def chat(req: ChatRequest):
     """メッセージを送信してAIの応答を取得"""
     from api import app
 
-    chat_service = getattr(app.state, "chat_service", None)
-    if not chat_service:
-        raise HTTPException(status_code=503, detail="AIサービスが初期化されていません。")
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
 
-    # ユーザーメッセージを保存
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="AIコアがロードされていません。")
+
+    # ユーザーメッセージを保存 (DB)
     await save_message("user", req.message)
 
-    # AI応答を生成
-    reply = await chat_service.generate_response(req.message)
+    # 履歴を取得してContentの形式に変換
+    from google.genai import types
+    db_history = await get_history(limit=30)
+    history_messages = []
+    # 最新のメッセージ(今保存したもの)を除いた過去ログを渡す
+    for m in reversed(db_history[1:]): 
+        role = "model" if m["role"] == "assistant" else "user"
+        history_messages.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+
+    # AI応答を生成 (PartnerCogの全21機能を利用)
+    reply = await partner_cog.generate_response_for_app(req.message, history_messages)
 
     # AIの応答を保存
     await save_message("assistant", reply)
@@ -118,7 +131,36 @@ async def dashboard():
     if alter_match:
         alter_log = alter_match.group(1).strip()
 
-    return {"tasks": tasks, "alter_log": alter_log, "date": today_str}
+    # Google Calendar
+    g_calendar = []
+    if hasattr(chat_service, "calendar_service") and chat_service.calendar_service:
+        try:
+            cal_str = await chat_service.calendar_service.list_events_for_date(today_str)
+            # "【2026-04-11 の予定】\n- 09:00 : ..." -> 文字列リストに変換
+            lines = cal_str.split("\n")
+            if len(lines) > 1 and lines[0].startswith("【"):
+                g_calendar = lines[1:]
+            else:
+                g_calendar = [cal_str]
+        except Exception as e:
+            pass
+            
+    # Google Tasks
+    g_tasks = []
+    if hasattr(chat_service, "tasks_service") and chat_service.tasks_service:
+        try:
+            task_str = await chat_service.tasks_service.get_uncompleted_tasks()
+            g_tasks = [t for t in task_str.split("\n") if t.strip()]
+        except Exception as e:
+            pass
+
+    return {
+        "tasks": tasks, 
+        "alter_log": alter_log, 
+        "date": today_str,
+        "g_calendar": g_calendar,
+        "g_tasks": g_tasks
+    }
 
 
 class TaskActionRequest(BaseModel):

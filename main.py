@@ -196,6 +196,8 @@ async def main():
     config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
 
+    fastapi_app.state.bot = bot  # API側からBotインスタンスにアクセス可能にする
+
     # Discord BotとFastAPIを並列で起動
     logging.info(f"Manager AI サーバーをポート {port} で起動します...")
     tasks = [server.serve()]
