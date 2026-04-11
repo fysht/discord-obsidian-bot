@@ -71,8 +71,8 @@ async def chat(req: ChatRequest):
     # Google Driveへのバックアップを非同期で実行 (ユーザーを待たせない)
     import asyncio
     from api.database import backup_db_to_drive
-    if chat_service.drive_service:
-        asyncio.create_task(backup_db_to_drive(chat_service.drive_service, chat_service.drive_folder_id))
+    if bot.drive_service:
+        asyncio.create_task(backup_db_to_drive(bot.drive_service, bot.drive_folder_id))
 
     return ChatResponse(reply=reply)
 
@@ -151,7 +151,35 @@ async def dashboard():
         try:
             task_str = await chat_service.tasks_service.get_uncompleted_tasks()
             g_tasks = [t for t in task_str.split("\n") if t.strip()]
-        except Exception as e:
+        except Exception:
+            pass
+
+    # Weather & News (InfoServiceを使用)
+    from services.info_service import InfoService
+    weather = "取得失敗"
+    news = []
+    try:
+        info_service = getattr(bot, "info_service", InfoService())
+        weather_val, _, _ = await info_service.get_weather()
+        weather = weather_val.strip('"')
+        news = await info_service.get_news(limit=5)
+    except Exception:
+        pass
+
+    # Fitbit (Sleep & Health)
+    sleep_stats = {}
+    fitbit_cog = bot.get_cog("FitbitCog")
+    if fitbit_cog and getattr(fitbit_cog, "is_ready", False):
+        try:
+            stats = await fitbit_cog.fitbit_service.get_stats(datetime.datetime.now(JST).date())
+            if stats:
+                sleep_stats = {
+                    "score": stats.get("sleep_score", "N/A"),
+                    "duration": fitbit_cog._format_minutes(stats.get("total_sleep_minutes", 0)),
+                    "steps": stats.get("steps", "N/A"),
+                    "calories": stats.get("calories_out", "N/A")
+                }
+        except Exception:
             pass
 
     return {
@@ -159,7 +187,10 @@ async def dashboard():
         "alter_log": alter_log, 
         "date": today_str,
         "g_calendar": g_calendar,
-        "g_tasks": g_tasks
+        "g_tasks": g_tasks,
+        "weather": weather,
+        "news": news,
+        "sleep": sleep_stats
     }
 
 

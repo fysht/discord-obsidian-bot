@@ -1,389 +1,373 @@
 /* ==========================================
-   Manager AI — Application Logic v2
+   Manager AI — Application Logic v3
    ========================================== */
 
 const API_BASE = '';
 let apiKey = localStorage.getItem('secretary_api_key') || '';
 
-// ========== Utility ==========
+// ========== Utilities ==========
 const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 
 function showScreen(id) {
-  $$('.screen').forEach(s => s.classList.remove('active'));
-  $(`#${id}`).classList.add('active');
+    $$('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
 }
 
 function formatTime(isoStr) {
-  if (!isoStr) return '';
-  const d = new Date(isoStr);
-  return d.toLocaleTimeString('ja-JP', { timeZone: 'Asia/Tokyo', hour: '2-digit', minute: '2-digit' });
+    if (!isoStr) return '';
+    const d = new Date(isoStr);
+    return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
 }
 
 function escapeHtml(text) {
-  const el = document.createElement('div');
-  el.textContent = text;
-  return el.innerHTML;
+    if (!text) return '';
+    const el = document.createElement('div');
+    el.textContent = text;
+    return el.innerHTML;
 }
 
+// ========== API Core ==========
 async function apiFetch(path, options = {}) {
-  const headers = {
-    'Content-Type': 'application/json',
-    'X-Api-Key': apiKey,
-    ...(options.headers || {}),
-  };
-  const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-  if (res.status === 401) {
-    localStorage.removeItem('secretary_api_key');
-    apiKey = '';
-    showScreen('login-screen');
-    throw new Error('認証エラー');
-  }
-  if (!res.ok) throw new Error(`API Error: ${res.status}`);
-  return res.json();
+    const headers = {
+        'Content-Type': 'application/json',
+        'X-Api-Key': apiKey,
+        ...(options.headers || {}),
+    };
+    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    if (res.status === 401) {
+        localStorage.removeItem('secretary_api_key');
+        apiKey = '';
+        showScreen('login-screen');
+        throw new Error('認証が切れました。再ログインしてください。');
+    }
+    if (!res.ok) throw new Error(`APIエラー: ${res.status}`);
+    return res.json();
 }
 
 // ========== Login ==========
 $('#login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const pw = $('#password-input').value.trim();
-  if (!pw) return;
+    e.preventDefault();
+    const pw = $('#password-input').value.trim();
+    if (!pw) return;
 
-  try {
-    const data = await fetch(`${API_BASE}/api/auth`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password: pw }),
-    }).then(r => {
-      if (!r.ok) throw new Error('パスワードが正しくありません。');
-      return r.json();
-    });
+    try {
+        const data = await fetch(`${API_BASE}/api/auth`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: pw }),
+        }).then(r => {
+            if (!r.ok) throw new Error('パスワードが正しくありません。');
+            return r.json();
+        });
 
-    apiKey = data.api_key;
-    localStorage.setItem('secretary_api_key', apiKey);
-    $('#login-error').textContent = '';
-    showScreen('main-screen');
-    loadHistory();
-  } catch (err) {
-    $('#login-error').textContent = err.message;
-  }
+        apiKey = data.api_key;
+        localStorage.setItem('secretary_api_key', apiKey);
+        $('#login-error').textContent = '';
+        showScreen('main-screen');
+        loadHistory();
+    } catch (err) {
+        $('#login-error').textContent = err.message;
+    }
 });
 
-// ========== Tab Navigation ==========
+// ========== Navigation (Main Tabs & Sub Tabs) ==========
 $$('.nav-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    $$('.nav-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    $$('.tab-content').forEach(t => t.classList.remove('active'));
-    $(`#${btn.dataset.tab}-tab`).classList.add('active');
-    if (btn.dataset.tab === 'dashboard') loadDashboard();
-  });
+    btn.addEventListener('click', () => {
+        $$('.nav-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        
+        $$('.tab-content').forEach(t => t.classList.remove('active'));
+        const targetTab = btn.dataset.tab;
+        $(`#${targetTab}-tab`).classList.add('active');
+
+        // タブに応じたデータ読み込み
+        if (targetTab === 'dashboard' || targetTab === 'wellness' || targetTab === 'logs') {
+            loadDashboard();
+        }
+    });
 });
 
-// ========== Chat ==========
+$$('.sub-nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        $$('.sub-nav-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        
+        $$('.sub-tab-content').forEach(t => t.classList.remove('active'));
+        $(`#sub-${btn.dataset.sub}`).classList.add('active');
+    });
+});
+
+// ========== Chat System ==========
 const chatMessages = $('#chat-messages');
 const messageInput = $('#message-input');
 const sendBtn = $('#send-btn');
 
-// テキストエリアの自動リサイズ
+// Input resizing
 messageInput.addEventListener('input', () => {
-  messageInput.style.height = 'auto';
-  messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+    messageInput.style.height = 'auto';
+    messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
 });
 
-// PC: Enter で送信 / Shift+Enter で改行
-// モバイル: Enter で改行 (送信はボタン)
+// PC: Enter to Send
 messageInput.addEventListener('keydown', (e) => {
-  if (e.isComposing) return; // IME変換中は無視（二重送信防止）
-  if (window.innerWidth >= 768 && e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    $('#chat-form').dispatchEvent(new Event('submit'));
-  }
+    if (e.isComposing) return;
+    if (window.innerWidth >= 768 && e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        $('#chat-form').dispatchEvent(new Event('submit'));
+    }
 });
 
-// メッセージ表示
 function addMessage(role, content, timestamp) {
-  const welcome = chatMessages.querySelector('.chat-welcome');
-  if (welcome) welcome.remove();
+    const welcome = chatMessages.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
 
-  const div = document.createElement('div');
-  div.className = `message ${role}`;
-  const timeStr = timestamp ? formatTime(timestamp) : formatTime(new Date().toISOString());
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    const timeStr = timestamp ? formatTime(timestamp) : formatTime(new Date().toISOString());
 
-  if (role === 'assistant') {
     div.innerHTML = `
-      <div class="msg-avatar"><img src="/static/icons/avatar.png" alt="AI"></div>
-      <div>
         <div class="msg-bubble">${formatMessageText(content)}</div>
         <div class="msg-time">${timeStr}</div>
-      </div>`;
-  } else {
-    div.innerHTML = `
-      <div>
-        <div class="msg-bubble">${formatMessageText(content)}</div>
-        <div class="msg-time">${timeStr}</div>
-      </div>`;
-  }
+    `;
 
-  chatMessages.appendChild(div);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 function formatMessageText(text) {
-  let html = escapeHtml(text);
-  // [BUTTON:add_task:タスク名] をインラインボタンに変換
-  html = html.replace(/\[BUTTON:add_task:(.+?)\]/g, (_, taskName) => {
-    return `<button class="inline-action-btn" onclick="directAddTask('${escapeHtml(taskName)}')">＋「${escapeHtml(taskName)}」をタスクに追加</button>`;
-  });
-  return html;
+    let html = escapeHtml(text).replace(/\n/g, '<br>');
+    // Inline buttons for quick actions
+    html = html.replace(/\[BUTTON:add_task:(.+?)\]/g, (_, taskName) => {
+        return `<button class="inline-action-btn" onclick="directAddTask('${escapeHtml(taskName)}')">＋ ${escapeHtml(taskName)}をタスクへ</button>`;
+    });
+    return html;
 }
 
-// タスク直接追加
 window.directAddTask = async function(taskName) {
-  try {
-    await apiFetch('/api/task_action', {
-      method: 'POST',
-      body: JSON.stringify({ action: 'create', new_text: taskName }),
-    });
-    showToast(`「${taskName}」を追加しました`);
-    if ($('#dashboard-tab').classList.contains('active')) loadDashboard();
-  } catch {
-    showToast('追加に失敗しました', true);
-  }
+    try {
+        await apiFetch('/api/task_action', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'create', new_text: taskName }),
+        });
+        showToast(`「${taskName}」を追加しました`);
+    } catch {
+        showToast('追加に失敗しました', true);
+    }
 };
 
-// タイピングインジケーター
+$('#chat-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = messageInput.value.trim();
+    if (!msg || sendBtn.disabled) return;
+
+    addMessage('user', msg);
+    messageInput.value = '';
+    messageInput.style.height = 'auto';
+    sendBtn.disabled = true;
+    showTyping();
+
+    try {
+        const data = await apiFetch('/api/chat', {
+            method: 'POST',
+            body: JSON.stringify({ message: msg }),
+        });
+        hideTyping();
+        addMessage('assistant', data.reply);
+    } catch (err) {
+        hideTyping();
+        addMessage('assistant', 'ごめん、ちょっと調子が悪いみたいだ。もう一回送ってくれる？');
+    } finally {
+        sendBtn.disabled = false;
+        messageInput.focus();
+    }
+});
+
 function showTyping() {
-  const div = document.createElement('div');
-  div.className = 'message assistant';
-  div.id = 'typing-msg';
-  div.innerHTML = `
-    <div class="msg-avatar"><img src="/static/icons/avatar.png" alt="AI"></div>
-    <div class="typing-indicator">
-      <div class="typing-dot"></div>
-      <div class="typing-dot"></div>
-      <div class="typing-dot"></div>
-    </div>`;
-  chatMessages.appendChild(div);
-  chatMessages.scrollTop = chatMessages.scrollHeight;
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.id = 'typing-msg';
+    div.innerHTML = `<div class="msg-bubble typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
 function hideTyping() {
-  const el = $('#typing-msg');
-  if (el) el.remove();
+    const el = $('#typing-msg');
+    if (el) el.remove();
 }
 
-// メッセージ送信
-$('#chat-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  if (sendBtn.disabled) return;
-
-  const msg = messageInput.value.trim();
-  if (!msg) return;
-
-  addMessage('user', msg);
-  messageInput.value = '';
-  messageInput.style.height = 'auto';
-  sendBtn.disabled = true;
-  showTyping();
-
-  try {
-    const data = await apiFetch('/api/chat', {
-      method: 'POST',
-      body: JSON.stringify({ message: msg }),
-    });
-    hideTyping();
-    addMessage('assistant', data.reply);
-  } catch {
-    hideTyping();
-    addMessage('assistant', 'ごめん、ちょっと通信エラーみたいだ。もう一回試してみて。');
-  } finally {
-    sendBtn.disabled = false;
-    messageInput.focus();
-  }
-});
-
-// 履歴読み込み
 async function loadHistory() {
-  try {
-    const data = await apiFetch('/api/history?limit=30');
-    chatMessages.innerHTML = '';
-    if (data.messages && data.messages.length > 0) {
-      data.messages.forEach(m => addMessage(m.role, m.content, m.timestamp));
-    } else {
-      chatMessages.innerHTML = `
-        <div class="chat-welcome">
-          <div class="welcome-inner">
-            <div class="welcome-avatar"><img src="/static/icons/avatar.png" alt=""></div>
-            <h2>こんにちは！</h2>
-            <p>何でも話しかけてね。予定確認、タスク管理、メモ…何でもお任せ！</p>
-          </div>
-        </div>`;
+    try {
+        const data = await apiFetch('/api/history?limit=30');
+        chatMessages.innerHTML = '';
+        if (data.messages && data.messages.length > 0) {
+            data.messages.forEach(m => addMessage(m.role, m.content, m.timestamp));
+        }
+    } catch (err) {
+        console.error('History load failed:', err);
     }
-  } catch (err) {
-    console.error('履歴の読み込みに失敗:', err);
-  }
 }
 
-// クイックアクション送信
 window.sendActionCommand = function(cmd) {
-  messageInput.value = cmd;
-  $('#chat-form').dispatchEvent(new Event('submit'));
+    messageInput.value = cmd;
+    $('#chat-form').dispatchEvent(new Event('submit'));
 };
 
-// ========== Dashboard ==========
+// ========== Dashboard & Data Rendering ==========
 async function loadDashboard() {
-  // 日付ラベル
-  const dateLabel = $('#dash-date-label');
-  if (dateLabel) {
-    const now = new Date();
-    const days = ['日', '月', '火', '水', '木', '金', '土'];
-    dateLabel.textContent = `${now.getMonth() + 1}月${now.getDate()}日 (${days[now.getDay()]})`;
-  }
-
-  try {
-    const data = await apiFetch('/api/dashboard');
-
-    // Google Calendar
-    const gcEl = $('#dash-google-calendar');
-    if (gcEl) {
-      if (data.g_calendar && data.g_calendar.length > 0) {
-        gcEl.innerHTML = data.g_calendar.map(l => {
-          const text = l.replace(/^- /, '');
-          return `<div class="cal-event"><span class="cal-event-dot"></span><span class="cal-event-text">${escapeHtml(text)}</span></div>`;
-        }).join('');
-      } else {
-        gcEl.innerHTML = '<p class="dash-empty">今日の予定はありません</p>';
-      }
-    }
-
-    // Google Tasks
-    const gtEl = $('#dash-google-tasks');
-    if (gtEl) {
-      if (data.g_tasks && data.g_tasks.length > 0) {
-        gtEl.innerHTML = data.g_tasks.map(l => {
-          const text = l.replace(/^- /, '');
-          return `<div class="gtask-item"><span class="gtask-dot"></span><span>${escapeHtml(text)}</span></div>`;
-        }).join('');
-      } else {
-        gtEl.innerHTML = '<p class="dash-empty">未完了のタスクはありません</p>';
-      }
-    }
-
-    // Obsidian Tasks
-    const tasksEl = $('#dash-tasks');
-    if (data.tasks && data.tasks.length > 0) {
-      tasksEl.innerHTML = data.tasks.map(t => `
-        <div class="task-item ${t.done ? 'done' : ''}" data-text="${escapeHtml(t.text)}">
-          <span class="task-check" onclick="toggleTask('${escapeHtml(t.text)}')">${t.done ? '✅' : '⬜'}</span>
-          <span class="task-text">${escapeHtml(t.text)}</span>
-          <div class="task-actions">
-            <button class="task-action-btn" onclick="editTask('${escapeHtml(t.text)}')" title="編集">✏️</button>
-            <button class="task-action-btn danger" onclick="deleteTask('${escapeHtml(t.text)}')" title="削除">🗑️</button>
-          </div>
-        </div>
-      `).join('');
-    } else {
-      tasksEl.innerHTML = '<p class="dash-empty">今日のタスクはまだありません</p>';
-    }
-
-    // Alter Log
-    const alterEl = $('#dash-alter-log');
-    if (data.alter_log) {
-      alterEl.innerHTML = `<div class="alter-log-text">${escapeHtml(data.alter_log)}</div>`;
-    } else {
-      alterEl.innerHTML = '<p class="dash-empty">今日のAlter Logはまだ生成されていません</p>';
-    }
-  } catch (err) {
-    console.error('ダッシュボードの読み込みに失敗:', err);
-  }
-}
-
-// タスク操作
-async function toggleTask(text) {
-  try {
-    await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'toggle', old_text: text }) });
-    loadDashboard();
-  } catch { showToast('更新に失敗しました', true); }
-}
-
-async function editTask(text) {
-  const newText = prompt('タスクを編集', text);
-  if (newText && newText !== text) {
     try {
-      await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'update', old_text: text, new_text: newText }) });
-      loadDashboard();
-    } catch { showToast('更新に失敗しました', true); }
-  }
+        const data = await apiFetch('/api/dashboard');
+        
+        // Date Label
+        if ($('#dash-date-label')) {
+            const now = new Date();
+            const days = ['日', '月', '火', '水', '木', '金', '土'];
+            $('#dash-date-label').textContent = `${now.getMonth()+1}月${now.getDate()}日 (${days[now.getDay()]})`;
+        }
+
+        // 1. Google Calendar
+        const gcEl = $('#dash-google-calendar');
+        if (data.g_calendar && data.g_calendar.length > 0) {
+            gcEl.innerHTML = data.g_calendar.map(l => `<div class="cal-item">${escapeHtml(l.replace(/^- /, ''))}</div>`).join('');
+        } else {
+            gcEl.innerHTML = '<p class="dash-empty">予定はありません</p>';
+        }
+
+        // 2. Google Tasks
+        const gtEl = $('#dash-google-tasks');
+        if (data.g_tasks && data.g_tasks.length > 0) {
+            gtEl.innerHTML = data.g_tasks.map(l => `<div class="gtask-item">⭕ ${escapeHtml(l.replace(/^- /, ''))}</div>`).join('');
+        } else {
+            gtEl.innerHTML = '<p class="dash-empty">タスクはありません</p>';
+        }
+
+        // 3. Obsidian Tasks
+        const otEl = $('#dash-tasks');
+        if (data.tasks && data.tasks.length > 0) {
+            otEl.innerHTML = data.tasks.map(t => `
+                <div class="task-item ${t.done ? 'done' : ''}">
+                    <span class="task-check" onclick="toggleTask('${escapeHtml(t.text)}')">${t.done ? '✅' : '⬜'}</span>
+                    <span class="task-text">${escapeHtml(t.text)}</span>
+                    <div class="task-actions">
+                        <button class="small-btn" onclick="deleteTask('${escapeHtml(t.text)}')">🗑️</button>
+                    </div>
+                </div>
+            `).join('');
+        } else {
+            otEl.innerHTML = '<p class="dash-empty">タスクはありません</p>';
+        }
+
+        // 4. Weather
+        if ($('#dash-weather')) {
+            $('#dash-weather').innerHTML = `<p>${escapeHtml(data.weather || '取得失敗')}</p>`;
+        }
+
+        // 5. Sleep (Health)
+        const sleepEl = $('#dash-sleep');
+        if (sleepEl) {
+            if (data.sleep && data.sleep.score !== 'N/A') {
+                sleepEl.innerHTML = `
+                    <div class="health-grid">
+                        <div class="health-stat"><small>スコア</small><strong>${data.sleep.score}</strong></div>
+                        <div class="health-stat"><small>睡眠時間</small><strong>${data.sleep.duration}</strong></div>
+                        <div class="health-stat"><small>歩数</small><strong>${data.sleep.steps}歩</strong></div>
+                    </div>`;
+            } else {
+                sleepEl.innerHTML = '<p class="dash-empty">データがまだ同期されていません</p>';
+            }
+        }
+
+        // 6. News
+        const newsEl = $('#dash-news');
+        if (newsEl) {
+            if (data.news && data.news.length > 0) {
+                newsEl.innerHTML = data.news.map(n => {
+                    const lines = n.split('\n');
+                    return `<a href="${lines[1]}" target="_blank" class="news-item">
+                                <span class="news-title">${escapeHtml(lines[0])}</span>
+                            </a>`;
+                }).join('');
+            } else {
+                newsEl.innerHTML = '<p class="dash-empty">ニュースが取得できませんでした</p>';
+            }
+        }
+
+        // 7. Alter Log
+        if ($('#dash-alter-log')) {
+            $('#dash-alter-log').innerHTML = data.alter_log ? escapeHtml(data.alter_log).replace(/\n/g, '<br>') : '未生成です';
+        }
+
+    } catch (err) {
+        showToast('データの更新に失敗しました', true);
+    }
+}
+
+async function toggleTask(text) {
+    try {
+        await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'toggle', old_text: text }) });
+        loadDashboard();
+    } catch { showToast('同期待ち...', true); }
 }
 
 async function deleteTask(text) {
-  if (confirm('このタスクを削除しますか？')) {
+    if (!confirm('削除しますか？')) return;
     try {
-      await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', old_text: text }) });
-      loadDashboard();
-    } catch { showToast('削除に失敗しました', true); }
-  }
+        await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', old_text: text }) });
+        loadDashboard();
+    } catch { showToast('削除失敗', true); }
 }
 
-// ========== Toast通知 ==========
-function showToast(message, isError = false) {
-  // 既存のトーストがあれば削除
-  const existing = $('#toast-notification');
-  if (existing) existing.remove();
+// ========== Modal Logic ==========
+let taskActionType = 'start';
 
-  const toast = document.createElement('div');
-  toast.id = 'toast-notification';
-  toast.textContent = message;
-  toast.style.cssText = `
-    position: fixed; bottom: 80px; left: 50%; transform: translateX(-50%) translateY(10px);
-    padding: 10px 20px; border-radius: 12px; font-size: 0.85rem; font-weight: 500;
-    font-family: var(--font); z-index: 1000; opacity: 0;
-    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-    background: ${isError ? 'rgba(248, 113, 113, 0.2)' : 'rgba(52, 211, 153, 0.15)'};
-    color: ${isError ? '#f87171' : '#34d399'};
-    border: 1px solid ${isError ? 'rgba(248, 113, 113, 0.3)' : 'rgba(52, 211, 153, 0.25)'};
-    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-  `;
-  document.body.appendChild(toast);
+window.openTaskEntry = function(type) {
+    taskActionType = type;
+    const modal = $('#task-modal');
+    const title = $('#modal-title');
+    title.textContent = type === 'start' ? 'タスク開始' : 'タスク終了';
+    $('#task-name-input').value = '';
+    modal.classList.remove('hidden');
+    $('#task-name-input').focus();
+};
 
-  requestAnimationFrame(() => {
-    toast.style.opacity = '1';
-    toast.style.transform = 'translateX(-50%) translateY(0)';
-  });
+window.closeTaskEntry = function() {
+    $('#task-modal').classList.add('hidden');
+};
 
-  setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateX(-50%) translateY(10px)';
-    setTimeout(() => toast.remove(), 300);
-  }, 2500);
+$('#task-submit-btn').addEventListener('click', () => {
+    const val = $('#task-name-input').value.trim();
+    if (!val) return;
+    
+    const command = taskActionType === 'start' ? `今から「${val}」を開始するよ` : `「${val}」が終わったよ`;
+    sendActionCommand(command);
+    closeTaskEntry();
+});
+
+// Toast notification
+function showToast(msg, isError = false) {
+    const container = $('#toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast ${isError ? 'error' : ''}`;
+    toast.textContent = msg;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 500);
+    }, 3000);
 }
 
-// ========== 初期化 ==========
+// ========== Initialize ==========
 window.addEventListener('DOMContentLoaded', () => {
-  // Service Worker登録
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/js/sw.js').catch(err =>
-      console.error('SW registration failed:', err)
-    );
-  }
-
-  // 認証済みならメイン画面へ
-  if (apiKey) {
-    showScreen('main-screen');
-    loadHistory();
-
-    // Web Share API 等からの連携パラメータ処理
-    const params = new URLSearchParams(window.location.search);
-    const inText = params.get('text');
-    const inUrl = params.get('url');
-    if (inText || inUrl) {
-      const parts = [inText, inUrl].filter(Boolean);
-      messageInput.value = parts.join(' \n');
-      messageInput.focus();
-      window.history.replaceState({}, document.title, '/');
+    if (apiKey) {
+        showScreen('main-screen');
+        loadHistory();
+        loadDashboard();
+    } else {
+        showScreen('login-screen');
     }
-  } else {
-    showScreen('login-screen');
-  }
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/static/js/sw.js').catch(err => console.error(err));
+    }
 });
