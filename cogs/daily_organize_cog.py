@@ -163,6 +163,14 @@ class DailyOrganizeCog(commands.Cog):
             updates_fm["temp_min"] = meta.get("temp_min")
         content = update_frontmatter(content, updates_fm)
 
+        if data.get("alter_log") and len(data["alter_log"]) > 0:
+            content = update_section(
+                content,
+                "\n".join(data["alter_log"])
+                if isinstance(data["alter_log"], list)
+                else str(data["alter_log"]),
+                "## 🪞 Alter Log",
+            )
         if data.get("journal"):
             content = update_section(content, data["journal"], "## 📔 Daily Journal")
         if data.get("events") and len(data["events"]) > 0:

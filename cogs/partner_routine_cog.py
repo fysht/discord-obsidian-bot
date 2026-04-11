@@ -1,4 +1,5 @@
 import os
+import asyncio
 from discord.ext import commands, tasks
 import logging
 import datetime
@@ -60,6 +61,8 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     @tasks.loop(time=datetime.time(hour=23, minute=45, tzinfo=JST))
     async def update_manual_task(self):
+        # 人間らしさのため0〜10分のランダム遅延
+        await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
         channel = self.bot.get_channel(self.memo_channel_id)
         if not partner_cog or not channel:
@@ -152,6 +155,8 @@ class PartnerRoutineCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=7, minute=0, tzinfo=JST))
     async def morning_routine_task(self):
+        # 人間らしさのため0〜15分のランダム遅延
+        await asyncio.sleep(random.randint(0, 900))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return
@@ -200,6 +205,8 @@ class PartnerRoutineCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
     async def nightly_reflection_task(self):
+        # 人間らしさのため0〜15分のランダム遅延
+        await asyncio.sleep(random.randint(0, 900))
         channel = self.bot.get_channel(self.memo_channel_id)
         partner_cog = self.bot.get_cog("PartnerCog")
         if not channel or not partner_cog:
@@ -234,6 +241,8 @@ class PartnerRoutineCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
     async def habit_check_task(self):
+        # 人間らしさのため0〜10分のランダム遅延
+        await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
         habit_cog = self.bot.get_cog("HabitCog")
         if not partner_cog or not habit_cog:

@@ -181,6 +181,143 @@ class PartnerCog(commands.Cog):
                 service, logs_folder_id, file_name, new_content
             )
 
+    async def _log_life_activity_to_obsidian(self, activity_name: str, status: str) -> str:
+        service = self.drive_service.get_service()
+        if not service:
+            return "システムエラー: Driveサービスに接続できません。"
+
+        folder_name = "DailyNotes"
+        folder_id = await self.drive_service.find_file(
+            service, self.drive_folder_id, folder_name
+        )
+        if not folder_id:
+            folder_id = await self.drive_service.create_folder(
+                service, self.drive_folder_id, folder_name
+            )
+
+        now = datetime.datetime.now(JST)
+        time_str = now.strftime("%H:%M")
+        file_name = f"{now.strftime('%Y-%m-%d')}.md"
+
+        f_id = await self.drive_service.find_file(service, folder_id, file_name)
+        content = f"# Daily Note {file_name.replace('.md', '')}\n"
+
+        if f_id:
+            try:
+                raw_content = await self.drive_service.read_text_file(service, f_id)
+                if raw_content:
+                    content = raw_content
+            except Exception:
+                pass
+
+        if status == "start":
+            append_text = f"- [/] {activity_name} ({time_str}-)"
+            new_content = update_section(content, append_text, "## 🎯 Tasks")
+            if f_id:
+                await self.drive_service.update_text(service, f_id, new_content)
+            else:
+                await self.drive_service.upload_text(service, folder_id, file_name, new_content)
+            return f"「{activity_name}」の開始を記録しました。"
+            
+        elif status == "end":
+            import re
+            pattern = re.compile(rf"- \[\/\] {re.escape(activity_name)} \((.*?)-\)")
+            match = pattern.search(content)
+            if match:
+                start_time = match.group(1)
+                replacement = f"- [x] {activity_name} ({start_time}-{time_str})"
+                new_content = content[:match.start()] + replacement + content[match.end():]
+                if f_id:
+                    await self.drive_service.update_text(service, f_id, new_content)
+                else:
+                    await self.drive_service.upload_text(service, folder_id, file_name, new_content)
+                return f"「{activity_name}」の終了を記録しました（開始: {start_time}）。"
+            else:
+                # 開始ログが見つからなかった場合
+                append_text = f"- [x] {activity_name} (開始時間不明-{time_str})"
+                new_content = update_section(content, append_text, "## 🎯 Tasks")
+                if f_id:
+                    await self.drive_service.update_text(service, f_id, new_content)
+                else:
+                    await self.drive_service.upload_text(service, folder_id, file_name, new_content)
+                return f"「{activity_name}」の開始記録が見つからなかったため、終了時刻のみ記録しました。"
+
+        return "不正なステータスです。"
+
+    async def _save_thought_reflection_to_obsidian(self, theme: str, summary: str, next_step: str) -> str:
+        service = self.drive_service.get_service()
+        if not service:
+            return "システムエラー"
+
+        now = datetime.datetime.now(JST)
+        time_str = now.strftime("%H:%M")
+        file_name = f"{now.strftime('%Y-%m-%d')}.md"
+
+        folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+        if not folder_id:
+            folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
+
+        f_id = await self.drive_service.find_file(service, folder_id, file_name)
+        content = f"# Daily Note {file_name.replace('.md', '')}\n"
+
+        if f_id:
+            try:
+                raw_content = await self.drive_service.read_text_file(service, f_id)
+                if raw_content:
+                    content = raw_content
+            except Exception:
+                pass
+
+        append_text = f"### {time_str} テーマ: {theme}\n{summary}\n**Next Step:** {next_step}"
+        new_content = update_section(content, append_text, "## 🤔 Thought Reflection")
+
+        if f_id:
+            await self.drive_service.update_text(service, f_id, new_content)
+        else:
+            await self.drive_service.upload_text(service, folder_id, file_name, new_content)
+
+        return f"壁打ちの内容をテーマ「{theme}」として保存しました。"
+
+    async def _create_permanent_note_to_obsidian(self, title: str, content: str) -> str:
+        service = self.drive_service.get_service()
+        if not service:
+            return "システムエラー: Driveサービスに接続できません。"
+
+        # Zettelkastenフォルダの取得・作成
+        zk_folder_name = "Zettelkasten"
+        zk_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, zk_folder_name)
+        if not zk_folder_id:
+            zk_folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, zk_folder_name)
+
+        # 永久ノートの作成
+        safe_title = title.replace("/", "_").replace("\\", "_")
+        zk_file_name = f"{safe_title}.md"
+        
+        # すでに存在するかチェック
+        zk_f_id = await self.drive_service.find_file(service, zk_folder_id, zk_file_name)
+        if zk_f_id:
+            return f"「{safe_title}」というノートはすでに存在します。"
+            
+        await self.drive_service.upload_text(service, zk_folder_id, zk_file_name, content)
+
+        # Daily Note にリンクを追記（Timeline）
+        now = datetime.datetime.now(JST)
+        time_str = now.strftime("%H:%M")
+        daily_file_name = f"{now.strftime('%Y-%m-%d')}.md"
+        daily_folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+        if daily_folder_id:
+            daily_f_id = await self.drive_service.find_file(service, daily_folder_id, daily_file_name)
+            if daily_f_id:
+                try:
+                    daily_content = await self.drive_service.read_text_file(service, daily_f_id)
+                    append_text = f"- {time_str} 💡 永久ノート作成: [[{safe_title}]]"
+                    new_daily_content = update_section(daily_content, append_text, "## 💬 Timeline")
+                    await self.drive_service.update_text(service, daily_f_id, new_daily_content)
+                except Exception:
+                    pass
+
+        return f"永久ノート「{safe_title}」を作成し、Zettelkastenフォルダに保存しました。"
+
     async def _search_drive_notes(self, keywords: str):
         return await self.drive_service.search_markdown_files(keywords)
 
@@ -307,7 +444,8 @@ class PartnerCog(commands.Cog):
 
         if text and not text.startswith("/"):
             asyncio.create_task(self._append_raw_message_to_obsidian(text))
-            asyncio.create_task(self._append_english_log_to_obsidian(text))
+            # 英語学習機能を自然なクイズ形式に切り替えるため、無条件の英訳保存は停止
+            # asyncio.create_task(self._append_english_log_to_obsidian(text))
 
         if is_short_message and text in ["まとめ", "途中経過", "整理して", "今の状態"]:
             await self._show_interim_summary(message)
@@ -333,6 +471,57 @@ class PartnerCog(commands.Cog):
         function_tools = [
             types.Tool(
                 function_declarations=[
+                    types.FunctionDeclaration(
+                        name="log_life_activity",
+                        description="LLR形式でユーザーの行動やタスクの開始・終了を記録する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "activity_name": types.Schema(
+                                    type=types.Type.STRING, description="行動やタスクの名前"
+                                ),
+                                "status": types.Schema(
+                                    type=types.Type.STRING, description="'start' または 'end'"
+                                ),
+                            },
+                            required=["activity_name", "status"],
+                        ),
+                    ),
+                    types.FunctionDeclaration(
+                        name="save_thought_reflection",
+                        description="壁打ち（思考整理）の結果をObsidianのThought Reflectionセクションに保存する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "theme": types.Schema(
+                                    type=types.Type.STRING, description="思考整理のテーマや悩み"
+                                ),
+                                "summary": types.Schema(
+                                    type=types.Type.STRING, description="深掘りして明らかになったこと（Markdown形式）"
+                                ),
+                                "next_step": types.Schema(
+                                    type=types.Type.STRING, description="次に取るべき具体的なアクション"
+                                ),
+                            },
+                            required=["theme", "summary", "next_step"],
+                        ),
+                    ),
+                    types.FunctionDeclaration(
+                        name="create_permanent_note",
+                        description="深い洞察やアイデアをZettelkasten（永久ノート）として独立したファイルに保存する。",
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "title": types.Schema(
+                                    type=types.Type.STRING, description="ノートのタイトル（簡潔・具体的）"
+                                ),
+                                "content": types.Schema(
+                                    type=types.Type.STRING, description="ノートの本文（Markdown。十分な解説と考察を含める）"
+                                ),
+                            },
+                            required=["title", "content"],
+                        ),
+                    ),
                     types.FunctionDeclaration(
                         name="search_memory",
                         description="Obsidianをキーワード検索する。",
@@ -607,7 +796,23 @@ class PartnerCog(commands.Cog):
 
                 for function_call in response.function_calls:
                     tool_result = ""
-                    if function_call.name == "search_memory":
+                    if function_call.name == "log_life_activity":
+                        tool_result = await self._log_life_activity_to_obsidian(
+                            function_call.args["activity_name"],
+                            function_call.args["status"]
+                        )
+                    elif function_call.name == "save_thought_reflection":
+                        tool_result = await self._save_thought_reflection_to_obsidian(
+                            function_call.args.get("theme", "無題"),
+                            function_call.args.get("summary", ""),
+                            function_call.args.get("next_step", "")
+                        )
+                    elif function_call.name == "create_permanent_note":
+                        tool_result = await self._create_permanent_note_to_obsidian(
+                            function_call.args["title"],
+                            function_call.args["content"]
+                        )
+                    elif function_call.name == "search_memory":
                         tool_result = await self._search_drive_notes(
                             function_call.args["keywords"]
                         )

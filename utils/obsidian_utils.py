@@ -5,9 +5,12 @@ import re
 # Botは項目を新規作成する際、この順序に従って適切な位置に挿入します。
 SECTION_ORDER = [
     # --- 1. Timeline (リアルタイムメモ) ---
+    "## 🎯 Tasks",     # LLR風タスク＆時間記録 (PartnerCog)
     "## 💬 Timeline",  # 日常のつぶやき・メモ (PartnerCog)
     # --- 2. Daily Summary (1日の振り返り整理) ---
+    "## 🪞 Alter Log",  # 忖度ゼロの客観的プロファイリング (DailyOrganizeCog)
     "## 📔 Daily Journal",  # AIによる振り返り日記 (DailyOrganizeCog)
+    "## 🤔 Thought Reflection",  # 壁打ちと思考整理の記録 (PartnerCog)
     "## 📝 Events & Actions",  # 出来事・行動記録 (DailyOrganizeCog)
     "## 💡 Insights & Thoughts",  # 考えたこと・気づき (DailyOrganizeCog)
     "## ➡️ Next Actions",  # ネクストアクション (DailyOrganizeCog)

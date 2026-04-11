@@ -5,6 +5,7 @@ from discord import app_commands
 import logging
 import datetime
 import asyncio
+import random
 
 from config import JST
 from prompts import (
@@ -191,10 +192,14 @@ class FitbitCog(commands.Cog):
     # --- 自動タスク（毎日の定期実行） ---
     @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
     async def sleep_report_loop(self):
+        # 人間らしさのため0〜10分のランダム遅延
+        await asyncio.sleep(random.randint(0, 600))
         await self.send_sleep_report()
 
     @tasks.loop(time=datetime.time(hour=22, minute=15, tzinfo=JST))
     async def full_health_report_loop(self):
+        # 人間らしさのため0〜10分のランダム遅延
+        await asyncio.sleep(random.randint(0, 600))
         await self.send_full_health_report()
 
     # --- 手動コマンド（念のための個別取得用） ---
