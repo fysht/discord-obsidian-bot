@@ -158,13 +158,14 @@ class MyBot(commands.Bot):
 
 # --- 3. 起動処理 ---
 async def main():
-    if not TOKEN:
-        logging.critical(
-            "DISCORD_BOT_TOKENが設定されていません。ボットを起動できません。"
-        )
-        return
-
     bot = MyBot()
+
+    # TOKENのチェックは行うが、Webサーバー起動を優先するためreturnはしない
+    if not TOKEN:
+        logging.error(
+            "DISCORD_BOT_TOKENが設定されていません。Discord側は起動しません。"
+        )
+
 
     # --- FastAPI の初期化 ---
     import uvicorn
@@ -194,16 +195,17 @@ async def main():
     server = uvicorn.Server(config)
 
     # Discord BotとFastAPIを並列で起動
-    logging.info(f"FastAPI サーバーをポート {port} で起動します...")
+    logging.info(f"Manager AI サーバーをポート {port} で起動します...")
+    tasks = [server.serve()]
+    if TOKEN:
+        tasks.append(bot.start(TOKEN))
+    else:
+        logging.warning("TOKENがないため、Webサーバー（PWA）のみを起動します。")
+
     try:
-        await asyncio.gather(
-            bot.start(TOKEN),
-            server.serve(),
-        )
+        await asyncio.gather(*tasks)
     except Exception as e:
-        logging.critical(
-            f"ボットの起動中に致命的なエラーが発生しました: {e}", exc_info=True
-        )
+        logging.error(f"サーバーの起動中にエラーが発生しました: {e}", exc_info=True)
 
 
 URL_REGEX = re.compile(r"https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+")
