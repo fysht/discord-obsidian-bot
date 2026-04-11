@@ -16,5 +16,5 @@ SCOPES = [
 # フォルダ・ファイル設定
 BOT_FOLDER = ".bot"
 PENDING_MEMOS_FILE = Path(
-    os.getenv("PENDING_MEMOS_FILE", "/var/data/pending_memos.json")
+    os.getenv("PENDING_MEMOS_FILE", "pending_memos.json")
 )

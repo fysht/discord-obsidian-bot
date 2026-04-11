@@ -1,7 +1,7 @@
 {
-  "name": "Secretary AI",
-  "short_name": "秘書AI",
-  "description": "あなた専用のAI秘書アプリ",
+  "name": "Manager AI",
+  "short_name": "マネージャー",
+  "description": "俺たちの仕事と人生を支えるマネージャーAI",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0f0f1a",

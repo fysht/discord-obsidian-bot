@@ -285,4 +285,4 @@ class ChatService:
 
         except Exception as e:
             logging.error(f"ChatService AI応答エラー: {e}")
-            return "申し訳ございません。一時的にエラーが発生しました。少々お待ちくださいませ。"
+            return "ごめん、ちょっとエラーが起きたみたい。少し時間おいてからまた話しかけて！"

@@ -102,7 +102,7 @@ function addMessage(role, content, timestamp) {
 
   if (role === 'assistant') {
     div.innerHTML = `
-      <div class="msg-avatar">🤵‍♀️</div>
+      <div class="msg-avatar">💼</div>
       <div>
         <div class="msg-bubble">${escapeHtml(content)}</div>
         <div class="msg-time">${timeStr}</div>
@@ -130,7 +130,7 @@ function showTyping() {
   div.className = 'message assistant';
   div.id = 'typing-msg';
   div.innerHTML = `
-    <div class="msg-avatar">🤵‍♀️</div>
+    <div class="msg-avatar">💼</div>
     <div class="typing-indicator">
       <div class="typing-dot"></div>
       <div class="typing-dot"></div>
@@ -166,7 +166,7 @@ $('#chat-form').addEventListener('submit', async (e) => {
     addMessage('assistant', data.reply);
   } catch (err) {
     hideTyping();
-    addMessage('assistant', '申し訳ございません。通信エラーが発生しました。');
+    addMessage('assistant', 'ごめん、ちょっと通信エラーみたいだ。');
   } finally {
     sendBtn.disabled = false;
     messageInput.focus();
@@ -181,7 +181,7 @@ async function loadHistory() {
     if (data.messages && data.messages.length > 0) {
       data.messages.forEach(m => addMessage(m.role, m.content, m.timestamp));
     } else {
-      chatMessages.innerHTML = '<div class="chat-welcome"><p>秘書AIとの会話を始めましょう。</p></div>';
+      chatMessages.innerHTML = '<div class="chat-welcome"><p>俺たちの会話、ここから始めようぜ。</p></div>';
     }
   } catch (err) {
     console.error('履歴の読み込みに失敗:', err);
