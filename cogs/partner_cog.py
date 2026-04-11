@@ -1332,10 +1332,7 @@ class PartnerCog(commands.Cog):
 
         # 常に一番安価なモデルを使用
         use_model = "gemini-2.5-flash"
-        contents = await self._build_conversation_context(
-            message.channel, message.id, limit=10
-        )
-        contents.append(types.Content(role="user", parts=input_parts))
+        # contents は既にメソッド冒頭で history_messages + ユーザー入力から構築済み
 
         try:
             response = await self.gemini_client.aio.models.generate_content(
