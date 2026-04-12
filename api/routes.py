@@ -157,14 +157,38 @@ async def dashboard():
     # Fitbit (Sleep & Health)
     sleep_stats = {}
     fitbit_cog = bot.get_cog("FitbitCog")
-    if fitbit_cog and getattr(fitbit_cog, "is_ready", False):
+        if fitbit_cog and getattr(fitbit_cog, "is_ready", False):
         try:
             stats = await fitbit_cog.fitbit_service.get_stats(datetime.datetime.now(JST).date())
             if stats:
                 sleep_stats = {
-                    "score": stats.get("sleep_score", "N/@router.post("/task_action", dependencies=[Depends(verify_api_key)])
+                    "score": stats.get("sleep_score", "N/A"),
+                    "duration": fitbit_cog._format_minutes(stats.get("total_sleep_minutes", 0)),
+                    "steps": stats.get("steps", "N/A"),
+                    "calories": stats.get("calories_out", "N/A")
+                }
+        except Exception:
+            pass
+
+    return {
+        "tasks": tasks, 
+        "alter_log": alter_log, 
+        "date": today_str,
+        "g_calendar": g_calendar,
+        "google_tasks": google_tasks,
+        "weather": weather,
+        "news": news,
+        "sleep": sleep_stats
+    }
+
+class TaskActionRequest(BaseModel):
+    action: str  # 'create', 'update', 'delete', 'toggle'
+    old_text: str = ""
+    new_text: str = ""
+
+@router.post("/task_action", dependencies=[Depends(verify_api_key)])
 async def task_action(req: TaskActionRequest):
-    """Obsidian (DailyNote) のタスクセクションを操作」"""
+    """Obsidian (DailyNote) のタスクセクションを操作"""
     from api import app
     import datetime
     from config import JST
@@ -196,7 +220,10 @@ async def task_action(req: TaskActionRequest):
                 if req.action == "delete": lines.pop(i)
                 elif req.action == "update":
                     prefix = line[:6]
-                    lines[i] = f"{prefix}{req.new_text}"
+                    if "[" in prefix and "]" in prefix:
+                        lines[i] = f"{prefix}{req.new_text}"
+                    else:
+                        lines[i] = line.replace(req.old_text, req.new_text, 1)
                 elif req.action == "toggle":
                     if "- [x]" in line: lines[i] = line.replace("- [x]", "- [/]", 1)
                     else: lines[i] = line.replace("- [/]", "- [x]", 1)
@@ -273,7 +300,6 @@ async def task_candidates():
         f_id = await chat_service.drive_service.find_file(service, folder_id, f"{d}.md")
         if f_id:
             content = await chat_service.drive_service.read_text_file(service, f_id)
-            # ## 🎯 Tasks セクション以下を抽出
             if "## 🎯 Tasks" in content:
                 section = content.split("## 🎯 Tasks")[1].split("##")[0]
                 for line in section.split("\n"):
@@ -291,20 +317,4 @@ async def task_candidates():
         "start": start_candidates[:10],
         "end": end_candidates
     }
-ion == "update":
-                    prefix = line[:6] # '- [x] ' or '- [/] '
-                    lines[i] = f"{prefix}{req.new_text}"
-                elif req.action == "toggle":
-                    if line.startswith("- [x]"):
-                        lines[i] = line.replace("- [x]", "- [/]", 1)
-                    else:
-                        lines[i] = line.replace("- [/]", "- [x]", 1)
-                break
-        content = '\n'.join(lines)
 
-    if f_id:
-        await chat_service.drive_service.update_text(service, f_id, content)
-    else:
-        await chat_service.drive_service.upload_text(service, folder_id, file_name, content)
-
-    return {"status": "success"}

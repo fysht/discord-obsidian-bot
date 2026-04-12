@@ -364,10 +364,23 @@ class PartnerCog(commands.Cog):
             )
 
             reply_text = response.text.strip()
+            
+            # PWA (App) DBに保存
+            await _save_msg("assistant", reply_text)
+            
+            # Discordに送信
+            if hasattr(self, "memo_channel_id") and self.memo_channel_id:
+                channel = self.bot.get_channel(self.memo_channel_id)
+                if channel:
+                    await channel.send(reply_text)
+                    
+            # バックアップ
+            if hasattr(self, "drive_service") and self.drive_service:
+                 _asyncio.create_task(_backup(self.drive_service, self.drive_folder_id))
 
-            await channel.send(reply_text)
         except Exception as e:
             logging.error(f"PartnerCog 定期メッセージ生成エラー: {e}")
+
 
     async def fetch_todays_chat_log(self, channel=None) -> str:
         """今日のチャットログをPWAのDBから取得"""
@@ -1017,7 +1030,12 @@ class PartnerCog(commands.Cog):
 
     async def generate_response_for_app(self, text: str, history_messages: list):
         """PWA (アプリ) からのメッセージを処理し、全21機能を活用してAI応答を生成する。"""
+        # ★追加: アプリからのメッセージも Obsidian の Timeline に保存する
+        if text:
+            asyncio.create_task(self._append_raw_message_to_obsidian(text))
+
         now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+
         user_manual = await self._get_user_manual()
         system_prompt = get_system_prompt(self.user_name, now_str, user_manual)
 
