@@ -169,7 +169,7 @@ class DailyOrganizeCog(commands.Cog):
                 "\n".join(data["alter_log"])
                 if isinstance(data["alter_log"], list)
                 else str(data["alter_log"]),
-                "## 🪞 Alter Log",
+                "## 🪟 ライフログ",
             )
         if data.get("journal"):
             content = update_section(content, data["journal"], "## 📔 Daily Journal")

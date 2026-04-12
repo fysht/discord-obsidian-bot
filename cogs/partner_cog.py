@@ -60,7 +60,7 @@ class PartnerCog(commands.Cog):
         text: str,
         folder_name: str = "DailyNotes",
         file_name: str = None,
-        target_heading: str = "## 💬 Timeline",
+        target_heading: str = "## 🪟 ライフログ",
     ):
         if not text:
             return

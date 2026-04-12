@@ -104,14 +104,18 @@ async def dashboard():
 
     now = datetime.datetime.now(JST)
     weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-    today_str = f"{now.strftime('%Y-%m-%d')} ({weekdays[now.weekday()]})"
+    # 表示用には曜日を含める
+    display_date = f"{now.strftime('%Y-%m-%d')} ({weekdays[now.weekday()]})"
+    # ファイル検索用には曜日を含めない
+    today_str = now.strftime("%Y-%m-%d")
+
     folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
     if not folder_id:
-        return {"tasks": [], "alter_log": ""}
+        return {"tasks": [], "alter_log": "", "date": display_date}
 
     f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
     if not f_id:
-        return {"tasks": [], "alter_log": ""}
+        return {"tasks": [], "alter_log": "", "date": display_date}
 
     try:
         content = await chat_service.drive_service.read_text_file(service, f_id)
@@ -129,9 +133,13 @@ async def dashboard():
             elif line.startswith("- [/]"):
                 tasks.append({"text": line[6:].strip(), "done": False})
 
-    # Alter Logセクションの抽出
+    # ライフログ（旧Alter Log相当）セクションの抽出
     alter_log = ""
-    alter_match = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    # 新しい形式 (## 🪟 ライフログ) を優先的に探し、なければ旧形式 (## 🪞 Alter Log) を探す
+    alter_match = re.search(r"## 🪟 ライフログ\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    if not alter_match:
+        alter_match = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    
     if alter_match:
         alter_log = alter_match.group(1).strip()
 
@@ -175,7 +183,7 @@ async def dashboard():
     return {
         "tasks": tasks, 
         "alter_log": alter_log, 
-        "date": today_str,
+        "date": display_date,
         "g_calendar": g_calendar,
         "google_tasks": google_tasks,
         "weather": weather,
@@ -201,9 +209,8 @@ async def task_action(req: TaskActionRequest):
         raise HTTPException(status_code=503, detail="サービス未接続")
 
     service = chat_service.drive_service.get_service()
-    now = datetime.datetime.now(JST)
-    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-    today_str = f"{now.strftime('%Y-%m-%d')} ({weekdays[now.weekday()]})"
+    # ファイル名用（曜日なし）
+    today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
     folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
     file_name = f"{today_str}.md"
     f_id = await chat_service.drive_service.find_file(service, folder_id, file_name)
