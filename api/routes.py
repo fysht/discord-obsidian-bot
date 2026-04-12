@@ -174,8 +174,20 @@ async def dashboard():
                 news.append({"title": parts[0], "link": parts[1]})
             else:
                 news.append({"title": n, "link": "#"})
-    except Exception:
-        pass
+    # Fitbitデータ取得
+    sleep_stats = {"score": "N/A", "duration": "N/A"}
+    fitbit_cog = bot.get_cog("FitbitCog")
+    if fitbit_cog and fitbit_cog.is_ready:
+        try:
+            target_date = datetime.datetime.now(JST).date()
+            stats = await fitbit_cog.fitbit_service.get_stats(target_date)
+            if stats:
+                score = stats.get("sleep_score")
+                raw_duration = stats.get("total_sleep_minutes")
+                duration = fitbit_cog._format_minutes(raw_duration) if raw_duration else "N/A"
+                sleep_stats = {"score": score or "N/A", "duration": duration}
+        except Exception as e:
+            logging.error(f"API Dashboard Fitbit fetch error: {e}")
 
     return {
         "tasks": tasks, 

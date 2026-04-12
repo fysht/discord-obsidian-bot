@@ -225,6 +225,53 @@ window.executeAiAction = async (toolName, args) => {
     } catch { showToast('実行に失敗しました', true); }
 };
 
+window.openIntelligentTaskModal = async (mode) => {
+    const modal = $('#task-modal');
+    const list = $('#modal-list');
+    const title = $('#modal-title');
+    if (!modal || !list || !title) return;
+
+    title.textContent = mode === 'start' ? 'タスク開始' : 'タスク終了';
+    list.innerHTML = '<div class="loading-placeholder">候補を取得中...</div>';
+    modal.classList.remove('hidden');
+
+    try {
+        const data = await apiFetch('/api/task_candidates');
+        const candidates = mode === 'start' ? data.start : data.end;
+        
+        if (!candidates || candidates.length === 0) {
+            list.innerHTML = '<div class="loading-placeholder">候補がありません</div>';
+        } else {
+            list.innerHTML = candidates.map(c => `
+                <div class="modal-item" onclick="selectTaskCandidate('${c}')">${escapeHtml(c)}</div>
+            `).join('');
+        }
+    } catch (err) {
+        console.error(err);
+        list.innerHTML = '<div class="loading-placeholder">データ取得に失敗しました</div>';
+    }
+
+    const confirmBtn = $('#task-confirm-btn');
+    if (confirmBtn) {
+        confirmBtn.onclick = () => {
+            const val = $('#custom-task-input').value.trim();
+            if (val) selectTaskCandidate(val);
+        };
+    }
+};
+
+window.selectTaskCandidate = (name) => {
+    const isStart = $('#modal-title').textContent === 'タスク開始';
+    const modeStr = isStart ? '開始' : '終了';
+    sendActionCommand(`${name}を${modeStr}`);
+    closeTaskModal();
+};
+
+window.closeTaskModal = () => {
+    $('#task-modal').classList.add('hidden');
+    $('#custom-task-input').value = '';
+};
+
 window.sendActionCommand = (cmd) => {
     if (!messageInput) return;
     messageInput.value = cmd;
