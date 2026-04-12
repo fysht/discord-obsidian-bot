@@ -162,3 +162,66 @@ class GoogleTasksService:
         except Exception as e:
             logging.error(f"get_completed_tasks_today error: {e}")
             return []
+
+    async def delete_task(self, task_id, list_name: str = None):
+        """タスクIDを指定して削除する"""
+        service = self.get_service()
+        if not service:
+            return "Tasks APIに接続できませんでした。"
+        try:
+            list_id = await self._get_tasklist_id(service, list_name)
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: service.tasks().delete(tasklist=list_id, task=task_id).execute(),
+            )
+            return "タスクを削除しました。"
+        except Exception as e:
+            return f"タスクの削除に失敗しました: {e}"
+
+    async def update_task(self, task_id, title=None, notes=None, completed=None, list_name: str = None):
+        """タスクの内容を更新する。completedがTrueなら完了にする"""
+        service = self.get_service()
+        if not service:
+            return "Tasks APIに接続できませんでした。"
+        try:
+            list_id = await self._get_tasklist_id(service, list_name)
+            loop = asyncio.get_running_loop()
+            
+            # 現在の状態を取得
+            task = await loop.run_in_executor(
+                None,
+                lambda: service.tasks().get(tasklist=list_id, task=task_id).execute(),
+            )
+            
+            if title: task["title"] = title
+            if notes is not None: task["notes"] = notes
+            if completed is True:
+                task["status"] = "completed"
+            elif completed is False:
+                task["status"] = "needsAction"
+
+            await loop.run_in_executor(
+                None,
+                lambda: service.tasks().update(tasklist=list_id, task=task_id, body=task).execute(),
+            )
+            return f"タスク「{task['title']}」を更新しました。"
+        except Exception as e:
+            return f"タスクの更新に失敗しました: {e}"
+
+    async def get_raw_tasks(self, list_name: str = None):
+        """未完了タスクのパッチ用データをリストで取得する"""
+        service = self.get_service()
+        if not service: return []
+        try:
+            list_id = await self._get_tasklist_id(service, list_name)
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(
+                None,
+                lambda: service.tasks().list(tasklist=list_id, showCompleted=False).execute(),
+            )
+            items = res.get("items", [])
+            return [{"id": t["id"], "title": t["title"], "notes": t.get("notes", "")} for t in items]
+        except Exception:
+            return []
+

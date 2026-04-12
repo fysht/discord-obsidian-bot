@@ -136,35 +136,21 @@ async def dashboard():
     # Google Calendar
     g_calendar = []
     if hasattr(chat_service, "calendar_service") and chat_service.calendar_service:
-        try:
-            cal_str = await chat_service.calendar_service.list_events_for_date(today_str)
-            # "【2026-04-11 の予定】\n- 09:00 : ..." -> 文字列リストに変換
-            lines = cal_str.split("\n")
-            if len(lines) > 1 and lines[0].startswith("【"):
-                g_calendar = lines[1:]
-            else:
-                g_calendar = [cal_str]
-        except Exception as e:
-            pass
-            
-    # Google Tasks
-    g_tasks = []
+        g_calendar = await chat_service.calendar_service.get_raw_events_for_date(today_str)
+
+    # Google Tasks (旧名: g_tasks -> google_tasks)
+    google_tasks = []
     if hasattr(chat_service, "tasks_service") and chat_service.tasks_service:
-        try:
-            task_str = await chat_service.tasks_service.get_uncompleted_tasks()
-            g_tasks = [t for t in task_str.split("\n") if t.strip()]
-        except Exception:
-            pass
+        google_tasks = await chat_service.tasks_service.get_raw_tasks()
 
     # Weather & News (InfoServiceを使用)
     from services.info_service import InfoService
     weather = "取得失敗"
     news = []
     try:
-        info_service = getattr(bot, "info_service", InfoService())
-        weather_val, _, _ = await info_service.get_weather()
+        weather_val, _, _ = await bot.info_service.get_weather() if hasattr(bot, "info_service") else InfoService().get_weather()
         weather = weather_val.strip('"')
-        news = await info_service.get_news(limit=5)
+        news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
     except Exception:
         pass
 
@@ -176,34 +162,9 @@ async def dashboard():
             stats = await fitbit_cog.fitbit_service.get_stats(datetime.datetime.now(JST).date())
             if stats:
                 sleep_stats = {
-                    "score": stats.get("sleep_score", "N/A"),
-                    "duration": fitbit_cog._format_minutes(stats.get("total_sleep_minutes", 0)),
-                    "steps": stats.get("steps", "N/A"),
-                    "calories": stats.get("calories_out", "N/A")
-                }
-        except Exception:
-            pass
-
-    return {
-        "tasks": tasks, 
-        "alter_log": alter_log, 
-        "date": today_str,
-        "g_calendar": g_calendar,
-        "g_tasks": g_tasks,
-        "weather": weather,
-        "news": news,
-        "sleep": sleep_stats
-    }
-
-
-class TaskActionRequest(BaseModel):
-    action: str  # 'create', 'update', 'delete', 'toggle'
-    old_text: str = ""
-    new_text: str = ""
-
-@router.post("/task_action", dependencies=[Depends(verify_api_key)])
+                    "score": stats.get("sleep_score", "N/@router.post("/task_action", dependencies=[Depends(verify_api_key)])
 async def task_action(req: TaskActionRequest):
-    """ダッシュボードUIやボタンからタスクを操作するエンドポイント"""
+    """Obsidian (DailyNote) のタスクセクションを操作」"""
     from api import app
     import datetime
     from config import JST
@@ -223,21 +184,114 @@ async def task_action(req: TaskActionRequest):
     if f_id:
         try:
             content = await chat_service.drive_service.read_text_file(service, f_id)
-        except Exception:
-            pass
+        except Exception: pass
 
-    # 既存のタスクセクション内容を正規表現で書き換え
     if req.action == "create":
         append_text = f"- [/] {req.new_text}"
         content = update_section(content, append_text, "## 🎯 Tasks")
     else:
-        # 古いテキストを含む行を探す
         lines = content.split('\n')
         for i, line in enumerate(lines):
-            if line.startswith("- [") and req.old_text in line:
-                if req.action == "delete":
-                    lines.pop(i)
+            if line.strip().startswith("- [") and req.old_text in line:
+                if req.action == "delete": lines.pop(i)
                 elif req.action == "update":
+                    prefix = line[:6]
+                    lines[i] = f"{prefix}{req.new_text}"
+                elif req.action == "toggle":
+                    if "- [x]" in line: lines[i] = line.replace("- [x]", "- [/]", 1)
+                    else: lines[i] = line.replace("- [/]", "- [x]", 1)
+                break
+        content = '\n'.join(lines)
+
+    if f_id: await chat_service.drive_service.update_text(service, f_id, content)
+    else: await chat_service.drive_service.upload_text(service, folder_id, file_name, content)
+    return {"status": "success"}
+
+class CalendarActionRequest(BaseModel):
+    action: str # 'update', 'delete'
+    event_id: str
+    summary: str = None
+    description: str = None
+
+@router.post("/calendar_action", dependencies=[Depends(verify_api_key)])
+async def calendar_action(req: CalendarActionRequest):
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not bot.calendar_service: raise HTTPException(status_code=503, detail="カレンダーサービス未設定")
+    
+    if req.action == "delete":
+        res = await bot.calendar_service.delete_event(req.event_id)
+    elif req.action == "update":
+        res = await bot.calendar_service.update_event(req.event_id, summary=req.summary, description=req.description)
+    else: res = "不明なアクションです"
+    
+    return {"status": "success", "message": res}
+
+class GTaskActionRequest(BaseModel):
+    action: str # 'update', 'delete', 'toggle'
+    task_id: str
+    title: str = None
+    completed: bool = None
+
+@router.post("/google_tasks_action", dependencies=[Depends(verify_api_key)])
+async def google_tasks_action(req: GTaskActionRequest):
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not bot.tasks_service: raise HTTPException(status_code=503, detail="タスクサービス未設定")
+
+    if req.action == "delete":
+        res = await bot.tasks_service.delete_task(req.task_id)
+    elif req.action == "update":
+        res = await bot.tasks_service.update_task(req.task_id, title=req.title)
+    elif req.action == "toggle":
+        res = await bot.tasks_service.update_task(req.task_id, completed=req.completed)
+    else: res = "不明なアクションです"
+
+    return {"status": "success", "message": res}
+
+@router.get("/task_candidates", dependencies=[Depends(verify_api_key)])
+async def task_candidates():
+    """タスク開始用の履歴（直近10件）と、終了用の現在実行中タスクを取得"""
+    from api import app
+    import datetime
+    from config import JST
+    import re
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service: return {"start": [], "end": []}
+
+    service = chat_service.drive_service.get_service()
+    folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+    
+    # 履歴（過去7日分くらいからユニークなタスクを抽出）
+    start_candidates = []
+    end_candidates = []
+    seen = set()
+    
+    for i in range(7):
+        d = (datetime.datetime.now(JST) - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{d}.md")
+        if f_id:
+            content = await chat_service.drive_service.read_text_file(service, f_id)
+            # ## 🎯 Tasks セクション以下を抽出
+            if "## 🎯 Tasks" in content:
+                section = content.split("## 🎯 Tasks")[1].split("##")[0]
+                for line in section.split("\n"):
+                    match = re.search(r"- \[(.*?)\] (.*)", line)
+                    if match:
+                        state = match.group(1)
+                        task_name = match.group(2).split("(")[0].strip() # 時刻部分は除外
+                        if task_name and task_name not in seen:
+                            start_candidates.append(task_name)
+                            seen.add(task_name)
+                        if state == "/" and i == 0: # 今日の実行中
+                             end_candidates.append(task_name)
+    
+    return {
+        "start": start_candidates[:10],
+        "end": end_candidates
+    }
+ion == "update":
                     prefix = line[:6] # '- [x] ' or '- [/] '
                     lines[i] = f"{prefix}{req.new_text}"
                 elif req.action == "toggle":

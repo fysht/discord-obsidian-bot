@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="theme-color" content="#0a0a12">
-    <meta name="description" content="AI Manager - Your Personal Assistant">
     <title>AI Manager</title>
     <link rel="manifest" href="/static/manifest.json">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -26,9 +25,7 @@
                 <p class="login-subtitle">Your personal AI partner</p>
                 <form id="login-form">
                     <input type="password" id="password-input" class="login-input" placeholder="パスワードを入力" autocomplete="current-password">
-                    <button type="submit" class="login-btn">
-                        <span>ログイン</span>
-                    </button>
+                    <button type="submit" class="login-btn">ログイン</button>
                 </form>
                 <p id="login-error" class="login-error"></p>
             </div>
@@ -37,180 +34,175 @@
 
     <!-- ========== MAIN SCREEN ========== -->
     <div id="main-screen" class="screen">
-        <!-- HEADER -->
-        <header class="header">
-            <div class="header-top">
-                <div class="brand">
-                    <img src="/static/icons/avatar.png" alt="" class="small-avatar">
-                    <span class="brand-name">Manager AI</span>
-                    <span class="status-dot"></span>
-                </div>
+        <!-- TOP HEADER -->
+        <header class="top-header">
+            <div class="header-left">
+                <span class="header-title" id="current-tab-title">チャット</span>
             </div>
-            <!-- MAIN NAVIGATION -->
-            <nav class="main-nav">
-                <button class="nav-btn active" data-tab="chat" title="チャット">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                    <span>チャット</span>
+            <div class="header-right">
+                <button class="icon-btn" id="settings-btn" title="設定">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                 </button>
-                <button class="nav-btn" data-tab="dashboard" title="ダッシュボード">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
-                    <span>予定</span>
-                </button>
-                <button class="nav-btn" data-tab="wellness" title="ウェルネス">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                    <span>ライフ</span>
-                </button>
-                <button class="nav-btn" data-tab="logs" title="ログ">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                    <span>記録</span>
-                </button>
-            </nav>
+            </div>
         </header>
 
-        <!-- ========== CHAT TAB ========== -->
-        <div id="chat-tab" class="tab-content active">
-            <div id="chat-messages" class="chat-messages">
-                <!-- Welcome UI -->
-                <div class="chat-welcome">
-                    <div class="welcome-box">
-                        <h2>こんにちは、ボス。</h2>
-                        <p>今日の調子はどうだい？何でも話しかけてくれ。</p>
+        <!-- TAB CONTENTS -->
+        <main class="content-area">
+            <!-- ========== CHAT TAB ========== -->
+            <div id="tab-chat" class="tab-pane active">
+                <div id="chat-messages" class="chat-messages">
+                    <div class="chat-welcome">
+                        <h2>こんにちは。</h2>
+                        <p>今日はどんなお手伝いをしましょうか？</p>
+                    </div>
+                </div>
+                <div class="action-chips-container">
+                    <div class="action-chips">
+                        <button class="chip-btn" onclick="sendActionCommand('今日の予定を教えて')">今日の予定</button>
+                        <button class="chip-btn special" onclick="openIntelligentTaskModal('start')">タスク開始</button>
+                        <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">タスク終了</button>
+                        <button class="chip-btn" onclick="sendActionCommand('英語学習を始める')">英語学習</button>
+                        <button class="chip-btn" onclick="sendActionCommand('振り返りをしよう')">振り返り</button>
+                    </div>
+                </div>
+                <div class="chat-input-area">
+                    <form id="chat-form">
+                        <div class="input-wrapper">
+                            <textarea id="message-input" placeholder="メッセージを入力..." rows="1"></textarea>
+                            <button type="submit" class="send-btn" id="send-btn">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- ========== INFO TAB (WEATHER/NEWS) ========== -->
+            <div id="tab-info" class="tab-pane">
+                <div class="scroll-container">
+                    <div class="card weather-card">
+                        <div class="card-header">
+                            <span class="card-icon">☁️</span>
+                            <span class="card-title">岡山県の天気</span>
+                        </div>
+                        <div id="dash-weather" class="card-body">読み込み中...</div>
+                    </div>
+                    <div class="card news-card">
+                        <div class="card-header">
+                            <span class="card-icon">🌍</span>
+                            <span class="card-title">主要ニュース</span>
+                        </div>
+                        <div id="dash-news" class="card-body">読み込み中...</div>
                     </div>
                 </div>
             </div>
 
-            <!-- ACTION CHIPS (SCROLLABLE) -->
-            <div class="action-chips-container">
-                <div class="action-chips">
-                    <button class="chip-btn" onclick="sendActionCommand('今日の予定を教えて')">今日の予定</button>
-                    <button class="chip-btn special" onclick="openTaskEntry('start')">タスク開始</button>
-                    <button class="chip-btn special" onclick="openTaskEntry('end')">タスク終了</button>
-                    <button class="chip-btn" onclick="sendActionCommand('メモを残して')">メモ</button>
-                    <button class="chip-btn" onclick="sendActionCommand('振り返りをしよう')">振り返り</button>
-                    <button class="chip-btn" onclick="sendActionCommand('学習ノートを作成')">ノート</button>
-                </div>
-            </div>
-
-            <!-- CHAT INPUT -->
-            <div class="chat-input-area">
-                <form id="chat-form">
-                    <div class="input-wrapper">
-                        <textarea id="message-input" placeholder="メッセージを入力..." rows="1"></textarea>
-                        <button type="submit" class="send-btn" id="send-btn">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-                        </button>
+            <!-- ========== LOG TAB (OBSIDIAN/SLEEP/DIARY) ========== -->
+            <div id="tab-log" class="tab-pane">
+                <div class="scroll-container">
+                    <div class="card obsidian-card">
+                        <div class="card-header">
+                            <span class="card-icon">🎯</span>
+                            <span class="card-title">Obsidian 今日のタスク</span>
+                        </div>
+                        <div id="dash-tasks" class="card-body"></div>
                     </div>
-                </form>
-            </div>
-        </div>
-
-        <!-- ========== DASHBOARD TAB (SCHEDULE) ========== -->
-        <div id="dashboard-tab" class="tab-content">
-            <div class="sub-nav">
-                <button class="sub-nav-btn active" data-sub="calendar">Googleカレンダー</button>
-                <button class="sub-nav-btn" data-sub="tasks">ToDoリスト</button>
-            </div>
-            
-            <div class="dashboard-scroll-area">
-                <!-- Calendar Section -->
-                <div id="sub-calendar" class="sub-tab-content active">
-                    <div class="section-header">
-                        <h3>今日の予定</h3>
-                        <a href="https://calendar.google.com/" target="_blank" rel="noopener" class="external-link-btn">
-                            Googleカレンダーを開く
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                        </a>
+                    <div class="card health-card">
+                        <div class="card-header">
+                            <span class="card-icon">🌙</span>
+                            <span class="card-title">昨夜の睡眠</span>
+                        </div>
+                        <div id="dash-sleep" class="card-body"></div>
                     </div>
-                    <div id="dash-google-calendar" class="data-container">
-                        <div class="loading-placeholder">予定を読み込み中...</div>
-                    </div>
-                </div>
-
-                <!-- Google Tasks Section -->
-                <div id="sub-tasks" class="sub-tab-content">
-                    <div class="section-header">
-                        <h3>Google Tasks</h3>
-                    </div>
-                    <div id="dash-google-tasks" class="data-container">
-                        <div class="loading-placeholder">タスクを読み込み中...</div>
-                    </div>
-                    <div class="section-header mt-20">
-                        <h3>Obsidian 今日のタスク</h3>
-                    </div>
-                    <div id="dash-tasks" class="data-container">
-                        <div class="loading-placeholder">Obsidianを読み込み中...</div>
+                    <div class="card diary-card">
+                        <div class="card-header">
+                            <span class="card-icon">📒</span>
+                            <span class="card-title">観察日記</span>
+                        </div>
+                        <div id="dash-alter-log" class="card-body diary-content"></div>
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- ========== WELLNESS TAB (INFO) ========== -->
-        <div id="wellness-tab" class="tab-content">
-            <div class="dashboard-scroll-area">
-                <!-- Weather Card -->
-                <div class="wellness-card weather">
-                    <div class="wc-header">
-                        <span class="wc-icon">☁️</span>
-                        <span class="wc-title">岡山県の天気</span>
-                    </div>
-                    <div id="dash-weather" class="wc-body">---</div>
-                </div>
+            <!-- ========== SCHEDULE TAB (CALENDAR/TASKS) ========== -->
+            <div id="tab-schedule" class="tab-pane">
+                <div class="scroll-container">
+                    <!-- Date at top -->
+                    <div class="date-header" id="dash-date-label">---</div>
 
-                <!-- Sleep Card -->
-                <div class="wellness-card health">
-                    <div class="wc-header">
-                        <span class="wc-icon">🌙</span>
-                        <span class="wc-title">昨夜の睡眠 (Fitbit)</span>
+                    <div class="card calendar-card">
+                        <div class="card-header">
+                            <span class="card-icon">📅</span>
+                            <span class="card-title">Googleカレンダー</span>
+                            <a href="https://calendar.google.com/" target="_blank" class="mini-link">開く</a>
+                        </div>
+                        <div id="dash-google-calendar" class="card-body list-body"></div>
                     </div>
-                    <div id="dash-sleep" class="wc-body">
-                        <div class="loading-placeholder">Fitbit連携待ち...</div>
-                    </div>
-                </div>
 
-                <!-- News Card -->
-                <div class="wellness-card news">
-                    <div class="wc-header">
-                        <span class="wc-icon">🌍</span>
-                        <span class="wc-title">Yahoo! 最新ニュース</span>
-                    </div>
-                    <div id="dash-news" class="wc-body">
-                        <div class="loading-placeholder">ニュース取得中...</div>
+                    <div class="card tasks-card">
+                        <div class="card-header">
+                            <span class="card-icon">✅</span>
+                            <span class="card-title">タスク</span>
+                            <a href="https://calendar.google.com/" target="_blank" class="mini-link">カレンダーで確認</a>
+                        </div>
+                        <div id="dash-google-tasks" class="card-body list-body"></div>
                     </div>
                 </div>
             </div>
-        </div>
+        </main>
 
-        <!-- ========== LOGS TAB (ALTER LOG) ========== -->
-        <div id="logs-tab" class="tab-content">
-            <div class="dashboard-scroll-area">
-                <div class="section-header padding-16">
-                    <h3>🪞 Alter Log</h3>
-                    <span class="dash-date" id="dash-date-label">---</span>
-                </div>
-                <div class="log-card-large">
-                    <div id="dash-alter-log" class="alter-log-content">今日の日記はまだ生成されていません。</div>
-                </div>
-            </div>
-        </div>
+        <!-- BOTTOM NAVIGATION (LINE-like) -->
+        <nav class="bottom-nav">
+            <button class="nav-item active" data-tab="chat">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                <span>チャット</span>
+            </button>
+            <button class="nav-item" data-tab="info">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <span>情報</span>
+            </button>
+            <button class="nav-item" data-tab="log">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                <span>ログ</span>
+            </button>
+            <button class="nav-item" data-tab="schedule">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                <span>予定</span>
+            </button>
+        </nav>
     </div>
 
-    <!-- ========== TASK ENTRY MODAL ========== -->
+    <!-- ========== INTELLIGENT TASK MODAL ========== -->
     <div id="task-modal" class="modal-overlay hidden">
         <div class="modal-card">
-            <h3 id="modal-title">タスク開始</h3>
-            <div class="modal-body">
-                <input type="text" id="task-name-input" placeholder="具体的に何をする？" autofocus>
+            <h3 id="modal-title">タスク選択</h3>
+            <div id="modal-list" class="modal-list">
+                <!-- 候補がここに並ぶ -->
+            </div>
+            <div class="modal-input-area">
+                <input type="text" id="custom-task-input" placeholder="新しいタスク名を入力...">
             </div>
             <div class="modal-actions">
-                <button class="modal-btn cancel" onclick="closeTaskEntry()">キャンセル</button>
-                <button class="modal-btn submit" id="task-submit-btn">確定</button>
+                <button class="modal-btn cancel" onclick="closeTaskModal()">キャンセル</button>
+                <button class="modal-btn submit" id="task-confirm-btn">確定</button>
             </div>
         </div>
     </div>
 
-    <!-- ========== TOAST ========== -->
-    <div id="toast-container"></div>
+    <!-- ========== EDIT MODAL (FOR CAL/TASK) ========== -->
+    <div id="edit-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3 id="edit-modal-title">編集</h3>
+            <input type="text" id="edit-input" class="modern-input">
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeEditModal()">閉じる</button>
+                <button class="modal-btn delete" id="edit-delete-btn">削除</button>
+                <button class="modal-btn submit" id="edit-save-btn">保存</button>
+            </div>
+        </div>
+    </div>
 
+    <div id="toast-container"></div>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

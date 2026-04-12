@@ -1,350 +1,20 @@
 /* ==========================================
-   Manager AI — Application Logic v3
+   Manager AI — Application Logic v4.0
    ========================================== */
 
 const API_BASE = '';
 let apiKey = localStorage.getItem('secretary_api_key') || '';
+let currentLanguage = 'ja'; // 'ja' or 'en' (Concept)
 
-// ========== Utilities ==========
 const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 
+// ========== UI UTILS ==========
 function showScreen(id) {
     $$('.screen').forEach(s => s.classList.remove('active'));
-    document.getElementById(id).classList.add('active');
+    $(`#${id}`).classList.add('active');
 }
 
-function formatTime(isoStr) {
-    if (!isoStr) return '';
-    const d = new Date(isoStr);
-    return d.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const el = document.createElement('div');
-    el.textContent = text;
-    return el.innerHTML;
-}
-
-// ========== API Core ==========
-async function apiFetch(path, options = {}) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'X-Api-Key': apiKey,
-        ...(options.headers || {}),
-    };
-    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
-    if (res.status === 401) {
-        localStorage.removeItem('secretary_api_key');
-        apiKey = '';
-        showScreen('login-screen');
-        throw new Error('認証が切れました。再ログインしてください。');
-    }
-    if (!res.ok) throw new Error(`APIエラー: ${res.status}`);
-    return res.json();
-}
-
-// ========== Login ==========
-$('#login-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const pw = $('#password-input').value.trim();
-    if (!pw) return;
-
-    try {
-        const data = await fetch(`${API_BASE}/api/auth`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: pw }),
-        }).then(r => {
-            if (!r.ok) throw new Error('パスワードが正しくありません。');
-            return r.json();
-        });
-
-        apiKey = data.api_key;
-        localStorage.setItem('secretary_api_key', apiKey);
-        $('#login-error').textContent = '';
-        showScreen('main-screen');
-        loadHistory();
-    } catch (err) {
-        $('#login-error').textContent = err.message;
-    }
-});
-
-// ========== Navigation (Main Tabs & Sub Tabs) ==========
-$$('.nav-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        $$('.nav-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        
-        $$('.tab-content').forEach(t => t.classList.remove('active'));
-        const targetTab = btn.dataset.tab;
-        $(`#${targetTab}-tab`).classList.add('active');
-
-        // タブに応じたデータ読み込み
-        if (targetTab === 'dashboard' || targetTab === 'wellness' || targetTab === 'logs') {
-            loadDashboard();
-        }
-    });
-});
-
-$$('.sub-nav-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-        $$('.sub-nav-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        
-        $$('.sub-tab-content').forEach(t => t.classList.remove('active'));
-        $(`#sub-${btn.dataset.sub}`).classList.add('active');
-    });
-});
-
-// ========== Chat System ==========
-const chatMessages = $('#chat-messages');
-const messageInput = $('#message-input');
-const sendBtn = $('#send-btn');
-
-// Input resizing
-messageInput.addEventListener('input', () => {
-    messageInput.style.height = 'auto';
-    messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
-});
-
-// PC: Enter to Send
-messageInput.addEventListener('keydown', (e) => {
-    if (e.isComposing) return;
-    if (window.innerWidth >= 768 && e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        $('#chat-form').dispatchEvent(new Event('submit'));
-    }
-});
-
-function addMessage(role, content, timestamp) {
-    const welcome = chatMessages.querySelector('.chat-welcome');
-    if (welcome) welcome.remove();
-
-    const div = document.createElement('div');
-    div.className = `message ${role}`;
-    const timeStr = timestamp ? formatTime(timestamp) : formatTime(new Date().toISOString());
-
-    div.innerHTML = `
-        <div class="msg-bubble">${formatMessageText(content)}</div>
-        <div class="msg-time">${timeStr}</div>
-    `;
-
-    chatMessages.appendChild(div);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-function formatMessageText(text) {
-    let html = escapeHtml(text).replace(/\n/g, '<br>');
-    // Inline buttons for quick actions
-    html = html.replace(/\[BUTTON:add_task:(.+?)\]/g, (_, taskName) => {
-        return `<button class="inline-action-btn" onclick="directAddTask('${escapeHtml(taskName)}')">＋ ${escapeHtml(taskName)}をタスクへ</button>`;
-    });
-    return html;
-}
-
-window.directAddTask = async function(taskName) {
-    try {
-        await apiFetch('/api/task_action', {
-            method: 'POST',
-            body: JSON.stringify({ action: 'create', new_text: taskName }),
-        });
-        showToast(`「${taskName}」を追加しました`);
-    } catch {
-        showToast('追加に失敗しました', true);
-    }
-};
-
-$('#chat-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const msg = messageInput.value.trim();
-    if (!msg || sendBtn.disabled) return;
-
-    addMessage('user', msg);
-    messageInput.value = '';
-    messageInput.style.height = 'auto';
-    sendBtn.disabled = true;
-    showTyping();
-
-    try {
-        const data = await apiFetch('/api/chat', {
-            method: 'POST',
-            body: JSON.stringify({ message: msg }),
-        });
-        hideTyping();
-        addMessage('assistant', data.reply);
-    } catch (err) {
-        hideTyping();
-        addMessage('assistant', 'ごめん、ちょっと調子が悪いみたいだ。もう一回送ってくれる？');
-    } finally {
-        sendBtn.disabled = false;
-        messageInput.focus();
-    }
-});
-
-function showTyping() {
-    const div = document.createElement('div');
-    div.className = 'message assistant';
-    div.id = 'typing-msg';
-    div.innerHTML = `<div class="msg-bubble typing"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
-    chatMessages.appendChild(div);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-function hideTyping() {
-    const el = $('#typing-msg');
-    if (el) el.remove();
-}
-
-async function loadHistory() {
-    try {
-        const data = await apiFetch('/api/history?limit=30');
-        chatMessages.innerHTML = '';
-        if (data.messages && data.messages.length > 0) {
-            data.messages.forEach(m => addMessage(m.role, m.content, m.timestamp));
-        }
-    } catch (err) {
-        console.error('History load failed:', err);
-    }
-}
-
-window.sendActionCommand = function(cmd) {
-    messageInput.value = cmd;
-    $('#chat-form').dispatchEvent(new Event('submit'));
-};
-
-// ========== Dashboard & Data Rendering ==========
-async function loadDashboard() {
-    try {
-        const data = await apiFetch('/api/dashboard');
-        
-        // Date Label
-        if ($('#dash-date-label')) {
-            const now = new Date();
-            const days = ['日', '月', '火', '水', '木', '金', '土'];
-            $('#dash-date-label').textContent = `${now.getMonth()+1}月${now.getDate()}日 (${days[now.getDay()]})`;
-        }
-
-        // 1. Google Calendar
-        const gcEl = $('#dash-google-calendar');
-        if (data.g_calendar && data.g_calendar.length > 0) {
-            gcEl.innerHTML = data.g_calendar.map(l => `<div class="cal-item">${escapeHtml(l.replace(/^- /, ''))}</div>`).join('');
-        } else {
-            gcEl.innerHTML = '<p class="dash-empty">予定はありません</p>';
-        }
-
-        // 2. Google Tasks
-        const gtEl = $('#dash-google-tasks');
-        if (data.g_tasks && data.g_tasks.length > 0) {
-            gtEl.innerHTML = data.g_tasks.map(l => `<div class="gtask-item">⭕ ${escapeHtml(l.replace(/^- /, ''))}</div>`).join('');
-        } else {
-            gtEl.innerHTML = '<p class="dash-empty">タスクはありません</p>';
-        }
-
-        // 3. Obsidian Tasks
-        const otEl = $('#dash-tasks');
-        if (data.tasks && data.tasks.length > 0) {
-            otEl.innerHTML = data.tasks.map(t => `
-                <div class="task-item ${t.done ? 'done' : ''}">
-                    <span class="task-check" onclick="toggleTask('${escapeHtml(t.text)}')">${t.done ? '✅' : '⬜'}</span>
-                    <span class="task-text">${escapeHtml(t.text)}</span>
-                    <div class="task-actions">
-                        <button class="small-btn" onclick="deleteTask('${escapeHtml(t.text)}')">🗑️</button>
-                    </div>
-                </div>
-            `).join('');
-        } else {
-            otEl.innerHTML = '<p class="dash-empty">タスクはありません</p>';
-        }
-
-        // 4. Weather
-        if ($('#dash-weather')) {
-            $('#dash-weather').innerHTML = `<p>${escapeHtml(data.weather || '取得失敗')}</p>`;
-        }
-
-        // 5. Sleep (Health)
-        const sleepEl = $('#dash-sleep');
-        if (sleepEl) {
-            if (data.sleep && data.sleep.score !== 'N/A') {
-                sleepEl.innerHTML = `
-                    <div class="health-grid">
-                        <div class="health-stat"><small>スコア</small><strong>${data.sleep.score}</strong></div>
-                        <div class="health-stat"><small>睡眠時間</small><strong>${data.sleep.duration}</strong></div>
-                        <div class="health-stat"><small>歩数</small><strong>${data.sleep.steps}歩</strong></div>
-                    </div>`;
-            } else {
-                sleepEl.innerHTML = '<p class="dash-empty">データがまだ同期されていません</p>';
-            }
-        }
-
-        // 6. News
-        const newsEl = $('#dash-news');
-        if (newsEl) {
-            if (data.news && data.news.length > 0) {
-                newsEl.innerHTML = data.news.map(n => {
-                    const lines = n.split('\n');
-                    return `<a href="${lines[1]}" target="_blank" class="news-item">
-                                <span class="news-title">${escapeHtml(lines[0])}</span>
-                            </a>`;
-                }).join('');
-            } else {
-                newsEl.innerHTML = '<p class="dash-empty">ニュースが取得できませんでした</p>';
-            }
-        }
-
-        // 7. Alter Log
-        if ($('#dash-alter-log')) {
-            $('#dash-alter-log').innerHTML = data.alter_log ? escapeHtml(data.alter_log).replace(/\n/g, '<br>') : '未生成です';
-        }
-
-    } catch (err) {
-        showToast('データの更新に失敗しました', true);
-    }
-}
-
-async function toggleTask(text) {
-    try {
-        await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'toggle', old_text: text }) });
-        loadDashboard();
-    } catch { showToast('同期待ち...', true); }
-}
-
-async function deleteTask(text) {
-    if (!confirm('削除しますか？')) return;
-    try {
-        await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', old_text: text }) });
-        loadDashboard();
-    } catch { showToast('削除失敗', true); }
-}
-
-// ========== Modal Logic ==========
-let taskActionType = 'start';
-
-window.openTaskEntry = function(type) {
-    taskActionType = type;
-    const modal = $('#task-modal');
-    const title = $('#modal-title');
-    title.textContent = type === 'start' ? 'タスク開始' : 'タスク終了';
-    $('#task-name-input').value = '';
-    modal.classList.remove('hidden');
-    $('#task-name-input').focus();
-};
-
-window.closeTaskEntry = function() {
-    $('#task-modal').classList.add('hidden');
-};
-
-$('#task-submit-btn').addEventListener('click', () => {
-    const val = $('#task-name-input').value.trim();
-    if (!val) return;
-    
-    const command = taskActionType === 'start' ? `今から「${val}」を開始するよ` : `「${val}」が終わったよ`;
-    sendActionCommand(command);
-    closeTaskEntry();
-});
-
-// Toast notification
 function showToast(msg, isError = false) {
     const container = $('#toast-container');
     const toast = document.createElement('div');
@@ -357,17 +27,296 @@ function showToast(msg, isError = false) {
     }, 3000);
 }
 
-// ========== Initialize ==========
+const escapeHtml = t => {
+    const d = document.createElement('div');
+    d.textContent = t;
+    return d.innerHTML;
+};
+
+// ========== API CORE ==========
+async function apiFetch(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', 'X-Api-Key': apiKey, ...(options.headers || {}) };
+    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    if (res.status === 401) {
+        localStorage.removeItem('secretary_api_key');
+        apiKey = '';
+        showScreen('login-screen');
+        throw new Error('Unauthorized');
+    }
+    if (!res.ok) throw new Error(`API Error: ${res.status}`);
+    return res.json();
+}
+
+// ========== LOGIN ==========
+$('#login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = $('#password-input').value.trim();
+    if (!pw) return;
+
+    try {
+        const data = await fetch(`${API_BASE}/api/auth`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ password: pw }),
+        }).then(r => {
+            if (!r.ok) throw new Error('Password mismatch');
+            return r.json();
+        });
+
+        apiKey = data.api_key;
+        localStorage.setItem('secretary_api_key', apiKey);
+        showScreen('main-screen');
+        initMain();
+    } catch (err) {
+        $('#login-error').textContent = 'パスワードが違います';
+    }
+});
+
+// ========== NAVIGATION ==========
+$$('.nav-item').forEach(item => {
+    item.addEventListener('click', () => {
+        const tab = item.dataset.tab;
+        switchTab(tab);
+    });
+});
+
+function switchTab(tab) {
+    $$('.nav-item').forEach(i => i.classList.remove('active'));
+    $(`.nav-item[data-tab="${tab}"]`).classList.add('active');
+    
+    $$('.tab-pane').forEach(p => p.classList.remove('active'));
+    $(`#tab-${tab}`).classList.add('active');
+    
+    // Update Header Title
+    const titles = { chat: 'チャット', info: '情報', log: 'デイリーログ', schedule: '予定' };
+    $('#current-tab-title').textContent = titles[tab] || 'Manager AI';
+
+    if (tab !== 'chat') loadDashboard();
+}
+
+// ========== SETTINGS (CONCEPT) ==========
+$('#settings-btn').addEventListener('click', () => {
+    currentLanguage = currentLanguage === 'ja' ? 'en' : 'ja';
+    showToast(`Language switched to ${currentLanguage === 'ja' ? '日本語' : 'English'} (Concept)`);
+});
+
+// ========== CHAT SYSTEM ==========
+const chatMessages = $('#chat-messages');
+const messageInput = $('#message-input');
+const sendBtn = $('#send-btn');
+
+$('#chat-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = messageInput.value.trim();
+    if (!msg || sendBtn.disabled) return;
+
+    appendMsg('user', msg);
+    messageInput.value = '';
+    messageInput.style.height = 'auto';
+    sendBtn.disabled = true;
+
+    try {
+        const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: msg }) });
+        appendMsg('assistant', data.reply);
+    } catch (err) {
+        appendMsg('assistant', 'すみません、エラーが発生しました。');
+    } finally {
+        sendBtn.disabled = false;
+    }
+});
+
+function appendMsg(role, content) {
+    const welcome = chatMessages.querySelector('.chat-welcome');
+    if (welcome) welcome.remove();
+
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    div.innerHTML = `<div class="msg-bubble">${escapeHtml(content).replace(/\n/g, '<br>')}</div>`;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+window.sendActionCommand = (cmd) => {
+    messageInput.value = cmd;
+    $('#chat-form').dispatchEvent(new Event('submit'));
+};
+
+// ========== INTELLIGENT TASK MODAL ==========
+let currentTaskType = 'start';
+
+window.openIntelligentTaskModal = async (type) => {
+    currentTaskType = type;
+    const modal = $('#task-modal');
+    $('#modal-title').textContent = type === 'start' ? 'タスク開始（履歴）' : 'タスク終了（実行中）';
+    $('#modal-list').innerHTML = '<div class="loading-placeholder">候補を読み込み中...</div>';
+    $('#custom-task-input').value = '';
+    
+    modal.classList.remove('hidden');
+    
+    try {
+        const data = await apiFetch('/api/task_candidates');
+        const list = type === 'start' ? data.start : data.end;
+        
+        if (list && list.length > 0) {
+            $('#modal-list').innerHTML = list.map(item => `
+                <div class="modal-item" onclick="selectTaskCandidate('${escapeHtml(item)}')">${escapeHtml(item)}</div>
+            `).join('');
+        } else {
+            $('#modal-list').innerHTML = '<div class="loading-placeholder">候補がありません</div>';
+        }
+    } catch (err) {
+        $('#modal-list').innerHTML = '<div class="loading-placeholder">取得に失敗しました</div>';
+    }
+};
+
+window.closeTaskModal = () => $('#task-modal').classList.add('hidden');
+
+window.selectTaskCandidate = (name) => {
+    $('#custom-task-input').value = name;
+};
+
+$('#task-confirm-btn').addEventListener('click', () => {
+    const val = $('#custom-task-input').value.trim();
+    if (!val) return;
+    const cmd = currentTaskType === 'start' ? `今から「${val}」を開始するよ` : `「${val}」が終わったよ`;
+    sendActionCommand(cmd);
+    closeTaskModal();
+});
+
+// ========== DASHBOARD & EDIT MODAL ==========
+let editTarget = null; // { type: 'calendar'|'google_task'|'obsidian', id: string, text: string }
+
+async function loadDashboard() {
+    try {
+        const data = await apiFetch('/api/dashboard');
+        
+        // Date
+        if ($('#dash-date-label')) $('#dash-date-label').textContent = data.date || '---';
+
+        // 1. Google Calendar
+        const calEl = $('#dash-google-calendar');
+        if (data.g_calendar && data.g_calendar.length > 0) {
+            calEl.innerHTML = data.g_calendar.map(ev => `
+                <div class="list-item">
+                    <div class="li-time">${ev.time}</div>
+                    <div class="li-text">${escapeHtml(ev.summary)}</div>
+                    <button class="edit-btn" onclick="openEditModal('calendar', '${ev.id}', '${escapeHtml(ev.summary)}')">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                </div>
+            `).join('');
+        } else {
+            calEl.innerHTML = '<div class="loading-placeholder">予定はありません</div>';
+        }
+
+        // 2. Google Tasks (タスク)
+        const gTaskEl = $('#dash-google-tasks');
+        if (data.google_tasks && data.google_tasks.length > 0) {
+            gTaskEl.innerHTML = data.google_tasks.map(t => `
+                <div class="list-item">
+                    <div class="li-text">✅ ${escapeHtml(t.title)}</div>
+                    <button class="edit-btn" onclick="openEditModal('google_task', '${t.id}', '${escapeHtml(t.title)}')">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                </div>
+            `).join('');
+        } else {
+            gTaskEl.innerHTML = '<div class="loading-placeholder">タスクはありません</div>';
+        }
+
+        // 3. Obsidian Tasks
+        const obTaskEl = $('#dash-tasks');
+        if (data.tasks && data.tasks.length > 0) {
+            obTaskEl.innerHTML = data.tasks.map(t => `
+                <div class="list-item">
+                    <div class="li-text" style="text-decoration: ${t.done ? 'line-through' : 'none'}">${escapeHtml(t.text)}</div>
+                    <button class="edit-btn" onclick="openEditModal('obsidian', '', '${escapeHtml(t.text)}', ${t.done})">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        // 4. Weather & News
+        if ($('#dash-weather')) $('#dash-weather').textContent = data.weather || '---';
+        if ($('#dash-news')) {
+            $('#dash-news').innerHTML = (data.news || []).map(n => `<div class="news-item">${escapeHtml(n.split('\n')[0])}</div>`).join('');
+        }
+
+        // 5. Sleep & Diary
+        if ($('#dash-sleep')) {
+            $('#dash-sleep').innerHTML = data.sleep?.score ? `スコア: ${data.sleep.score} / 時間: ${data.sleep.duration}` : 'データなし';
+        }
+        if ($('#dash-alter-log')) $('#dash-alter-log').innerHTML = escapeHtml(data.alter_log || '日記はまだ生成されていません。').replace(/\n/g, '<br>');
+
+    } catch (err) {
+        console.error(err);
+    }
+}
+
+window.openEditModal = (type, id, text, isDone = false) => {
+    editTarget = { type, id, text, isDone };
+    const modal = $('#edit-modal');
+    $('#edit-modal-title').textContent = type === 'calendar' ? '予定を編集' : 'タスクを編集';
+    $('#edit-input').value = text;
+    modal.classList.remove('hidden');
+};
+
+window.closeEditModal = () => $('#edit-modal').classList.add('hidden');
+
+$('#edit-save-btn').addEventListener('click', async () => {
+    const newVal = $('#edit-input').value.trim();
+    if (!newVal) return;
+    
+    try {
+        if (editTarget.type === 'calendar') {
+            await apiFetch('/api/calendar_action', { method: 'POST', body: JSON.stringify({ action: 'update', event_id: editTarget.id, summary: newVal }) });
+        } else if (editTarget.type === 'google_task') {
+            await apiFetch('/api/google_tasks_action', { method: 'POST', body: JSON.stringify({ action: 'update', task_id: editTarget.id, title: newVal }) });
+        } else if (editTarget.type === 'obsidian') {
+            await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'update', old_text: editTarget.text, new_text: newVal }) });
+        }
+        showToast('保存しました');
+        loadDashboard();
+        closeEditModal();
+    } catch { showToast('保存失敗', true); }
+});
+
+$('#edit-delete-btn').addEventListener('click', async () => {
+    if (!confirm('本当に削除しますか？')) return;
+    try {
+        if (editTarget.type === 'calendar') {
+            await apiFetch('/api/calendar_action', { method: 'POST', body: JSON.stringify({ action: 'delete', event_id: editTarget.id }) });
+        } else if (editTarget.type === 'google_task') {
+            await apiFetch('/api/google_tasks_action', { method: 'POST', body: JSON.stringify({ action: 'delete', task_id: editTarget.id }) });
+        } else if (editTarget.type === 'obsidian') {
+            await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', old_text: editTarget.text }) });
+        }
+        showToast('削除しました');
+        loadDashboard();
+        closeEditModal();
+    } catch { showToast('削除失敗', true); }
+});
+
+// ========== INIT ==========
+function initMain() {
+    loadHistory();
+    loadDashboard();
+}
+
+async function loadHistory() {
+    try {
+        const data = await apiFetch('/api/history?limit=20');
+        chatMessages.innerHTML = '';
+        data.messages.forEach(m => appendMsg(m.role, m.content));
+    } catch {}
+}
+
 window.addEventListener('DOMContentLoaded', () => {
     if (apiKey) {
         showScreen('main-screen');
-        loadHistory();
-        loadDashboard();
+        initMain();
     } else {
         showScreen('login-screen');
-    }
-
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/static/js/sw.js').catch(err => console.error(err));
     }
 });

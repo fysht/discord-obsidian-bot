@@ -81,9 +81,9 @@ class GoogleCalendarService:
                 if "T" in start:
                     t_obj = datetime.datetime.fromisoformat(start)
                     t_str = t_obj.strftime("%H:%M")
-                    result.append(f"- {t_str} : {summary} (ID: {event_id})")
+                    result.append(f"- {t_str} : {summary}")
                 else:
-                    result.append(f"- 終日 : {summary} (ID: {event_id})")
+                    result.append(f"- 終日 : {summary}")
 
             return f"【{date_str} の予定】\n" + "\n".join(result)
         except Exception as e:
@@ -167,6 +167,79 @@ class GoogleCalendarService:
         except Exception as e:
             logging.error(f"Calendar Create Error: {e}")
             return f"予定の作成に失敗しました。: {e}"
+
+    async def update_event(self, event_id, summary=None, start_time=None, end_time=None, description=None):
+        """指定したイベントIDの予定を更新する"""
+        service = self.get_service()
+        if not service:
+            return "カレンダーに接続できませんでした。"
+
+        try:
+            # 現在のイベントを取得
+            event = await asyncio.to_thread(
+                lambda: service.events().get(calendarId=self.calendar_id, eventId=event_id).execute()
+            )
+
+            if summary: event["summary"] = summary
+            if description is not None: event["description"] = description
+            
+            if start_time and end_time:
+                # 簡易的に通常予定として更新
+                event["start"] = {"dateTime": self._format_iso_time(start_time), "timeZone": "Asia/Tokyo"}
+                event["end"] = {"dateTime": self._format_iso_time(end_time), "timeZone": "Asia/Tokyo"}
+
+            updated_event = await asyncio.to_thread(
+                lambda: service.events().update(calendarId=self.calendar_id, eventId=event_id, body=event).execute()
+            )
+            return f"予定「{updated_event.get('summary')}」を更新したよ！"
+        except Exception as e:
+            logging.error(f"Calendar Update Error: {e}")
+            return f"予定の更新に失敗しました: {e}"
+
+    async def get_raw_events_for_date(self, date_str):
+        """指定した日付の予定を、加工前のオブジェクトリストとして取得する（PWAダッシュボード向け）"""
+        service = self.get_service()
+        if not service:
+            return []
+
+        try:
+            dt = datetime.datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=JST)
+            time_min = dt.replace(hour=0, minute=0, second=0).isoformat()
+            time_max = dt.replace(hour=23, minute=59, second=59).isoformat()
+
+            events_result = await asyncio.to_thread(
+                lambda: (
+                    service.events()
+                    .list(
+                        calendarId=self.calendar_id,
+                        timeMin=time_min,
+                        timeMax=time_max,
+                        singleEvents=True,
+                        orderBy="startTime",
+                    )
+                    .execute()
+                )
+            )
+            items = events_result.get("items", [])
+            
+            result = []
+            for item in items:
+                start = item["start"].get("dateTime", item["start"].get("date"))
+                time_display = "終日"
+                if "T" in start:
+                    time_display = datetime.datetime.fromisoformat(start).strftime("%H:%M")
+                
+                result.append({
+                    "id": item.get("id"),
+                    "summary": item.get("summary", "(タイトルなし)"),
+                    "time": time_display,
+                    "description": item.get("description", "")
+                })
+            return result
+        except Exception as e:
+            logging.error(f"Calendar Raw List Error: {e}")
+            return []
+
 
     # --- 新規追加：予定の削除機能 ---
     async def delete_event(self, event_id):
