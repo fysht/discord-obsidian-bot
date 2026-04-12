@@ -157,7 +157,7 @@ async def dashboard():
     # Fitbit (Sleep & Health)
     sleep_stats = {}
     fitbit_cog = bot.get_cog("FitbitCog")
-        if fitbit_cog and getattr(fitbit_cog, "is_ready", False):
+    if fitbit_cog and getattr(fitbit_cog, "is_ready", False):
         try:
             stats = await fitbit_cog.fitbit_service.get_stats(datetime.datetime.now(JST).date())
             if stats:
