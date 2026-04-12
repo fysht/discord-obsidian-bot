@@ -132,7 +132,8 @@ body {
 .card-header { padding: 14px 18px; border-bottom: 1px solid var(--border-glass); display: flex; align-items: center; gap: 10px; }
 .card-icon { font-size: 1rem; flex-shrink: 0; }
 .card-title { font-weight: 700; font-size: 0.95rem; flex: 1; }
-.mini-link { font-size: 0.75rem; color: var(--accent); text-decoration: none; padding: 4px 8px; background: rgba(0,186,152,0.1); border-radius: 6px; }
+.mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
+.mini-link:hover { background: rgba(0,186,152,0.2); }
 
 .card-body { padding: 16px; font-size: 0.95rem; }
 .list-body { padding: 8px 0; }

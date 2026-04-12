@@ -212,7 +212,7 @@ async function loadDashboard() {
             `).join('');
         }
 
-        // Google Tasks
+        // Google Tasks (ToDo)
         const gTaskEl = $('#dash-google-tasks');
         if (gTaskEl && data.google_tasks) {
             gTaskEl.innerHTML = data.google_tasks.map(t => `
@@ -220,7 +220,7 @@ async function loadDashboard() {
                     <div class="checkbox-custom ${t.status === 'completed' ? 'checked' : ''}" 
                          onclick="toggleGoogleTask('${t.id}', '${t.status}')"></div>
                     <div class="li-text">${escapeHtml(t.title)}</div>
-                    <button class="icon-btn" onclick="openEditModal('google_task', '${t.id}', '${escapeHtml(t.title)}')">
+                    <button class="icon-btn" onclick='openEditModal(${JSON.stringify({ type: "google_task", id: t.id, title: t.title })})'>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                     </button>
                 </div>
@@ -236,7 +236,7 @@ async function loadDashboard() {
                     <div class="list-item">
                         <div class="li-time">${startTime}</div>
                         <div class="li-text">${escapeHtml(ev.summary)}</div>
-                        <button class="icon-btn" onclick="openEditModal('calendar', '${ev.id}', '${escapeHtml(ev.summary)}')">
+                        <button class="icon-btn" onclick='openEditModal(${JSON.stringify({ type: "calendar", id: ev.id, title: ev.summary })})'>
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                         </button>
                     </div>
@@ -250,11 +250,25 @@ async function loadDashboard() {
             obTaskEl.innerHTML = data.tasks.map(t => `
                 <div class="list-item">
                     <div class="li-text" style="text-decoration: ${t.done ? 'line-through' : 'none'}">${escapeHtml(t.text)}</div>
-                    <button class="icon-btn" onclick="openEditModal('obsidian', '', '${escapeHtml(t.text)}', ${t.done})">
+                    <button class="icon-btn" onclick='openEditModal(${JSON.stringify({ type: "obsidian", text: t.text, done: t.done })})'>
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                     </button>
                 </div>
             `).join('');
+        }
+
+        // 習慣
+        const habitsContainer = $('#dash-habits');
+        if (habitsContainer && data.habits) {
+            habitsContainer.innerHTML = data.habits.length ? data.habits.map(t => `
+                <div class="list-item">
+                    <div class="card-icon">🔄</div>
+                    <div class="li-text">${escapeHtml(t.title)}</div>
+                    <button class="edit-btn" onclick='openEditModal(${JSON.stringify({ type: "habit", id: t.id, title: t.title })})'>
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                </div>
+            `).join('') : '<div class="p-10 text-secondary" style="font-size:0.8rem;">登録された習慣はありません。</div>';
         }
 
         // Sleep & Diary
@@ -266,6 +280,9 @@ async function loadDashboard() {
         if (diaryEl) {
             diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
         }
+
+        // NotebookLMのリストを再描画
+        loadNotebooks();
 
     } catch (err) {
         console.error(err);
@@ -382,10 +399,23 @@ window.saveEvent = async () => {
     } catch { showToast('追加に失敗しました', true); }
 };
 
-window.openEditModal = (type, id, text, isDone = false) => {
-    window.currentEditTarget = { type, id, text, isDone };
+window.openEditModal = (item) => {
+    window.currentEditTarget = item;
+    const title = $('#edit-modal-title');
     const input = $('#edit-input');
-    if (input) input.value = text;
+    const toggleBtn = $('#edit-toggle-btn');
+    
+    if (title) title.textContent = item.type === 'calendar' ? '予定の編集' : (item.type === 'habit' ? '習慣の編集' : 'ライフログの編集');
+    if (input) input.value = item.text || item.title || '';
+    
+    if (toggleBtn) {
+        if (item.type === 'calendar' || item.type === 'habit') {
+            toggleBtn.classList.add('hidden');
+        } else {
+            toggleBtn.classList.remove('hidden');
+        }
+    }
+    
     $('#edit-modal')?.classList.remove('hidden');
 };
 
@@ -439,6 +469,8 @@ if (editDeleteBtn) {
                 await apiFetch('/api/google_tasks_action', { method: 'POST', body: JSON.stringify({ action: 'delete', task_id: t.id }) });
             } else if (t.type === 'obsidian') {
                 await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', old_text: t.text }) });
+            } else if (t.type === 'habit') {
+                await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', task_id: t.id, list_name: '習慣' }) });
             }
             showToast('削除しました');
             loadDashboard();

@@ -12,31 +12,43 @@ class InfoService:
         )
 
     async def get_weather(self):
-        """Yahoo!天気から岡山の天気を取得（スクレイピング形式）"""
-        # 岡山南部 (6610.html が最新の岡山地点)
-        url = "https://weather.yahoo.co.jp/weather/jp/33/6610.html" 
+        """気象庁APIから岡山の詳細な天気を取得"""
+        # 岡山県 (330000)
+        url = "https://www.jma.go.jp/bosai/forecast/data/forecast/330000.json"
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
-                        html = await resp.text()
+                        data = await resp.json()
+                        # data[0] が直近予報
+                        forecast_day0 = data[0]
                         
-                        # 天気 (imgのalt属性)
-                        weather_match = re.search(r'<p class="pict">.*?alt="([^"]+)"', html, re.DOTALL)
-                        weather_text = weather_match.group(1).strip() if weather_match else "取得失敗"
+                        # 岡山南部 (areas[0])
+                        ts0 = forecast_day0["timeSeries"][0]
+                        weather = ts0["areas"][0]["weathers"][0].replace("　", " ")
                         
-                        # 気温 (emタグ)
-                        high_match = re.search(r'<li class="high">.*?em>(\d+)</em>', html, re.DOTALL)
-                        low_match = re.search(r'<li class="low">.*?em>(\d+)</em>', html, re.DOTALL)
+                        # 降水確率 (timeSeries[1] areas[0] pops)
+                        ts1 = forecast_day0["timeSeries"][1]
+                        pops = ts1["areas"][0]["pops"]
+                        # 降水確率の時間枠ラベル (00-06, 06-12, 12-18, 18-24 など)
+                        # popsの数によって今日か明日か変わるが、基本は今日の直近
+                        pop_text = " / ".join([f"{p}%" for p in pops[:4]]) # 最大4つ表示
                         
-                        max_t = high_match.group(1) if high_match else "N/A"
-                        min_t = low_match.group(1) if low_match else "N/A"
+                        # 気温 (timeSeries[2] areas[0] temps)
+                        ts2 = forecast_day0["timeSeries"][2]
+                        temps = ts2["areas"][0]["temps"] # 今日の最低、今日の最高、明日の最低、明日の最高
+                        # 注: 発表時間によって配列の意味が変わるため、簡易的に取得
+                        # 通常 index 0:今日最低(or欠落), 1:今日最高, 2:明日最低, 3:明日最高
+                        max_t = temps[1] if len(temps) > 1 else "--"
+                        min_t = temps[0] if len(temps) > 0 else "--"
                         
-                        weather_value = f'"{weather_text} (最高: {max_t}℃ / 最低: {min_t}℃)"'
-                        return weather_value, max_t, min_t
+                        res_str = f'"{weather} (降水:{pop_text}) 気温:{max_t}℃/{min_t}℃"'
+                        return res_str, max_t, min_t
+                        
+                    return "取得失敗", "N/A", "N/A"
         except Exception as e:
-            logging.error(f"Yahoo Weather Fetch Error: {e}")
-        return '"天気情報の取得に失敗しました"', "N/A", "N/A"
+            logging.error(f"JMA Weather Fetch Error: {e}")
+            return "取得失敗", "N/A", "N/A"
 
     async def get_news(self, limit=3):
         """Yahoo!ニュースのRSSからタイトルと本物のURLを取得"""

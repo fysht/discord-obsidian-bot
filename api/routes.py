@@ -152,8 +152,11 @@ async def dashboard():
 
     # Google Tasks (旧名: g_tasks -> google_tasks)
     google_tasks = []
+    habits = []
     if hasattr(chat_service, "tasks_service") and chat_service.tasks_service:
         google_tasks = await chat_service.tasks_service.get_raw_tasks()
+        # 「習慣」リストの取得
+        habits = await chat_service.tasks_service.get_raw_tasks("習慣")
 
     # Weather & News (InfoServiceを使用)
     from services.info_service import InfoService
@@ -195,6 +198,7 @@ async def dashboard():
         "date": display_date,
         "g_calendar": g_calendar,
         "google_tasks": google_tasks,
+        "habits": habits,
         "weather": weather,
         "news": news,
         "sleep": sleep_stats

@@ -118,6 +118,7 @@
                         <div class="card-header">
                             <span class="card-icon">📚</span>
                             <span class="card-title">ナレッジ拠点 (NotebookLM)</span>
+                            <button class="mini-link" onclick="registerNotebook()">＋追加</button>
                         </div>
                         <div class="card-body list-body" id="dash-notebooks">
                             <!-- Notebook links injected by JS -->
@@ -129,9 +130,16 @@
             <!-- ========== LOG TAB (OBSIDIAN/SLEEP/DIARY) ========== -->
             <div id="tab-log" class="tab-pane">
                 <div class="scroll-container">
+                    <div class="card habits-card">
+                        <div class="card-header">
+                            <span class="card-icon">🔄</span>
+                            <span class="card-title">習慣トラッカー</span>
+                        </div>
+                        <div id="dash-habits" class="card-body list-body"></div>
+                    </div>
                     <div class="card obsidian-card">
                         <div class="card-header">
-                            <span class="card-icon">🎯</span>
+                            <span class="card-icon">🪟</span>
                             <span class="card-title">ライフログ</span>
                         </div>
                         <div id="dash-tasks" class="card-body"></div>
@@ -157,7 +165,10 @@
                         </div>
                         <div class="card-body">
                             <p class="mb-10 text-secondary" style="font-size: 0.85rem;">今日の足取りを記録しましたか？</p>
-                            <a href="https://www.google.com/maps/timeline" target="_blank" class="modal-btn submit block-link" style="text-decoration: none; text-align: center; display: block;">Google マップで確認</a>
+                            <div style="display:flex; gap:8px;">
+                                <a href="https://www.google.com/maps/timeline" target="_blank" class="modal-btn submit" style="text-decoration: none; text-align: center; flex:1; font-size:0.8rem;">タイムライン確認</a>
+                                <a href="https://www.google.com/maps/timeline/kml" target="_blank" class="modal-btn" style="text-decoration: none; text-align: center; flex:1; font-size:0.8rem; border:1px solid var(--border-glass);">エクスポート</a>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -218,7 +229,7 @@
                 <!-- 候補がここに並ぶ -->
             </div>
             <div class="modal-input-area">
-                <input type="text" id="custom-task-input" placeholder="新しいタスク名を入力...">
+                <input type="text" id="custom-task-input" class="modern-input" placeholder="新しいタスク名を入力...">
             </div>
             <div class="modal-actions">
                 <button class="modal-btn cancel" onclick="closeTaskModal()">キャンセル</button>

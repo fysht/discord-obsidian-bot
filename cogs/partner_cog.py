@@ -358,17 +358,24 @@ class PartnerCog(commands.Cog):
 {instruction}
 """
         try:
-            # コスト削減のため、ルーティン生成も flash モデルに変更
+            # 最新のJMA天気を取得してプロンプトに追加（あれば）
+            weather_report = ""
+            if "天気" in instruction or "予定" in instruction:
+                from services.info_service import InfoService
+                w_val, _, _ = await InfoService().get_weather()
+                weather_report = f"\n（参考：現在の岡山天報：{w_val}）"
+            
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash", contents=prompt
+                model="gemini-2.5-flash", contents=prompt + weather_report
             )
 
             reply_text = response.text.strip()
             
-            # PWA (App) DBに保存
+            # PWA (App) DBに保存（これでアプリ側の履歴に載る）
             await _save_msg("assistant", reply_text)
+            logging.info("ルーティンメッセージをアプリDBに保存しました。")
             
-            # Discordに送信
+            # Discordに送信（バックアップ兼通知として継続）
             if hasattr(self, "memo_channel_id") and self.memo_channel_id:
                 channel = self.bot.get_channel(self.memo_channel_id)
                 if channel:
