@@ -63,6 +63,10 @@ class DocumentCog(commands.Cog):
             return
 
         async with message.channel.typing():
+            # ユーザーメッセージをDBに保存
+            from api.database import save_message as _save_msg
+            await _save_msg("user", message.content)
+
             # 会話履歴を取得
             contents = await self._build_conversation_context(
                 message.channel, limit=20
@@ -105,6 +109,7 @@ class DocumentCog(commands.Cog):
                     ),
                 )
 
+                from api.database import save_message as _save_msg
                 # Tool実行が求められた場合
                 if response.function_calls:
                     for function_call in response.function_calls:
@@ -118,16 +123,22 @@ class DocumentCog(commands.Cog):
 
                             # Obsidian同期保存
                             result_msg = await self._save_to_obsidian(title, content)
+                            await _save_msg("assistant", result_msg)
                             await message.channel.send(result_msg)
                             return
 
                 # 通常の返信
                 if response.text:
-                    await message.channel.send(response.text.strip())
+                    reply_text = response.text.strip()
+                    await _save_msg("assistant", reply_text)
+                    await message.channel.send(reply_text)
 
             except Exception as e:
                 logging.error(f"DocumentCogでエラー発生: {e}", exc_info=True)
-                await message.channel.send(f"ごめんね、エラーが起きちゃった💦 ({e})")
+                err_text = f"ごめんね、エラーが起きちゃった💦 ({e})"
+                from api.database import save_message as _save_msg
+                await _save_msg("assistant", err_text)
+                await message.channel.send(err_text)
 
     async def _save_to_obsidian(self, file_name: str, content: str) -> str:
         """DriveServiceを利用してDocumentsフォルダへ保存する"""

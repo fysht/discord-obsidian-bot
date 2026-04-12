@@ -24,7 +24,12 @@
                 <h1 class="login-title">Manager AI</h1>
                 <p class="login-subtitle">Your personal AI partner</p>
                 <form id="login-form">
-                    <input type="password" id="password-input" class="login-input" placeholder="パスワードを入力" autocomplete="current-password">
+                    <div class="login-input-wrapper">
+                        <input type="password" id="password-input" class="login-input" placeholder="パスワードを入力" autocomplete="current-password">
+                        <button type="button" class="pw-toggle" id="pw-toggle-btn">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                        </button>
+                    </div>
                     <button type="submit" class="login-btn">ログイン</button>
                 </form>
                 <p id="login-error" class="login-error"></p>
@@ -75,9 +80,9 @@
                 </div>
                 <div class="action-chips-container">
                     <div class="action-chips">
-                        <button class="chip-btn" onclick="sendActionCommand('今日の予定を教えて')">今日の予定</button>
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('start')">タスク開始</button>
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">タスク終了</button>
+                        <button class="chip-btn" onclick="sendActionCommand('今日の予定を教えて')">今日の予定</button>
                         <button class="chip-btn" onclick="sendActionCommand('英語学習を始める')">英語学習</button>
                         <button class="chip-btn" onclick="sendActionCommand('振り返りをしよう')">振り返り</button>
                     </div>
@@ -134,6 +139,7 @@
                         <div class="card-header">
                             <span class="card-icon">🔄</span>
                             <span class="card-title">習慣トラッカー</span>
+                            <button class="mini-link" onclick="openAddTaskModal('習慣')">＋追加</button>
                         </div>
                         <div id="dash-habits" class="card-body list-body"></div>
                     </div>
@@ -167,7 +173,6 @@
                             <p class="mb-10 text-secondary" style="font-size: 0.85rem;">今日の足取りを記録しましたか？</p>
                             <div style="display:flex; gap:8px;">
                                 <a href="https://www.google.com/maps/timeline" target="_blank" class="modal-btn submit" style="text-decoration: none; text-align: center; flex:1; font-size:0.8rem;">タイムライン確認</a>
-                                <a href="https://www.google.com/maps/timeline/kml" target="_blank" class="modal-btn" style="text-decoration: none; text-align: center; flex:1; font-size:0.8rem; border:1px solid var(--border-glass);">エクスポート</a>
                             </div>
                         </div>
                     </div>
@@ -190,11 +195,20 @@
 
                     <div class="card tasks-card">
                         <div class="card-header">
-                            <span class="card-icon">✅</span>
-                            <span class="card-title">タスク</span>
-                            <a href="https://calendar.google.com/" target="_blank" class="mini-link">カレンダーで確認</a>
+                            <span class="card-icon">💼</span>
+                            <span class="card-title">仕事</span>
+                            <button class="mini-link" onclick="openAddTaskModal('仕事')">＋追加</button>
                         </div>
-                        <div id="dash-google-tasks" class="card-body list-body"></div>
+                        <div id="dash-google-tasks-work" class="card-body list-body"></div>
+                    </div>
+
+                    <div class="card tasks-card">
+                        <div class="card-header">
+                            <span class="card-icon">🏠</span>
+                            <span class="card-title">プライベート</span>
+                            <button class="mini-link" onclick="openAddTaskModal('プライベート')">＋追加</button>
+                        </div>
+                        <div id="dash-google-tasks-private" class="card-body list-body"></div>
                     </div>
                 </div>
             </div>

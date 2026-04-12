@@ -385,7 +385,10 @@ class LocationLogCog(commands.Cog):
                         context, PROMPT_LOCATION_SYNC
                     )
                 else:
-                    await channel.send(f"📍 {dates_str} の移動記録を保存したよ！")
+                    msg = f"📍 {dates_str} の移動記録を保存したよ！"
+                    from api.database import save_message as _save_msg
+                    await _save_msg("assistant", msg)
+                    pass
 
     @app_commands.command(
         name="location_sync",

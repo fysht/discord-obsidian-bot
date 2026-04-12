@@ -12,7 +12,7 @@ class InfoService:
         )
 
     async def get_weather(self):
-        """気象庁APIから岡山の詳細な天気を取得"""
+        """気象庁APIから詳細な時系列予報を取得"""
         # 岡山県 (330000)
         url = "https://www.jma.go.jp/bosai/forecast/data/forecast/330000.json"
         try:
@@ -20,35 +20,66 @@ class InfoService:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        # data[0] が直近予報
-                        forecast_day0 = data[0]
+                        forecast = data[0]
                         
                         # 岡山南部 (areas[0])
-                        ts0 = forecast_day0["timeSeries"][0]
-                        weather = ts0["areas"][0]["weathers"][0].replace("　", " ")
+                        # 天気コードとテキスト
+                        ts0 = forecast["timeSeries"][0]
+                        area0 = ts0["areas"][0]
+                        codes = area0.get("weatherCodes", [])
+                        weathers = area0.get("weathers", [])
                         
-                        # 降水確率 (timeSeries[1] areas[0] pops)
-                        ts1 = forecast_day0["timeSeries"][1]
-                        pops = ts1["areas"][0]["pops"]
-                        # 降水確率の時間枠ラベル (00-06, 06-12, 12-18, 18-24 など)
-                        # popsの数によって今日か明日か変わるが、基本は今日の直近
-                        pop_text = " / ".join([f"{p}%" for p in pops[:4]]) # 最大4つ表示
+                        # 降水確率 (6時間ごと)
+                        ts1 = forecast["timeSeries"][1]
+                        pops = ts1["areas"][0].get("pops", [])
+                        times_pop = ts1.get("timeDefines", [])
                         
-                        # 気温 (timeSeries[2] areas[0] temps)
-                        ts2 = forecast_day0["timeSeries"][2]
-                        temps = ts2["areas"][0]["temps"] # 今日の最低、今日の最高、明日の最低、明日の最高
-                        # 注: 発表時間によって配列の意味が変わるため、簡易的に取得
-                        # 通常 index 0:今日最低(or欠落), 1:今日最高, 2:明日最低, 3:明日最高
-                        max_t = temps[1] if len(temps) > 1 else "--"
-                        min_t = temps[0] if len(temps) > 0 else "--"
+                        # 気温
+                        ts2 = forecast["timeSeries"][2]
+                        temps = ts2["areas"][0].get("temps", [])
                         
-                        res_str = f'"{weather} (降水:{pop_text}) 気温:{max_t}℃/{min_t}℃"'
-                        return res_str, max_t, min_t
+                        # フロントエンドで使いやすいように整理
+                        slots = []
+                        # 今日・明日の情報を抽出
+                        for i in range(min(len(pops), 6)):
+                            t_str = times_pop[i] # ISO format
+                            from datetime import datetime
+                            dt = datetime.fromisoformat(t_str)
+                            
+                            # 天気アイコンのマッピング
+                            code = codes[0] if i < 4 else codes[1] if len(codes)>1 else codes[0]
+                            icon = self._get_weather_icon(code)
+                            
+                            slots.append({
+                                "time": dt.strftime("%H:%M"),
+                                "icon": icon,
+                                "pop": f"{pops[i]}%",
+                                "temp": temps[i] if i < len(temps) else "--"
+                            })
                         
-                    return "取得失敗", "N/A", "N/A"
+                        # 概要テキスト
+                        summary = f"{weathers[0]} (現在の気温: {temps[0]}℃)" if temps else weathers[0]
+                        
+                        return {
+                            "summary": summary,
+                            "slots": slots,
+                            "max_temp": temps[1] if len(temps) > 1 else "--",
+                            "min_temp": temps[0] if len(temps) > 0 else "--"
+                        }
+                        
+                    return {"summary": "取得失敗"}
         except Exception as e:
             logging.error(f"JMA Weather Fetch Error: {e}")
-            return "取得失敗", "N/A", "N/A"
+            return {"summary": "取得失敗"}
+
+    def _get_weather_icon(self, code):
+        """JMA天気コードを絵文字に変換"""
+        code = str(code)
+        if code.startswith('1'): return "☀️"
+        if code.startswith('2'): return "☁️"
+        if code.startswith('3'): return "☔"
+        if code.startswith('4'): return "❄️"
+        return "❓"
 
     async def get_news(self, limit=3):
         """Yahoo!ニュースのRSSからタイトルと本物のURLを取得"""

@@ -125,7 +125,11 @@ class DailyOrganizeCog(commands.Cog):
             "message",
             "（今日の会話とデータをノートにまとめたよ🌙 今日も一日お疲れ様、おやすみ！）",
         )
-        await channel.send(send_msg)
+        try:
+            from api.database import save_message as _save_msg
+            await _save_msg("assistant", send_msg)
+        except Exception:
+            pass
 
     async def _execute_organization(self, data, date_str):
         service = self.drive_service.get_service()
@@ -201,7 +205,7 @@ class DailyOrganizeCog(commands.Cog):
                     prefix = f"[{lst}] " if lst else ""
                     formatted_actions.append(f"- {prefix}{title}")
             content = update_section(
-                content, "\n".join(formatted_actions), "## 🪟 Lifelog"
+                content, "\n".join(formatted_actions), "## 🚀 Next Actions"
             )
 
         if f_id:

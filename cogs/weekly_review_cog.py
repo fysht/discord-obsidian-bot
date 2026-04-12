@@ -78,7 +78,11 @@ class WeeklyReviewCog(commands.Cog):
                 )
                 
                 send_msg = f"**【今週の Weekly Review 棚卸しレポート】**\n\n{response.text}"
-                await channel.send(send_msg)
+                try:
+                    from api.database import save_message as _save_msg
+                    await _save_msg("assistant", send_msg)
+                except Exception:
+                    pass
         except Exception as e:
             logging.error(f"WeeklyReview API Error: {e}")
 

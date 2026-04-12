@@ -36,8 +36,22 @@ body {
     overflow: hidden;
     line-height: 1.5;
 }
+.login-screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-base); z-index: 1000; }
+.login-container { width: 100%; max-width: 400px; padding: 24px; }
+.login-card { background: var(--bg-elevated); border-radius: var(--radius-xl); padding: 40px 32px; box-shadow: var(--shadow-deep); text-align: center; border: 1px solid var(--border-glass); }
 .login-avatar { width: 80px; height: 80px; margin: 0 auto 20px; }
-.login-avatar img { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 2px solid var(--accent); }
+.login-avatar img { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 2.5px solid var(--accent); }
+.login-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 8px; }
+.login-subtitle { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 32px; }
+
+.login-input-wrapper { position: relative; margin-bottom: 20px; }
+.login-input { width: 100%; height: 56px; padding: 0 50px 0 20px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-glass); border-radius: var(--radius-md); color: #fff; font-size: 1.1rem; outline: none; transition: 0.3s; }
+.login-input:focus { border-color: var(--accent); background: rgba(0,186,152,0.05); }
+.pw-toggle { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; }
+
+.login-btn { width: 100%; height: 56px; background: var(--accent-gradient); color: #fff; border: none; border-radius: var(--radius-md); font-size: 1rem; font-weight: 700; cursor: pointer; transition: 0.3s; }
+.login-btn:active { transform: scale(0.98); opacity: 0.9; }
+.login-error { color: #ff4444; font-size: 0.85rem; margin-top: 16px; min-height: 1.2em; }
 
 /* ========== SCREEN SYSTEM ========== */
 .screen { display: none; height: 100%; flex-direction: column; }
@@ -85,9 +99,10 @@ body {
     top: 0;
     left: 0;
     right: 0;
-    bottom: calc(65px + var(--safe-bottom));
+    bottom: 0;
     display: none;
     flex-direction: column;
+    overflow: hidden; /* スクロールはコンテナ側に任せる */
 }
 .tab-pane.active { display: flex; animation: tabSlideUp 0.3s ease; }
 
@@ -135,7 +150,8 @@ body {
 .mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
 .mini-link:hover { background: rgba(0,186,152,0.2); }
 
-.card-body { padding: 16px; font-size: 0.95rem; }
+.card-body { padding: 16px; font-size: 0.95rem; min-height: 40px; }
+.loading-placeholder { text-align: center; color: var(--text-muted); padding: 20px; font-size: 0.85rem; }
 .list-body { padding: 8px 0; }
 
 /* ========== LIST ITEMS (EDITABLE) ========== */

@@ -150,21 +150,22 @@ async def dashboard():
     if hasattr(chat_service, "calendar_service") and chat_service.calendar_service:
         g_calendar = await chat_service.calendar_service.get_raw_events_for_date(today_str)
 
-    # Google Tasks (旧名: g_tasks -> google_tasks)
-    google_tasks = []
+    # Google Tasks (仕事 / プライベート)
+    google_tasks_work = []
+    google_tasks_private = []
     habits = []
     if hasattr(chat_service, "tasks_service") and chat_service.tasks_service:
-        google_tasks = await chat_service.tasks_service.get_raw_tasks()
+        google_tasks_work = await chat_service.tasks_service.get_raw_tasks("仕事")
+        google_tasks_private = await chat_service.tasks_service.get_raw_tasks("プライベート")
         # 「習慣」リストの取得
         habits = await chat_service.tasks_service.get_raw_tasks("習慣")
 
     # Weather & News (InfoServiceを使用)
     from services.info_service import InfoService
-    weather = "取得失敗"
+    weather_data = {"summary": "取得失敗"}
     news = []
     try:
-        weather_val, _, _ = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
-        weather = weather_val.strip('"')
+        weather_data = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
         raw_news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
         news = []
         for n in raw_news:
@@ -176,30 +177,15 @@ async def dashboard():
     except Exception:
         pass
 
-    # Fitbit (Sleep & Health)
-    sleep_stats = {}
-    fitbit_cog = bot.get_cog("FitbitCog")
-    if fitbit_cog and getattr(fitbit_cog, "is_ready", False):
-        try:
-            stats = await fitbit_cog.fitbit_service.get_stats(datetime.datetime.now(JST).date())
-            if stats:
-                sleep_stats = {
-                    "score": stats.get("sleep_score", "N/A"),
-                    "duration": fitbit_cog._format_minutes(stats.get("total_sleep_minutes", 0)),
-                    "steps": stats.get("steps", "N/A"),
-                    "calories": stats.get("calories_out", "N/A")
-                }
-        except Exception:
-            pass
-
     return {
         "tasks": tasks, 
         "alter_log": alter_log, 
         "date": display_date,
         "g_calendar": g_calendar,
-        "google_tasks": google_tasks,
+        "google_tasks_work": google_tasks_work,
+        "google_tasks_private": google_tasks_private,
         "habits": habits,
-        "weather": weather,
+        "weather": weather_data,
         "news": news,
         "sleep": sleep_stats
     }
@@ -294,10 +280,11 @@ async def calendar_action(req: CalendarActionRequest):
     return {"status": "success", "message": res}
 
 class GTaskActionRequest(BaseModel):
-    action: str # 'update', 'delete', 'toggle'
-    task_id: str
+    action: str # 'add', 'update', 'delete', 'toggle'
+    task_id: Optional[str] = None
     title: str = None
     completed: bool = None
+    list_name: str = None
 
 @router.post("/google_tasks_action", dependencies=[Depends(verify_api_key)])
 async def google_tasks_action(req: GTaskActionRequest):
@@ -305,14 +292,37 @@ async def google_tasks_action(req: GTaskActionRequest):
     bot = getattr(app.state, "bot", None)
     if not bot or not bot.tasks_service: raise HTTPException(status_code=503, detail="タスクサービス未設定")
 
-    if req.action == "delete":
-        res = await bot.tasks_service.delete_task(req.task_id)
+    if req.action == "add":
+        if not req.title: raise HTTPException(status_code=400, detail="titleが必要です")
+        res = await bot.tasks_service.add_task(req.title, list_name=req.list_name)
+    elif req.action == "delete":
+        if not req.task_id: raise HTTPException(status_code=400, detail="task_idが必要です")
+        res = await bot.tasks_service.delete_task(req.task_id, list_name=req.list_name)
     elif req.action == "update":
-        res = await bot.tasks_service.update_task(req.task_id, title=req.title)
+        if not req.task_id: raise HTTPException(status_code=400, detail="task_idが必要です")
+        res = await bot.tasks_service.update_task(req.task_id, title=req.title, list_name=req.list_name)
     elif req.action == "toggle":
-        res = await bot.tasks_service.update_task(req.task_id, completed=req.completed)
+        if not req.task_id: raise HTTPException(status_code=400, detail="task_idが必要です")
+        res = await bot.tasks_service.update_task(req.task_id, completed=req.completed, list_name=req.list_name)
     else: res = "不明なアクションです"
 
+    return {"status": "success", "message": res}
+
+class ExecuteToolRequest(BaseModel):
+    tool_name: str
+    args: dict
+
+@router.post("/execute_tool", dependencies=[Depends(verify_api_key)])
+async def execute_tool(req: ExecuteToolRequest):
+    """AIが提案したアクションをユーザーの承認後に実行"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if req.tool_name == "calendar_add":
+        res = await bot.calendar_service.create_event(req.args["summary"], req.args["start"], req.args["end"], req.args.get("description", ""))
+    elif req.tool_name == "task_add":
+        res = await bot.tasks_service.add_task(req.args["title"], list_name=req.args.get("list_name"))
+    else:
+        raise HTTPException(status_code=400, detail="不明なツールです")
     return {"status": "success", "message": res}
 
 @router.get("/task_candidates", dependencies=[Depends(verify_api_key)])
