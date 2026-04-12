@@ -104,8 +104,8 @@ async def dashboard():
 
     now = datetime.datetime.now(JST)
     weekdays = ["月", "火", "水", "木", "金", "土", "日"]
-    # 表示用には曜日を含める
-    display_date = f"{now.strftime('%Y-%m-%d')} ({weekdays[now.weekday()]})"
+    # 表示用には「年月」と曜日を含める
+    display_date = f"{now.year}年{now.month}月{now.day}日 ({weekdays[now.weekday()]})"
     # ファイル検索用には曜日を含めない
     today_str = now.strftime("%Y-%m-%d")
 
@@ -133,15 +133,17 @@ async def dashboard():
             elif line.startswith("- [/]"):
                 tasks.append({"text": line[6:].strip(), "done": False})
 
-    # タイムラインの抽出
+    # 観察日記 (Alter Log) の抽出
     alter_log = ""
-    alter_match = re.search(r"## 💬 Timeline\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    alter_match = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     if not alter_match:
-        # 移行期間用
-        alter_match = re.search(r"## 🪟 ライフログ\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+        # 以前の Timeline 同期ロジックへの互換性またはフォールバック
+        alter_match = re.search(r"## 🕵️ AI Assessment\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     
     if alter_match:
         alter_log = alter_match.group(1).strip()
+    else:
+        alter_log = "本日の観察ログはまだ生成されていません。"
 
     # Google Calendar
     g_calendar = []
@@ -157,10 +159,16 @@ async def dashboard():
     from services.info_service import InfoService
     weather = "取得失敗"
     news = []
-    try:
         weather_val, _, _ = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
         weather = weather_val.strip('"')
-        news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
+        raw_news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
+        news = []
+        for n in raw_news:
+            parts = n.split('\n')
+            if len(parts) >= 2:
+                news.append({"title": parts[0], "link": parts[1]})
+            else:
+                news.append({"title": n, "link": "#"})
     except Exception:
         pass
 
@@ -223,7 +231,7 @@ async def task_action(req: TaskActionRequest):
 
     if req.action == "create":
         append_text = f"- [/] {req.new_text}"
-        content = update_section(content, append_text, "## 🎯 Tasks")
+        content = update_section(content, append_text, "## 🪟 Lifelog")
     else:
         lines = content.split('\n')
         for i, line in enumerate(lines):
@@ -326,8 +334,8 @@ async def task_candidates():
         f_id = await chat_service.drive_service.find_file(service, folder_id, f"{d}.md")
         if f_id:
             content = await chat_service.drive_service.read_text_file(service, f_id)
-            if "## 🎯 Tasks" in content:
-                section = content.split("## 🎯 Tasks")[1].split("##")[0]
+            if "## 🪟 Lifelog" in content:
+                section = content.split("## 🪟 Lifelog")[1].split("##")[0]
                 for line in section.split("\n"):
                     match = re.search(r"- \[(.*?)\] (.*)", line)
                     if match:

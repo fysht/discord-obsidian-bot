@@ -21,7 +21,7 @@ class InfoService:
                         html = await resp.text()
                         
                         # 天気
-                        weather_match = re.search(r'<p class="forecast">([^<]+)</p>', html)
+                        weather_match = re.search(r'<p class="pict">.*?alt="([^"]+)"', html, re.DOTALL)
                         weather_text = weather_match.group(1).strip() if weather_match else "取得失敗"
                         
                         # 気温

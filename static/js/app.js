@@ -268,6 +268,60 @@ async function loadDashboard() {
     }
 }
 
+// ========== INTELLIGENT TASK MODAL ==========
+let currentTaskMode = 'start';
+
+window.openIntelligentTaskModal = async (mode) => {
+    currentTaskMode = mode;
+    const modal = $('#task-modal');
+    const list = $('#modal-list');
+    const title = $('#modal-title');
+    
+    if (!modal || !list) return;
+    
+    title.textContent = mode === 'start' ? 'タスクを開始する' : 'タスクを終了する';
+    list.innerHTML = '<div class="p-20 text-center">読み込み中...</div>';
+    modal.classList.remove('hidden');
+    
+    try {
+        const data = await apiFetch('/api/task_candidates');
+        const candidates = mode === 'start' ? data.start : data.end;
+        
+        if (candidates.length === 0) {
+            list.innerHTML = '<div class="p-20 text-center text-secondary">候補がありません</div>';
+        } else {
+            list.innerHTML = candidates.map(c => `
+                <div class="modal-item" onclick="selectTaskCandidate('${escapeHtml(c)}')">
+                    ${escapeHtml(c)}
+                </div>
+            `).join('');
+        }
+    } catch (err) {
+        list.innerHTML = '<div class="p-20 text-center text-error">エラーが発生しました</div>';
+    }
+};
+
+window.closeTaskModal = () => {
+    $('#task-modal')?.classList.add('hidden');
+    $('#custom-task-input').value = '';
+};
+
+window.selectTaskCandidate = (name) => {
+    $('#custom-task-input').value = name;
+};
+
+const taskConfirmBtn = $('#task-confirm-btn');
+if (taskConfirmBtn) {
+    taskConfirmBtn.addEventListener('click', () => {
+        const val = $('#custom-task-input').value.trim();
+        if (!val) return;
+        
+        const cmd = currentTaskMode === 'start' ? `${val}を始める` : `${val}を終わった`;
+        sendActionCommand(cmd);
+        closeTaskModal();
+    });
+}
+
 // ========== ACTIONS ==========
 window.toggleGoogleTask = async (taskId, currentStatus) => {
     const isCompleted = currentStatus === 'completed';
