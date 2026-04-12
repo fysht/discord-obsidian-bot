@@ -98,9 +98,10 @@ async def dashboard():
     if not chat_service or not chat_service.drive_service:
         return {"tasks": [], "alter_log": "", "error": "サービス未接続"}
 
+    sleep_stats = {"score": "N/A", "duration": "N/A"}
     service = chat_service.drive_service.get_service()
     if not service:
-        return {"tasks": [], "alter_log": ""}
+        return {"tasks": [], "alter_log": "", "sleep": sleep_stats}
 
     now = datetime.datetime.now(JST)
     weekdays = ["月", "火", "水", "木", "金", "土", "日"]
@@ -111,16 +112,16 @@ async def dashboard():
 
     folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
     if not folder_id:
-        return {"tasks": [], "alter_log": "", "date": display_date}
+        return {"tasks": [], "alter_log": "", "date": display_date, "sleep": sleep_stats}
 
     f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
     if not f_id:
-        return {"tasks": [], "alter_log": "", "date": display_date}
+        return {"tasks": [], "alter_log": "", "date": display_date, "sleep": sleep_stats}
 
     try:
         content = await chat_service.drive_service.read_text_file(service, f_id)
     except Exception:
-        return {"tasks": [], "alter_log": ""}
+        return {"tasks": [], "alter_log": "", "sleep": sleep_stats}
 
     # Lifelog（旧Tasks相当）セクションの抽出
     tasks = []
@@ -178,7 +179,6 @@ async def dashboard():
         logging.error(f"Weather/News fetch error: {e}")
 
     # Fitbitデータ取得
-    sleep_stats = {"score": "N/A", "duration": "N/A"}
     fitbit_cog = bot.get_cog("FitbitCog")
     if fitbit_cog and fitbit_cog.is_ready:
         try:
