@@ -154,9 +154,18 @@ function appendMsg(role, content) {
         html += `<img src="/static/icons/avatar.png" class="msg-avatar">`;
     }
     
+    // NotebookLM URLへのリンクが含まれている場合はボタンとして表示
+    let processedContent = escapeHtml(content).replace(/\n/g, '<br>');
+    if (content.includes('notebooklm.google.com')) {
+        const urlMatch = content.match(/https:\/\/notebooklm\.google\.com\/notebook\/[a-zA-Z0-9-]+/);
+        if (urlMatch) {
+            processedContent += `<br><a href="${urlMatch[0]}" target="_blank" class="mini-link" style="display:inline-block; margin-top:8px; background:var(--line-bg); padding:6px 12px; border-radius:12px; text-decoration:none; color:var(--text-main); font-weight:600; border:1px solid var(--line-border);">📚 NotebookLMで詳しく調べる</a>`;
+        }
+    }
+
     html += `
         <div class="msg-content">
-            <div class="msg-bubble">${escapeHtml(content).replace(/\n/g, '<br>')}</div>
+            <div class="msg-bubble">${processedContent}</div>
         </div>
         <div class="msg-time">${tStr}</div>
     `;
@@ -365,17 +374,80 @@ if (editDeleteBtn) {
     });
 }
 
+// ========== RESET CHAT ==========
+const resetChatBtn = $('#reset-chat-btn');
+if (resetChatBtn) {
+    resetChatBtn.addEventListener('click', async () => {
+        if (!confirm('チャット履歴を完全にリセットしてもよろしいですか？\n(Obsidianの記録は消えませんが、アプリ上の表示は空になります)')) return;
+        try {
+            await apiFetch('/api/reset_history', { method: 'POST' });
+            showToast('履歴をリセットしました');
+            location.reload();
+        } catch (err) {
+            showToast('リセットに失敗しました', true);
+        }
+    });
+}
+
+// ========== NOTEBOOK LM PORTAL ==========
+function loadNotebooks() {
+    const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
+    const container = $('#dash-notebooks');
+    if (!container) return;
+
+    if (notebooks.length === 0) {
+        container.innerHTML = `
+            <div class="p-10 text-center">
+                <p class="text-secondary mb-10" style="font-size:0.8rem;">登録されたノートはありません。</p>
+                <button class="mini-link" style="display:inline-block;" onclick="registerNotebook()">＋ ノートを登録する</button>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = notebooks.map(nb => `
+        <div class="list-item">
+            <div class="card-icon" style="font-size:1.2rem;">📘</div>
+            <div class="li-text" style="flex:1;">
+                <div style="font-weight:600;">${escapeHtml(nb.title)}</div>
+                <div class="text-secondary" style="font-size:0.7rem;">${nb.updated || '最終更新なし'}</div>
+            </div>
+            <a href="${nb.url}" target="_blank" class="mini-link">開く</a>
+        </div>
+    `).join('');
+}
+
+window.registerNotebook = () => {
+    const title = prompt('ノートのタイトルを入力してください');
+    if (!title) return;
+    const url = prompt('NotebookLMのURLを入力してください (https://notebooklm.google.com/...)');
+    if (!url || !url.includes('notebooklm.google.com')) {
+        alert('有効なNotebookLMのURLを入力してください');
+        return;
+    }
+    const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
+    notebooks.push({ title, url, updated: new Date().toLocaleDateString() });
+    localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
+    loadNotebooks();
+};
+
 // ========== INIT ==========
 function initMain() {
     loadHistory();
     loadDashboard();
+    loadNotebooks();
 }
 
 async function loadHistory() {
     try {
         const data = await apiFetch('/api/history?limit=20');
         if (chatMessages) {
-            chatMessages.innerHTML = '';
+            chatMessages.innerHTML = `
+                <div class="chat-welcome">
+                    <h2>こんにちは。</h2>
+                    <p>今日はどんなお手伝いをしましょうか？</p>
+                </div>
+            `;
             lastMsgDate = null;
             data.messages.forEach(m => appendMsg(m.role, m.content));
         }

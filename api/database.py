@@ -97,6 +97,12 @@ async def get_todays_log():
         rows = await cursor.fetchall()
         lines = []
         for row in rows:
-            prefix = "[私]" if row["role"] == "user" else "[秘書]"
+            prefix = "[私]" if row["role"] == "user" else "[マネージャー]"
             lines.append(f"{prefix} {row['content']}")
         return "\n".join(lines)
+
+async def clear_history():
+    """全会話履歴をリセット（削除）"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("DELETE FROM messages")
+        await db.commit()

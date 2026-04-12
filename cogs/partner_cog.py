@@ -60,7 +60,7 @@ class PartnerCog(commands.Cog):
         text: str,
         folder_name: str = "DailyNotes",
         file_name: str = None,
-        target_heading: str = "## 🪟 ライフログ",
+        target_heading: str = "## 💬 Timeline",
     ):
         if not text:
             return
@@ -212,7 +212,7 @@ class PartnerCog(commands.Cog):
 
         if status == "start":
             append_text = f"- [/] {activity_name} ({time_str}-)"
-            new_content = update_section(content, append_text, "## 🎯 Tasks")
+            new_content = update_section(content, append_text, "## 🪟 Lifelog")
             if f_id:
                 await self.drive_service.update_text(service, f_id, new_content)
             else:

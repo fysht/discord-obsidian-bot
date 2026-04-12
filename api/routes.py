@@ -122,9 +122,9 @@ async def dashboard():
     except Exception:
         return {"tasks": [], "alter_log": ""}
 
-    # Tasksセクションの抽出
+    # Lifelog（旧Tasks相当）セクションの抽出
     tasks = []
-    task_match = re.search(r"## 🎯 Tasks\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    task_match = re.search(r"## 🪟 Lifelog\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     if task_match:
         for line in task_match.group(1).strip().split("\n"):
             line = line.strip()
@@ -133,12 +133,12 @@ async def dashboard():
             elif line.startswith("- [/]"):
                 tasks.append({"text": line[6:].strip(), "done": False})
 
-    # ライフログ（旧Alter Log相当）セクションの抽出
+    # タイムラインの抽出
     alter_log = ""
-    # 新しい形式 (## 🪟 ライフログ) を優先的に探し、なければ旧形式 (## 🪞 Alter Log) を探す
-    alter_match = re.search(r"## 🪟 ライフログ\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    alter_match = re.search(r"## 💬 Timeline\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     if not alter_match:
-        alter_match = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+        # 移行期間用
+        alter_match = re.search(r"## 🪟 ライフログ\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     
     if alter_match:
         alter_log = alter_match.group(1).strip()
@@ -243,6 +243,12 @@ async def task_action(req: TaskActionRequest):
 
     if f_id: await chat_service.drive_service.update_text(service, f_id, content)
     else: await chat_service.drive_service.upload_text(service, folder_id, file_name, content)
+    return {"status": "success"}
+
+@router.post("/reset_history", dependencies=[Depends(verify_api_key)])
+async def reset_history():
+    from api.database import clear_history
+    await clear_history()
     return {"status": "success"}
 
 class CalendarActionRequest(BaseModel):

@@ -74,7 +74,7 @@ class ChatService:
 
         if status == "start":
             append_text = f"- [/] {activity_name} ({time_str}-)"
-            new_content = update_section(content, append_text, "## 🎯 Tasks")
+            new_content = update_section(content, append_text, "## 🪟 Lifelog")
             if f_id:
                 await self.drive_service.update_text(service, f_id, new_content)
             else:
@@ -92,7 +92,7 @@ class ChatService:
                 return f"「{activity_name}」の終了を記録しました（開始: {start_time}）。"
             else:
                 append_text = f"- [x] {activity_name} (開始時間不明-{time_str})"
-                new_content = update_section(content, append_text, "## 🎯 Tasks")
+                new_content = update_section(content, append_text, "## 🪟 Lifelog")
                 if f_id:
                     await self.drive_service.update_text(service, f_id, new_content)
                 return f"「{activity_name}」の終了時刻のみ記録しました。"

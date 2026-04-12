@@ -169,7 +169,7 @@ class DailyOrganizeCog(commands.Cog):
                 "\n".join(data["alter_log"])
                 if isinstance(data["alter_log"], list)
                 else str(data["alter_log"]),
-                "## 🪟 ライフログ",
+                "## 💬 Timeline",
             )
         if data.get("journal"):
             content = update_section(content, data["journal"], "## 📔 Daily Journal")
@@ -190,7 +190,6 @@ class DailyOrganizeCog(commands.Cog):
                 "## 💡 Insights & Thoughts",
             )
 
-        # ★ ここも修正: Obsidianのノートにも「[仕事] 〇〇する」と分かりやすく書き込む処理
         if data.get("next_actions") and len(data["next_actions"]) > 0:
             formatted_actions = []
             for act in data["next_actions"]:
@@ -202,7 +201,7 @@ class DailyOrganizeCog(commands.Cog):
                     prefix = f"[{lst}] " if lst else ""
                     formatted_actions.append(f"- {prefix}{title}")
             content = update_section(
-                content, "\n".join(formatted_actions), "## ➡️ Next Actions"
+                content, "\n".join(formatted_actions), "## 🪟 Lifelog"
             )
 
         if f_id:
