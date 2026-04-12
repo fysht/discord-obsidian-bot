@@ -148,7 +148,7 @@ async def dashboard():
     weather = "取得失敗"
     news = []
     try:
-        weather_val, _, _ = await bot.info_service.get_weather() if hasattr(bot, "info_service") else InfoService().get_weather()
+        weather_val, _, _ = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
         weather = weather_val.strip('"')
         news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
     except Exception:

@@ -25,7 +25,9 @@ class FitbitService:
         self.refresh_token = initial_refresh_token
         self.user_id = user_id
         self.access_token = None
+        self.access_token_expires_at = None
         self.session = None
+        self._refresh_lock = asyncio.Lock()
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -72,34 +74,43 @@ class FitbitService:
             logging.error(f"Fitbit Token Save Error: {e}")
 
     async def _refresh_access_token(self):
-        await self._load_token()
-        session = await self._get_session()
-        url = "https://api.fitbit.com/oauth2/token"
-        auth = base64.b64encode(
-            f"{self.client_id}:{self.client_secret}".encode()
-        ).decode()
-        headers = {
-            "Authorization": f"Basic {auth}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        data = {"grant_type": "refresh_token", "refresh_token": self.refresh_token}
-        try:
-            async with session.post(url, headers=headers, data=data) as resp:
-                if resp.status == 200:
-                    resp_json = await resp.json()
-                    self.access_token = resp_json["access_token"]
-                    new_refresh = resp_json["refresh_token"]
-                    await self._save_token(new_refresh)
-                    return True
-                else:
-                    error_text = await resp.text()
-                    logging.error(
-                        f"[Fitbit Token Error] Status: {resp.status}, Body: {error_text}"
-                    )
-                    return False
-        except Exception as e:
-            logging.error(f"[Fitbit Token Exception] {e}")
-            return False
+        async with self._refresh_lock:
+            # 有効期限のチェック（60秒の余裕を持たせる）
+            now = datetime.datetime.now()
+            if self.access_token and self.access_token_expires_at and self.access_token_expires_at > now + datetime.timedelta(seconds=60):
+                return True
+
+            await self._load_token()
+            session = await self._get_session()
+            url = "https://api.fitbit.com/oauth2/token"
+            auth = base64.b64encode(
+                f"{self.client_id}:{self.client_secret}".encode()
+            ).decode()
+            headers = {
+                "Authorization": f"Basic {auth}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            }
+            data = {"grant_type": "refresh_token", "refresh_token": self.refresh_token}
+            try:
+                async with session.post(url, headers=headers, data=data) as resp:
+                    if resp.status == 200:
+                        resp_json = await resp.json()
+                        self.access_token = resp_json["access_token"]
+                        new_refresh = resp_json["refresh_token"]
+                        expires_in = resp_json.get("expires_in", 28800) # デフォルト8時間
+                        self.access_token_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=expires_in)
+                        
+                        await self._save_token(new_refresh)
+                        return True
+                    else:
+                        error_text = await resp.text()
+                        logging.error(
+                            f"[Fitbit Token Error] Status: {resp.status}, Body: {error_text}"
+                        )
+                        return False
+            except Exception as e:
+                logging.error(f"[Fitbit Token Exception] {e}")
+                return False
 
     def _calculate_sleep_score(
         self, total_asleep_min, total_in_bed_min, deep_min, rem_min, wake_min

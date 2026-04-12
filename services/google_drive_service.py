@@ -96,6 +96,36 @@ class GoogleDriveService:
             lambda: service.files().update(fileId=file_id, media_body=media).execute()
         )
 
+    async def upload_file(
+        self, service, parent_id, name, local_path, mime_type="application/octet-stream"
+    ):
+        """ローカルファイルを Google Drive にアップロードする"""
+        if not parent_id:
+            return None
+        file_metadata = {"name": name, "parents": [parent_id], "mimeType": mime_type}
+        media = MediaIoBaseUpload(
+            io.FileIO(local_path, "rb"), mimetype=mime_type, resumable=True
+        )
+        file = await asyncio.to_thread(
+            lambda: (
+                service.files()
+                .create(body=file_metadata, media_body=media, fields="id")
+                .execute()
+            )
+        )
+        return file.get("id")
+
+    async def update_file(
+        self, service, file_id, local_path, mime_type="application/octet-stream"
+    ):
+        """既存のファイルをローカルファイルの内容で更新する"""
+        media = MediaIoBaseUpload(
+            io.FileIO(local_path, "rb"), mimetype=mime_type, resumable=True
+        )
+        await asyncio.to_thread(
+            lambda: service.files().update(fileId=file_id, media_body=media).execute()
+        )
+
     async def read_text_file(self, service, file_id):
         try:
             request = service.files().get_media(fileId=file_id)
