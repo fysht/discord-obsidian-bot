@@ -36,8 +36,15 @@
     <div id="main-screen" class="screen">
         <!-- TOP HEADER -->
         <header class="top-header">
-            <div class="header-left">
-                <span class="header-title" id="current-tab-title">チャット</span>
+            <div class="header-partner">
+                <div class="partner-avatar">
+                    <img src="/static/icons/avatar.png" alt="Manager">
+                    <span class="status-indicator"></span>
+                </div>
+                <div class="partner-info">
+                    <div class="partner-name">幾田 りら</div>
+                    <div class="partner-status" id="current-tab-title">チャット</div>
+                </div>
             </div>
             <div class="header-right">
                 <button class="icon-btn" id="settings-btn" title="設定">
@@ -80,10 +87,13 @@
             <!-- ========== INFO TAB (WEATHER/NEWS) ========== -->
             <div id="tab-info" class="tab-pane">
                 <div class="scroll-container">
+                    <!-- Date at top of Info Tab -->
+                    <div class="date-header" id="dash-date-label">---</div>
+
                     <div class="card weather-card">
                         <div class="card-header">
                             <span class="card-icon">☁️</span>
-                            <span class="card-title">岡山県の天気</span>
+                            <span class="card-title">Yahoo!天気 (岡山南部)</span>
                         </div>
                         <div id="dash-weather" class="card-body">読み込み中...</div>
                     </div>
@@ -103,7 +113,7 @@
                     <div class="card obsidian-card">
                         <div class="card-header">
                             <span class="card-icon">🎯</span>
-                            <span class="card-title">Obsidian 今日のタスク</span>
+                            <span class="card-title">ライフログ</span>
                         </div>
                         <div id="dash-tasks" class="card-body"></div>
                     </div>
@@ -137,13 +147,12 @@
             <!-- ========== SCHEDULE TAB (CALENDAR/TASKS) ========== -->
             <div id="tab-schedule" class="tab-pane">
                 <div class="scroll-container">
-                    <!-- Date at top -->
-                    <div class="date-header" id="dash-date-label">---</div>
 
                     <div class="card calendar-card">
                         <div class="card-header">
                             <span class="card-icon">📅</span>
-                            <span class="card-title">Googleカレンダー</span>
+                            <span class="card-title">カレンダー</span>
+                            <button class="mini-link" onclick="openAddEventModal()" style="border:none; cursor:pointer;">追加</button>
                             <a href="https://calendar.google.com/" target="_blank" class="mini-link">開く</a>
                         </div>
                         <div id="dash-google-calendar" class="card-body list-body"></div>
@@ -208,6 +217,36 @@
                 <button class="modal-btn cancel" onclick="closeEditModal()">閉じる</button>
                 <button class="modal-btn delete" id="edit-delete-btn">削除</button>
                 <button class="modal-btn submit" id="edit-save-btn">保存</button>
+            </div>
+        </div>
+    </div>
+    <!-- ========== ADD EVENT MODAL ========== -->
+    <div id="event-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3>予定を追加</h3>
+            <div class="modal-body mt-20">
+                <div class="input-group">
+                    <label>タイトル</label>
+                    <input type="text" id="event-summary" class="modern-input" placeholder="会議、買い物など">
+                </div>
+                <div class="input-row mt-10">
+                    <div class="input-group">
+                        <label>開始</label>
+                        <input type="datetime-local" id="event-start" class="modern-input">
+                    </div>
+                    <div class="input-group">
+                        <label>終了</label>
+                        <input type="datetime-local" id="event-end" class="modern-input">
+                    </div>
+                </div>
+                <div class="input-group mt-10">
+                    <label>詳細</label>
+                    <textarea id="event-desc" class="modern-input" rows="2"></textarea>
+                </div>
+            </div>
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeEventModal()">キャンセル</button>
+                <button class="modal-btn submit" onclick="saveEvent()">追加</button>
             </div>
         </div>
     </div>

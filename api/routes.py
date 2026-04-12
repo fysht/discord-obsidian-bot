@@ -102,7 +102,9 @@ async def dashboard():
     if not service:
         return {"tasks": [], "alter_log": ""}
 
-    today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    now = datetime.datetime.now(JST)
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+    today_str = f"{now.strftime('%Y-%m-%d')} ({weekdays[now.weekday()]})"
     folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
     if not folder_id:
         return {"tasks": [], "alter_log": ""}
@@ -199,7 +201,9 @@ async def task_action(req: TaskActionRequest):
         raise HTTPException(status_code=503, detail="サービス未接続")
 
     service = chat_service.drive_service.get_service()
-    today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    now = datetime.datetime.now(JST)
+    weekdays = ["月", "火", "水", "木", "金", "土", "日"]
+    today_str = f"{now.strftime('%Y-%m-%d')} ({weekdays[now.weekday()]})"
     folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
     file_name = f"{today_str}.md"
     f_id = await chat_service.drive_service.find_file(service, folder_id, file_name)
@@ -235,10 +239,12 @@ async def task_action(req: TaskActionRequest):
     return {"status": "success"}
 
 class CalendarActionRequest(BaseModel):
-    action: str # 'update', 'delete'
-    event_id: str
+    action: str # 'add', 'update', 'delete'
+    event_id: Optional[str] = None
     summary: str = None
     description: str = None
+    start_time: str = None # 'YYYY-MM-DD HH:MM:S' または 'YYYY-MM-DD'
+    end_time: str = None
 
 @router.post("/calendar_action", dependencies=[Depends(verify_api_key)])
 async def calendar_action(req: CalendarActionRequest):
@@ -246,9 +252,16 @@ async def calendar_action(req: CalendarActionRequest):
     bot = getattr(app.state, "bot", None)
     if not bot or not bot.calendar_service: raise HTTPException(status_code=503, detail="カレンダーサービス未設定")
     
-    if req.action == "delete":
+    if req.action == "add":
+        # デフォルトで今日の日付にするなどの処理はService側か呼び出し側で行う
+        start = req.start_time or datetime.datetime.now(JST).strftime("%Y-%m-%d 10:00:00")
+        end = req.end_time or (datetime.datetime.strptime(start[:19], "%Y-%m-%d %H:%M:%S") + datetime.timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S") if " " in start else start
+        res = await bot.calendar_service.create_event(req.summary, start, end, req.description or "")
+    elif req.action == "delete":
+        if not req.event_id: raise HTTPException(status_code=400, detail="event_idが必要です")
         res = await bot.calendar_service.delete_event(req.event_id)
     elif req.action == "update":
+        if not req.event_id: raise HTTPException(status_code=400, detail="event_idが必要です")
         res = await bot.calendar_service.update_event(req.event_id, summary=req.summary, description=req.description)
     else: res = "不明なアクションです"
     

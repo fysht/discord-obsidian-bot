@@ -1,6 +1,7 @@
 import aiohttp
 import xml.etree.ElementTree as ET
 import logging
+import re
 
 
 class InfoService:
@@ -11,37 +12,29 @@ class InfoService:
         )
 
     async def get_weather(self):
-        """気象庁APIから岡山の天気を取得"""
+        """Yahoo!天気から岡山の天気を取得（スクレイピング形式）"""
+        url = "https://weather.yahoo.co.jp/weather/jp/33/6110.html" # 岡山南部
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(self.weather_url) as resp:
+                async with session.get(url) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        time_series = data[0]["timeSeries"]
-                        weather_text = time_series[0]["areas"][0]["weathers"][0]
-                        weather_text = weather_text.replace("　", " ")  # 見やすく整形
-
-                        # 気温のリストを取得
-                        weekly_areas = data[1]["timeSeries"][1]["areas"][0]
-                        temps_max = weekly_areas.get("tempsMax", [])
-                        temps_min = weekly_areas.get("tempsMin", [])
-
-                        # ★修正: 空っぽのデータ("")をスキップして、数字が入っているものだけを抽出する
-                        valid_max = [t for t in temps_max if t.strip()]
-                        valid_min = [t for t in temps_min if t.strip()]
-
-                        # 一番最初に見つかった有効な数字をセット（見つからなければN/A）
-                        max_t = valid_max[0] if valid_max else "N/A"
-                        min_t = valid_min[0] if valid_min else "N/A"
-
-                        # ObsidianのYAMLエラーを防ぐため、全体をダブルクォーテーションで囲む
-                        weather_value = (
-                            f'"{weather_text} (最高: {max_t}℃ / 最低: {min_t}℃)"'
-                        )
-
+                        html = await resp.text()
+                        
+                        # 天気
+                        weather_match = re.search(r'<p class="forecast">([^<]+)</p>', html)
+                        weather_text = weather_match.group(1).strip() if weather_match else "取得失敗"
+                        
+                        # 気温
+                        high_match = re.search(r'<li class="high">.*?em>(\d+)</em>', html, re.DOTALL)
+                        low_match = re.search(r'<li class="low">.*?em>(\d+)</em>', html, re.DOTALL)
+                        
+                        max_t = high_match.group(1) if high_match else "N/A"
+                        min_t = low_match.group(1) if low_match else "N/A"
+                        
+                        weather_value = f'"{weather_text} (最高: {max_t}℃ / 最低: {min_t}℃)"'
                         return weather_value, max_t, min_t
         except Exception as e:
-            logging.error(f"Weather Fetch Error: {e}")
+            logging.error(f"Yahoo Weather Fetch Error: {e}")
         return '"天気情報の取得に失敗しました"', "N/A", "N/A"
 
     async def get_news(self, limit=3):
