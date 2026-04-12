@@ -174,6 +174,9 @@ async def dashboard():
                 news.append({"title": parts[0], "link": parts[1]})
             else:
                 news.append({"title": n, "link": "#"})
+    except Exception as e:
+        logging.error(f"Weather/News fetch error: {e}")
+
     # Fitbitデータ取得
     sleep_stats = {"score": "N/A", "duration": "N/A"}
     fitbit_cog = bot.get_cog("FitbitCog")
