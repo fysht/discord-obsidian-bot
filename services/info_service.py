@@ -13,18 +13,19 @@ class InfoService:
 
     async def get_weather(self):
         """Yahoo!天気から岡山の天気を取得（スクレイピング形式）"""
-        url = "https://weather.yahoo.co.jp/weather/jp/33/6110.html" # 岡山南部
+        # 岡山南部 (6610.html が最新の岡山地点)
+        url = "https://weather.yahoo.co.jp/weather/jp/33/6610.html" 
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         html = await resp.text()
                         
-                        # 天気
+                        # 天気 (imgのalt属性)
                         weather_match = re.search(r'<p class="pict">.*?alt="([^"]+)"', html, re.DOTALL)
                         weather_text = weather_match.group(1).strip() if weather_match else "取得失敗"
                         
-                        # 気温
+                        # 気温 (emタグ)
                         high_match = re.search(r'<li class="high">.*?em>(\d+)</em>', html, re.DOTALL)
                         low_match = re.search(r'<li class="low">.*?em>(\d+)</em>', html, re.DOTALL)
                         

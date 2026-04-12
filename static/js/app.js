@@ -115,8 +115,12 @@ if (chatForm) {
         messageInput.style.height = '40px';
         sendBtn.classList.remove('active');
 
+        // 英会話モードがONなら指示を付加
+        const isEnglish = $('#english-mode-checkbox')?.checked;
+        const finalMsg = isEnglish ? `${msg}\n(Important: Please reply ONLY in English for this response.)` : msg;
+
         try {
-            const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: msg }) });
+            const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: finalMsg }) });
             appendMsg('assistant', data.reply);
         } catch (err) {
             appendMsg('assistant', 'すみません、エラーが発生しました。');
@@ -316,7 +320,7 @@ if (taskConfirmBtn) {
         const val = $('#custom-task-input').value.trim();
         if (!val) return;
         
-        const cmd = currentTaskMode === 'start' ? `${val}を始める` : `${val}を終わった`;
+        const cmd = currentTaskMode === 'start' ? `「${val}」を始める` : `「${val}」を終えた`;
         sendActionCommand(cmd);
         closeTaskModal();
     });
@@ -387,7 +391,22 @@ window.openEditModal = (type, id, text, isDone = false) => {
 
 window.closeEditModal = () => $('#edit-modal')?.classList.add('hidden');
 
-const editSaveBtn = $('#edit-save-btn');
+const editToggleBtn = $('#edit-toggle-btn');
+if (editToggleBtn) {
+    editToggleBtn.addEventListener('click', async () => {
+        const t = window.currentEditTarget;
+        if (t.type !== 'obsidian') {
+            showToast('この項目は切り替えできません', true);
+            return;
+        }
+        try {
+            await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'toggle', old_text: t.text }) });
+            showToast('状態を切り替えました');
+            loadDashboard();
+            closeEditModal();
+        } catch { showToast('切り替えに失敗しました', true); }
+    });
+}
 if (editSaveBtn) {
     editSaveBtn.addEventListener('click', async () => {
         const t = window.currentEditTarget;
@@ -459,22 +478,31 @@ function loadNotebooks() {
         return;
     }
 
-    container.innerHTML = notebooks.map(nb => `
+    container.innerHTML = notebooks.map((nb, idx) => `
         <div class="list-item">
             <div class="card-icon" style="font-size:1.2rem;">📘</div>
             <div class="li-text" style="flex:1;">
                 <div style="font-weight:600;">${escapeHtml(nb.title)}</div>
                 <div class="text-secondary" style="font-size:0.7rem;">${nb.updated || '最終更新なし'}</div>
             </div>
-            <a href="${nb.url}" target="_blank" class="mini-link">開く</a>
+            <div style="display:flex; gap:8px;">
+                <button class="icon-btn" onclick="deleteNotebook(${idx})" style="color:#ff4444; opacity:0.6;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                </button>
+                <a href="${nb.url}" target="_blank" class="mini-link">開く</a>
+            </div>
         </div>
-    `).join('');
+    `).join('') + `
+        <div class="p-10 text-center">
+            <button class="mini-link" onclick="registerNotebook()">＋ ノートを追加する</button>
+        </div>
+    `;
 }
 
 window.registerNotebook = () => {
     const title = prompt('ノートのタイトルを入力してください');
     if (!title) return;
-    const url = prompt('NotebookLMのURLを入力してください (https://notebooklm.google.com/...)');
+    const url = prompt('NotebookLMのURLを入力してください');
     if (!url || !url.includes('notebooklm.google.com')) {
         alert('有効なNotebookLMのURLを入力してください');
         return;
@@ -484,6 +512,23 @@ window.registerNotebook = () => {
     localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
     loadNotebooks();
 };
+
+window.deleteNotebook = (idx) => {
+    if (!confirm('このノートブックを削除しますか？')) return;
+    const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
+    notebooks.splice(idx, 1);
+    localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
+    loadNotebooks();
+};
+
+// Initial English Mode State
+const engCheckbox = $('#english-mode-checkbox');
+if (engCheckbox) {
+    engCheckbox.checked = localStorage.getItem('mng_english_mode') === 'true';
+    engCheckbox.addEventListener('change', () => {
+        localStorage.setItem('mng_english_mode', engCheckbox.checked);
+    });
+}
 
 // ========== INIT ==========
 function initMain() {
