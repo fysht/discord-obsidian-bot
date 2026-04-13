@@ -47,7 +47,10 @@ class DailyOrganizeCog(commands.Cog):
 
         log_text = await partner_cog.fetch_todays_chat_log(channel)
 
-        weather, max_t, min_t = await self.info_service.get_weather()
+        weather_res = await self.info_service.get_weather()
+        weather = weather_res.get("summary", "取得失敗")
+        max_t = weather_res.get("max_temp", "N/A")
+        min_t = weather_res.get("min_temp", "N/A")
 
         location_log_text = "（記録なし）"
         service = self.drive_service.get_service()

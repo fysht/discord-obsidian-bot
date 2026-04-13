@@ -98,6 +98,7 @@ body {
     display: none;
     flex-direction: column;
     padding-bottom: calc(65px + var(--safe-bottom));
+    overflow: hidden;
 }
 .tab-pane.active { display: flex; }
 
@@ -136,7 +137,7 @@ body {
 .nav-item.active svg { transform: translateY(-2px); }
 
 /* ========== CARDS & SCROLL ========== */
-.scroll-container { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; }
+.scroll-container { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
 .date-header { text-align: center; font-size: 1.1rem; font-weight: 700; color: var(--text-secondary); margin: 8px 0; }
 .card { background: var(--bg-glass); border: 1px solid var(--border-glass); border-radius: var(--radius-lg); overflow: hidden; }
 .card-header { padding: 14px 18px; border-bottom: 1px solid var(--border-glass); display: flex; align-items: center; gap: 10px; }

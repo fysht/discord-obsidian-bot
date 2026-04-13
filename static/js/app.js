@@ -150,15 +150,15 @@ if (messageInput) {
     });
 }
 
-function appendMsg(role, content) {
+function appendMsg(role, content, isoTimestamp = null) {
     if (!chatMessages) return;
-    const now = new Date();
+    const now = isoTimestamp ? new Date(isoTimestamp) : new Date();
     const dStr = `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日(${['日','月','火','水','木','金','土'][now.getDay()]})`;
     const tStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
 
     if (lastMsgDate !== dStr) {
         const sep = document.createElement('div');
-        sep.className = 'chat-date-separator';
+        sep.className = 'msg-date-separator';
         sep.textContent = dStr;
         chatMessages.appendChild(sep);
         lastMsgDate = dStr;
@@ -541,7 +541,7 @@ async function loadHistory() {
         if (chatMessages) {
             chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
             lastMsgDate = null;
-            data.messages.forEach(m => appendMsg(m.role, m.content));
+            data.messages.forEach(m => appendMsg(m.role, m.content, m.timestamp));
         }
     } catch {}
 }
