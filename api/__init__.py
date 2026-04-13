@@ -16,5 +16,8 @@ async def root():
     """PWAのトップページを返す"""
     index_path = static_dir / "index.html"
     if index_path.exists():
-        return FileResponse(str(index_path))
+        return FileResponse(
+            str(index_path),
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+        )
     return {"message": "Secretary AI API is running."}
