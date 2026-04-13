@@ -76,8 +76,8 @@ body {
 .header-partner { display: flex; align-items: center; gap: 12px; }
 .partner-avatar { position: relative; width: 34px; height: 34px; flex-shrink: 0; }
 .partner-avatar img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid var(--accent); display: block; }
-.status-indicator { position: absolute; bottom: 1px; right: 1px; width: 10px; height: 10px; background: #31a24c; border: 2px solid var(--bg-base); border-radius: 50%; }
-
+.status-indicator { position: absolute; bottom: 2px; right: 2px; width: 10px; height: 10px; background: #00ba98; border: 2px solid var(--bg-dark); border-radius: 50%; }
+.version-tag { font-size: 0.6rem; color: var(--text-muted); opacity: 0.5; margin: 0 5px; }
 .partner-info { display: flex; flex-direction: column; }
 .partner-name { font-size: 0.95rem; font-weight: 700; line-height: 1.2; }
 .partner-status { font-size: 0.7rem; color: var(--text-muted); font-weight: 500; }

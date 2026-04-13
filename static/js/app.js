@@ -225,6 +225,14 @@ window.executeAiAction = async (toolName, args) => {
     } catch { showToast('実行に失敗しました', true); }
 };
 
+window.forceReload = async () => {
+    if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (let reg of regs) await reg.unregister();
+    }
+    window.location.reload(true);
+};
+
 window.openIntelligentTaskModal = async (mode) => {
     const modal = $('#task-modal');
     const list = $('#modal-list');
