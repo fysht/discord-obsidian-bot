@@ -99,7 +99,7 @@ body {
     flex: 1;
     display: none;
     flex-direction: column;
-    /* overflow: hidden; */ /* スクロールを阻害するため解除 */
+    overflow: hidden;
     height: 100%;
     max-height: 100%;
     min-height: 0;
@@ -150,7 +150,6 @@ body {
     flex-direction: column; 
     gap: 16px; 
     min-height: 0;
-    max-height: 100%;
     -webkit-overflow-scrolling: touch;
 }
 .date-header { text-align: center; font-size: 1.1rem; font-weight: 700; color: var(--text-secondary); margin: 8px 0; }
@@ -206,7 +205,16 @@ body {
 .chip-btn { padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-glass); color: #fff; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
 .chip-btn.special { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
-.chat-input-area { padding: 10px 16px calc(10px + var(--safe-bottom)); background: var(--bg-base); border-top: 1px solid var(--border-glass); }
+.chat-input-area {
+    padding: 12px 16px;
+    padding-bottom: calc(85px + var(--safe-bottom)); /* ボトムナビにかぶらないように配置 */
+    background: var(--bg-card);
+    border-top: 1px solid var(--border-glass);
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    flex-shrink: 0;
+}
 .input-wrapper { display: flex; align-items: flex-end; gap: 10px; padding: 8px 8px 8px 16px; background: var(--bg-elevated); border-radius: 24px; border: 1px solid var(--border-glass); }
 #message-input { flex: 1; background: none; border: none; outline: none; color: #fff; font-size: 1rem; padding: 4px 0; resize: none; max-height: 120px; }
 .send-btn { width: 36px; height: 36px; border-radius: 50%; background: var(--accent-gradient); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
