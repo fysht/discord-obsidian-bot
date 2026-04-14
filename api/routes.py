@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 from api.database import save_message, get_history
+from services.info_service import InfoService
 
 router = APIRouter(prefix="/api")
 

@@ -13,6 +13,7 @@ from google import genai
 from services.google_drive_service import GoogleDriveService
 from services.google_calendar_service import GoogleCalendarService
 from services.google_tasks_service import GoogleTasksService
+from services.info_service import InfoService
 
 try:
     from obsidian_handler import add_memo_async
@@ -102,6 +103,9 @@ class MyBot(commands.Bot):
         else:
             self.gemini_client = None
             logging.warning("GEMINI_API_KEYが設定されていません。")
+
+        # --- 天気・ニュース取得サービスの生成 ---
+        self.info_service = InfoService()
 
     async def setup_hook(self):
         """Cogを動的にロードする"""
