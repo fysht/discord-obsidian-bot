@@ -178,8 +178,9 @@ async def dashboard():
             else:
                 news.append({"title": n, "link": "#"})
     except Exception as e:
-        logging.error(f"Dashboard Weather/News fetch error: {e}")
-        weather_data = {"summary": "取得失敗"}
+        import traceback
+        logging.error(f"Dashboard Weather/News fetch ERROR: {e}\n{traceback.format_exc()}")
+        weather_data = {"summary": "取得失敗 (Except)"}
         news = []
 
     # Fitbitデータ取得

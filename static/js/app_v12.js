@@ -289,41 +289,54 @@ window.sendActionCommand = (cmd) => {
 
 // ========== DASHBOARD ==========
 async function loadDashboard() {
+    if (!apiKey) {
+        console.warn("No API Key - loadDashboard aborted");
+        return;
+    }
     try {
         const data = await apiFetch('/api/dashboard');
         
         const dateLabel = $('#dash-date-label');
         if (dateLabel) dateLabel.textContent = data.date || '---';
 
-        // Weather (Detailed Slots)
+        // Weather
         const weatherEl = $('#dash-weather');
-        if (weatherEl && data.weather && data.weather.slots) {
-            weatherEl.innerHTML = `
-                <div style="margin-bottom:12px; font-weight:600;">${data.weather.summary}</div>
-                <div style="display:flex; flex-direction:column; gap:8px;">
-                    ${data.weather.slots.map(s => `
-                        <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85rem; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.05);">
-                            <div style="width:50px;">${s.time}</div>
-                            <div style="font-size:1.2rem; width:30px; text-align:center;">${s.icon}</div>
-                            <div style="width:60px; color:var(--accent); text-align:right;">降水 ${s.pop}</div>
-                            <div style="width:50px; text-align:right;">${s.temp}℃</div>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
-        } else if (weatherEl) {
-            weatherEl.innerHTML = `<div class="loading-placeholder">${data.weather?.summary || '取得失敗'}</div>`;
+        if (weatherEl) {
+            if (data.weather && data.weather.summary !== "取得失敗") {
+                const w = data.weather;
+                let html = `<div style="margin-bottom:12px; font-weight:600;">${w.summary}</div>`;
+                if (w.slots) {
+                    html += `<div style="display:flex; flex-direction:column; gap:8px;">
+                        ${w.slots.map(s => `
+                            <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85rem; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.05);">
+                                <div style="width:50px;">${s.time}</div>
+                                <div style="font-size:1.2rem; width:30px; text-align:center;">${s.icon}</div>
+                                <div style="width:60px; color:var(--accent); text-align:right;">降水 ${s.pop}</div>
+                                <div style="width:50px; text-align:right;">${s.temp}℃</div>
+                            </div>
+                        `).join('')}
+                    </div>`;
+                }
+                weatherEl.innerHTML = html;
+            } else {
+                weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした (再試行中...)</div>`;
+                setTimeout(loadDashboard, 10000); // Fail-safe retry
+            }
         }
 
         // News
         const newsEl = $('#dash-news');
-        if (newsEl && data.news) {
-            newsEl.innerHTML = data.news.length ? data.news.map(n => `
-                <div class="news-item">
-                    <span class="news-dot"></span>
-                    <a href="${n.link}" target="_blank" class="news-text">${escapeHtml(n.title)}</a>
-                </div>
-            `).join('') : '<div class="loading-placeholder">ニュースはありません</div>';
+        if (newsEl) {
+            if (data.news && data.news.length > 0) {
+                newsEl.innerHTML = data.news.map(n => `
+                    <div class="news-item">
+                        <span class="news-dot"></span>
+                        <a href="${n.link}" target="_blank" class="news-text">${escapeHtml(n.title)}</a>
+                    </div>
+                `).join('');
+            } else {
+                newsEl.innerHTML = '<div class="loading-placeholder">現在、ニュースはありません</div>';
+            }
         }
 
         // Google Tasks (Separate lists)

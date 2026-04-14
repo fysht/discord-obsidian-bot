@@ -13,53 +13,37 @@ class InfoService:
 
     async def get_weather(self):
         """気象庁APIから詳細な時系列予報を取得"""
-        # 岡山県 (330000)
         url = "https://www.jma.go.jp/bosai/forecast/data/forecast/330000.json"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url) as resp:
+                async with session.get(url, timeout=10) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         forecast = data[0]
-                        
                         # 岡山南部 (areas[0])
-                        # 天気コードとテキスト
-                        ts0 = forecast["timeSeries"][0]
-                        area0 = ts0["areas"][0]
-                        codes = area0.get("weatherCodes", [])
-                        weathers = area0.get("weathers", [])
+                        weathers = forecast["timeSeries"][0]["areas"][0].get("weathers", ["不明"])
+                        pops = forecast["timeSeries"][1]["areas"][0].get("pops", [])
+                        times_pop = forecast["timeSeries"][1].get("timeDefines", [])
+                        temps = forecast["timeSeries"][2]["areas"][0].get("temps", [])
                         
-                        # 降水確率 (6時間ごと)
-                        ts1 = forecast["timeSeries"][1]
-                        pops = ts1["areas"][0].get("pops", [])
-                        times_pop = ts1.get("timeDefines", [])
-                        
-                        # 気温
-                        ts2 = forecast["timeSeries"][2]
-                        temps = ts2["areas"][0].get("temps", [])
-                        
-                        # フロントエンドで使いやすいように整理
                         slots = []
-                        # 今日・明日の情報を抽出
+                        # 降水確率がある分だけスロットを作成
                         for i in range(min(len(pops), 6)):
-                            t_str = times_pop[i] # ISO format
                             from datetime import datetime
+                            t_str = times_pop[i]
                             dt = datetime.fromisoformat(t_str)
-                            
-                            # 天気アイコンのマッピング
-                            code = codes[0] if i < 4 else codes[1] if len(codes)>1 else codes[0]
-                            icon = self._get_weather_icon(code)
-                            
                             slots.append({
                                 "time": dt.strftime("%H:%M"),
-                                "icon": icon,
+                                "icon": "☀️" if "晴" in weathers[0] else "☁️" if "曇" in weathers[0] else "☔",
                                 "pop": f"{pops[i]}%",
                                 "temp": temps[i] if i < len(temps) else "--"
                             })
                         
-                        # 概要テキスト
-                        summary = f"{weathers[0]} (現在の気温: {temps[0]}℃)" if temps else weathers[0]
+                        summary = weathers[0]
+                        if temps: summary += f" ({temps[0]}℃)"
                         
                         return {
                             "summary": summary,
@@ -67,11 +51,10 @@ class InfoService:
                             "max_temp": temps[1] if len(temps) > 1 else "--",
                             "min_temp": temps[0] if len(temps) > 0 else "--"
                         }
-                        
-                    return {"summary": "取得失敗"}
+                    return {"summary": "取得失敗 (Server Error)"}
         except Exception as e:
-            logging.error(f"JMA Weather Fetch Error: {e}")
-            return {"summary": "取得失敗"}
+            logging.error(f"Weather Fetch Error: {e}")
+            return {"summary": "取得失敗 (JSON Error)"}
 
     def _get_weather_icon(self, code):
         """JMA天気コードを絵文字に変換"""
@@ -85,19 +68,22 @@ class InfoService:
     async def get_news(self, limit=3):
         """Yahoo!ニュースのRSSからタイトルと本物のURLを取得"""
         url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/91.0.4472.124"
+        }
         try:
             async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url) as response:
+                async with session.get(url, timeout=10) as response:
                     if response.status == 200:
                         xml_data = await response.text()
                         root = ET.fromstring(xml_data)
                         news_list = []
-                        # 最新のニュースをlimit件取得
-                        for item in root.findall(".//item")[:limit]:
-                            title = item.find("title").text
-                            link = item.find("link").text
-                            # タイトルとURLをセットにしてAIに渡す
+                        items = root.findall(".//item")
+                        for item in items[:limit]:
+                            title_el = item.find("title")
+                            link_el = item.find("link")
+                            title = title_el.text if title_el is not None else "無題"
+                            link = link_el.text if link_el is not None else "#"
                             news_list.append(f"{title}\n{link}")
                         return news_list
         except Exception as e:
