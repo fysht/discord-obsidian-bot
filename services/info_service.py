@@ -2,18 +2,16 @@ import aiohttp
 import xml.etree.ElementTree as ET
 import logging
 import re
-
+import datetime
+from config import JST
 
 class InfoService:
     def __init__(self):
-        # 岡山県の気象庁JSONコード
-        self.weather_url = (
-            "https://www.jma.go.jp/bosai/forecast/data/forecast/330000.json"
-        )
+        self.weather_url = "https://www.jma.go.jp/bosai/forecast/data/forecast/330000.json"
 
     async def get_weather(self):
-        """気象庁APIから詳細な時系列予報を取得"""
-        url = "https://www.jma.go.jp/bosai/forecast/data/forecast/330000.json"
+        """気象庁APIから詳細な時系列予報を取得し、未来のデータのみ抽出"""
+        url = self.weather_url
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
@@ -29,18 +27,21 @@ class InfoService:
                         times_pop = forecast["timeSeries"][1].get("timeDefines", [])
                         temps = forecast["timeSeries"][2]["areas"][0].get("temps", [])
                         
+                        now = datetime.datetime.now(JST)
                         slots = []
-                        # 降水確率がある分だけスロットを作成
-                        for i in range(min(len(pops), 6)):
-                            from datetime import datetime
-                            t_str = times_pop[i]
-                            dt = datetime.fromisoformat(t_str)
+                        for i in range(len(pops)):
+                            dt = datetime.datetime.fromisoformat(times_pop[i])
+                            # 現在時刻より1時間以上前のデータはスキップ（鮮度維持）
+                            if dt < now - datetime.timedelta(hours=1):
+                                continue
+                            
                             slots.append({
                                 "time": dt.strftime("%H:%M"),
-                                "icon": "☀️" if "晴" in weathers[0] else "☁️" if "曇" in weathers[0] else "☔",
+                                "icon": self._get_weather_icon_by_text(weathers[0]),
                                 "pop": f"{pops[i]}%",
                                 "temp": temps[i] if i < len(temps) else "--"
                             })
+                            if len(slots) >= 6: break
                         
                         summary = weathers[0]
                         if temps: summary += f" ({temps[0]}℃)"
@@ -56,17 +57,15 @@ class InfoService:
             logging.error(f"Weather Fetch Error: {e}")
             return {"summary": "取得失敗 (JSON Error)"}
 
-    def _get_weather_icon(self, code):
-        """JMA天気コードを絵文字に変換"""
-        code = str(code)
-        if code.startswith('1'): return "☀️"
-        if code.startswith('2'): return "☁️"
-        if code.startswith('3'): return "☔"
-        if code.startswith('4'): return "❄️"
+    def _get_weather_icon_by_text(self, text):
+        if "晴" in text: return "☀️"
+        if "雨" in text: return "☔"
+        if "雪" in text: return "❄️"
+        if "曇" in text: return "☁️"
         return "❓"
 
     async def get_news(self, limit=3):
-        """Yahoo!ニュースのRSSからタイトルと本物のURLを取得"""
+        """Yahoo!ニュースのRSSからタイトルとURLを取得"""
         url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/91.0.4472.124"
