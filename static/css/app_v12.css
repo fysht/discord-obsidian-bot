@@ -149,7 +149,17 @@ body {
 .mini-link:hover { background: rgba(0,186,152,0.2); }
 
 .card-body { padding: 16px; font-size: 0.95rem; min-height: 40px; }
-.loading-placeholder { text-align: center; color: var(--text-muted); padding: 20px; font-size: 0.85rem; }
+.loading-placeholder { 
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center; 
+    color: var(--text-muted); 
+    padding: 30px 20px; 
+    font-size: 0.85rem; 
+    width: 100%;
+    min-height: 80px;
+}
 .list-body { padding: 8px 0; }
 
 /* ========== LIST ITEMS (EDITABLE) ========== */

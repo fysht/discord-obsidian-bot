@@ -101,7 +101,11 @@ class DailyOrganizeCog(commands.Cog):
             except Exception as e:
                 logging.error(f"DailyOrganize: JSON Error: {e}")
 
-        result["meta"] = {"weather": weather, "temp_max": max_t, "temp_min": min_t}
+        result["meta"] = {
+            "weather": f'"{weather}"' if weather != "取得失敗" else "取得失敗",
+            "temp_max": f'"{max_t}"' if max_t != "N/A" else "N/A",
+            "temp_min": f'"{min_t}"' if min_t != "N/A" else "N/A"
+        }
         await self._execute_organization(result, today_str)
 
         # ★ ここを修正: リスト名（仕事/プライベート）を受け取ってGoogle Tasksへ登録
@@ -170,14 +174,6 @@ class DailyOrganizeCog(commands.Cog):
             updates_fm["temp_min"] = meta.get("temp_min")
         content = update_frontmatter(content, updates_fm)
 
-        if data.get("alter_log") and len(data["alter_log"]) > 0:
-            content = update_section(
-                content,
-                "\n".join(data["alter_log"])
-                if isinstance(data["alter_log"], list)
-                else str(data["alter_log"]),
-                "## 🪞 Alter Log",
-            )
         if data.get("journal"):
             content = update_section(content, data["journal"], "## 📔 Daily Journal")
         if data.get("events") and len(data["events"]) > 0:

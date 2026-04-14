@@ -134,11 +134,15 @@ async def dashboard():
             elif line.startswith("- [/]"):
                 tasks.append({"text": line[6:].strip(), "done": False})
 
-    # 観察日記 (Alter Log) の抽出
+    # 観察日記 (Alter Log / Insights & Thoughts) の抽出
     alter_log = ""
-    alter_match = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    # 新しい名称 (Insights & Thoughts) を優先
+    alter_match = re.search(r"## 💡 Insights & Thoughts\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     if not alter_match:
-        # 以前の Timeline 同期ロジックへの互換性またはフォールバック
+        # 以前の名称 (Alter Log)
+        alter_match = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    if not alter_match:
+        # さらに以前の名称 (AI Assessment) へのフォールバック
         alter_match = re.search(r"## 🕵️ AI Assessment\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     
     if alter_match:
@@ -156,15 +160,13 @@ async def dashboard():
     google_tasks_private = []
     habits = []
     if hasattr(chat_service, "tasks_service") and chat_service.tasks_service:
-        google_tasks_work = await chat_service.tasks_service.get_raw_tasks("仕事")
-        google_tasks_private = await chat_service.tasks_service.get_raw_tasks("プライベート")
-        # 「習慣」リストの取得
-        habits = await chat_service.tasks_service.get_raw_tasks("習慣")
+        try:
+            google_tasks_work = await chat_service.tasks_service.get_raw_tasks("仕事")
+            google_tasks_private = await chat_service.tasks_service.get_raw_tasks("プライベート")
+            habits = await chat_service.tasks_service.get_raw_tasks("習慣")
+        except Exception as te:
+            logging.error(f"Dashboard Google Tasks Fetch Error: {te}")
 
-    # Weather & News (InfoServiceを使用)
-    from services.info_service import InfoService
-    weather_data = {"summary": "取得失敗"}
-    news = []
     try:
         weather_data = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
         raw_news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
@@ -176,7 +178,9 @@ async def dashboard():
             else:
                 news.append({"title": n, "link": "#"})
     except Exception as e:
-        logging.error(f"Weather/News fetch error: {e}")
+        logging.error(f"Dashboard Weather/News fetch error: {e}")
+        weather_data = {"summary": "取得失敗"}
+        news = []
 
     # Fitbitデータ取得
     fitbit_cog = bot.get_cog("FitbitCog")

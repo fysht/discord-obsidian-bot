@@ -10,10 +10,9 @@ SECTION_ORDER = [
     # --- 2. Daily Summary (1日の振り返り整理) ---
     "## 🪞 Alter Log",  # 忖度ゼロの客観的プロファイリング (DailyOrganizeCog)
     "## 📔 Daily Journal",  # AIによる振り返り日記 (DailyOrganizeCog)
-    "## 🤔 Thought Reflection",  # 壁打ちと思考整理の記録 (PartnerCog)
-    "## 📝 Events & Actions",  # 出来事・行動記録 (DailyOrganizeCog)
-    "## 💡 Insights & Thoughts",  # 考えたこと・気づき (DailyOrganizeCog)
-    "## ➡️ Next Actions",  # ネクストアクション (DailyOrganizeCog)
+    "## 📝 Events & Actions",  # 具体的な出来事 (DailyOrganizeCog)
+    "## 💡 Insights & Thoughts",  # 客観的な分析 (DailyOrganizeCog)
+    "## 🚀 Next Actions",  # 明日のアクション (DailyOrganizeCog)
     # --- 3. Input & Information (インプット・情報収集) ---
     "## 🍳 Recipes",  # レシピクリップ (WebClipService)
     "## 📺 YouTube",  # YouTube動画リンク (WebClipService)

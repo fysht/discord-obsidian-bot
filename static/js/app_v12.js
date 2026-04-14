@@ -312,7 +312,7 @@ async function loadDashboard() {
                 </div>
             `;
         } else if (weatherEl) {
-            weatherEl.textContent = data.weather?.summary || '取得失敗';
+            weatherEl.innerHTML = `<div class="loading-placeholder">${data.weather?.summary || '取得失敗'}</div>`;
         }
 
         // News
