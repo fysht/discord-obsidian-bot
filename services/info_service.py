@@ -15,8 +15,9 @@ class InfoService:
         """気象庁APIから詳細な時系列予報を取得"""
         # 岡山県 (330000)
         url = "https://www.jma.go.jp/bosai/forecast/data/forecast/330000.json"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -84,8 +85,9 @@ class InfoService:
     async def get_news(self, limit=3):
         """Yahoo!ニュースのRSSからタイトルと本物のURLを取得"""
         url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(headers=headers) as session:
                 async with session.get(url) as response:
                     if response.status == 200:
                         xml_data = await response.text()
