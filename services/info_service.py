@@ -27,21 +27,16 @@ class InfoService:
                         times_pop = forecast["timeSeries"][1].get("timeDefines", [])
                         temps = forecast["timeSeries"][2]["areas"][0].get("temps", [])
                         
-                        now = datetime.datetime.now(JST)
+                        # 降水確率がある分だけスロットを作成
                         slots = []
-                        for i in range(len(pops)):
+                        for i in range(min(len(pops), 6)):
                             dt = datetime.datetime.fromisoformat(times_pop[i])
-                            # 現在時刻より1時間以上前のデータはスキップ（鮮度維持）
-                            if dt < now - datetime.timedelta(hours=1):
-                                continue
-                            
                             slots.append({
                                 "time": dt.strftime("%H:%M"),
                                 "icon": self._get_weather_icon_by_text(weathers[0]),
                                 "pop": f"{pops[i]}%",
                                 "temp": temps[i] if i < len(temps) else "--"
                             })
-                            if len(slots) >= 6: break
                         
                         summary = weathers[0]
                         if temps: summary += f" ({temps[0]}℃)"
