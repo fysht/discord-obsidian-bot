@@ -114,17 +114,14 @@ async def dashboard():
     today_str = now.strftime("%Y-%m-%d")
 
     folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
-    if not folder_id:
-        return {"tasks": [], "alter_log": "", "date": display_date, "sleep": sleep_stats}
-
-    f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
-    if not f_id:
-        return {"tasks": [], "alter_log": "", "date": display_date, "sleep": sleep_stats}
-
-    try:
-        content = await chat_service.drive_service.read_text_file(service, f_id)
-    except Exception:
-        return {"tasks": [], "alter_log": "", "sleep": sleep_stats}
+    content = ""
+    if folder_id:
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
+        if f_id:
+            try:
+                content = await chat_service.drive_service.read_text_file(service, f_id)
+            except Exception:
+                pass
 
     # Lifelog（旧Tasks相当）セクションの抽出
     tasks = []
