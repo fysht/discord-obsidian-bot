@@ -36,7 +36,7 @@ class DailyOrganizeCog(commands.Cog):
     async def daily_organize_task(self):
         channel = self.bot.get_channel(self.memo_channel_id)
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not channel or not partner_cog:
+        if not partner_cog:
             return
 
         today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -45,6 +45,7 @@ class DailyOrganizeCog(commands.Cog):
         if self.tasks_service:
             current_tasks_text = await self.tasks_service.get_uncompleted_tasks()
 
+        # channelがNoneの場合でもPWA DBからログを取得する（partner_cogの改修に対応）
         log_text = await partner_cog.fetch_todays_chat_log(channel)
 
         weather_res = await self.info_service.get_weather()

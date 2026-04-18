@@ -99,7 +99,8 @@ body {
     flex: 1;
     display: none;
     flex-direction: column;
-    overflow: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     height: 100%;
     max-height: 100%;
     min-height: 0;
@@ -205,6 +206,7 @@ body {
 .chip-btn { padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-glass); color: #fff; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
 .chip-btn.special { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 
+#chat-form { width: 100%; }
 .chat-input-area {
     padding: 12px 16px;
     padding-bottom: calc(80px + var(--safe-bottom)); /* ボトムナビを避ける十分な余白 */
@@ -253,6 +255,80 @@ body {
 
 .diary-content { white-space: pre-wrap; line-height: 1.8; color: var(--text-secondary); font-family: 'Noto Sans JP', serif; }
 .mt-20 { margin-top: 20px; }
+.mt-10 { margin-top: 10px; }
+
+/* Toast Notifications */
+#toast-container {
+    position: fixed;
+    top: calc(60px + var(--safe-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+.toast {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: 12px 24px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    box-shadow: var(--shadow-deep);
+    animation: toastIn 0.3s ease;
+    transition: opacity 0.5s ease;
+    pointer-events: auto;
+}
+.toast.error {
+    border-color: #ff4444;
+    color: #ff6666;
+}
+@keyframes toastIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Checkbox */
+.checkbox-custom {
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--text-muted);
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: 0.2s;
+    position: relative;
+}
+.checkbox-custom:hover {
+    border-color: var(--accent);
+    background: rgba(0,186,152,0.1);
+}
+
+/* Section action button */
+.section-action-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 12px;
+    margin-top: 12px;
+    background: rgba(0,186,152,0.08);
+    border: 1px dashed rgba(0,186,152,0.3);
+    border-radius: var(--radius-md);
+    color: var(--accent);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.2s;
+}
+.section-action-btn:hover {
+    background: rgba(0,186,152,0.15);
+    border-color: var(--accent);
+}
 
 /* Switch Toggle Style */
 .eng-mode-toggle { display: flex; align-items: center; gap: 6px; margin-right: 12px; }

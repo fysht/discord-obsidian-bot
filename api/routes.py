@@ -1,5 +1,7 @@
 import os
 import logging
+import datetime
+from typing import Optional
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
@@ -387,4 +389,167 @@ async def task_candidates():
         "start": start_candidates[:10],
         "end": end_candidates
     }
+
+
+@router.post("/daily_report", dependencies=[Depends(verify_api_key)])
+async def daily_report():
+    """日次レポートを手動実行する（Daily Journal, Events & Actions, Insights & Thoughts, Next Actionsを生成しObsidianに保存）"""
+    from api import app
+    from config import JST
+    from api.database import get_todays_log
+    import json
+    import re
+    from prompts import PROMPT_DAILY_ORGANIZE
+    from utils.obsidian_utils import update_section, update_frontmatter
+
+    bot = getattr(app.state, "bot", None)
+    chat_service = getattr(app.state, "chat_service", None)
+    if not bot or not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="サービス未接続")
+
+    gemini_client = bot.gemini_client
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="AI未接続")
+
+    now = datetime.datetime.now(JST)
+    today_str = now.strftime("%Y-%m-%d")
+
+    # 今日の会話ログ取得
+    log_text = await get_todays_log()
+    if not log_text.strip():
+        return {"message": "今日の会話ログが空のため、日次整理をスキップしました。"}
+
+    # 未完了タスク取得
+    current_tasks_text = "タスクAPIに接続されていません。"
+    if chat_service.tasks_service:
+        try:
+            current_tasks_text = await chat_service.tasks_service.get_uncompleted_tasks()
+        except Exception:
+            pass
+
+    # 天気取得
+    weather_data = await bot.info_service.get_weather()
+    weather = weather_data.get("summary", "取得失敗")
+    max_t = weather_data.get("max_temp", "N/A")
+    min_t = weather_data.get("min_temp", "N/A")
+
+    # ロケーション情報取得
+    location_log_text = "（記録なし）"
+    service = chat_service.drive_service.get_service()
+    if service:
+        daily_folder = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+        if daily_folder:
+            daily_file = await chat_service.drive_service.find_file(service, daily_folder, f"{today_str}.md")
+            if daily_file:
+                try:
+                    raw_content = await chat_service.drive_service.read_text_file(service, daily_file)
+                    match = re.search(r"## 📍 Location History\n(.*?)(?=\n## |\Z)", raw_content, re.DOTALL)
+                    if match and match.group(1).strip():
+                        location_log_text = match.group(1).strip()
+                except Exception:
+                    pass
+
+    # Gemini呼び出し
+    from google.genai import types
+    prompt = f"{PROMPT_DAILY_ORGANIZE}\n【現在の未完了タスク】\n{current_tasks_text}\n\n【今日の移動記録】\n{location_log_text}\n\n--- Chat Log ---\n{log_text}"
+
+    result = {
+        "journal": "",
+        "events": [],
+        "insights": [],
+        "next_actions": [],
+        "message": "日次整理が完了しました。",
+    }
+
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        res_data = json.loads(response.text)
+        result.update(res_data)
+    except Exception as e:
+        logging.error(f"Daily Report AI Error: {e}")
+        return {"message": f"AI整理中にエラーが発生しました: {e}"}
+
+    # Obsidianに保存
+    result["meta"] = {
+        "weather": f'"{ weather}"' if weather != "取得失敗" else "取得失敗",
+        "temp_max": f'"{max_t}"' if max_t != "N/A" else "N/A",
+        "temp_min": f'"{min_t}"' if min_t != "N/A" else "N/A",
+    }
+
+    daily_folder = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+    if not daily_folder:
+        daily_folder = await chat_service.drive_service.create_folder(service, chat_service.drive_folder_id, "DailyNotes")
+
+    f_id = await chat_service.drive_service.find_file(service, daily_folder, f"{today_str}.md")
+    content = f"# Daily Note {today_str}\n"
+    if f_id:
+        try:
+            raw = await chat_service.drive_service.read_text_file(service, f_id)
+            if raw:
+                content = raw
+        except Exception:
+            pass
+
+    meta = result.get("meta", {})
+    updates_fm = {"date": today_str}
+    if meta.get("weather") != "N/A":
+        updates_fm["weather"] = meta.get("weather")
+    if meta.get("temp_max") != "N/A":
+        updates_fm["temp_max"] = meta.get("temp_max")
+    if meta.get("temp_min") != "N/A":
+        updates_fm["temp_min"] = meta.get("temp_min")
+    content = update_frontmatter(content, updates_fm)
+
+    if result.get("journal"):
+        content = update_section(content, result["journal"], "## 📔 Daily Journal")
+    if result.get("events") and len(result["events"]) > 0:
+        content = update_section(
+            content,
+            "\n".join(result["events"]) if isinstance(result["events"], list) else str(result["events"]),
+            "## 📝 Events & Actions",
+        )
+    if result.get("insights") and len(result["insights"]) > 0:
+        content = update_section(
+            content,
+            "\n".join(result["insights"]) if isinstance(result["insights"], list) else str(result["insights"]),
+            "## 💡 Insights & Thoughts",
+        )
+    if result.get("next_actions") and len(result["next_actions"]) > 0:
+        formatted_actions = []
+        for act in result["next_actions"]:
+            if isinstance(act, str):
+                formatted_actions.append(act if act.startswith("-") else f"- {act}")
+            elif isinstance(act, dict):
+                title = act.get("title", "")
+                lst = act.get("list", "")
+                prefix = f"[{lst}] " if lst else ""
+                formatted_actions.append(f"- {prefix}{title}")
+        content = update_section(content, "\n".join(formatted_actions), "## 🚀 Next Actions")
+
+    if f_id:
+        await chat_service.drive_service.update_text(service, f_id, content)
+    else:
+        await chat_service.drive_service.upload_text(service, daily_folder, f"{today_str}.md", content)
+
+    # Next ActionsをGoogle Tasksに登録
+    if result.get("next_actions") and chat_service.tasks_service:
+        for act_data in result["next_actions"]:
+            act_title = ""
+            list_name = None
+            if isinstance(act_data, str):
+                act_title = re.sub(r"^-\s*", "", act_data).strip()
+            elif isinstance(act_data, dict):
+                act_title = act_data.get("title", "").strip()
+                list_name = act_data.get("list")
+            if act_title:
+                try:
+                    await chat_service.tasks_service.add_task(title=act_title, list_name=list_name)
+                except Exception:
+                    pass
+
+    return {"message": result.get("message", "日次整理が完了しました。")}
 

@@ -355,19 +355,35 @@ class PartnerCog(commands.Cog):
             return f"ツールエラー: {e}"
         return "不明なツールです。"
 
-    async def fetch_todays_chat_log(self, channel):
-        """今日一日のチャットログを収集してテキスト化する（日報用）。"""
+    async def fetch_todays_chat_log(self, channel=None):
+        """今日一日のチャットログを収集してテキスト化する（日報用）。
+        channelが指定されればDiscordから取得し、Noneの場合はPWAのDBから取得する。
+        """
         now = datetime.datetime.now(JST)
         start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         log_lines = []
+
+        # まずPWA DB（SQLite）からログを取得
         try:
-            # Discordからの取得
-            async for msg in channel.history(limit=500, after=start_of_day, oldest_first=True):
-                if msg.author.bot and msg.author != self.bot.user: continue
-                author_name = "User" if not msg.author.bot else "AI"
-                log_lines.append(f"{msg.created_at.astimezone(JST).strftime('%H:%M')} [{author_name}]: {msg.content}")
+            from api.database import get_todays_log
+            db_log = await get_todays_log()
+            if db_log and db_log.strip():
+                log_lines.append(db_log)
         except Exception as e:
-            logging.error(f"Chat log fetch error: {e}")
+            logging.error(f"PWA DB log fetch error: {e}")
+
+        # Discordチャンネルがあれば追加取得
+        if channel:
+            try:
+                async for msg in channel.history(limit=500, after=start_of_day, oldest_first=True):
+                    if msg.author.bot and msg.author != self.bot.user:
+                        continue
+                    author_name = "User" if not msg.author.bot else "AI"
+                    line = f"{msg.created_at.astimezone(JST).strftime('%H:%M')} [{author_name}]: {msg.content}"
+                    log_lines.append(line)
+            except Exception as e:
+                logging.error(f"Discord chat log fetch error: {e}")
+
         return "\n".join(log_lines)
 
     async def generate_and_send_routine_message(self, context_text: str, routine_prompt: str):

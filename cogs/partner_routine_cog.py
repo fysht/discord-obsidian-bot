@@ -170,7 +170,10 @@ class PartnerRoutineCog(commands.Cog):
         weather, max_t, min_t = "取得失敗", "N/A", "N/A"
         news_list = []
         if self.info_service:
-            weather, max_t, min_t = await self.info_service.get_weather()
+            weather_data = await self.info_service.get_weather()
+            weather = weather_data.get("summary", "取得失敗")
+            max_t = weather_data.get("max_temp", "N/A")
+            min_t = weather_data.get("min_temp", "N/A")
             news_list = await self.info_service.get_news(limit=3)
 
         news_text = (
@@ -178,7 +181,7 @@ class PartnerRoutineCog(commands.Cog):
         )
 
         # ★ 変更: context_data に【今日の予定】を結合
-        context_data = f"【今日の予定】\n{schedule_text}\n\n【未完了のタスク】\n{tasks_text}\n\n【今日の天気】\n{weather}\n\n【ニュース】\n{news_text}"
+        context_data = f"【今日の予定】\n{schedule_text}\n\n【未完了のタスク】\n{tasks_text}\n\n【今日の天気】\n{weather} (最高{max_t}℃ / 最侎{min_t}℃)\n\n【ニュース】\n{news_text}"
         await partner_cog.generate_and_send_routine_message(
             context_data, PROMPT_ROUTINE_MORNING
         )

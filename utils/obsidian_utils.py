@@ -6,7 +6,9 @@ import re
 SECTION_ORDER = [
     # --- 1. Timeline (リアルタイムメモ) ---
     "## 🎯 Tasks",     # LLR風タスク＆時間記録 (PartnerCog)
+    "## 🪟 Lifelog",   # 行動記録 (PartnerCog / PWA)
     "## 💬 Timeline",  # 日常のつぶやき・メモ (PartnerCog)
+    "## 🤔 Thought Reflection",  # 壁打ち (PartnerCog)
     # --- 2. Daily Summary (1日の振り返り整理) ---
     "## 🪞 Alter Log",  # 忖度ゼロの客観的プロファイリング (DailyOrganizeCog)
     "## 📔 Daily Journal",  # AIによる振り返り日記 (DailyOrganizeCog)
@@ -21,6 +23,8 @@ SECTION_ORDER = [
     # --- 4. Logs & Records (自動記録・活動データ) ---
     "## 📍 Location History",  # 位置情報ログ (LocationLogCog)
     "## 📊 Health Metrics",  # 健康データ (FitbitCog)
+    "## 🗒️ Logs",  # 一般ログ (PartnerCog)
+    "## Memo",  # メモ (sync_worker)
 ]
 
 

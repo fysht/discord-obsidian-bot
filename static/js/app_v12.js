@@ -347,10 +347,9 @@ async function loadDashboard() {
         const calEl = $('#dash-google-calendar');
         if (calEl && data.g_calendar) {
             calEl.innerHTML = data.g_calendar.length ? data.g_calendar.map(ev => {
-                const startTime = ev.start ? (ev.start.includes('T') ? ev.start.split('T')[1].slice(0,5) : '終日') : '終日';
                 return `
                     <div class="list-item">
-                        <div class="li-time">${startTime}</div>
+                        <div class="li-time">${ev.time || '終日'}</div>
                         <div class="li-text">${escapeHtml(ev.summary)}</div>
                         <button class="icon-btn" onclick='openEditModal(${JSON.stringify({ type: "calendar", id: ev.id, title: ev.summary })})'>
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
@@ -555,6 +554,33 @@ window.deleteNotebook = (idx) => {
 
 // ========== INIT ==========
 function initMain() { loadHistory(); loadDashboard(); }
+
+// Chat reset button
+const resetBtn = $('#reset-chat-btn');
+if (resetBtn) {
+    resetBtn.addEventListener('click', async () => {
+        if (!confirm('チャット履歴をすべて削除しますか？')) return;
+        try {
+            await apiFetch('/api/reset_history', { method: 'POST' });
+            if (chatMessages) {
+                chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
+                lastMsgDate = null;
+            }
+            showToast('履歴をリセットしました');
+        } catch { showToast('リセットに失敗しました', true); }
+    });
+}
+
+// Daily report trigger
+window.triggerDailyReport = async () => {
+    if (!confirm('今日の日次整理を実行しますか？\n会話ログを元にDaily Journal、Events & Actions、Insights & Thoughts、Next Actionsを生成し、Obsidianに保存します。')) return;
+    showToast('日次整理を実行中...');
+    try {
+        const data = await apiFetch('/api/daily_report', { method: 'POST' });
+        showToast(data.message || '日次整理が完了しました');
+        loadDashboard();
+    } catch { showToast('日次整理に失敗しました', true); }
+};
 
 async function loadHistory() {
     try {
