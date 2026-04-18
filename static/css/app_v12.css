@@ -94,6 +94,7 @@ body {
     position: relative;
     display: flex;
     flex-direction: column;
+    padding-bottom: calc(65px + var(--safe-bottom)); /* bottom-navの高さ分を確保 */
 }
 .tab-pane {
     flex: 1;
@@ -145,7 +146,7 @@ body {
     flex: 1; 
     overflow-y: auto; 
     padding: 20px; 
-    padding-bottom: calc(100px + var(--safe-bottom)); /* 最後の要素が確実に見えるように */
+    padding-bottom: 24px;
     display: flex; 
     flex-direction: column; 
     gap: 16px; 
@@ -208,8 +209,8 @@ body {
 #chat-form { width: 100%; }
 .chat-input-area {
     padding: 12px 16px;
-    padding-bottom: calc(80px + var(--safe-bottom)); /* ボトムナビを避ける十分な余白 */
-    background: var(--bg-card);
+    padding-bottom: 16px;
+    background: var(--bg-base);
     border-top: 1px solid var(--border-glass);
     display: flex;
     gap: 10px;
@@ -255,6 +256,74 @@ body {
 .diary-content { white-space: pre-wrap; line-height: 1.8; color: var(--text-secondary); font-family: 'Noto Sans JP', serif; }
 .mt-20 { margin-top: 20px; }
 .mt-10 { margin-top: 10px; }
+
+/* ========== WEATHER SLOTS ========== */
+.weather-summary {
+    font-weight: 600;
+    font-size: 0.95rem;
+    margin-bottom: 8px;
+    line-height: 1.6;
+}
+.weather-temps {
+    display: flex;
+    gap: 12px;
+    font-size: 0.85rem;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--border-glass);
+}
+.temp-max { color: #ff7b54; font-weight: 600; }
+.temp-min { color: #54b4ff; font-weight: 600; }
+.weather-slots {
+    display: flex;
+    flex-direction: column;
+}
+.weather-day-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 6px 0 4px;
+    border-top: 1px solid var(--border-glass);
+}
+.weather-day-label:first-child { border-top: none; }
+.weather-slot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 0;
+    font-size: 0.82rem;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+}
+.weather-slot:last-child { border-bottom: none; }
+.ws-time {
+    width: 36px;
+    color: var(--text-muted);
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.ws-icon {
+    font-size: 1.1rem;
+    width: 24px;
+    text-align: center;
+    flex-shrink: 0;
+}
+.ws-weather {
+    flex: 1;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ws-pop {
+    width: 48px;
+    text-align: right;
+    color: var(--accent);
+    font-weight: 500;
+    flex-shrink: 0;
+}
 
 /* Toast Notifications */
 #toast-container {

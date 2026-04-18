@@ -304,23 +304,34 @@ async function loadDashboard() {
         if (weatherEl) {
             if (data.weather && data.weather.summary !== "取得失敗") {
                 const w = data.weather;
-                let html = `<div style="margin-bottom:12px; font-weight:600;">${w.summary}</div>`;
-                if (w.slots) {
-                    html += `<div style="display:flex; flex-direction:column; gap:8px;">
-                        ${w.slots.map(s => `
-                            <div style="display:flex; align-items:center; justify-content:space-between; font-size:0.85rem; padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.05);">
-                                <div style="width:50px;">${s.time}</div>
-                                <div style="font-size:1.2rem; width:30px; text-align:center;">${s.icon}</div>
-                                <div style="width:60px; color:var(--accent); text-align:right;">降水 ${s.pop}</div>
-                                <div style="width:50px; text-align:right;">${s.temp}℃</div>
-                            </div>
-                        `).join('')}
+                let html = `<div class="weather-summary">${escapeHtml(w.summary)}</div>`;
+                if (w.max_temp || w.min_temp) {
+                    html += `<div class="weather-temps">
+                        <span class="temp-max">↑${w.max_temp}℃</span>
+                        <span class="temp-min">↓${w.min_temp}℃</span>
                     </div>`;
+                }
+                if (w.slots && w.slots.length > 0) {
+                    // 日付ラベルでグループ化
+                    let currentDay = '';
+                    html += `<div class="weather-slots">`;
+                    w.slots.forEach(s => {
+                        if (s.day !== currentDay) {
+                            currentDay = s.day;
+                            html += `<div class="weather-day-label">${escapeHtml(s.day)}</div>`;
+                        }
+                        html += `<div class="weather-slot">
+                            <div class="ws-time">${s.time}</div>
+                            <div class="ws-icon">${s.icon}</div>
+                            <div class="ws-weather">${escapeHtml(s.weather || '')}</div>
+                            <div class="ws-pop">☂${s.pop}</div>
+                        </div>`;
+                    });
+                    html += `</div>`;
                 }
                 weatherEl.innerHTML = html;
             } else {
-                weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした (再試行中...)</div>`;
-                setTimeout(loadDashboard, 10000); // Fail-safe retry
+                weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした</div>`;
             }
         }
 
