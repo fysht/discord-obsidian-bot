@@ -266,7 +266,7 @@ body {
 }
 .weather-temps {
     display: flex;
-    gap: 12px;
+    gap: 16px;
     font-size: 0.85rem;
     margin-bottom: 12px;
     padding-bottom: 10px;
@@ -277,51 +277,51 @@ body {
 .weather-slots {
     display: flex;
     flex-direction: column;
+    gap: 2px;
 }
 .weather-day-label {
     font-size: 0.7rem;
     font-weight: 700;
     color: var(--accent);
-    text-transform: uppercase;
     letter-spacing: 0.5px;
-    padding: 6px 0 4px;
+    padding: 8px 0 4px;
     border-top: 1px solid var(--border-glass);
 }
-.weather-day-label:first-child { border-top: none; }
+.weather-day-label:first-child { border-top: none; padding-top: 0; }
 .weather-slot {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 5px 0;
-    font-size: 0.82rem;
-    border-bottom: 1px solid rgba(255,255,255,0.03);
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 0.85rem;
 }
-.weather-slot:last-child { border-bottom: none; }
 .ws-time {
-    width: 36px;
+    width: 40px;
     color: var(--text-muted);
     font-weight: 500;
     flex-shrink: 0;
+    font-size: 0.82rem;
 }
 .ws-icon {
-    font-size: 1.1rem;
-    width: 24px;
+    font-size: 1.2rem;
+    width: 28px;
     text-align: center;
     flex-shrink: 0;
 }
 .ws-weather {
     flex: 1;
     color: var(--text-secondary);
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .ws-pop {
-    width: 48px;
+    width: 52px;
     text-align: right;
     color: var(--accent);
-    font-weight: 500;
+    font-weight: 600;
+    font-size: 0.82rem;
     flex-shrink: 0;
 }
 

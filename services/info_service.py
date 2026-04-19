@@ -95,11 +95,16 @@ class InfoService:
             return {"summary": "取得失敗 (JSON Error)"}
 
     def _get_weather_icon_by_text(self, text):
-        if "晴" in text: return "☀️"
-        if "雨" in text: return "☔"
-        if "雪" in text: return "❄️"
-        if "曇" in text: return "☁️"
-        return "❓"
+        """天気テキストからアイコンを判定（気象庁APIはひらがな「くもり」を使用）"""
+        if "雨" in text or "あめ" in text: return "🌧️"
+        if "雪" in text or "ゆき" in text: return "❄️"
+        if "雷" in text or "かみなり" in text: return "⛈️"
+        if "晴" in text or "はれ" in text:
+            if "くもり" in text or "曇" in text:
+                return "⛅"  # 晴れ時々くもり
+            return "☀️"
+        if "くもり" in text or "曇" in text: return "☁️"
+        return "🌤️"  # デフォルトはくもり晴れ
 
     def _shorten_weather(self, text):
         """気象庁の長い天気文を短縮する"""
