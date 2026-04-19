@@ -585,18 +585,22 @@ function loadBookshelf() {
         container.innerHTML = '<div class="p-20 text-center text-secondary">登録された書籍はありません</div>';
         return;
     }
-    container.innerHTML = books.map((b, idx) => `
+    container.innerHTML = books.map((b, idx) => {
+        const action = b.url ? "window.open('" + b.url + "', '_blank')" : "alert('NotebookLMのURLが登録されていません')";
+        const openBtn = b.url ? `<button class="book-btn nlm" onclick="window.open('${b.url}', '_blank')">📚 開く</button>` : '';
+        return `
         <div class="book-item">
-            <div class="book-title" onclick="${b.url ? `window.open('${b.url}', '_blank')` : 'alert(\\'NotebookLMのURLが登録されていません\\')'}">
+            <div class="book-title" onclick="${action}">
                 ${escapeHtml(b.title)}
             </div>
             <div class="book-actions">
                 <button class="book-btn" onclick="copyBookNotes('${b.title}')">📋 メモコピー</button>
-                ${b.url ? `<button class="book-btn nlm" onclick="window.open('${b.url}', '_blank')">📚 開く</button>` : ''}
+                ${openBtn}
                 <button class="book-btn delete" onclick="deleteBook(${idx})">🗑️</button>
             </div>
         </div>
-    `).join('');
+        `;
+    }).join('');
 }
 
 window.openBookModal = () => {
