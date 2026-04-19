@@ -116,13 +116,20 @@ function switchTab(tab) {
 const chatMessages = $('#chat-messages');
 const messageInput = $('#message-input');
 const sendBtn = $('#send-btn');
+let isChatSending = false;
 const chatForm = $('#chat-form');
 
 if (chatForm) {
     chatForm.addEventListener('submit', async (e) => {
         e.preventDefault();
+        if (isChatSending) return;
+
         const msg = messageInput.value.trim();
         if (!msg) return;
+
+        isChatSending = true;
+        sendBtn.style.opacity = '0.5';
+        sendBtn.disabled = true;
 
         appendMsg('user', msg);
         messageInput.value = '';
@@ -138,6 +145,10 @@ if (chatForm) {
             appendMsg('assistant', data.reply);
         } catch (err) {
             appendMsg('assistant', 'すみません、エラーが発生しました。');
+        } finally {
+            isChatSending = false;
+            sendBtn.style.opacity = '1';
+            sendBtn.disabled = false;
         }
     });
 }

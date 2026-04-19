@@ -216,6 +216,12 @@ class PartnerCog(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot or message.channel.id != self.memo_channel_id: return
         text = message.content.strip()
+
+        # ReceptionCogがURLを処理するため、URLが含まれている場合はAIの応対をスキップ
+        import re
+        if re.search(r"https?://[^\s]+", text):
+            return
+
         if text and not text.startswith("/"): asyncio.create_task(self._append_raw_message_to_obsidian(text))
         
         input_parts = [types.Part.from_text(text=text)] if text else []
