@@ -567,6 +567,27 @@ async def get_habits():
         return {"habits": [], "today_done": [], "streaks": {}}
 
     data = await habit_cog._load_data()
+    
+    # --- Google Tasksからの同期 ---
+    if bot.tasks_service:
+        try:
+            google_habits = await bot.tasks_service.get_raw_tasks("習慣")
+            existing_names = [h["name"].lower() for h in data.get("habits", [])]
+            changed = False
+            for gh in google_habits:
+                title = gh["title"]
+                if title.lower() not in existing_names:
+                    existing_ids = [int(h["id"]) for h in data.get("habits", [])]
+                    new_id = str(max(existing_ids) + 1) if existing_ids else "1"
+                    data.setdefault("habits", []).append({"id": new_id, "name": title, "frequency_days": 1})
+                    existing_names.append(title.lower())
+                    changed = True
+            if changed:
+                await habit_cog._save_data(data)
+        except Exception as e:
+            logging.error(f"Failed to sync google habits: {e}")
+    # ------------------------------
+
     today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
     today_logs = data.get("logs", {}).get(today_str, [])
 
@@ -595,6 +616,58 @@ async def complete_habit(req: HabitCompleteRequest):
 
     result_msg = await habit_cog._process_habit_completion(req.habit_name)
     return {"status": "success", "message": result_msg}
+
+
+class HabitModifyRequest(BaseModel):
+    habit_id: str
+    old_title: str
+    title: str = None  # updateの場合に使用
+
+
+@router.post("/habits/update", dependencies=[Depends(verify_api_key)])
+async def update_habit(req: HabitModifyRequest):
+    """習慣の名前を変更し、Google Tasksにも反映させる"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog: return {"status": "error", "message": "機能未接続"}
+
+    data = await habit_cog._load_data()
+    target = next((h for h in data.get("habits", []) if h["id"] == req.habit_id), None)
+    if target and req.title:
+        target["name"] = req.title
+        await habit_cog._save_data(data)
+
+    if bot.tasks_service:
+        try:
+            gtasks = await bot.tasks_service.get_raw_tasks("習慣")
+            gtask = next((t for t in gtasks if t["title"] == req.old_title), None)
+            if gtask and req.title:
+                await bot.tasks_service.update_task(gtask["id"], title=req.title, list_name="習慣")
+        except: pass
+    return {"status": "success"}
+
+
+@router.post("/habits/delete", dependencies=[Depends(verify_api_key)])
+async def delete_habit_endpoint(req: HabitModifyRequest):
+    """習慣を削除し、Google Tasksからも削除する"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog: return {"status": "error", "message": "機能未接続"}
+
+    data = await habit_cog._load_data()
+    data["habits"] = [h for h in data.get("habits", []) if h["id"] != req.habit_id]
+    await habit_cog._save_data(data)
+
+    if bot.tasks_service:
+        try:
+            gtasks = await bot.tasks_service.get_raw_tasks("習慣")
+            gtask = next((t for t in gtasks if t["title"] == req.old_title), None)
+            if gtask:
+                await bot.tasks_service.delete_task(gtask["id"], list_name="習慣")
+        except: pass
+    return {"status": "success"}
 
 
 @router.get("/book_notes", dependencies=[Depends(verify_api_key)])

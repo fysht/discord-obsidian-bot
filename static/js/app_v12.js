@@ -496,7 +496,8 @@ $('#edit-save-btn')?.addEventListener('click', async () => {
     if (!val) return;
     try {
         if (t.type === 'calendar') await apiFetch('/api/calendar_action', { method: 'POST', body: JSON.stringify({ action: 'update', event_id: t.id, summary: val }) });
-        else if (t.type === 'google_task' || t.type === 'habit') await apiFetch('/api/google_tasks_action', { method: 'POST', body: JSON.stringify({ action: 'update', task_id: t.id, title: val, list_name: t.listName || (t.type === 'habit' ? '習慣' : null) }) });
+        else if (t.type === 'habit') await apiFetch('/api/habits/update', { method: 'POST', body: JSON.stringify({ habit_id: t.id, old_title: t.title, title: val }) });
+        else if (t.type === 'google_task') await apiFetch('/api/google_tasks_action', { method: 'POST', body: JSON.stringify({ action: 'update', task_id: t.id, title: val, list_name: t.listName }) });
         else if (t.type === 'obsidian') await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'update', old_text: t.text, new_text: val }) });
         showToast('保存しました');
         loadDashboard();
@@ -509,7 +510,8 @@ $('#edit-delete-btn')?.addEventListener('click', async () => {
     if (!confirm('削除しますか？')) return;
     try {
         if (t.type === 'calendar') await apiFetch('/api/calendar_action', { method: 'POST', body: JSON.stringify({ action: 'delete', event_id: t.id }) });
-        else if (t.type === 'google_task' || t.type === 'habit') await apiFetch('/api/google_tasks_action', { method: 'POST', body: JSON.stringify({ action: 'delete', task_id: t.id, list_name: t.listName || (t.type === 'habit' ? '習慣' : null) }) });
+        else if (t.type === 'habit') await apiFetch('/api/habits/delete', { method: 'POST', body: JSON.stringify({ habit_id: t.id, old_title: t.title }) });
+        else if (t.type === 'google_task') await apiFetch('/api/google_tasks_action', { method: 'POST', body: JSON.stringify({ action: 'delete', task_id: t.id, list_name: t.listName }) });
         else if (t.type === 'obsidian') await apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'delete', old_text: t.text }) });
         showToast('削除しました');
         loadDashboard();
