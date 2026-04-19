@@ -383,18 +383,12 @@ async function loadDashboard() {
             `).join('') : '<div class="loading-placeholder">ログはありません</div>';
         }
 
-        // 習慣
+        // 習慣 - 簡易表示（詳細はloadHabitsで上書き）
         const habitsContainer = $('#dash-habits');
-        if (habitsContainer && data.habits) {
-            habitsContainer.innerHTML = data.habits.length ? data.habits.map(t => `
-                <div class="list-item">
-                    <div class="li-text">${escapeHtml(t.title)}</div>
-                    <button class="icon-btn" onclick='openEditModal(${JSON.stringify({ type: "habit", id: t.id, title: t.title })})'>
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                    </button>
-                </div>
-            `).join('') : '<div class="loading-placeholder">登録された習慣はありません。</div>';
+        if (habitsContainer && (!data.habits || data.habits.length === 0)) {
+            habitsContainer.innerHTML = '<div class="loading-placeholder">登録された習慣はありません</div>';
         }
+        loadHabits(); // 詳細データを非同期取得
 
         const sleepEl = $('#dash-sleep');
         if (sleepEl) {
@@ -404,7 +398,7 @@ async function loadDashboard() {
         if (diaryEl) {
             diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
         }
-        loadNotebooks();
+        loadBookshelf();
 
     } catch (err) { console.error(err); }
 }
@@ -523,43 +517,142 @@ $('#edit-delete-btn')?.addEventListener('click', async () => {
     } catch { showToast('削除に失敗しました', true); }
 });
 
-// ========== NOTEBOOK LM ==========
-function loadNotebooks() {
-    const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
-    const container = $('#dash-notebooks');
+// ========== HABIT TRACKER ==========
+async function loadHabits() {
+    try {
+        const data = await apiFetch('/api/habits');
+        const container = $('#dash-habits');
+        const wrap = $('#habit-progress-wrap');
+        const fill = $('#habit-progress-fill');
+        const label = $('#habit-progress-label');
+        if (!container) return;
+
+        if (!data.habits || data.habits.length === 0) {
+            container.innerHTML = '<div class="p-20 text-center text-secondary">登録された習慣はありません</div>';
+            if (wrap) wrap.style.display = 'none';
+            return;
+        }
+
+        const total = data.habits.length;
+        const doneCount = data.habits.filter(h => data.today_done.includes(h.id)).length;
+        const percent = Math.round((doneCount / total) * 100);
+
+        if (wrap) {
+            wrap.style.display = 'flex';
+            fill.style.width = `${percent}%`;
+            label.textContent = `${doneCount}/${total}`;
+        }
+
+        container.innerHTML = data.habits.map(h => {
+            const isDone = data.today_done.includes(h.id);
+            const streakText = data.streaks[h.id] || '';
+            const streakBadge = streakText.includes('連続') ? `<span class="habit-streak">🔥${streakText.replace(/[^0-9]/g, '')}</span>` : `<span class="habit-streak" style="color:var(--text-muted)">${streakText}</span>`;
+            return `
+                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}">
+                    <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone ? 'disabled' : ''}>✔</button>
+                    <div class="habit-name">${escapeHtml(h.name)}</div>
+                    ${streakBadge}
+                    <button class="icon-btn" onclick='openEditModal(${JSON.stringify({ type: "habit", id: h.id, title: h.name })})'>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                    </button>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        console.error("Habit fetch error", e);
+    }
+}
+
+window.completeHabit = async (habitName, hId) => {
+    try {
+        const item = $(`#habit-item-${hId}`);
+        if(item) item.classList.add('done');
+        showToast(`「${habitName}」を完了しました！🎉`);
+        await apiFetch('/api/habits/complete', {
+            method: 'POST',
+            body: JSON.stringify({ habit_name: habitName })
+        });
+        loadHabits(); // リロードしてストリークとバーを更新
+    } catch { showToast('失敗しました', true); loadHabits(); }
+};
+
+// ========== BOOKSHELF (NOTEBOOK LM) ==========
+function loadBookshelf() {
+    const books = JSON.parse(localStorage.getItem('mng_books') || '[]');
+    const container = $('#dash-bookshelf');
     if (!container) return;
-    if (notebooks.length === 0) {
-        container.innerHTML = '<div class="p-20 text-center text-secondary">登録されたノートはありません</div>';
+    if (books.length === 0) {
+        container.innerHTML = '<div class="p-20 text-center text-secondary">登録された書籍はありません</div>';
         return;
     }
-    container.innerHTML = notebooks.map((nb, idx) => `
-        <div class="list-item">
-            <div class="li-text" style="cursor:pointer;" onclick="window.open('${nb.url}', '_blank')">
-                <div style="font-weight:600;">${escapeHtml(nb.title)}</div>
-                <div class="text-secondary" style="font-size:0.7rem;">最後に追加: ${nb.updated}</div>
+    container.innerHTML = books.map((b, idx) => `
+        <div class="book-item">
+            <div class="book-title" onclick="${b.url ? `window.open('${b.url}', '_blank')` : 'alert(\\'NotebookLMのURLが登録されていません\\')'}">
+                ${escapeHtml(b.title)}
             </div>
-            <button class="icon-btn" onclick="deleteNotebook(${idx})" style="color:#ff4444;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+            <div class="book-actions">
+                <button class="book-btn" onclick="copyBookNotes('${b.title}')">📋 メモコピー</button>
+                ${b.url ? `<button class="book-btn nlm" onclick="window.open('${b.url}', '_blank')">📚 開く</button>` : ''}
+                <button class="book-btn delete" onclick="deleteBook(${idx})">🗑️</button>
+            </div>
         </div>
     `).join('');
 }
 
-window.registerNotebook = () => {
-    const title = prompt('ノートのタイトル:');
-    if (!title) return;
-    const url = prompt('NotebookLMのURL:');
-    if (!url || !url.includes('notebooklm.google.com')) return alert('無効なURLです');
-    const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
-    notebooks.push({ title, url, updated: new Date().toLocaleDateString() });
-    localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
-    loadNotebooks();
+window.openBookModal = () => {
+    $('#book-title-input').value = '';
+    $('#book-nlm-url-input').value = '';
+    $('#book-modal').classList.remove('hidden');
 };
 
-window.deleteNotebook = (idx) => {
-    if (confirm('削除しますか？')) {
-        const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
-        notebooks.splice(idx, 1);
-        localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
-        loadNotebooks();
+window.closeBookModal = () => {
+    $('#book-modal').classList.add('hidden');
+};
+
+window.saveBook = () => {
+    const title = $('#book-title-input').value.trim();
+    const url = $('#book-nlm-url-input').value.trim();
+    if (!title) { alert('書籍タイトルを入力してください'); return; }
+    
+    const books = JSON.parse(localStorage.getItem('mng_books') || '[]');
+    books.push({ title, url, added: new Date().toLocaleDateString() });
+    localStorage.setItem('mng_books', JSON.stringify(books));
+    closeBookModal();
+    loadBookshelf();
+    showToast('書籍を登録しました');
+};
+
+window.deleteBook = (idx) => {
+    if (confirm('この書籍の紐付けを削除しますか？\n(Driveのメモデータ自体は削除されません)')) {
+        const books = JSON.parse(localStorage.getItem('mng_books') || '[]');
+        books.splice(idx, 1);
+        localStorage.setItem('mng_books', JSON.stringify(books));
+        loadBookshelf();
+    }
+};
+
+window.copyBookNotes = async (title) => {
+    showToast(`${title}のメモを取得中...`);
+    try {
+        const data = await apiFetch(`/api/book_notes?title=${encodeURIComponent(title)}`);
+        if (!data.content) throw new Error("メモが空です");
+        await navigator.clipboard.writeText(data.content);
+        showToast('コピーしました！NotebookLMの「ソースを追加」に貼り付けてください');
+    } catch (e) {
+        console.error(e);
+        showToast('コピーに失敗しました。メモが存在しない可能性があります。', true);
+    }
+};
+
+window.copyDailySummary = async () => {
+    const events = $('#dash-tasks')?.innerText || "";
+    const insights = $('#dash-alter-log')?.innerText || "";
+    const content = `本日の記録:\n\n${events}\n\n${insights}`;
+    try {
+        await navigator.clipboard.writeText(content);
+        showToast('今日のサマリーをコピーしました！NotebookLMに貼り付けてください');
+    } catch {
+        showToast('コピーに失敗しました', true);
     }
 };
 

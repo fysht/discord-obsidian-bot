@@ -550,3 +550,76 @@ async def daily_report():
 
     return {"message": result.get("message", "日次整理が完了しました。")}
 
+
+class HabitCompleteRequest(BaseModel):
+    habit_name: str
+
+
+@router.get("/habits", dependencies=[Depends(verify_api_key)])
+async def get_habits():
+    """習慣リストと今日の達成状況・ストリーク情報を返す"""
+    from api import app
+    from config import JST
+
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        return {"habits": [], "today_done": [], "streaks": {}}
+
+    data = await habit_cog._load_data()
+    today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    today_logs = data.get("logs", {}).get(today_str, [])
+
+    habits_list = []
+    streaks = {}
+    for h in data.get("habits", []):
+        habits_list.append({"id": h["id"], "name": h["name"], "frequency_days": h.get("frequency_days", 1)})
+        streaks[h["id"]] = habit_cog._get_habit_stats(data, h["id"], today_str)
+
+    return {
+        "habits": habits_list,
+        "today_done": today_logs,
+        "streaks": streaks,
+    }
+
+
+@router.post("/habits/complete", dependencies=[Depends(verify_api_key)])
+async def complete_habit(req: HabitCompleteRequest):
+    """習慣をワンタップ完了する"""
+    from api import app
+
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        raise HTTPException(status_code=503, detail="習慣サービス未接続")
+
+    result_msg = await habit_cog._process_habit_completion(req.habit_name)
+    return {"status": "success", "message": result_msg}
+
+
+@router.get("/book_notes", dependencies=[Depends(verify_api_key)])
+async def get_book_notes(title: str):
+    """指定書籍のBookNotesの内容を返す"""
+    from api import app
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="サービス未接続")
+
+    service = chat_service.drive_service.get_service()
+    if not service:
+        raise HTTPException(status_code=503, detail="Drive未接続")
+
+    import re
+    safe_title = re.sub(r'[\\/*?:"<>|]', "_", title)[:50]
+    book_folder = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "BookNotes")
+    if not book_folder:
+        return {"title": title, "content": ""}
+
+    f_id = await chat_service.drive_service.find_file(service, book_folder, f"{safe_title}.md")
+    if not f_id:
+        return {"title": title, "content": ""}
+
+    content = await chat_service.drive_service.read_text_file(service, f_id)
+    return {"title": title, "content": content}
+
