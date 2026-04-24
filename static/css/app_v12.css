@@ -149,6 +149,7 @@ body {
 /* ========== CARDS & SCROLL ========== */
 .scroll-container { 
     padding: 20px;
+    padding-bottom: calc(85px + var(--safe-bottom));
     display: flex; 
     flex-direction: column; 
     gap: 16px; 
