@@ -44,6 +44,29 @@ async def authenticate(req: AuthRequest):
 async def chat(req: ChatRequest):
     """メッセージを送信してAIの応答を取得"""
     from api import app
+    import re
+    from api.database import add_stocked_link
+
+    # URLが含まれているかチェックし、ストックに回す
+    # 単純にURLらしき文字列があれば抽出
+    url_match = re.search(r"https?://[^\s]+", req.message)
+    if url_match:
+        url = url_match.group(0)
+        # 簡単な分類
+        link_type = "web"
+        if "youtube.com" in url or "youtu.be" in url:
+            link_type = "youtube"
+        elif "google.com/maps" in url or "goo.gl/maps" in url or "maps.app.goo.gl" in url:
+            link_type = "map"
+        elif any(d in url for d in ["cookpad.com", "kurashiru.com", "delishkitchen.tv", "macaro-ni.jp"]):
+            link_type = "recipe"
+
+        await add_stocked_link(url, link_type, "Untitled")
+        reply = "リンクをストックしました！ダッシュボードの「積読」セクションから詳細を確認・要約できます。"
+        await save_message("user", req.message)
+        await save_message("assistant", reply)
+        return ChatResponse(reply=reply)
+
 
     bot = getattr(app.state, "bot", None)
     if not bot:
@@ -695,4 +718,72 @@ async def get_book_notes(title: str):
 
     content = await chat_service.drive_service.read_text_file(service, f_id)
     return {"title": title, "content": content}
+
+# --- 機能9: 積読 (Stocked Links) 関連のエンドポイント ---
+
+@router.get("/links", dependencies=[Depends(verify_api_key)])
+async def get_links():
+    """未読のストックリンク一覧を取得"""
+    from api.database import get_unread_links
+    links = await get_unread_links()
+    return {"links": links}
+
+@router.post("/links/{link_id}/summarize", dependencies=[Depends(verify_api_key)])
+async def summarize_link(link_id: int):
+    """ストックされたリンクをWebClipServiceで解析・要約・保存する"""
+    from api import app
+    from api.database import get_unread_links, mark_link_as_saved
+    
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+
+    webclip_cog = bot.get_cog("WebClipCog")
+    if not webclip_cog:
+        raise HTTPException(status_code=503, detail="WebClipCogがロードされていません。")
+
+    # DBから該当リンクを探す
+    links = await get_unread_links()
+    target_link = next((lk for lk in links if lk["id"] == link_id), None)
+    if not target_link:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません。")
+
+    url = target_link["url"]
+    
+    # WebClipServiceに投げてObsidianに保存
+    # (内部でタイトル取得、要約、DailyNote追記まで行う)
+    try:
+        parsed_info = await webclip_cog.webclip_service.parse_url_info(url, "")
+        
+        # Geminiを使って要約を生成
+        if webclip_cog.webclip_service.gemini_client and parsed_info.get("raw_text") and len(parsed_info["raw_text"]) > 50:
+            from google.genai import types
+            prompt = f"以下のWebページの内容（またはメタデータ）を読み込み、最も重要なポイントを箇条書きで分かりやすく要約してください。\n\n【タイトル】{parsed_info['title']}\n【本文・詳細】\n{parsed_info['raw_text'][:5000]}"
+            
+            gemini_res = await webclip_cog.webclip_service.gemini_client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            if gemini_res and gemini_res.text:
+                parsed_info["raw_text"] = f"## ✨ AI Summary\n{gemini_res.text.strip()}\n\n---\n\n<details><summary>原文プレビュー</summary>\n\n{parsed_info['raw_text'][:1000]}...\n</details>"
+        elif target_link["type"] == "youtube" or target_link["type"] == "map":
+            # 動画やマップの場合はraw_textが少ないので基本情報をGeminiで整形
+            from google.genai import types
+            prompt = f"以下のURLリンク情報を元に、Obsidianに保存するための簡単な紹介文（1〜2行）を作成してください。\nタイトル: {parsed_info['title']}\nURL: {url}"
+            gemini_res = await webclip_cog.webclip_service.gemini_client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            if gemini_res and gemini_res.text:
+                parsed_info["raw_text"] = f"## ✨ AI Info\n{gemini_res.text.strip()}"
+
+        res = await webclip_cog.webclip_service.save_parsed_info(parsed_info, user_comment="Webストックからの要約保存")
+        if res:
+            await mark_link_as_saved(link_id)
+            return {"status": "success", "message": f"「{res['title']}」を要約して保存しました。"}
+        else:
+            raise HTTPException(status_code=500, detail="保存に失敗しました。")
+    except Exception as e:
+        logging.error(f"Link Summarize Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 

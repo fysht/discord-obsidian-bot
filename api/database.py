@@ -55,6 +55,16 @@ async def init_db():
                 timestamp TEXT NOT NULL
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS stocked_links (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                url TEXT NOT NULL,
+                type TEXT NOT NULL,
+                title TEXT,
+                status TEXT DEFAULT 'unread',
+                added_at TEXT NOT NULL
+            )
+        """)
         await db.commit()
 
 
@@ -106,3 +116,45 @@ async def clear_history():
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute("DELETE FROM messages")
         await db.commit()
+
+
+# --- Stocked Links 用のCRUD ---
+
+async def add_stocked_link(url: str, link_type: str, title: str = "Untitled"):
+    """リンクをストックする"""
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO stocked_links (url, type, title, added_at) VALUES (?, ?, ?, ?)",
+            (url, link_type, title, now),
+        )
+        await db.commit()
+
+async def get_unread_links():
+    """未処理(unread)のストックリンク一覧を取得"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, url, type, title, added_at FROM stocked_links WHERE status = 'unread' ORDER BY id DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+async def mark_link_as_saved(link_id: int):
+    """リンクを保存済み(saved)に更新"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "UPDATE stocked_links SET status = 'saved' WHERE id = ?",
+            (link_id,)
+        )
+        await db.commit()
+
+async def delete_stocked_link(link_id: int):
+    """リンクを削除"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "DELETE FROM stocked_links WHERE id = ?",
+            (link_id,)
+        )
+        await db.commit()
+

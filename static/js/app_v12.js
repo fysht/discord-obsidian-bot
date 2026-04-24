@@ -410,6 +410,7 @@ async function loadDashboard() {
             diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
         }
         loadBookshelf();
+        loadStockedLinks(); // 積読・ストックリンク読み込み
 
     } catch (err) { console.error(err); }
 }
@@ -658,6 +659,57 @@ window.copyBookNotes = async (title) => {
     } catch (e) {
         console.error(e);
         showToast('コピーに失敗しました。メモが存在しない可能性があります。', true);
+    }
+};
+
+window.loadStockedLinks = async () => {
+    try {
+        const data = await apiFetch('/api/links');
+        const container = $('#dash-stocked-links');
+        if (!container) return;
+
+        if (!data.links || data.links.length === 0) {
+            container.innerHTML = '<div class="p-20 text-center text-secondary">ストックされたリンクはありません</div>';
+            return;
+        }
+
+        container.innerHTML = data.links.map(lk => {
+            const icons = { 'web': '🌐', 'youtube': '📺', 'map': '📍', 'recipe': '🍳' };
+            const icon = icons[lk.type] || '🔗';
+            const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            return `
+                <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 16px;">
+                    <div style="display:flex; justify-content: space-between; align-items: flex-start;">
+                        <a href="${lk.url}" target="_blank" class="li-text" style="color:var(--text); text-decoration:none; font-weight:500; font-size:0.95rem; line-height:1.4;">${icon} ${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
+                    </div>
+                    <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">${dateStr}</span>
+                        <div style="display:flex; gap: 6px;">
+                            <button class="modal-btn" style="padding: 4px 10px; font-size: 0.8rem; background: rgba(255,255,255,0.05); color:var(--text-muted);" onclick="window.open('${lk.url}', '_blank')">開く</button>
+                            <button class="modal-btn" style="padding: 4px 10px; font-size: 0.8rem; background: var(--accent); color:#fff;" onclick="summarizeStockedLink(${lk.id})">要約して保存</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) {
+        console.error("StockedLinks fetch error", e);
+    }
+};
+
+window.summarizeStockedLink = async (linkId) => {
+    const el = $('#stocked-link-' + linkId);
+    if(el) el.style.opacity = '0.5';
+    showToast('AIが解析・要約中です... (数秒かかります)');
+    
+    try {
+        const data = await apiFetch(`/api/links/${linkId}/summarize`, { method: 'POST' });
+        showToast(data.message || '保存しました！');
+        loadStockedLinks();
+    } catch (e) {
+        console.error(e);
+        showToast('要約に失敗しました', true);
+        if(el) el.style.opacity = '1';
     }
 };
 
