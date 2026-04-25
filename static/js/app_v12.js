@@ -665,39 +665,55 @@ window.copyBookNotes = async (title) => {
 window.loadStockedLinks = async () => {
     try {
         const data = await apiFetch('/api/links');
-        const container = $('#dash-stocked-links');
-        if (!container) return;
+        const webEl = $('#dash-stocked-web');
+        const ytEl = $('#dash-stocked-youtube');
+        const recipeEl = $('#dash-stocked-recipe');
 
-        if (!data.links || data.links.length === 0) {
-            container.innerHTML = '<div class="loading-placeholder">ストックされたリンクはありません</div>';
-            return;
-        }
+        const links = data.links || [];
+        const webLinks = links.filter(l => l.type === 'web');
+        const ytLinks = links.filter(l => l.type === 'youtube');
+        const recipeLinks = links.filter(l => l.type === 'recipe');
 
-        container.innerHTML = data.links.map(lk => {
-            const icons = { 'web': '🌐', 'youtube': '📺', 'recipe': '🍳' };
-            const icon = icons[lk.type] || '🔗';
-            const typeLabels = { 'web': 'Web', 'youtube': 'YouTube', 'recipe': 'レシピ' };
-            const typeLabel = typeLabels[lk.type] || 'リンク';
-            const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-            const isSaved = lk.status === 'saved';
-            const savedBadge = isSaved ? '<span style="font-size:0.7rem; background:rgba(0,186,152,0.2); color:var(--accent); padding:2px 6px; border-radius:4px; margin-left:4px;">保存済</span>' : '';
-
-            return `
-                <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:6px;${isSaved ? ' opacity:0.6;' : ''}">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.9rem; line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${icon} ${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
-                        ${savedBadge}
-                    </div>
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="font-size:0.7rem; color:var(--text-muted);">${typeLabel} · ${dateStr}</span>
-                        <div style="display:flex; gap:6px;">
-                            ${!isSaved ? `<button class="modal-btn" style="padding:3px 8px; font-size:0.75rem; background:var(--accent); color:#fff;" onclick="summarizeStockedLink(${lk.id})">要約保存</button>` : ''}
-                            <button class="modal-btn" style="padding:3px 8px; font-size:0.75rem; background:rgba(255,80,80,0.15); color:#ff5050;" onclick="deleteStockedLink(${lk.id})">削除</button>
+        const renderGroup = (container, items, showPaste) => {
+            if (!container) return;
+            if (items.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+            container.innerHTML = items.map(lk => {
+                const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                const isSaved = lk.status === 'saved';
+                const savedBadge = isSaved ? '<span style="font-size:0.65rem; background:rgba(0,186,152,0.2); color:var(--accent); padding:2px 6px; border-radius:4px;">保存済</span>' : '';
+                // Web: 自動要約ボタン / YouTube・レシピ: 貼り付けボタン
+                let actionBtn = '';
+                if (!isSaved) {
+                    if (showPaste) {
+                        actionBtn = `<button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:var(--accent); color:#fff;" onclick="openPasteSummaryModal(${lk.id}, '${escapeHtml(lk.title)}')">要約を貼付</button>`;
+                    } else {
+                        actionBtn = `<button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:var(--accent); color:#fff;" onclick="summarizeStockedLink(${lk.id})">要約保存</button>`;
+                    }
+                }
+                return `
+                    <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:4px;${isSaved ? ' opacity:0.55;' : ''}">
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.85rem; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
+                            ${savedBadge}
+                        </div>
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span style="font-size:0.65rem; color:var(--text-muted);">${dateStr}</span>
+                            <div style="display:flex; gap:5px;">
+                                ${actionBtn}
+                                <button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:rgba(255,80,80,0.15); color:#ff5050;" onclick="deleteStockedLink(${lk.id})">削除</button>
+                            </div>
                         </div>
                     </div>
-                </div>
-            `;
-        }).join('');
+                `;
+            }).join('');
+        };
+
+        renderGroup(webEl, webLinks, false);
+        renderGroup(ytEl, ytLinks, true);
+        renderGroup(recipeEl, recipeLinks, true);
     } catch (e) {
         console.error("StockedLinks fetch error", e);
     }
@@ -716,6 +732,43 @@ window.summarizeStockedLink = async (linkId) => {
         console.error(e);
         showToast('要約に失敗しました', true);
         if(el) el.style.opacity = '1';
+    }
+};
+
+// YouTube / レシピ用の要約貼り付けモーダル
+let pasteTargetLinkId = null;
+window.openPasteSummaryModal = (linkId, title) => {
+    pasteTargetLinkId = linkId;
+    $('#paste-summary-title').textContent = title || 'リンク';
+    $('#paste-summary-text').value = '';
+    $('#paste-summary-modal').classList.remove('hidden');
+};
+window.closePasteSummaryModal = () => {
+    $('#paste-summary-modal').classList.add('hidden');
+    pasteTargetLinkId = null;
+};
+window.submitPasteSummary = async () => {
+    const text = $('#paste-summary-text').value.trim();
+    if (!text) { showToast('要約テキストを貼り付けてください', true); return; }
+    if (!pasteTargetLinkId) return;
+
+    $('#paste-submit-btn').textContent = '保存中...';
+    $('#paste-submit-btn').disabled = true;
+
+    try {
+        const data = await apiFetch(`/api/links/${pasteTargetLinkId}/summarize_manual`, {
+            method: 'POST',
+            body: JSON.stringify({ summary: text })
+        });
+        showToast(data.message || '保存しました');
+        closePasteSummaryModal();
+        loadStockedLinks();
+    } catch (e) {
+        console.error(e);
+        showToast('保存に失敗しました', true);
+    } finally {
+        $('#paste-submit-btn').textContent = '保存';
+        $('#paste-submit-btn').disabled = false;
     }
 };
 

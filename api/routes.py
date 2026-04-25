@@ -58,6 +58,11 @@ async def _fetch_link_meta(url: str) -> dict:
                     if resp.status == 200:
                         data = await resp.json()
                         title = data.get("title", "YouTube Video")
+                        
+                        # タイトルからレシピ判定
+                        recipe_kw = ["レシピ", "作り方", "材料", "献立", "recipe", "cooking"]
+                        if any(k in title.lower() for k in recipe_kw):
+                            link_type = "recipe"
         except Exception:
             pass
         return {"title": title, "type": link_type}
@@ -1189,6 +1194,78 @@ URL: {url}
         logging.error(f"Link Summarize Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class ManualSummaryRequest(BaseModel):
+    summary: str
+
+@router.post("/links/{link_id}/summarize_manual", dependencies=[Depends(verify_api_key)])
+async def summarize_link_manual(link_id: int, req: ManualSummaryRequest):
+    """ストックされたリンクの要約を手動で指定してObsidianに保存する"""
+    from api import app
+    from api.database import get_link_by_id, mark_link_as_saved
+    import datetime, re
+    from config import JST
+    from utils.obsidian_utils import update_section
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="サービス未接続")
+
+    target_link = await get_link_by_id(link_id)
+    if not target_link:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません。")
+
+    url = target_link["url"]
+    link_type = target_link["type"]
+    link_title = target_link["title"]
+    summary_text = req.summary
+
+    try:
+        now = datetime.datetime.now(JST)
+        service = chat_service.drive_service.get_service()
+        if not service:
+            raise HTTPException(status_code=503, detail="Drive未接続")
+
+        folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips"}
+        folder_name = folder_map.get(link_type, "WebClips")
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", link_title)[:80] or "Untitled"
+        timestamp = now.strftime("%Y%m%d%H%M%S")
+        filename = f"{timestamp}-{safe_title}.md"
+        daily_note_date = now.strftime("%Y-%m-%d")
+
+        # ファイル内容 (ユーザーが貼り付けた要約を利用)
+        note_content = f"# {link_title}\n\n{summary_text}\n\n---\n## リンク\n{url}\n\n---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
+
+        # フォルダの作成・取得
+        drive_folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        folder_id = await chat_service.drive_service.find_file(service, drive_folder, folder_name)
+        if not folder_id:
+            folder_id = await chat_service.drive_service.create_folder(service, drive_folder, folder_name)
+
+        await chat_service.drive_service.upload_text(service, folder_id, filename, note_content)
+
+        # DailyNoteにリンクを追記
+        section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips"}
+        section_header = section_map.get(link_type, "## 🔗 WebClips")
+        link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{link_title}]]"
+
+        daily_folder_id = await chat_service.drive_service.find_file(service, drive_folder, "DailyNotes")
+        if daily_folder_id:
+            daily_fname = f"{daily_note_date}.md"
+            daily_fid = await chat_service.drive_service.find_file(service, daily_folder_id, daily_fname)
+            if daily_fid:
+                current = await chat_service.drive_service.read_text_file(service, daily_fid)
+                updated = update_section(current, link_str, section_header)
+                await chat_service.drive_service.update_text(service, daily_fid, updated)
+
+        await mark_link_as_saved(link_id)
+        return {"status": "success", "message": f"「{link_title}」の手動要約を保存しました。"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Link Manual Summarize Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/links/{link_id}", dependencies=[Depends(verify_api_key)])
 async def delete_link(link_id: int):
