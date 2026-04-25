@@ -928,7 +928,7 @@ async def task_breakdown(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class TaskTriageRequest(PydanticBase):
+class TaskTriageRequest(BaseModel):
     list_name: str = "仕事"
 
 @router.post("/task_triage", dependencies=[Depends(verify_api_key)])
@@ -986,14 +986,13 @@ async def task_triage(req: TaskTriageRequest):
 
 
 # リクエストボディ用のモデルを定義
-from pydantic import BaseModel as PydanticBase
 from typing import List
 
-class SubtaskItem(PydanticBase):
+class SubtaskItem(BaseModel):
     title: str
     estimate: str = ""
 
-class ApplyBreakdownRequest(PydanticBase):
+class ApplyBreakdownRequest(BaseModel):
     list_name: str = "プライベート"
     subtasks: List[SubtaskItem]
 
