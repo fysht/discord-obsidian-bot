@@ -148,10 +148,15 @@ body {
 /* ========== CARDS & SCROLL ========== */
 .scroll-container { 
     padding: 20px;
-    padding-bottom: calc(85px + var(--safe-bottom));
     display: flex; 
     flex-direction: column; 
     gap: 16px; 
+}
+.scroll-container::after {
+    content: '';
+    display: block;
+    height: calc(85px + var(--safe-bottom));
+    flex-shrink: 0;
 }
 .date-header { text-align: center; font-size: 1.1rem; font-weight: 700; color: var(--text-secondary); margin: 8px 0; }
 .card { background: var(--bg-glass); border: 1px solid var(--border-glass); border-radius: var(--radius-lg); overflow: hidden; }
