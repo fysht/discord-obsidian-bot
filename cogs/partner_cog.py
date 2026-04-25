@@ -197,6 +197,7 @@ class PartnerCog(commands.Cog):
                     types.FunctionDeclaration(name="check_tasks", description="タスクを確認する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"list_name": types.Schema(type=types.Type.STRING)})),
                     types.FunctionDeclaration(name="add_task", description="タスクを追加する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["title"])),
                     types.FunctionDeclaration(name="complete_task", description="タスクを完了する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["keyword"])),
+                    types.FunctionDeclaration(name="delete_task", description="指定したキーワードに合致するタスクを削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["keyword"])),
                     types.FunctionDeclaration(name="record_habit", description="習慣を記録する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING), "frequency_days": types.Schema(type=types.Type.INTEGER)}, required=["habit_name"])),
                     types.FunctionDeclaration(name="list_habits", description="習慣一覧を取得する。"),
                     types.FunctionDeclaration(name="delete_habit", description="習慣を削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])),
@@ -325,6 +326,8 @@ class PartnerCog(commands.Cog):
             return f"[ACTION:calendar_add:summary={args['summary']}|start={args['start_time']}|end={args['end_time']}] (カレンダーに登録してもいいかな？)"
         elif name == "add_task":
             return f"[ACTION:task_add:title={args['title']}|list_name={args.get('list_name','')}] (タスクに追加するね、OK？)"
+        elif name == "delete_task":
+            return f"[ACTION:task_delete:keyword={args['keyword']}|list_name={args.get('list_name','')}] (タスクを削除するね、OK？)"
         elif name == "complete_task":
             return "タスクの完了はアプリの予定タブから直接チェックできるよ！"
         elif name in ["delete_calendar_event", "delete_habit"]:

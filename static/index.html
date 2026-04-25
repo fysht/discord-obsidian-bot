@@ -88,6 +88,8 @@
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">タスク終了</button>
                         <button class="chip-btn" onclick="runBriefing()">☀️ ブリーフィング</button>
                         <button class="chip-btn" onclick="openTaskBreakdownModal()">🔨 タスク分解</button>
+                        <button class="chip-btn" onclick="runTaskTriage('仕事')">🧹 仕事を整理</button>
+                        <button class="chip-btn" onclick="runTaskTriage('プライベート')">🧹 ﾌﾟﾗｲﾍﾞｰﾄ整理</button>
                         <button class="chip-btn" onclick="runHealthCorrelation()">📊 健康分析</button>
                         <button class="chip-btn" onclick="sendActionCommand('今日の予定を教えて')">今日の予定</button>
                         <button class="chip-btn" onclick="sendActionCommand('振り返りをしよう')">振り返り</button>
@@ -404,6 +406,6 @@
     </div>
 
     <div id="toast-container"></div>
-    <script src="/static/js/app_v12.js?v=28"></script>
+    <script src="/static/js/app_v12.js?v=29"></script>
 </body>
 </html>

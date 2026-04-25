@@ -117,6 +117,33 @@ class GoogleTasksService:
         except Exception as e:
             return f"タスクの完了処理に失敗しました: {e}"
 
+    async def delete_task_by_keyword(self, keyword: str, list_name: str = None):
+        service = self.get_service()
+        if not service:
+            return "Tasks APIに接続できませんでした。"
+        try:
+            list_id = await self._get_tasklist_id(service, list_name)
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(
+                None,
+                lambda: service.tasks().list(tasklist=list_id, showCompleted=False).execute(),
+            )
+            items = res.get("items", [])
+
+            target_task = next(
+                (t for t in items if keyword.lower() in t["title"].lower()), None
+            )
+            if not target_task:
+                return f"「{keyword}」を含む未完了タスクがリスト「{list_name or 'デフォルト'}」に見つかりませんでした。"
+
+            await loop.run_in_executor(
+                None,
+                lambda: service.tasks().delete(tasklist=list_id, task=target_task["id"]).execute(),
+            )
+            return f"タスク「{target_task['title']}」を削除しました。"
+        except Exception as e:
+            return f"タスクの削除処理に失敗しました: {e}"
+
     async def get_completed_tasks_today(self, list_name: str = "習慣"):
         """今日完了になったタスク（カレンダー上でチェックされたもの）を取得する"""
         service = self.get_service()

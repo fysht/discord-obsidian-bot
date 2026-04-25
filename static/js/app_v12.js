@@ -204,7 +204,9 @@ function appendMsg(role, content, isoTimestamp = null) {
             if (k) args[k] = v;
         });
 
-        const btnLabel = toolName === 'calendar_add' ? 'カレンダーに登録する' : (toolName === 'task_add' ? 'タスクに追加する' : '実行する');
+        const btnLabel = toolName === 'calendar_add' ? 'カレンダーの予定に追加' : 
+                         (toolName === 'task_add' ? 'タスクに追加する' : 
+                         (toolName === 'task_delete' ? 'このタスクを削除' : '実行する'));
         processedContent = processedContent.replace(/\[ACTION:.*?\]/, '');
         processedContent += `
             <div style="margin-top:12px; display:flex; gap:8px;">
@@ -874,6 +876,22 @@ window.runBriefing = async () => {
     } catch (e) {
         console.error(e);
         showToast('ブリーフィングの生成に失敗しました', true);
+    }
+};
+
+// ========== 機能X: タスク整理 (トリアージ) ==========
+window.runTaskTriage = async (listName) => {
+    showToast(`「${listName}」のタスクを整理中...`);
+    try {
+        const data = await apiFetch('/api/task_triage', { 
+            method: 'POST',
+            body: JSON.stringify({ list_name: listName })
+        });
+        appendMsg('assistant', data.reply);
+        showToast('整理提案が完了しました');
+    } catch (e) {
+        console.error(e);
+        showToast('タスク整理の提案生成に失敗しました', true);
     }
 };
 

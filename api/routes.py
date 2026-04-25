@@ -419,6 +419,8 @@ async def execute_tool(req: ExecuteToolRequest):
         res = await bot.calendar_service.create_event(req.args["summary"], req.args["start"], req.args["end"], req.args.get("description", ""))
     elif req.tool_name == "task_add":
         res = await bot.tasks_service.add_task(req.args["title"], list_name=req.args.get("list_name"))
+    elif req.tool_name == "task_delete":
+        res = await bot.tasks_service.delete_task_by_keyword(req.args["keyword"], list_name=req.args.get("list_name"))
     else:
         raise HTTPException(status_code=400, detail="不明なツールです")
     return {"status": "success", "message": res}
@@ -832,8 +834,8 @@ async def generate_briefing():
         raise HTTPException(status_code=503, detail="AI未接続")
 
     if is_morning:
-        prompt = f"""朝のブリーフィングを生成して。気持ちのいい挨拶から始めて、以下の情報をマネージャーとしてまとめて伝えてね。
-短すぎず長すぎず（5〜10行くらい）。最後に「今日のメインの目標は何にする？」って聞いてみて。
+        prompt = f"""あなたは有能な秘書・マネージャーとして、朝のブリーフィングを行います。
+以下の情報を踏まえて、今日の天候やコンディションを気遣いながら、簡潔に報告してください（5〜10行程度）。
 
 【天気】{weather_text} (最高{max_t}℃ / 最低{min_t}℃){sleep_text}
 【今日の予定】
@@ -841,7 +843,15 @@ async def generate_briefing():
 【未完了タスク】
 {tasks_text}
 【ニュース】
-{news_text}"""
+{news_text}
+
+【秘書としての重要任務】
+報告の最後に、今日の「メイン目標」をユーザーに決めさせてください。
+その際、上記の「今日の予定」の空き時間（予定が入っていない時間帯）を分析し、
+「〇〇時から〇〇時が空いているから、ここで『（未完了タスク等）』を一つ終わらせるのはどう？」
+と、タイムブロッキング（カレンダー枠の確保）を具体的に提案してください。
+提案に同意してくれたら、後で[ACTION:calendar_add:summary=〇〇|start=2026-XX-XXT10:00:00|end=2026-XX-XXT11:00:00] の形式でボタンを出せるよう、まずはスケジュールを提案するだけに留めてください。
+"""
     else:
         # 夜のレビュー
         from api.database import get_todays_log
@@ -904,6 +914,63 @@ async def task_breakdown(req: ChatRequest):
         return {"task": req.message, "subtasks": subtasks}
     except Exception as e:
         logging.error(f"Task Breakdown Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TaskTriageRequest(PydanticBase):
+    list_name: str = "仕事"
+
+@router.post("/task_triage", dependencies=[Depends(verify_api_key)])
+async def task_triage(req: TaskTriageRequest):
+    """指定されたリストのタスクをAIが整理（トリアージ）提案を行う"""
+    from api import app
+    import json
+
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    gemini_client = (chat_service.gemini_client if chat_service else None) or (bot.gemini_client if bot else None)
+    tasks_service = (chat_service.tasks_service if chat_service else None) or (bot.tasks_service if bot else None)
+
+    if not gemini_client or not tasks_service:
+        raise HTTPException(status_code=503, detail="AIまたはTasksAPIに接続できません")
+
+    raw_tasks = await tasks_service.get_raw_tasks(req.list_name)
+    if not raw_tasks:
+        reply = f"「{req.list_name}」のリストを確認したけど、未完了のタスクはゼロだったよ！素晴らしいね！"
+        await save_message("assistant", reply)
+        return {"reply": reply}
+
+    tasks_json = json.dumps(raw_tasks, ensure_ascii=False)
+    
+    prompt = f"""あなたは有能な秘書・マネージャーです。
+以下のJSONは、ゆうすけの「{req.list_name}」リストの未完了タスクです。
+
+【指令】
+このタスク一覧の中から、以下の条件に合いそうな「整理（削除、分解、日時変更）」が必要そうなタスクを最大3つ見つけ出し、
+それぞれについて「どうする？」と提案してください。
+
+・名前が抽象的すぎて何をすればいいか分かりにくいタスク（「〜について」など）
+・長期間残っていそうなタスク、または重すぎるタスク（推測でOK）
+
+【出力フォーマット】
+タスクのIDやJSONは出さず、チャットで話しかけるように人間らしく返信してください。
+例：「リストをチェックしたよ！いくつか整理したほうがよさそうなタスクを見つけたから確認させて！
+1. 『〇〇』：これ、粒度が大きすぎない？ 細かく分解（Breakdown）する？
+2. 『〇〇』：ずっと残ってそうだけど、今週やる？ それともひとまず消しちゃう？
+どれか一つでも対応するなら教えてね！」
+
+【タスク一覧】
+{tasks_json}
+"""
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
+        reply = response.text.strip()
+        await save_message("assistant", reply)
+        return {"reply": reply}
+    except Exception as e:
+        logging.error(f"Task Triage Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
