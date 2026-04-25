@@ -223,7 +223,7 @@ details.card > summary > .card-header { border-bottom: none; }
 .message.user { align-self: flex-end; flex-direction: row-reverse; }
 .msg-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 1.2px solid var(--accent); flex-shrink: 0; }
 .msg-content { display: flex; flex-direction: column; gap: 4px; }
-.msg-bubble { padding: 10px 14px; border-radius: 18px; font-size: 0.92rem; line-height: 1.5; background: var(--bg-elevated); border: 1px solid var(--border-glass); }
+.msg-bubble { padding: 10px 14px; border-radius: 18px; font-size: 0.92rem; line-height: 1.5; background: var(--bg-elevated); border: 1px solid var(--border-glass); word-break: break-all; }
 .message.user .msg-bubble { background: var(--accent); color: #000; border: none; border-top-right-radius: 4px; }
 .message.assistant .msg-bubble { border-top-left-radius: 4px; }
 .msg-time { font-size: 0.65rem; color: var(--text-muted); opacity: 0.7; margin-top: 4px; }
