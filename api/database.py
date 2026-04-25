@@ -130,15 +130,26 @@ async def add_stocked_link(url: str, link_type: str, title: str = "Untitled"):
         )
         await db.commit()
 
-async def get_unread_links():
-    """未処理(unread)のストックリンク一覧を取得"""
+async def get_all_links():
+    """ストックリンク一覧を取得（全ステータス、新しい順）"""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, added_at FROM stocked_links WHERE status = 'unread' ORDER BY id DESC"
+            "SELECT id, url, type, title, status, added_at FROM stocked_links ORDER BY id DESC"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+async def get_link_by_id(link_id: int):
+    """IDでリンクを1件取得"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, url, type, title, status, added_at FROM stocked_links WHERE id = ?",
+            (link_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
 async def mark_link_as_saved(link_id: int):
     """リンクを保存済み(saved)に更新"""

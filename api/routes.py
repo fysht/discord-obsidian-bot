@@ -40,31 +40,56 @@ async def authenticate(req: AuthRequest):
     return {"api_key": API_KEY}
 
 
-async def _update_link_title(url: str):
-    """バックグラウンドでURLのタイトルを取得し、DBを更新する"""
+async def _fetch_link_meta(url: str) -> dict:
+    """URLからタイトルと分類を取得する"""
     import aiohttp
     import re as _re
 
+    title = "Untitled"
+    link_type = "web"
+
+    # YouTube判定
+    if "youtube.com" in url or "youtu.be" in url:
+        link_type = "youtube"
+        try:
+            oembed = f"https://www.youtube.com/oembed?url={url}&format=json"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(oembed, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        title = data.get("title", "YouTube Video")
+        except Exception:
+            pass
+        return {"title": title, "type": link_type}
+
+    # レシピドメイン判定
+    recipe_domains = ["cookpad.com", "kurashiru.com", "delishkitchen.tv", "macaro-ni.jp",
+                      "orangepage.net", "lettuceclub.net", "kyounoryouri.jp", "ajinomoto.co.jp"]
+    if any(d in url for d in recipe_domains):
+        link_type = "recipe"
+
+    # HTMLからタイトル取得
     try:
         async with aiohttp.ClientSession() as session:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
                 if response.status == 200:
-                    html = await response.text()
+                    html = await response.text(errors="replace")
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
                     if match:
                         title = match.group(1).strip()[:200]
-                        if title:
-                            import aiosqlite
-                            from api.database import DB_PATH
-                            async with aiosqlite.connect(str(DB_PATH)) as db:
-                                await db.execute(
-                                    "UPDATE stocked_links SET title = ? WHERE url = ? AND title = 'Untitled'",
-                                    (title, url)
-                                )
-                                await db.commit()
+                    # タイトルやHTMLからレシピを追加判定
+                    if link_type == "web":
+                        recipe_kw = ["レシピ", "作り方", "献立", "材料", "recipe", "cooking"]
+                        if any(k in title.lower() for k in recipe_kw):
+                            link_type = "recipe"
+                        elif "材料" in html[:5000] and "作り方" in html[:5000]:
+                            link_type = "recipe"
     except Exception as e:
-        logging.error(f"Background title fetch failed for {url}: {e}")
+        logging.error(f"Link meta fetch failed for {url}: {e}")
+
+    return {"title": title if title else "Untitled", "type": link_type}
+
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_api_key)])
 async def chat(req: ChatRequest):
@@ -77,25 +102,16 @@ async def chat(req: ChatRequest):
     url_match = re.search(r"https?://[^\s]+", req.message)
     if url_match:
         url = url_match.group(0)
-        # 簡単な分類
-        link_type = "web"
-        if "youtube.com" in url or "youtu.be" in url:
-            link_type = "youtube"
-        elif "google.com/maps" in url or "goo.gl/maps" in url or "maps.app.goo.gl" in url:
-            link_type = "map"
-        elif any(d in url for d in ["cookpad.com", "kurashiru.com", "delishkitchen.tv", "macaro-ni.jp"]):
-            link_type = "recipe"
 
         try:
-            await add_stocked_link(url, link_type, "Untitled")
-            reply = "リンクをストックしました。「情報」タブの「積読」セクションから要約・保存ができます。"
+            # タイトルと分類を同期で取得してからDB保存
+            meta = await _fetch_link_meta(url)
+            await add_stocked_link(url, meta["type"], meta["title"])
+
+            type_label = {"web": "🌐 ウェブ", "youtube": "📺 YouTube", "recipe": "🍳 レシピ"}.get(meta["type"], "🔗 リンク")
+            reply = f"「{meta['title']}」を{type_label}としてストックしました。"
             await save_message("user", req.message)
             await save_message("assistant", reply)
-
-            # バックグラウンドでタイトルを取得して更新
-            import asyncio
-            asyncio.create_task(_update_link_title(url))
-
             return ChatResponse(reply=reply)
         except Exception as e:
             logging.error(f"Link stock failed, falling back to AI: {e}")
@@ -1007,67 +1023,176 @@ async def health_correlation():
 
 @router.get("/links", dependencies=[Depends(verify_api_key)])
 async def get_links():
-    """未読のストックリンク一覧を取得"""
-    from api.database import get_unread_links
-    links = await get_unread_links()
+    """ストックリンク一覧を取得（未読・保存済み両方）"""
+    from api.database import get_all_links
+    links = await get_all_links()
     return {"links": links}
+
 
 @router.post("/links/{link_id}/summarize", dependencies=[Depends(verify_api_key)])
 async def summarize_link(link_id: int):
-    """ストックされたリンクを解析・要約・Obsidianに保存する"""
+    """ストックされたリンクをGeminiで要約し、Obsidianに保存する"""
     from api import app
-    from api.database import get_unread_links, mark_link_as_saved
-    from services.webclip_service import WebClipService
+    from api.database import get_link_by_id, mark_link_as_saved
+    import aiohttp
 
     chat_service = getattr(app.state, "chat_service", None)
     bot = getattr(app.state, "bot", None)
     if not chat_service or not chat_service.drive_service:
         raise HTTPException(status_code=503, detail="サービス未接続")
 
-    # DBから該当リンクを探す
-    links = await get_unread_links()
-    target_link = next((lk for lk in links if lk["id"] == link_id), None)
+    target_link = await get_link_by_id(link_id)
     if not target_link:
         raise HTTPException(status_code=404, detail="リンクが見つかりません。")
 
     url = target_link["url"]
+    link_type = target_link["type"]
+    link_title = target_link["title"]
 
-    # WebClipServiceを直接インスタンス化して使用
-    gemini_client = chat_service.gemini_client if chat_service else (bot.gemini_client if bot else None)
-    wcs = WebClipService(chat_service.drive_service, gemini_client)
+    gemini_client = (chat_service.gemini_client if chat_service else None) or (bot.gemini_client if bot else None)
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="AI未接続")
 
     try:
-        parsed_info = await wcs.parse_url_info(url, "")
-
-        # Geminiを使って要約を生成
-        if gemini_client and parsed_info.get("raw_text") and len(parsed_info["raw_text"]) > 50:
-            raw_original = parsed_info["raw_text"]
-            prompt = f"以下のWebページの内容を読み込み、最も重要なポイントを箇条書きで分かりやすく要約してください。\n\n【タイトル】{parsed_info['title']}\n【本文・詳細】\n{raw_original[:5000]}"
-
-            gemini_res = await gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            if gemini_res and gemini_res.text:
-                parsed_info["raw_text"] = f"## AI Summary\n{gemini_res.text.strip()}\n\n---\n\n{raw_original[:1000]}..."
-        elif target_link["type"] in ("youtube", "map") and gemini_client:
-            prompt = f"以下のURLリンク情報を元に、Obsidianに保存するための簡単な紹介文（1〜2行）を作成してください。\nタイトル: {parsed_info['title']}\nURL: {url}"
-            gemini_res = await gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            if gemini_res and gemini_res.text:
-                parsed_info["raw_text"] = f"## AI Info\n{gemini_res.text.strip()}"
-
-        res = await wcs.save_parsed_info(parsed_info, user_comment="ストックからの要約保存")
-        if res:
-            await mark_link_as_saved(link_id)
-            return {"status": "success", "message": f"「{res['title']}」を要約して保存しました。"}
+        # コンテンツ取得（WebClipServiceを使わず直接取得）
+        page_text = ""
+        if link_type == "youtube":
+            # YouTubeはURLとタイトル情報だけでGeminiに要約させる
+            page_text = f"YouTube動画: {link_title}\nURL: {url}"
         else:
-            raise HTTPException(status_code=500, detail="保存に失敗しました。")
+            # Webページ/レシピはHTMLから本文を抽出
+            try:
+                async with aiohttp.ClientSession() as session:
+                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+                        if resp.status == 200:
+                            html = await resp.text(errors="replace")
+                            import re
+                            # scriptタグとstyleタグを除去
+                            html_clean = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+                            # HTMLタグを除去してテキスト化
+                            text = re.sub(r"<[^>]+>", " ", html_clean)
+                            text = re.sub(r"\s+", " ", text).strip()
+                            page_text = text[:8000]
+            except Exception as e:
+                logging.error(f"Page fetch error: {e}")
+                page_text = f"タイトル: {link_title}\nURL: {url}\n（ページ本文の取得に失敗しました）"
+
+        # 種類に応じたプロンプト
+        if link_type == "youtube":
+            prompt = f"""以下のYouTube動画をObsidianに保存するためのノートを生成して。
+動画タイトルから内容を推測し、どんな動画かの紹介文（2〜3行）を書いて。
+
+動画タイトル: {link_title}
+URL: {url}
+
+出力フォーマット:
+## 概要
+（紹介文）
+
+## リンク
+{url}"""
+        elif link_type == "recipe":
+            prompt = f"""以下はレシピページの内容です。Obsidianに保存するためのレシピノートを作成して。
+
+タイトル: {link_title}
+URL: {url}
+
+ページ本文:
+{page_text[:5000]}
+
+出力フォーマット:
+## 材料
+（材料リスト）
+
+## 作り方
+（手順）
+
+## メモ
+（ポイントや補足）
+
+## リンク
+{url}"""
+        else:
+            prompt = f"""以下のWebページの内容を要約して、Obsidianに保存するノートを作成して。
+最も重要なポイントを箇条書きで分かりやすくまとめて。
+
+タイトル: {link_title}
+URL: {url}
+
+ページ本文:
+{page_text[:5000]}
+
+出力フォーマット:
+## 要約
+（箇条書き）
+
+## リンク
+{url}"""
+
+        gemini_res = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
+        summary_text = gemini_res.text.strip() if gemini_res and gemini_res.text else ""
+
+        if not summary_text:
+            raise HTTPException(status_code=500, detail="要約の生成に失敗しました")
+
+        # Obsidianに保存
+        import datetime, re
+        from config import JST
+        from utils.obsidian_utils import update_section
+
+        now = datetime.datetime.now(JST)
+        service = chat_service.drive_service.get_service()
+        if not service:
+            raise HTTPException(status_code=503, detail="Drive未接続")
+
+        folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips"}
+        folder_name = folder_map.get(link_type, "WebClips")
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", link_title)[:80] or "Untitled"
+        timestamp = now.strftime("%Y%m%d%H%M%S")
+        filename = f"{timestamp}-{safe_title}.md"
+        daily_note_date = now.strftime("%Y-%m-%d")
+
+        # ファイル内容
+        note_content = f"# {link_title}\n\n{summary_text}\n\n---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
+
+        # フォルダの作成・取得
+        drive_folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        folder_id = await chat_service.drive_service.find_file(service, drive_folder, folder_name)
+        if not folder_id:
+            folder_id = await chat_service.drive_service.create_folder(service, drive_folder, folder_name)
+
+        await chat_service.drive_service.upload_text(service, folder_id, filename, note_content)
+
+        # DailyNoteにリンクを追記
+        section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips"}
+        section_header = section_map.get(link_type, "## 🔗 WebClips")
+        link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{link_title}]]"
+
+        daily_folder_id = await chat_service.drive_service.find_file(service, drive_folder, "DailyNotes")
+        if daily_folder_id:
+            daily_fname = f"{daily_note_date}.md"
+            daily_fid = await chat_service.drive_service.find_file(service, daily_folder_id, daily_fname)
+            if daily_fid:
+                current = await chat_service.drive_service.read_text_file(service, daily_fid)
+                updated = update_section(current, link_str, section_header)
+                await chat_service.drive_service.update_text(service, daily_fid, updated)
+
+        await mark_link_as_saved(link_id)
+        return {"status": "success", "message": f"「{link_title}」を要約して保存しました。"}
+
     except HTTPException:
         raise
     except Exception as e:
         logging.error(f"Link Summarize Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.delete("/links/{link_id}", dependencies=[Depends(verify_api_key)])
+async def delete_link(link_id: int):
+    """ストックリンクを削除する"""
+    from api.database import delete_stocked_link
+    await delete_stocked_link(link_id)
+    return {"status": "success", "message": "リンクを削除しました。"}

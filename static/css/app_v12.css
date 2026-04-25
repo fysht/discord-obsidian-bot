@@ -161,27 +161,27 @@ body {
 .mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
 .mini-link:hover { background: rgba(0,186,152,0.2); }
 
-.card-body { padding: 16px 20px; font-size: 0.95rem; min-height: 40px; }
+.card-body { padding: 14px 18px; font-size: 0.95rem; min-height: 40px; }
 .loading-placeholder { 
     display: flex;
     align-items: center;
     justify-content: flex-start;
     color: var(--text-muted); 
-    padding: 16px 20px; 
+    padding: 14px 18px; 
     font-size: 0.85rem; 
     width: 100%;
-    min-height: 60px;
+    min-height: 50px;
 }
-.list-body { padding: 8px 0; }
+.list-body { padding: 4px 0; }
 
 /* ========== LIST ITEMS (EDITABLE) ========== */
 .list-item {
-    display: flex; align-items: center; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border-glass);
+    display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-bottom: 1px solid var(--border-glass);
     transition: 0.2s;
 }
 .list-item:last-child { border-bottom: none; }
-.li-time { font-size: 0.8rem; color: var(--text-muted); min-width: 45px; }
-.li-text { flex: 1; font-weight: 500; }
+.li-time { font-size: 0.8rem; color: var(--text-muted); min-width: 45px; text-align: right; }
+.li-text { flex: 1; font-weight: 500; font-size: 0.9rem; }
 .edit-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; opacity: 0.4; transition: 0.2s; }
 .list-item:hover .edit-btn { opacity: 1; color: var(--accent); }
 

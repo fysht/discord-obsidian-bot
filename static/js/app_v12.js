@@ -669,24 +669,30 @@ window.loadStockedLinks = async () => {
         if (!container) return;
 
         if (!data.links || data.links.length === 0) {
-            container.innerHTML = '<div class="p-20 text-center text-secondary">ストックされたリンクはありません</div>';
+            container.innerHTML = '<div class="loading-placeholder">ストックされたリンクはありません</div>';
             return;
         }
 
         container.innerHTML = data.links.map(lk => {
-            const icons = { 'web': '🌐', 'youtube': '📺', 'map': '📍', 'recipe': '🍳' };
+            const icons = { 'web': '🌐', 'youtube': '📺', 'recipe': '🍳' };
             const icon = icons[lk.type] || '🔗';
+            const typeLabels = { 'web': 'Web', 'youtube': 'YouTube', 'recipe': 'レシピ' };
+            const typeLabel = typeLabels[lk.type] || 'リンク';
             const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            const isSaved = lk.status === 'saved';
+            const savedBadge = isSaved ? '<span style="font-size:0.7rem; background:rgba(0,186,152,0.2); color:var(--accent); padding:2px 6px; border-radius:4px; margin-left:4px;">保存済</span>' : '';
+
             return `
-                <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction: column; align-items: stretch; gap: 8px; padding: 12px 16px;">
-                    <div style="display:flex; justify-content: space-between; align-items: flex-start;">
-                        <a href="${lk.url}" target="_blank" class="li-text" style="color:var(--text); text-decoration:none; font-weight:500; font-size:0.95rem; line-height:1.4;">${icon} ${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
+                <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:6px;${isSaved ? ' opacity:0.6;' : ''}">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.9rem; line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${icon} ${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
+                        ${savedBadge}
                     </div>
-                    <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 4px;">
-                        <span style="font-size: 0.75rem; color: var(--text-muted);">${dateStr}</span>
-                        <div style="display:flex; gap: 6px;">
-                            <button class="modal-btn" style="padding: 4px 10px; font-size: 0.8rem; background: rgba(255,255,255,0.05); color:var(--text-muted);" onclick="window.open('${lk.url}', '_blank')">開く</button>
-                            <button class="modal-btn" style="padding: 4px 10px; font-size: 0.8rem; background: var(--accent); color:#fff;" onclick="summarizeStockedLink(${lk.id})">要約して保存</button>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.7rem; color:var(--text-muted);">${typeLabel} · ${dateStr}</span>
+                        <div style="display:flex; gap:6px;">
+                            ${!isSaved ? `<button class="modal-btn" style="padding:3px 8px; font-size:0.75rem; background:var(--accent); color:#fff;" onclick="summarizeStockedLink(${lk.id})">要約保存</button>` : ''}
+                            <button class="modal-btn" style="padding:3px 8px; font-size:0.75rem; background:rgba(255,80,80,0.15); color:#ff5050;" onclick="deleteStockedLink(${lk.id})">削除</button>
                         </div>
                     </div>
                 </div>
@@ -698,18 +704,30 @@ window.loadStockedLinks = async () => {
 };
 
 window.summarizeStockedLink = async (linkId) => {
-    const el = $('#stocked-link-' + linkId);
-    if(el) el.style.opacity = '0.5';
-    showToast('AIが解析・要約中です... (数秒かかります)');
-    
+    const el = $(`#stocked-link-${linkId}`);
+    if(el) el.style.opacity = '0.3';
+    showToast('AIが解析・要約中です...');
+
     try {
         const data = await apiFetch(`/api/links/${linkId}/summarize`, { method: 'POST' });
-        showToast(data.message || '保存しました！');
+        showToast(data.message || '保存しました');
         loadStockedLinks();
     } catch (e) {
         console.error(e);
         showToast('要約に失敗しました', true);
         if(el) el.style.opacity = '1';
+    }
+};
+
+window.deleteStockedLink = async (linkId) => {
+    if (!confirm('このリンクを削除しますか？')) return;
+    try {
+        await apiFetch(`/api/links/${linkId}`, { method: 'DELETE' });
+        showToast('リンクを削除しました');
+        loadStockedLinks();
+    } catch (e) {
+        console.error(e);
+        showToast('削除に失敗しました', true);
     }
 };
 
@@ -726,7 +744,45 @@ window.copyDailySummary = async () => {
 };
 
 // ========== INIT ==========
-function initMain() { loadHistory(); loadDashboard(); }
+function initMain() {
+    loadHistory();
+    loadDashboard();
+
+    // 共有ボタンからアプリが起動された場合の処理
+    const params = new URLSearchParams(window.location.search);
+    const sharedUrl = params.get('url') || '';
+    const sharedText = params.get('text') || '';
+    const sharedTitle = params.get('title') || '';
+
+    // URLが共有されたらチャットに送信してストック
+    const urlToStock = sharedUrl || extractUrl(sharedText);
+    if (urlToStock && apiKey) {
+        // URLパラメータを消す(履歴を綺麗にする)
+        window.history.replaceState({}, '', '/');
+        // チャットタブに切り替え
+        switchTab('chat');
+        // 少し待ってから送信（UIの初期化完了を待つ）
+        setTimeout(async () => {
+            const msg = sharedTitle ? `${sharedTitle}\n${urlToStock}` : urlToStock;
+            appendMsg('user', msg);
+            try {
+                const data = await apiFetch('/api/chat', {
+                    method: 'POST',
+                    body: JSON.stringify({ message: msg })
+                });
+                appendMsg('assistant', data.reply);
+            } catch (e) {
+                appendMsg('assistant', 'リンクのストックに失敗しました。');
+            }
+        }, 500);
+    }
+}
+
+function extractUrl(text) {
+    if (!text) return '';
+    const match = text.match(/https?:\/\/[^\s]+/);
+    return match ? match[0] : '';
+}
 
 // Chat reset button
 const resetBtn = $('#reset-chat-btn');
