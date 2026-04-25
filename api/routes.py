@@ -40,6 +40,32 @@ async def authenticate(req: AuthRequest):
     return {"api_key": API_KEY}
 
 
+async def _update_link_title(url: str):
+    """バックグラウンドでURLのタイトルを取得し、DBを更新する"""
+    import aiohttp
+    import re as _re
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status == 200:
+                    html = await response.text()
+                    match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
+                    if match:
+                        title = match.group(1).strip()[:200]
+                        if title:
+                            import aiosqlite
+                            from api.database import DB_PATH
+                            async with aiosqlite.connect(str(DB_PATH)) as db:
+                                await db.execute(
+                                    "UPDATE stocked_links SET title = ? WHERE url = ? AND title = 'Untitled'",
+                                    (title, url)
+                                )
+                                await db.commit()
+    except Exception as e:
+        logging.error(f"Background title fetch failed for {url}: {e}")
+
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_api_key)])
 async def chat(req: ChatRequest):
     """メッセージを送信してAIの応答を取得"""
@@ -48,7 +74,6 @@ async def chat(req: ChatRequest):
     from api.database import add_stocked_link
 
     # URLが含まれているかチェックし、ストックに回す
-    # 単純にURLらしき文字列があれば抽出
     url_match = re.search(r"https?://[^\s]+", req.message)
     if url_match:
         url = url_match.group(0)
@@ -61,11 +86,20 @@ async def chat(req: ChatRequest):
         elif any(d in url for d in ["cookpad.com", "kurashiru.com", "delishkitchen.tv", "macaro-ni.jp"]):
             link_type = "recipe"
 
-        await add_stocked_link(url, link_type, "Untitled")
-        reply = "リンクをストックしました！ダッシュボードの「積読」セクションから詳細を確認・要約できます。"
-        await save_message("user", req.message)
-        await save_message("assistant", reply)
-        return ChatResponse(reply=reply)
+        try:
+            await add_stocked_link(url, link_type, "Untitled")
+            reply = "リンクをストックしました。「情報」タブの「積読」セクションから要約・保存ができます。"
+            await save_message("user", req.message)
+            await save_message("assistant", reply)
+
+            # バックグラウンドでタイトルを取得して更新
+            import asyncio
+            asyncio.create_task(_update_link_title(url))
+
+            return ChatResponse(reply=reply)
+        except Exception as e:
+            logging.error(f"Link stock failed, falling back to AI: {e}")
+            # ストックに失敗した場合は通常のAI応答にフォールバック
 
 
     bot = getattr(app.state, "bot", None)
@@ -730,17 +764,15 @@ async def get_links():
 
 @router.post("/links/{link_id}/summarize", dependencies=[Depends(verify_api_key)])
 async def summarize_link(link_id: int):
-    """ストックされたリンクをWebClipServiceで解析・要約・保存する"""
+    """ストックされたリンクを解析・要約・Obsidianに保存する"""
     from api import app
     from api.database import get_unread_links, mark_link_as_saved
-    
-    bot = getattr(app.state, "bot", None)
-    if not bot:
-        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    from services.webclip_service import WebClipService
 
-    webclip_cog = bot.get_cog("WebClipCog")
-    if not webclip_cog:
-        raise HTTPException(status_code=503, detail="WebClipCogがロードされていません。")
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="サービス未接続")
 
     # DBから該当リンクを探す
     links = await get_unread_links()
@@ -749,40 +781,42 @@ async def summarize_link(link_id: int):
         raise HTTPException(status_code=404, detail="リンクが見つかりません。")
 
     url = target_link["url"]
-    
-    # WebClipServiceに投げてObsidianに保存
-    # (内部でタイトル取得、要約、DailyNote追記まで行う)
-    try:
-        parsed_info = await webclip_cog.webclip_service.parse_url_info(url, "")
-        
-        # Geminiを使って要約を生成
-        if webclip_cog.webclip_service.gemini_client and parsed_info.get("raw_text") and len(parsed_info["raw_text"]) > 50:
-            from google.genai import types
-            prompt = f"以下のWebページの内容（またはメタデータ）を読み込み、最も重要なポイントを箇条書きで分かりやすく要約してください。\n\n【タイトル】{parsed_info['title']}\n【本文・詳細】\n{parsed_info['raw_text'][:5000]}"
-            
-            gemini_res = await webclip_cog.webclip_service.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            if gemini_res and gemini_res.text:
-                parsed_info["raw_text"] = f"## ✨ AI Summary\n{gemini_res.text.strip()}\n\n---\n\n<details><summary>原文プレビュー</summary>\n\n{parsed_info['raw_text'][:1000]}...\n</details>"
-        elif target_link["type"] == "youtube" or target_link["type"] == "map":
-            # 動画やマップの場合はraw_textが少ないので基本情報をGeminiで整形
-            from google.genai import types
-            prompt = f"以下のURLリンク情報を元に、Obsidianに保存するための簡単な紹介文（1〜2行）を作成してください。\nタイトル: {parsed_info['title']}\nURL: {url}"
-            gemini_res = await webclip_cog.webclip_service.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt
-            )
-            if gemini_res and gemini_res.text:
-                parsed_info["raw_text"] = f"## ✨ AI Info\n{gemini_res.text.strip()}"
 
-        res = await webclip_cog.webclip_service.save_parsed_info(parsed_info, user_comment="Webストックからの要約保存")
+    # WebClipServiceを直接インスタンス化して使用
+    gemini_client = chat_service.gemini_client if chat_service else (bot.gemini_client if bot else None)
+    wcs = WebClipService(chat_service.drive_service, gemini_client)
+
+    try:
+        parsed_info = await wcs.parse_url_info(url, "")
+
+        # Geminiを使って要約を生成
+        if gemini_client and parsed_info.get("raw_text") and len(parsed_info["raw_text"]) > 50:
+            raw_original = parsed_info["raw_text"]
+            prompt = f"以下のWebページの内容を読み込み、最も重要なポイントを箇条書きで分かりやすく要約してください。\n\n【タイトル】{parsed_info['title']}\n【本文・詳細】\n{raw_original[:5000]}"
+
+            gemini_res = await gemini_client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            if gemini_res and gemini_res.text:
+                parsed_info["raw_text"] = f"## AI Summary\n{gemini_res.text.strip()}\n\n---\n\n{raw_original[:1000]}..."
+        elif target_link["type"] in ("youtube", "map") and gemini_client:
+            prompt = f"以下のURLリンク情報を元に、Obsidianに保存するための簡単な紹介文（1〜2行）を作成してください。\nタイトル: {parsed_info['title']}\nURL: {url}"
+            gemini_res = await gemini_client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt
+            )
+            if gemini_res and gemini_res.text:
+                parsed_info["raw_text"] = f"## AI Info\n{gemini_res.text.strip()}"
+
+        res = await wcs.save_parsed_info(parsed_info, user_comment="ストックからの要約保存")
         if res:
             await mark_link_as_saved(link_id)
             return {"status": "success", "message": f"「{res['title']}」を要約して保存しました。"}
         else:
             raise HTTPException(status_code=500, detail="保存に失敗しました。")
+    except HTTPException:
+        raise
     except Exception as e:
         logging.error(f"Link Summarize Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

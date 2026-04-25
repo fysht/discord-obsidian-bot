@@ -100,10 +100,10 @@ body {
     flex: 1;
     display: none;
     flex-direction: column;
-    overflow-y: auto;              /* ← 全タブをスクロール可能に */
+    overflow-y: auto;              /* 全タブをスクロール可能に */
     -webkit-overflow-scrolling: touch;
     min-height: 0;
-    padding-bottom: calc(65px + var(--safe-bottom)); /* bottom-navの裏を避ける */
+    /* 余白はscroll-container側で管理する */
 }
 .tab-pane.active { display: flex; }
 /* チャットタブだけはflexbox制御（入力欄を下部固定にするため） */
