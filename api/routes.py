@@ -11,12 +11,11 @@ from api.database import (
     delete_stocked_link, get_todays_log, clear_history
 )
 from services.info_service import InfoService
-from web_parser import fetch_maps_info  # 追加
+from web_parser import fetch_maps_info
 from config import JST
 
 router = APIRouter(prefix="/api")
 
-# 簡易認証: 環境変数 PWA_API_KEY と照合
 API_KEY = os.getenv("PWA_API_KEY", "secretary-ai-default-key")
 
 async def verify_api_key(x_api_key: str = Header(None)):
@@ -34,32 +33,27 @@ class AuthRequest(BaseModel):
 
 @router.post("/auth")
 async def authenticate(req: AuthRequest):
-    """簡易認証: パスワードを検証してAPIキーを返す"""
     app_password = os.getenv("PWA_PASSWORD", "secretary")
     if req.password != app_password:
         raise HTTPException(status_code=401, detail="パスワードが正しくありません。")
     return {"api_key": API_KEY}
 
 async def _fetch_link_meta(url: str) -> dict:
-    """URLからタイトルと分類を取得する"""
     import aiohttp
     import re as _re
 
     title = "Untitled"
     link_type = "web"
 
-    # YouTube判定
     if "youtube.com" in url or "youtu.be" in url:
         link_type = "youtube"
         try:
-            oembed = f"https://www.youtube.com/oembed?url={url}&format=json"
+            oembed = f"[https://www.youtube.com/oembed?url=](https://www.youtube.com/oembed?url=){url}&format=json"
             async with aiohttp.ClientSession() as session:
                 async with session.get(oembed, timeout=aiohttp.ClientTimeout(total=8)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         title = data.get("title", "YouTube Video")
-                        
-                        # タイトルからレシピ判定
                         recipe_kw = ["レシピ", "作り方", "材料", "献立", "recipe", "cooking"]
                         if any(k in title.lower() for k in recipe_kw):
                             link_type = "recipe"
@@ -67,7 +61,6 @@ async def _fetch_link_meta(url: str) -> dict:
             pass
         return {"title": title, "type": link_type}
         
-    # Google Maps判定
     if "maps.google.com" in url or "maps.app.goo.gl" in url or "goo.gl/maps" in url or "/maps/" in url:
         link_type = "map"
         try:
@@ -78,17 +71,14 @@ async def _fetch_link_meta(url: str) -> dict:
             pass
         return {"title": title, "type": link_type}
         
-    # Amazon判定
     if "amazon.co.jp" in url or "amzn.to" in url:
         link_type = "book"
 
-    # レシピドメイン判定
     recipe_domains = ["cookpad.com", "kurashiru.com", "delishkitchen.tv", "macaro-ni.jp",
                       "orangepage.net", "lettuceclub.net", "kyounoryouri.jp", "ajinomoto.co.jp"]
     if any(d in url for d in recipe_domains):
         link_type = "recipe"
 
-    # HTMLからタイトル取得
     try:
         async with aiohttp.ClientSession() as session:
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -98,10 +88,8 @@ async def _fetch_link_meta(url: str) -> dict:
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
                     if match:
                         title = match.group(1).strip()[:200]
-                    # Amazonタイトルのクリーンアップ
                     if link_type == "book":
                         title = title.replace("Amazon.co.jp:", "").replace("Amazon |", "").strip()
-                    # タイトルやHTMLからレシピを追加判定
                     if link_type == "web":
                         recipe_kw = ["レシピ", "作り方", "献立", "材料", "recipe", "cooking"]
                         if any(k in title.lower() for k in recipe_kw):
@@ -115,17 +103,14 @@ async def _fetch_link_meta(url: str) -> dict:
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_api_key)])
 async def chat(req: ChatRequest):
-    """メッセージを送信してAIの応答を取得"""
     from api import app
     import re
 
-    # URLが含まれているかチェックし、ストックに回す
     url_match = re.search(r"https?://[^\s]+", req.message)
     if url_match:
         url = url_match.group(0)
 
         try:
-            # タイトルと分類を同期で取得してからDB保存
             meta = await _fetch_link_meta(url)
             await add_stocked_link(url, meta["type"], meta["title"])
 
@@ -145,25 +130,18 @@ async def chat(req: ChatRequest):
     if not partner_cog:
         raise HTTPException(status_code=503, detail="AIコアがロードされていません。")
 
-    # ユーザーメッセージを保存 (DB)
     await save_message("user", req.message)
 
-    # 履歴を取得してContentの形式に変換
     from google.genai import types
     db_history = await get_history(limit=30)
     history_messages = []
-    # 最新のメッセージ(今保存したもの)を除いた過去ログを渡す
     for m in reversed(db_history[1:]): 
         role = "model" if m["role"] == "assistant" else "user"
         history_messages.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
 
-    # AI応答を生成
     reply = await partner_cog.generate_response_for_app(req.message, history_messages)
-
-    # AIの応答を保存
     await save_message("assistant", reply)
 
-    # Google Driveへのバックアップを非同期で実行
     import asyncio
     from api.database import backup_db_to_drive
     if bot.drive_service:
@@ -172,17 +150,13 @@ async def chat(req: ChatRequest):
 
     return ChatResponse(reply=reply)
 
-
 @router.get("/history", dependencies=[Depends(verify_api_key)])
 async def history(limit: int = 30):
-    """会話履歴を取得"""
     messages = await get_history(limit=limit)
     return {"messages": messages}
 
-
 @router.get("/dashboard", dependencies=[Depends(verify_api_key)])
 async def dashboard():
-    """今日のダッシュボードデータを取得"""
     from api import app
     import datetime
     import re
@@ -260,8 +234,6 @@ async def dashboard():
             else:
                 news.append({"title": n, "link": "#"})
     except Exception as e:
-        import traceback
-        logging.error(f"Dashboard Weather/News fetch ERROR: {e}\n{traceback.format_exc()}")
         weather_data = {"summary": "取得失敗 (Except)"}
         news = []
 
@@ -300,7 +272,6 @@ class TaskActionRequest(BaseModel):
 async def task_action(req: TaskActionRequest):
     from api import app
     import datetime
-    import re
     from utils.obsidian_utils import update_section
 
     chat_service = getattr(app.state, "chat_service", None)
@@ -786,6 +757,357 @@ async def task_breakdown(req: ChatRequest):
     try:
         response = await gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         raw = response.text.strip()
-        if raw.startswith("```"):
+        
+        # Markdown block avoidance for copy-paste
+        backticks = "`" * 3
+        if raw.startswith(backticks):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-            if raw.endswith("
+            if raw.endswith(backticks): raw = raw[:-3]
+            raw = raw.strip()
+        if raw.lower().startswith("json"):
+            raw = raw[4:].strip()
+            
+        subtasks = json.loads(raw)
+        return {"task": req.message, "subtasks": subtasks}
+    except Exception as e:
+        logging.error(f"Task Breakdown Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class TaskTriageRequest(BaseModel):
+    list_name: str = "仕事"
+
+@router.post("/task_triage", dependencies=[Depends(verify_api_key)])
+async def task_triage(req: TaskTriageRequest):
+    from api import app
+    import json
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    gemini_client = (chat_service.gemini_client if chat_service else None) or (bot.gemini_client if bot else None)
+    tasks_service = (chat_service.tasks_service if chat_service else None) or (bot.tasks_service if bot else None)
+    if not gemini_client or not tasks_service: raise HTTPException(status_code=503, detail="AIまたはTasksAPIに接続できません")
+
+    raw_tasks = await tasks_service.get_raw_tasks(req.list_name)
+    if not raw_tasks:
+        reply = f"「{req.list_name}」のリストを確認したけど、未完了のタスクはゼロだったよ！素晴らしいね！"
+        await save_message("assistant", reply)
+        return {"reply": reply}
+
+    tasks_json = json.dumps(raw_tasks, ensure_ascii=False)
+    prompt = f"""あなたは有能な秘書・マネージャーです。
+以下のJSONは、ゆうすけの「{req.list_name}」リストの未完了タスクです。
+【指令】
+このタスク一覧の中から、以下の条件に合いそうな「整理（削除、分解、日時変更）」が必要そうなタスクを最大3つ見つけ出し、
+それぞれについて「どうする？」と提案してください。
+・名前が抽象的すぎて何をすればいいか分かりにくいタスク（「〜について」など）
+・長期間残っていそうなタスク、または重すぎるタスク（推測でOK）
+【出力フォーマット】
+タスクのIDやJSONは出さず、チャットで話しかけるように人間らしく返信してください。
+【タスク一覧】\n{tasks_json}"""
+    try:
+        response = await gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        reply = response.text.strip()
+        await save_message("assistant", reply)
+        return {"reply": reply}
+    except Exception as e:
+        logging.error(f"Task Triage Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SubtaskItem(BaseModel):
+    title: str
+    estimate: str = ""
+
+class ApplyBreakdownRequest(BaseModel):
+    list_name: str = "プライベート"
+    subtasks: List[SubtaskItem]
+
+@router.post("/task_breakdown/apply", dependencies=[Depends(verify_api_key)])
+async def apply_task_breakdown(req: ApplyBreakdownRequest):
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.tasks_service: raise HTTPException(status_code=503, detail="Google Tasks未接続")
+
+    added = 0
+    for st in req.subtasks:
+        try:
+            await chat_service.tasks_service.add_task(st.title, req.list_name)
+            added += 1
+        except Exception as e: logging.error(f"Add subtask error: {e}")
+
+    reply = f"{added}個のサブタスクを「{req.list_name}」リストに追加しました。"
+    await save_message("assistant", reply)
+    return {"added": added, "message": reply}
+
+@router.post("/health_correlation", dependencies=[Depends(verify_api_key)])
+async def health_correlation():
+    from api import app
+    import datetime
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    if not chat_service or not chat_service.drive_service: raise HTTPException(status_code=503, detail="サービス未接続")
+
+    gemini_client = (chat_service.gemini_client if chat_service else None) or (bot.gemini_client if bot else None)
+    if not gemini_client: raise HTTPException(status_code=503, detail="AI未接続")
+    service = chat_service.drive_service.get_service()
+    if not service: raise HTTPException(status_code=503, detail="Drive未接続")
+
+    now = datetime.datetime.now(JST)
+    drive_folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    daily_folder = await chat_service.drive_service.find_file(service, drive_folder, "DailyNotes")
+    if not daily_folder: raise HTTPException(status_code=404, detail="DailyNotesフォルダが見つかりません")
+
+    gathered = []
+    for i in range(7):
+        target = now - datetime.timedelta(days=i)
+        fname = f"{target.strftime('%Y-%m-%d')}.md"
+        fid = await chat_service.drive_service.find_file(service, daily_folder, fname)
+        if fid:
+            try:
+                content = await chat_service.drive_service.read_text_file(service, fid)
+                lines = content.split("\n")
+                key_lines = [line for line in lines if any(k in line for k in ["Alter Log", "Insights", "Events", "Health", "Sleep", "Journal"]) or line.startswith("- ")]
+                if key_lines: gathered.append(f"=== {target.strftime('%Y-%m-%d')} ===\n" + "\n".join(key_lines))
+            except Exception: pass
+
+    if not gathered: return {"analysis": "分析するためのデータが不足しています。"}
+
+    combined = "\n\n".join(reversed(gathered))
+    prompt = f"""あなたはライフコーチ兼データアナリストだ。以下の1週間分のライフログを分析して、気分・行動と健康（睡眠・運動）の相関関係を見つけて。
+「ゆうすけ」に語りかけるように、タメ口で親しみやすく、でも深い洞察で。
+【データ】\n{combined}"""
+
+    try:
+        response = await gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        analysis = response.text.strip()
+        await save_message("assistant", f"【週間ヘルスレポート】\n{analysis}")
+        return {"analysis": analysis}
+    except Exception as e:
+        logging.error(f"Health Correlation Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/links", dependencies=[Depends(verify_api_key)])
+async def get_links():
+    return {"links": await get_all_links()}
+
+class LinkUpdateRequest(BaseModel):
+    title: str = ""
+    purpose: str = ""
+    summary: str = ""
+    memo: str = ""
+    target_date: str = ""
+    linked_note_url: str = ""
+    type: str = ""
+    add_to_calendar: bool = False
+
+@router.put("/links/{link_id}", dependencies=[Depends(verify_api_key)])
+async def update_link(link_id: int, req: LinkUpdateRequest):
+    from api import app
+    import datetime
+    import re
+    from utils.obsidian_utils import update_section
+
+    link = await get_link_by_id(link_id)
+    if not link: raise HTTPException(status_code=404, detail="リンク未検出")
+
+    new_title = req.title or link["title"]
+    await update_link_details(link_id, new_title, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, req.type or link["type"])
+
+    now = datetime.datetime.now(JST)
+    chat_service = getattr(app.state, "chat_service", None)
+    
+    if chat_service and chat_service.drive_service:
+        service = chat_service.drive_service.get_service()
+        if service:
+            link_type = req.type or link["type"]
+            url = link["url"]
+            folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Places", "book": "BookNotes"}
+            section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🔗 WebClips", "book": "## 📖 Reading Log"}
+            
+            folder_name = folder_map.get(link_type, "WebClips")
+            section_header = section_map.get(link_type, "## 🔗 WebClips")
+            safe_title = re.sub(r'[\\/*?:"<>|]', "", new_title)[:80] or "Untitled"
+            
+            if link_type == "book":
+                filename = f"{safe_title}.md"
+                link_str = f"- [[{folder_name}/{safe_title}|{new_title}]]"
+            else:
+                timestamp = now.strftime("%Y%m%d%H%M%S")
+                filename = f"{timestamp}-{safe_title}.md"
+                link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{new_title}]]"
+
+            daily_note_date = now.strftime("%Y-%m-%d")
+            note_content = f"# {new_title}\n\n"
+            if req.purpose: note_content += f"**🎯 目的:** {req.purpose}\n"
+            if req.target_date: note_content += f"**📅 予定日:** {req.target_date}\n"
+            if req.memo: note_content += f"**📝 メモ:** {req.memo}\n"
+            if req.summary: note_content += f"**💡 要約:**\n{req.summary}\n"
+            note_content += f"---\n## リンク\n{url}\n\n---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
+
+            try:
+                drive_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+                f_id = await chat_service.drive_service.find_file(service, drive_root, folder_name)
+                if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, folder_name)
+
+                existing = await chat_service.drive_service.find_file(service, f_id, filename) if link_type == "book" else None
+                if existing: await chat_service.drive_service.update_text(service, existing, note_content)
+                else: await chat_service.drive_service.upload_text(service, f_id, filename, note_content)
+
+                daily_fid = await chat_service.drive_service.find_file(service, drive_root, "DailyNotes")
+                if daily_fid:
+                    df_id = await chat_service.drive_service.find_file(service, daily_fid, f"{daily_note_date}.md")
+                    if df_id:
+                        cur = await chat_service.drive_service.read_text_file(service, df_id)
+                        if link_str not in cur: await chat_service.drive_service.update_text(service, df_id, update_section(cur, link_str, section_header))
+                    else:
+                        initial_content = f"---\ndate: {daily_note_date}\n---\n\n# Daily Note {daily_note_date}\n\n{section_header}\n{link_str}\n"
+                        await chat_service.drive_service.upload_text(service, daily_fid, f"{daily_note_date}.md", initial_content)
+            except Exception as e: logging.error(f"Obsidian Sync Error: {e}")
+
+    if req.add_to_calendar and req.target_date:
+        bot = getattr(app.state, "bot", None)
+        if bot and bot.calendar_service:
+            prefix = {"map": "🗺️[行]", "recipe": "🍳[食]", "book": "📚[本]"}.get(link_type, "📎[記]")
+            try:
+                dt = datetime.datetime.strptime(req.target_date, "%Y-%m-%d")
+                bot.calendar_service.get_service().events().insert(calendarId="primary", body={
+                    "summary": f"{prefix} {new_title}", "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
+                    "start": {"date": dt.strftime("%Y-%m-%d")}, "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")}
+                }).execute()
+            except: pass
+
+    return {"status": "success"}
+
+@router.post("/links/{link_id}/summarize", dependencies=[Depends(verify_api_key)])
+async def summarize_link(link_id: int):
+    from api import app
+    import datetime
+    import re
+    import aiohttp
+    from utils.obsidian_utils import update_section
+
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    if not chat_service or not chat_service.drive_service: raise HTTPException(status_code=503, detail="サービス未接続")
+
+    target_link = await get_link_by_id(link_id)
+    if not target_link: raise HTTPException(status_code=404, detail="リンク未検出")
+
+    url = target_link["url"]
+    link_type = target_link["type"]
+    link_title = target_link["title"]
+
+    gemini_client = (chat_service.gemini_client if chat_service else None) or (bot.gemini_client if bot else None)
+    if not gemini_client: raise HTTPException(status_code=503, detail="AI未接続")
+
+    try:
+        page_text = ""
+        if link_type == "youtube": page_text = f"YouTube動画: {link_title}\nURL: {url}"
+        else:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=aiohttp.ClientTimeout(total=15), allow_redirects=True) as resp:
+                        if resp.status == 200:
+                            html = await resp.text(errors="replace")
+                            html_clean = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+                            text = re.sub(r"<[^>]+>", " ", html_clean)
+                            page_text = re.sub(r"\s+", " ", text).strip()[:8000]
+            except: page_text = f"タイトル: {link_title}\nURL: {url}\n（本文取得失敗）"
+
+        if link_type == "youtube":
+            prompt = f"以下のYouTube動画の紹介文（2〜3行）を書いて。\nタイトル: {link_title}\nURL: {url}\n出力フォーマット:\n## 概要\n（紹介文）\n## リンク\n{url}"
+        elif link_type == "recipe":
+            prompt = f"以下のレシピノートを作成して。\nタイトル: {link_title}\nURL: {url}\n本文:\n{page_text[:5000]}\n出力フォーマット:\n## 材料\n## 作り方\n## メモ\n## リンク\n{url}"
+        else:
+            prompt = f"以下のWebページを要約して。\nタイトル: {link_title}\nURL: {url}\n本文:\n{page_text[:5000]}\n出力フォーマット:\n## 要約\n## リンク\n{url}"
+
+        gemini_res = await gemini_client.aio.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+        summary_text = gemini_res.text.strip() if gemini_res and gemini_res.text else ""
+        if not summary_text: raise HTTPException(status_code=500, detail="要約生成失敗")
+
+        now = datetime.datetime.now(JST)
+        service = chat_service.drive_service.get_service()
+        folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Places", "book": "BookNotes"}
+        folder_name = folder_map.get(link_type, "WebClips")
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", link_title)[:80] or "Untitled"
+        timestamp = now.strftime("%Y%m%d%H%M%S")
+        filename = f"{timestamp}-{safe_title}.md"
+        daily_note_date = now.strftime("%Y-%m-%d")
+
+        note_content = f"# {link_title}\n\n{summary_text}\n\n---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
+        drive_folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        folder_id = await chat_service.drive_service.find_file(service, drive_folder, folder_name)
+        if not folder_id: folder_id = await chat_service.drive_service.create_folder(service, drive_folder, folder_name)
+
+        await chat_service.drive_service.upload_text(service, folder_id, filename, note_content)
+
+        section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🔗 WebClips", "book": "## 📖 Reading Log"}
+        section_header = section_map.get(link_type, "## 🔗 WebClips")
+        link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{link_title}]]"
+
+        daily_folder_id = await chat_service.drive_service.find_file(service, drive_folder, "DailyNotes")
+        if daily_folder_id:
+            daily_fid = await chat_service.drive_service.find_file(service, daily_folder_id, f"{daily_note_date}.md")
+            if daily_fid:
+                current = await chat_service.drive_service.read_text_file(service, daily_fid)
+                await chat_service.drive_service.update_text(service, daily_fid, update_section(current, link_str, section_header))
+
+        await mark_link_as_saved(link_id)
+        return {"status": "success", "message": f"「{link_title}」を要約して保存しました。"}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+class ManualSummaryRequest(BaseModel):
+    summary: str
+
+@router.post("/links/{link_id}/summarize_manual", dependencies=[Depends(verify_api_key)])
+async def summarize_link_manual(link_id: int, req: ManualSummaryRequest):
+    from api import app
+    import datetime
+    import re
+    from utils.obsidian_utils import update_section
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service: raise HTTPException(status_code=503, detail="サービス未接続")
+
+    target_link = await get_link_by_id(link_id)
+    if not target_link: raise HTTPException(status_code=404, detail="リンク未検出")
+
+    url = target_link["url"]
+    link_type = target_link["type"]
+    link_title = target_link["title"]
+
+    try:
+        now = datetime.datetime.now(JST)
+        service = chat_service.drive_service.get_service()
+        folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Places", "book": "BookNotes"}
+        folder_name = folder_map.get(link_type, "WebClips")
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", link_title)[:80] or "Untitled"
+        timestamp = now.strftime("%Y%m%d%H%M%S")
+        filename = f"{timestamp}-{safe_title}.md"
+        daily_note_date = now.strftime("%Y-%m-%d")
+
+        note_content = f"# {link_title}\n\n{req.summary}\n\n---\n## リンク\n{url}\n\n---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
+        drive_folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        folder_id = await chat_service.drive_service.find_file(service, drive_folder, folder_name)
+        if not folder_id: folder_id = await chat_service.drive_service.create_folder(service, drive_folder, folder_name)
+
+        await chat_service.drive_service.upload_text(service, folder_id, filename, note_content)
+
+        section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🔗 WebClips", "book": "## 📖 Reading Log"}
+        section_header = section_map.get(link_type, "## 🔗 WebClips")
+        link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{link_title}]]"
+
+        daily_folder_id = await chat_service.drive_service.find_file(service, drive_folder, "DailyNotes")
+        if daily_folder_id:
+            daily_fid = await chat_service.drive_service.find_file(service, daily_folder_id, f"{daily_note_date}.md")
+            if daily_fid:
+                current = await chat_service.drive_service.read_text_file(service, daily_fid)
+                await chat_service.drive_service.update_text(service, daily_fid, update_section(current, link_str, section_header))
+
+        await mark_link_as_saved(link_id)
+        return {"status": "success", "message": f"手動要約を保存しました。"}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/links/{link_id}", dependencies=[Depends(verify_api_key)])
+async def delete_link(link_id: int):
+    await delete_stocked_link(link_id)
+    return {"status": "success"}
