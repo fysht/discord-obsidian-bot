@@ -1,5 +1,5 @@
 /* ==========================================
-   Manager AI — Application Logic v4.5
+   Manager AI — Application Logic v4.6 (Fixed)
    ========================================== */
 
 const API_BASE = '';
@@ -136,7 +136,6 @@ if (chatForm) {
         messageInput.style.height = '40px';
         sendBtn.classList.remove('active');
 
-        // 英会話モードがONなら指示を付加
         const isEnglish = $('#english-mode-checkbox')?.checked;
         const finalMsg = isEnglish ? `${msg}\n(Important: Please reply ONLY in English for this response.)` : msg;
 
@@ -185,7 +184,6 @@ function appendMsg(role, content, isoTimestamp = null) {
     
     let processedContent = escapeHtml(content).replace(/\n/g, '<br>');
     
-    // NotebookLM URLへのリンクが含まれている場合はボタンとして表示
     if (content.includes('notebooklm.google.com')) {
         const urlMatch = content.match(/https:\/\/notebooklm\.google\.com\/notebook\/[a-zA-Z0-9-]+/);
         if (urlMatch) {
@@ -193,7 +191,6 @@ function appendMsg(role, content, isoTimestamp = null) {
         }
     }
 
-    // AI提案ボタンのパース [ACTION:tool_name:arg1=val1|arg2=val2]
     const actionMatch = content.match(/\[ACTION:(.*?):(.*?)\]/);
     if (actionMatch) {
         const toolName = actionMatch[1];
@@ -325,7 +322,6 @@ async function loadDashboard() {
                     </div>`;
                 }
                 if (w.slots && w.slots.length > 0) {
-                    // 日付ラベルでグループ化
                     let currentDay = '';
                     html += `<div class="weather-slots">`;
                     w.slots.forEach(s => {
@@ -363,7 +359,6 @@ async function loadDashboard() {
             }
         }
 
-        // Google Tasks (Separate lists)
         renderTaskGroup($('#dash-google-tasks-work'), data.google_tasks_work, '仕事');
         renderTaskGroup($('#dash-google-tasks-private'), data.google_tasks_private, 'プライベート');
 
@@ -396,12 +391,11 @@ async function loadDashboard() {
             `).join('') : '<div class="loading-placeholder">ログはありません</div>';
         }
 
-        // 習慣 - 簡易表示（詳細はloadHabitsで上書き）
         const habitsContainer = $('#dash-habits');
         if (habitsContainer && (!data.habits || data.habits.length === 0)) {
             habitsContainer.innerHTML = '<div class="loading-placeholder">登録された習慣はありません</div>';
         }
-        loadHabits(); // 詳細データを非同期取得
+        loadHabits();
 
         const sleepEl = $('#dash-sleep');
         if (sleepEl) {
@@ -412,7 +406,7 @@ async function loadDashboard() {
             diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
         }
         loadBookshelf();
-        loadStockedLinks(); // 積読・ストックリンク読み込み
+        loadStockedLinks();
 
     } catch (err) { console.error(err); }
 }
@@ -588,7 +582,7 @@ window.completeHabit = async (habitName, hId) => {
             method: 'POST',
             body: JSON.stringify({ habit_name: habitName })
         });
-        loadHabits(); // リロードしてストリークとバーを更新
+        loadHabits();
     } catch { showToast('失敗しました', true); loadHabits(); }
 };
 
@@ -664,6 +658,7 @@ window.copyBookNotes = async (title) => {
     }
 };
 
+// ========== STOCKED LINKS ==========
 window.loadStockedLinks = async () => {
     try {
         const data = await apiFetch('/api/links');
@@ -680,7 +675,7 @@ window.loadStockedLinks = async () => {
         const mapLinks = links.filter(l => l.type === 'map');
         const bookLinks = links.filter(l => l.type === 'book');
 
-        const renderGroup = (container, items, type) => {
+        const renderGroup = (container, items) => {
             if (!container) return;
             if (items.length === 0) {
                 container.innerHTML = '<div style="padding:10px 18px; color:var(--text-muted); font-size:0.85rem;">登録なし</div>';
@@ -695,9 +690,9 @@ window.loadStockedLinks = async () => {
                 if(lk.target_date) extraInfo += `<span style="font-size:0.75rem; color:var(--text-secondary); margin-right:8px;">📅 ${escapeHtml(lk.target_date)}</span>`;
 
                 return `
-                    <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:4px;">
-                        <div style="display:flex; align-items:center; gap:6px;">
-                            <a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.85rem; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
+                    <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:4px; min-width: 0;">
+                        <div style="display:flex; align-items:flex-start; gap:6px; min-width: 0;">
+                            <a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.85rem; line-height:1.4; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
                         </div>
                         ${extraInfo ? `<div style="margin-top:2px;">${extraInfo}</div>` : ''}
                         <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
@@ -712,11 +707,11 @@ window.loadStockedLinks = async () => {
             }).join('');
         };
 
-        renderGroup(webEl, webLinks, 'web');
-        renderGroup(ytEl, ytLinks, 'youtube');
-        renderGroup(recipeEl, recipeLinks, 'recipe');
-        renderGroup(mapEl, mapLinks, 'map');
-        renderGroup(bookEl, bookLinks, 'book');
+        renderGroup(webEl, webLinks);
+        renderGroup(ytEl, ytLinks);
+        renderGroup(recipeEl, recipeLinks);
+        renderGroup(mapEl, mapLinks);
+        renderGroup(bookEl, bookLinks);
     } catch (e) {
         console.error("StockedLinks fetch error", e);
     }
@@ -729,16 +724,16 @@ window.openLinkDetailsModal = (lk) => {
     currentEditLinkId = lk.id;
     currentEditLinkType = lk.type;
     
-    $('#link-modal-title').textContent = "詳細編集: " + (lk.title.length > 15 ? lk.title.substring(0,15)+"..." : lk.title);
+    // タイトルを直接編集できるように Input 要素に置き換え
+    $('#link-modal-title').innerHTML = `<input type="text" id="link-title-input" value="${escapeHtml(lk.title)}" style="width:100%; background:rgba(0,0,0,0.2); border:1px solid var(--border-glass); color:#fff; padding:8px; border-radius:4px; font-size:0.9rem;" placeholder="タイトル">`;
     
-    // Type badge & field toggling
     const tr = { 'web': '🌐 ウェブ', 'youtube': '📺 YouTube', 'recipe': '🍳 レシピ', 'map': '🗺️ マップ', 'book': '📚 書籍' };
     $('#link-modal-type-badge').textContent = tr[lk.type] || lk.type;
 
     $('#field-purpose').style.display = 'flex';
     $('#field-summary').style.display = 'flex';
     $('#field-memo').style.display = 'flex';
-    $('#field-date').style.display = ['recipe', 'map'].includes(lk.type) ? 'flex' : 'none';
+    $('#field-date').style.display = ['recipe', 'map', 'book'].includes(lk.type) ? 'flex' : 'none';
     $('#field-url').style.display = lk.type === 'book' ? 'flex' : 'none';
     $('#link-extra-actions').style.display = lk.type === 'youtube' ? 'block' : 'none';
     
@@ -747,7 +742,7 @@ window.openLinkDetailsModal = (lk) => {
     $('#link-note-url-input').value = lk.linked_note_url || '';
     $('#link-summary-input').value = lk.summary || '';
     $('#link-memo-input').value = lk.memo || '';
-    $('#link-calendar-check').checked = true; // default
+    $('#link-calendar-check').checked = true;
 
     $('#link-details-modal').classList.remove('hidden');
 };
@@ -757,7 +752,6 @@ window.closeLinkDetailsModal = () => {
     currentEditLinkId = null;
 };
 
-// 共通保存処理
 $('#link-save-btn')?.addEventListener('click', async () => {
     if(!currentEditLinkId) return;
     const btn = $('#link-save-btn');
@@ -765,6 +759,7 @@ $('#link-save-btn')?.addEventListener('click', async () => {
     btn.disabled = true;
     
     const reqData = {
+        title: $('#link-title-input').value,
         purpose: $('#link-purpose-input').value,
         summary: $('#link-summary-input').value,
         memo: $('#link-memo-input').value,
@@ -790,58 +785,6 @@ $('#link-save-btn')?.addEventListener('click', async () => {
     }
 });
 
-// YouTube -> レシピ移動
-$('#link-move-recipe-btn')?.addEventListener('click', async () => {
-    if(!currentEditLinkId || !confirm('このリンクをレシピに変更しますか？')) return;
-    
-    const reqData = { type: 'recipe' };
-    try {
-        await apiFetch(`/api/links/${currentEditLinkId}`, { method: 'PUT', body: JSON.stringify(reqData) });
-        showToast('レシピに移動しました');
-        closeLinkDetailsModal();
-        loadStockedLinks();
-    } catch (e) {
-        showToast('移動に失敗しました', true);
-    }
-});
-
-// YouTube / レシピ用の要約貼り付けモーダル
-let pasteTargetLinkId = null;
-window.openPasteSummaryModal = (linkId, title) => {
-    pasteTargetLinkId = linkId;
-    $('#paste-summary-title').textContent = title || 'リンク';
-    $('#paste-summary-text').value = '';
-    $('#paste-summary-modal').classList.remove('hidden');
-};
-window.closePasteSummaryModal = () => {
-    $('#paste-summary-modal').classList.add('hidden');
-    pasteTargetLinkId = null;
-};
-window.submitPasteSummary = async () => {
-    const text = $('#paste-summary-text').value.trim();
-    if (!text) { showToast('要約テキストを貼り付けてください', true); return; }
-    if (!pasteTargetLinkId) return;
-
-    $('#paste-submit-btn').textContent = '保存中...';
-    $('#paste-submit-btn').disabled = true;
-
-    try {
-        const data = await apiFetch(`/api/links/${pasteTargetLinkId}/summarize_manual`, {
-            method: 'POST',
-            body: JSON.stringify({ summary: text })
-        });
-        showToast(data.message || '保存しました');
-        closePasteSummaryModal();
-        loadStockedLinks();
-    } catch (e) {
-        console.error(e);
-        showToast('保存に失敗しました', true);
-    } finally {
-        $('#paste-submit-btn').textContent = '保存';
-        $('#paste-submit-btn').disabled = false;
-    }
-};
-
 window.deleteStockedLink = async (linkId) => {
     if (!confirm('このリンクを削除しますか？')) return;
     try {
@@ -854,37 +797,20 @@ window.deleteStockedLink = async (linkId) => {
     }
 };
 
-window.copyDailySummary = async () => {
-    const events = $('#dash-tasks')?.innerText || "";
-    const insights = $('#dash-alter-log')?.innerText || "";
-    const content = `本日の記録:\n\n${events}\n\n${insights}`;
-    try {
-        await navigator.clipboard.writeText(content);
-        showToast('今日のサマリーをコピーしました！NotebookLMに貼り付けてください');
-    } catch {
-        showToast('コピーに失敗しました', true);
-    }
-};
-
 // ========== INIT ==========
 function initMain() {
     loadHistory();
     loadDashboard();
 
-    // 共有ボタンからアプリが起動された場合の処理
     const params = new URLSearchParams(window.location.search);
     const sharedUrl = params.get('url') || '';
     const sharedText = params.get('text') || '';
     const sharedTitle = params.get('title') || '';
 
-    // URLが共有されたらチャットに送信してストック
-    const urlToStock = sharedUrl || extractUrl(sharedText);
+    const urlToStock = sharedUrl || (sharedText ? (sharedText.match(/https?:\/\/[^\s]+/) || [''])[0] : '');
     if (urlToStock && apiKey) {
-        // URLパラメータを消す(履歴を綺麗にする)
         window.history.replaceState({}, '', '/');
-        // チャットタブに切り替え
         switchTab('chat');
-        // 少し待ってから送信（UIの初期化完了を待つ）
         setTimeout(async () => {
             const msg = sharedTitle ? `${sharedTitle}\n${urlToStock}` : urlToStock;
             appendMsg('user', msg);
@@ -900,159 +826,6 @@ function initMain() {
         }, 500);
     }
 }
-
-function extractUrl(text) {
-    if (!text) return '';
-    const match = text.match(/https?:\/\/[^\s]+/);
-    return match ? match[0] : '';
-}
-
-// Chat reset button
-const resetBtn = $('#reset-chat-btn');
-if (resetBtn) {
-    resetBtn.addEventListener('click', async () => {
-        if (!confirm('チャット履歴をすべて削除しますか？')) return;
-        try {
-            await apiFetch('/api/reset_history', { method: 'POST' });
-            if (chatMessages) {
-                chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
-                lastMsgDate = null;
-            }
-            showToast('履歴をリセットしました');
-        } catch { showToast('リセットに失敗しました', true); }
-    });
-}
-
-// Daily report trigger
-window.triggerDailyReport = async () => {
-    if (!confirm('今日の日次整理を実行しますか？\n会話ログを元にDaily Journal、Events & Actions、Insights & Thoughts、Next Actionsを生成し、Obsidianに保存します。')) return;
-    showToast('日次整理を実行中...');
-    try {
-        const data = await apiFetch('/api/daily_report', { method: 'POST' });
-        showToast(data.message || '日次整理が完了しました');
-        loadDashboard();
-    } catch { showToast('日次整理に失敗しました', true); }
-};
-
-// ========== 機能1: ブリーフィング ==========
-window.runBriefing = async () => {
-    showToast('ブリーフィングを生成中...');
-    try {
-        const data = await apiFetch('/api/briefing', { method: 'POST' });
-        appendMsg('assistant', data.reply);
-        showToast(data.type === 'morning' ? '朝のブリーフィングです' : '夜のレビューです');
-    } catch (e) {
-        console.error(e);
-        showToast('ブリーフィングの生成に失敗しました', true);
-    }
-};
-
-// ========== 機能X: タスク整理 (トリアージ) ==========
-window.runTaskTriage = async (listName) => {
-    showToast(`「${listName}」のタスクを整理中...`);
-    try {
-        const data = await apiFetch('/api/task_triage', { 
-            method: 'POST',
-            body: JSON.stringify({ list_name: listName })
-        });
-        appendMsg('assistant', data.reply);
-        showToast('整理提案が完了しました');
-    } catch (e) {
-        console.error(e);
-        showToast('タスク整理の提案生成に失敗しました', true);
-    }
-};
-
-// ========== 機能7: タスクブレイクダウン ==========
-let currentBreakdownSubtasks = [];
-
-window.openTaskBreakdownModal = () => {
-    $('#breakdown-task-input').value = '';
-    $('#breakdown-result').style.display = 'none';
-    $('#breakdown-generate-btn').style.display = '';
-    $('#breakdown-apply-btn').style.display = 'none';
-    $('#breakdown-list').innerHTML = '';
-    currentBreakdownSubtasks = [];
-    $('#breakdown-modal').classList.remove('hidden');
-};
-
-window.closeBreakdownModal = () => {
-    $('#breakdown-modal').classList.add('hidden');
-};
-
-window.generateBreakdown = async () => {
-    const task = $('#breakdown-task-input').value.trim();
-    if (!task) { showToast('タスクを入力してください', true); return; }
-
-    $('#breakdown-generate-btn').textContent = '分析中...';
-    $('#breakdown-generate-btn').disabled = true;
-
-    try {
-        const data = await apiFetch('/api/task_breakdown', {
-            method: 'POST',
-            body: JSON.stringify({ message: task })
-        });
-
-        currentBreakdownSubtasks = data.subtasks;
-        const listEl = $('#breakdown-list');
-        listEl.innerHTML = data.subtasks.map((st, i) => `
-            <div class="modal-item" style="display:flex; justify-content:space-between; align-items:center; cursor:default;">
-                <span>${escapeHtml(st.title)}</span>
-                <span style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(st.estimate || '')}</span>
-            </div>
-        `).join('');
-
-        $('#breakdown-result').style.display = '';
-        $('#breakdown-generate-btn').style.display = 'none';
-        $('#breakdown-apply-btn').style.display = '';
-    } catch (e) {
-        console.error(e);
-        showToast('タスク分解に失敗しました', true);
-    } finally {
-        $('#breakdown-generate-btn').textContent = 'AIで分解';
-        $('#breakdown-generate-btn').disabled = false;
-    }
-};
-
-window.applyBreakdown = async () => {
-    if (currentBreakdownSubtasks.length === 0) return;
-
-    const listName = $('#breakdown-list-name').value;
-    $('#breakdown-apply-btn').textContent = '追加中...';
-    $('#breakdown-apply-btn').disabled = true;
-
-    try {
-        const data = await apiFetch('/api/task_breakdown/apply', {
-            method: 'POST',
-            body: JSON.stringify({
-                list_name: listName,
-                subtasks: currentBreakdownSubtasks
-            })
-        });
-        showToast(data.message || '追加しました');
-        appendMsg('assistant', data.message);
-        closeBreakdownModal();
-        loadDashboard();
-    } catch (e) {
-        console.error(e);
-        showToast('タスク追加に失敗しました', true);
-    } finally {
-        $('#breakdown-apply-btn').textContent = 'Tasksに追加';
-        $('#breakdown-apply-btn').disabled = false;
-    }
-};
-
-// ========== 機能14: 健康と気分の相関分析 ==========
-window.runHealthCorrelation = async () => {
-    showToast('1週間のデータを分析中... (少し時間がかかります)');
-    try {
-        const data = await apiFetch('/api/health_correlation', { method: 'POST' });
-        appendMsg('assistant', data.analysis);
-    } catch (e) {
-        console.error(e);
-        showToast('健康分析に失敗しました', true);
-    }
-};
 
 async function loadHistory() {
     try {

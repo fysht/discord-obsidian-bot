@@ -164,16 +164,17 @@ async def get_link_by_id(link_id: int):
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-async def update_link_details(link_id: int, purpose: str, summary: str, memo: str, target_date: str, linked_note_url: str, link_type: str):
+# ★ 修正ポイント： title 引数を追加し、SQLの SET 句にも title を追加
+async def update_link_details(link_id: int, title: str, purpose: str, summary: str, memo: str, target_date: str, linked_note_url: str, link_type: str):
     """リンクの詳細情報を更新する"""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
             """
             UPDATE stocked_links
-            SET purpose = ?, summary = ?, memo = ?, target_date = ?, linked_note_url = ?, type = ?
+            SET title = ?, purpose = ?, summary = ?, memo = ?, target_date = ?, linked_note_url = ?, type = ?
             WHERE id = ?
             """,
-            (purpose, summary, memo, target_date, linked_note_url, link_type, link_id)
+            (title, purpose, summary, memo, target_date, linked_note_url, link_type, link_id)
         )
         await db.commit()
 
@@ -194,4 +195,3 @@ async def delete_stocked_link(link_id: int):
             (link_id,)
         )
         await db.commit()
-
