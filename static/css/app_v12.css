@@ -191,7 +191,7 @@ body {
 .list-item:hover .edit-btn { opacity: 1; color: var(--accent); }
 
 /* ========== CHAT ========== */
-.chat-messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
 .chat-welcome { padding: 60px 40px; text-align: center; }
 .chat-welcome h2 { font-size: 1.8rem; margin-bottom: 12px; }
 .chat-welcome p { color: var(--text-secondary); }
@@ -206,7 +206,7 @@ body {
 .msg-time { font-size: 0.65rem; color: var(--text-muted); opacity: 0.7; margin-top: 4px; }
 .msg-date-separator { align-self: center; background: rgba(0,0,0,0.3); color: var(--text-muted); font-size: 0.75rem; padding: 4px 12px; border-radius: 12px; margin: 10px 0; font-weight: 600; }
 
-.action-chips-container { padding: 12px 0; border-top: 1px solid var(--border-glass); overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.action-chips-container { padding: 12px 0; border-top: 1px solid var(--border-glass); overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 0; }
 .action-chips { display: flex; gap: 10px; padding: 0 16px; width: max-content; }
 .chip-btn { padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-glass); color: #fff; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
 .chip-btn.special { border-color: var(--accent); color: var(--accent); font-weight: 600; }
