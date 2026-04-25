@@ -86,8 +86,10 @@
                     <div class="action-chips">
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('start')">タスク開始</button>
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">タスク終了</button>
+                        <button class="chip-btn" onclick="runBriefing()">☀️ ブリーフィング</button>
+                        <button class="chip-btn" onclick="openTaskBreakdownModal()">🔨 タスク分解</button>
+                        <button class="chip-btn" onclick="runHealthCorrelation()">📊 健康分析</button>
                         <button class="chip-btn" onclick="sendActionCommand('今日の予定を教えて')">今日の予定</button>
-                        <button class="chip-btn" onclick="sendActionCommand('英語学習を始める')">英語学習</button>
                         <button class="chip-btn" onclick="sendActionCommand('振り返りをしよう')">振り返り</button>
                     </div>
                 </div>
@@ -348,7 +350,36 @@
         </div>
     </div>
 
+    <!-- ========== TASK BREAKDOWN MODAL ========== -->
+    <div id="breakdown-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3>🔨 タスク分解</h3>
+            <div class="modal-body mt-20">
+                <div class="input-group">
+                    <label>分解したいタスク</label>
+                    <input type="text" id="breakdown-task-input" class="modern-input" placeholder="引越しの準備をする、確定申告をする...">
+                </div>
+                <div id="breakdown-result" class="mt-20" style="display:none;">
+                    <label style="font-weight:600; margin-bottom:8px; display:block;">サブタスク：</label>
+                    <div id="breakdown-list" class="modal-list"></div>
+                    <div class="input-group mt-10">
+                        <label>追加先リスト</label>
+                        <select id="breakdown-list-name" class="modern-input" style="padding:10px;">
+                            <option value="プライベート">プライベート</option>
+                            <option value="仕事">仕事</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeBreakdownModal()">閉じる</button>
+                <button class="modal-btn submit" id="breakdown-generate-btn" onclick="generateBreakdown()">AIで分解</button>
+                <button class="modal-btn submit" id="breakdown-apply-btn" onclick="applyBreakdown()" style="display:none;">Tasksに追加</button>
+            </div>
+        </div>
+    </div>
+
     <div id="toast-container"></div>
-    <script src="/static/js/app_v12.js?v=23"></script>
+    <script src="/static/js/app_v12.js?v=25"></script>
 </body>
 </html>

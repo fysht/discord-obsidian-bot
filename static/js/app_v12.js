@@ -755,6 +755,110 @@ window.triggerDailyReport = async () => {
     } catch { showToast('日次整理に失敗しました', true); }
 };
 
+// ========== 機能1: ブリーフィング ==========
+window.runBriefing = async () => {
+    showToast('ブリーフィングを生成中...');
+    try {
+        const data = await apiFetch('/api/briefing', { method: 'POST' });
+        appendMsg('assistant', data.reply);
+        showToast(data.type === 'morning' ? '朝のブリーフィングです' : '夜のレビューです');
+    } catch (e) {
+        console.error(e);
+        showToast('ブリーフィングの生成に失敗しました', true);
+    }
+};
+
+// ========== 機能7: タスクブレイクダウン ==========
+let currentBreakdownSubtasks = [];
+
+window.openTaskBreakdownModal = () => {
+    $('#breakdown-task-input').value = '';
+    $('#breakdown-result').style.display = 'none';
+    $('#breakdown-generate-btn').style.display = '';
+    $('#breakdown-apply-btn').style.display = 'none';
+    $('#breakdown-list').innerHTML = '';
+    currentBreakdownSubtasks = [];
+    $('#breakdown-modal').classList.remove('hidden');
+};
+
+window.closeBreakdownModal = () => {
+    $('#breakdown-modal').classList.add('hidden');
+};
+
+window.generateBreakdown = async () => {
+    const task = $('#breakdown-task-input').value.trim();
+    if (!task) { showToast('タスクを入力してください', true); return; }
+
+    $('#breakdown-generate-btn').textContent = '分析中...';
+    $('#breakdown-generate-btn').disabled = true;
+
+    try {
+        const data = await apiFetch('/api/task_breakdown', {
+            method: 'POST',
+            body: JSON.stringify({ message: task })
+        });
+
+        currentBreakdownSubtasks = data.subtasks;
+        const listEl = $('#breakdown-list');
+        listEl.innerHTML = data.subtasks.map((st, i) => `
+            <div class="modal-item" style="display:flex; justify-content:space-between; align-items:center; cursor:default;">
+                <span>${escapeHtml(st.title)}</span>
+                <span style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(st.estimate || '')}</span>
+            </div>
+        `).join('');
+
+        $('#breakdown-result').style.display = '';
+        $('#breakdown-generate-btn').style.display = 'none';
+        $('#breakdown-apply-btn').style.display = '';
+    } catch (e) {
+        console.error(e);
+        showToast('タスク分解に失敗しました', true);
+    } finally {
+        $('#breakdown-generate-btn').textContent = 'AIで分解';
+        $('#breakdown-generate-btn').disabled = false;
+    }
+};
+
+window.applyBreakdown = async () => {
+    if (currentBreakdownSubtasks.length === 0) return;
+
+    const listName = $('#breakdown-list-name').value;
+    $('#breakdown-apply-btn').textContent = '追加中...';
+    $('#breakdown-apply-btn').disabled = true;
+
+    try {
+        const data = await apiFetch('/api/task_breakdown/apply', {
+            method: 'POST',
+            body: JSON.stringify({
+                list_name: listName,
+                subtasks: currentBreakdownSubtasks
+            })
+        });
+        showToast(data.message || '追加しました');
+        appendMsg('assistant', data.message);
+        closeBreakdownModal();
+        loadDashboard();
+    } catch (e) {
+        console.error(e);
+        showToast('タスク追加に失敗しました', true);
+    } finally {
+        $('#breakdown-apply-btn').textContent = 'Tasksに追加';
+        $('#breakdown-apply-btn').disabled = false;
+    }
+};
+
+// ========== 機能14: 健康と気分の相関分析 ==========
+window.runHealthCorrelation = async () => {
+    showToast('1週間のデータを分析中... (少し時間がかかります)');
+    try {
+        const data = await apiFetch('/api/health_correlation', { method: 'POST' });
+        appendMsg('assistant', data.analysis);
+    } catch (e) {
+        console.error(e);
+        showToast('健康分析に失敗しました', true);
+    }
+};
+
 async function loadHistory() {
     try {
         const data = await apiFetch('/api/history?limit=20');

@@ -753,7 +753,257 @@ async def get_book_notes(title: str):
     content = await chat_service.drive_service.read_text_file(service, f_id)
     return {"title": title, "content": content}
 
+
+# --- 機能1: 朝ブリーフィング / 夜レビュー ---
+
+@router.post("/briefing", dependencies=[Depends(verify_api_key)])
+async def generate_briefing():
+    """今日のブリーフィングを生成してチャット履歴に保存する"""
+    from api import app
+    import datetime
+    from config import JST
+    from services.info_service import InfoService
+
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    if not chat_service:
+        raise HTTPException(status_code=503, detail="サービス未接続")
+
+    now = datetime.datetime.now(JST)
+    is_morning = now.hour < 14  # 14時より前なら朝ブリーフィング
+
+    # 天気・ニュース取得
+    info_service = getattr(bot, "info_service", InfoService()) if bot else InfoService()
+    weather_data = await info_service.get_weather()
+    weather_text = weather_data.get("summary", "取得できませんでした")
+    max_t = weather_data.get("max_temp", "N/A")
+    min_t = weather_data.get("min_temp", "N/A")
+    news_list = await info_service.get_news(limit=3)
+    news_text = "\n".join([f"- {n}" for n in news_list]) if news_list else "取得できませんでした"
+
+    # カレンダー予定取得
+    schedule_text = "（取得できませんでした）"
+    if chat_service.calendar_service:
+        today_str = now.strftime("%Y-%m-%d")
+        schedule_text = await chat_service.calendar_service.list_events_for_date(today_str)
+
+    # 未完了タスク取得
+    tasks_text = "（取得できませんでした）"
+    if chat_service.tasks_service:
+        tasks_text = await chat_service.tasks_service.get_uncompleted_tasks()
+
+    # 睡眠データ
+    sleep_text = ""
+    if bot:
+        fitbit_cog = bot.get_cog("FitbitCog")
+        if fitbit_cog and fitbit_cog.is_ready:
+            try:
+                stats = await fitbit_cog.fitbit_service.get_stats(now.date())
+                if stats and stats.get("sleep_score"):
+                    sleep_text = f"\n睡眠スコア: {stats['sleep_score']}, 睡眠時間: {fitbit_cog._format_minutes(stats.get('total_sleep_minutes', 0))}"
+            except Exception:
+                pass
+
+    gemini_client = chat_service.gemini_client if chat_service else None
+    if not gemini_client and bot:
+        gemini_client = bot.gemini_client
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="AI未接続")
+
+    if is_morning:
+        prompt = f"""朝のブリーフィングを生成して。気持ちのいい挨拶から始めて、以下の情報をマネージャーとしてまとめて伝えてね。
+短すぎず長すぎず（5〜10行くらい）。最後に「今日のメインの目標は何にする？」って聞いてみて。
+
+【天気】{weather_text} (最高{max_t}℃ / 最低{min_t}℃){sleep_text}
+【今日の予定】
+{schedule_text}
+【未完了タスク】
+{tasks_text}
+【ニュース】
+{news_text}"""
+    else:
+        # 夜のレビュー
+        from api.database import get_todays_log
+        today_log = await get_todays_log()
+        prompt = f"""夜のレビューを生成して。「お疲れさま！」から始めて、今日の活動を振り返ってまとめてね。
+短すぎず長すぎず（5〜10行くらい）。最後に「明日はどうする？」って自然に聞いてみて。
+
+【今日の会話ログ】
+{today_log if today_log.strip() else '今日は特に会話がありませんでした。'}
+【今日の予定（振り返り用）】
+{schedule_text}
+【未完了タスク】
+{tasks_text}"""
+
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
+        reply = response.text.strip()
+        await save_message("assistant", reply)
+        return {"reply": reply, "type": "morning" if is_morning else "evening"}
+    except Exception as e:
+        logging.error(f"Briefing Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- 機能7: タスクブレイクダウン ---
+
+@router.post("/task_breakdown", dependencies=[Depends(verify_api_key)])
+async def task_breakdown(req: ChatRequest):
+    """大きなタスクをサブタスクに分解し、Google Tasksへの追加を提案する"""
+    from api import app
+
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    gemini_client = (chat_service.gemini_client if chat_service else None) or (bot.gemini_client if bot else None)
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="AI未接続")
+
+    prompt = f"""以下のタスクを、具体的で実行可能な3〜6個のサブタスクに分解して。
+各サブタスクは「〜する」で終わる短い文にして。所要時間の目安も付けて。
+出力はJSON配列で: [{{"title": "サブタスク名", "estimate": "10分"}}]
+余計な説明やマークダウンの装飾は不要、JSON配列だけを返して。
+
+タスク: {req.message}"""
+
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
+        import json
+        raw = response.text.strip()
+        # ```json ... ``` の囲みを除去
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+            if raw.endswith("```"):
+                raw = raw[:-3]
+            raw = raw.strip()
+        subtasks = json.loads(raw)
+        return {"task": req.message, "subtasks": subtasks}
+    except Exception as e:
+        logging.error(f"Task Breakdown Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# リクエストボディ用のモデルを定義
+from pydantic import BaseModel as PydanticBase
+from typing import List
+
+class SubtaskItem(PydanticBase):
+    title: str
+    estimate: str = ""
+
+class ApplyBreakdownRequest(PydanticBase):
+    list_name: str = "プライベート"
+    subtasks: List[SubtaskItem]
+
+@router.post("/task_breakdown/apply", dependencies=[Depends(verify_api_key)])
+async def apply_task_breakdown(req: ApplyBreakdownRequest):
+    """サブタスクをGoogle Tasksに一括追加"""
+    from api import app
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.tasks_service:
+        raise HTTPException(status_code=503, detail="Google Tasks未接続")
+
+    added = 0
+    for st in req.subtasks:
+        try:
+            await chat_service.tasks_service.add_task(st.title, req.list_name)
+            added += 1
+        except Exception as e:
+            logging.error(f"Add subtask error: {e}")
+
+    reply = f"{added}個のサブタスクを「{req.list_name}」リストに追加しました。"
+    await save_message("assistant", reply)
+    return {"added": added, "message": reply}
+
+
+# --- 機能14: 健康と気分の相関分析 ---
+
+@router.post("/health_correlation", dependencies=[Depends(verify_api_key)])
+async def health_correlation():
+    """過去1週間のDailyNoteとFitbitデータからAIが相関を分析する"""
+    from api import app
+    import datetime
+    from config import JST
+
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="サービス未接続")
+
+    gemini_client = (chat_service.gemini_client if chat_service else None) or (bot.gemini_client if bot else None)
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="AI未接続")
+
+    service = chat_service.drive_service.get_service()
+    if not service:
+        raise HTTPException(status_code=503, detail="Drive未接続")
+
+    now = datetime.datetime.now(JST)
+    drive_folder = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    daily_folder = await chat_service.drive_service.find_file(service, drive_folder, "DailyNotes")
+    if not daily_folder:
+        raise HTTPException(status_code=404, detail="DailyNotesフォルダが見つかりません")
+
+    gathered = []
+    for i in range(7):
+        target = now - datetime.timedelta(days=i)
+        fname = f"{target.strftime('%Y-%m-%d')}.md"
+        fid = await chat_service.drive_service.find_file(service, daily_folder, fname)
+        if fid:
+            try:
+                content = await chat_service.drive_service.read_text_file(service, fid)
+                # 主要セクションのみ抽出してトークン削減
+                lines = content.split("\n")
+                key_lines = []
+                capture = False
+                for line in lines:
+                    if line.startswith("## "):
+                        capture = any(k in line for k in ["Alter Log", "Insights", "Events", "Health", "Sleep", "Journal"])
+                    if capture:
+                        key_lines.append(line)
+                if key_lines:
+                    gathered.append(f"=== {target.strftime('%Y-%m-%d')} ===\n" + "\n".join(key_lines))
+            except Exception:
+                pass
+
+    if not gathered:
+        return {"analysis": "分析するためのデータが不足しています。数日間ログを記録してから再度お試しください。"}
+
+    combined = "\n\n".join(reversed(gathered))
+    prompt = f"""あなたはライフコーチ兼データアナリストだ。以下の1週間分のライフログを分析して、気分・行動と健康（睡眠・運動）の相関関係を見つけて。
+「ゆうすけ」に語りかけるように、タメ口で親しみやすく、でも深い洞察で。
+
+出力形式:
+### 📊 今週の傾向
+（睡眠と気分の傾向、活動量と生産性の関係など）
+
+### 💡 見つけたパターン
+（具体的な日付を引用して「この日は〇〇だったから△△だったみたい」など）
+
+### 🎯 来週への提案
+（1〜2個、具体的で実行可能なアドバイス）
+
+【データ】
+{combined}"""
+
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
+        analysis = response.text.strip()
+        await save_message("assistant", f"【週間ヘルスレポート】\n{analysis}")
+        return {"analysis": analysis}
+    except Exception as e:
+        logging.error(f"Health Correlation Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # --- 機能9: 積読 (Stocked Links) 関連のエンドポイント ---
+
 
 @router.get("/links", dependencies=[Depends(verify_api_key)])
 async def get_links():

@@ -109,7 +109,6 @@ body {
 /* チャットタブだけはflexbox制御（入力欄を下部固定にするため） */
 #tab-chat {
     overflow: hidden;           /* チャットタブはmessages領域自体がスクロール */
-    padding-bottom: calc(65px + var(--safe-bottom));
 }
 
 @keyframes tabSlideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
@@ -210,7 +209,7 @@ body {
 #chat-form { width: 100%; }
 .chat-input-area {
     padding: 12px 16px;
-    padding-bottom: 16px;
+    padding-bottom: calc(16px + 65px + var(--safe-bottom));
     background: var(--bg-base);
     border-top: 1px solid var(--border-glass);
     display: flex;
