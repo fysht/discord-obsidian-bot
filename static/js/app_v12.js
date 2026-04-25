@@ -670,38 +670,37 @@ window.loadStockedLinks = async () => {
         const webEl = $('#dash-stocked-web');
         const ytEl = $('#dash-stocked-youtube');
         const recipeEl = $('#dash-stocked-recipe');
+        const mapEl = $('#dash-stocked-map');
+        const bookEl = $('#dash-stocked-book');
 
         const links = data.links || [];
         const webLinks = links.filter(l => l.type === 'web');
         const ytLinks = links.filter(l => l.type === 'youtube');
         const recipeLinks = links.filter(l => l.type === 'recipe');
+        const mapLinks = links.filter(l => l.type === 'map');
+        const bookLinks = links.filter(l => l.type === 'book');
 
-        const renderGroup = (container, items, showPaste) => {
+        const renderGroup = (container, items, type) => {
             if (!container) return;
             if (items.length === 0) {
-                container.innerHTML = '';
+                container.innerHTML = '<div style="padding:10px 18px; color:var(--text-muted); font-size:0.85rem;">登録なし</div>';
                 return;
             }
             container.innerHTML = items.map(lk => {
                 const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-                const isSaved = lk.status === 'saved';
-                const savedBadge = isSaved ? '<span style="font-size:0.65rem; background:rgba(0,186,152,0.2); color:var(--accent); padding:2px 6px; border-radius:4px;">保存済</span>' : '';
-                // Web: 自動要約ボタン / YouTube・レシピ: 貼り付けボタン
-                let actionBtn = '';
-                if (!isSaved) {
-                    if (showPaste) {
-                        actionBtn = `<button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:var(--accent); color:#fff;" onclick="openPasteSummaryModal(${lk.id}, '${escapeHtml(lk.title)}')">要約を貼付</button>`;
-                    } else {
-                        actionBtn = `<button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:var(--accent); color:#fff;" onclick="summarizeStockedLink(${lk.id})">要約保存</button>`;
-                    }
-                }
+                const actionBtn = `<button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:rgba(0,186,152,0.1); color:var(--accent);" onclick='openLinkDetailsModal(${JSON.stringify(lk).replace(/'/g, "&#39;")})'>📝 詳細編集</button>`;
+                
+                let extraInfo = '';
+                if(lk.purpose) extraInfo += `<span style="font-size:0.75rem; color:var(--accent); margin-right:8px;">🎯 ${escapeHtml(lk.purpose)}</span>`;
+                if(lk.target_date) extraInfo += `<span style="font-size:0.75rem; color:var(--text-secondary); margin-right:8px;">📅 ${escapeHtml(lk.target_date)}</span>`;
+
                 return `
-                    <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:4px;${isSaved ? ' opacity:0.55;' : ''}">
+                    <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:4px;">
                         <div style="display:flex; align-items:center; gap:6px;">
                             <a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.85rem; line-height:1.3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>
-                            ${savedBadge}
                         </div>
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                        ${extraInfo ? `<div style="margin-top:2px;">${extraInfo}</div>` : ''}
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
                             <span style="font-size:0.65rem; color:var(--text-muted);">${dateStr}</span>
                             <div style="display:flex; gap:5px;">
                                 ${actionBtn}
@@ -713,29 +712,98 @@ window.loadStockedLinks = async () => {
             }).join('');
         };
 
-        renderGroup(webEl, webLinks, false);
-        renderGroup(ytEl, ytLinks, true);
-        renderGroup(recipeEl, recipeLinks, true);
+        renderGroup(webEl, webLinks, 'web');
+        renderGroup(ytEl, ytLinks, 'youtube');
+        renderGroup(recipeEl, recipeLinks, 'recipe');
+        renderGroup(mapEl, mapLinks, 'map');
+        renderGroup(bookEl, bookLinks, 'book');
     } catch (e) {
         console.error("StockedLinks fetch error", e);
     }
 };
 
-window.summarizeStockedLink = async (linkId) => {
-    const el = $(`#stocked-link-${linkId}`);
-    if(el) el.style.opacity = '0.3';
-    showToast('AIが解析・要約中です...');
+let currentEditLinkId = null;
+let currentEditLinkType = null;
+
+window.openLinkDetailsModal = (lk) => {
+    currentEditLinkId = lk.id;
+    currentEditLinkType = lk.type;
+    
+    $('#link-modal-title').textContent = "詳細編集: " + (lk.title.length > 15 ? lk.title.substring(0,15)+"..." : lk.title);
+    
+    // Type badge & field toggling
+    const tr = { 'web': '🌐 ウェブ', 'youtube': '📺 YouTube', 'recipe': '🍳 レシピ', 'map': '🗺️ マップ', 'book': '📚 書籍' };
+    $('#link-modal-type-badge').textContent = tr[lk.type] || lk.type;
+
+    $('#field-purpose').style.display = 'flex';
+    $('#field-summary').style.display = 'flex';
+    $('#field-memo').style.display = 'flex';
+    $('#field-date').style.display = ['recipe', 'map'].includes(lk.type) ? 'flex' : 'none';
+    $('#field-url').style.display = lk.type === 'book' ? 'flex' : 'none';
+    $('#link-extra-actions').style.display = lk.type === 'youtube' ? 'block' : 'none';
+    
+    $('#link-purpose-input').value = lk.purpose || '';
+    $('#link-date-input').value = lk.target_date || '';
+    $('#link-note-url-input').value = lk.linked_note_url || '';
+    $('#link-summary-input').value = lk.summary || '';
+    $('#link-memo-input').value = lk.memo || '';
+    $('#link-calendar-check').checked = true; // default
+
+    $('#link-details-modal').classList.remove('hidden');
+};
+
+window.closeLinkDetailsModal = () => {
+    $('#link-details-modal').classList.add('hidden');
+    currentEditLinkId = null;
+};
+
+// 共通保存処理
+$('#link-save-btn')?.addEventListener('click', async () => {
+    if(!currentEditLinkId) return;
+    const btn = $('#link-save-btn');
+    btn.textContent = '保存中...';
+    btn.disabled = true;
+    
+    const reqData = {
+        purpose: $('#link-purpose-input').value,
+        summary: $('#link-summary-input').value,
+        memo: $('#link-memo-input').value,
+        target_date: $('#link-date-input').value,
+        linked_note_url: $('#link-note-url-input').value,
+        type: currentEditLinkType,
+        add_to_calendar: $('#link-calendar-check').checked
+    };
 
     try {
-        const data = await apiFetch(`/api/links/${linkId}/summarize`, { method: 'POST' });
-        showToast(data.message || '保存しました');
+        await apiFetch(`/api/links/${currentEditLinkId}`, {
+            method: 'PUT',
+            body: JSON.stringify(reqData)
+        });
+        showToast('保存しました');
+        closeLinkDetailsModal();
         loadStockedLinks();
     } catch (e) {
-        console.error(e);
-        showToast('要約に失敗しました', true);
-        if(el) el.style.opacity = '1';
+        showToast('保存に失敗しました', true);
+    } finally {
+        btn.textContent = '保存';
+        btn.disabled = false;
     }
-};
+});
+
+// YouTube -> レシピ移動
+$('#link-move-recipe-btn')?.addEventListener('click', async () => {
+    if(!currentEditLinkId || !confirm('このリンクをレシピに変更しますか？')) return;
+    
+    const reqData = { type: 'recipe' };
+    try {
+        await apiFetch(`/api/links/${currentEditLinkId}`, { method: 'PUT', body: JSON.stringify(reqData) });
+        showToast('レシピに移動しました');
+        closeLinkDetailsModal();
+        loadStockedLinks();
+    } catch (e) {
+        showToast('移動に失敗しました', true);
+    }
+});
 
 // YouTube / レシピ用の要約貼り付けモーダル
 let pasteTargetLinkId = null;

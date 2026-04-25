@@ -159,9 +159,32 @@ body {
     flex-shrink: 0;
 }
 .date-header { text-align: center; font-size: 1.1rem; font-weight: 700; color: var(--text-secondary); margin: 8px 0; }
-.card { background: var(--bg-glass); border: 1px solid var(--border-glass); border-radius: var(--radius-lg); overflow: hidden; }
-.card-header { padding: 14px 18px; border-bottom: 1px solid var(--border-glass); display: flex; align-items: center; gap: 10px; }
-.card-icon { font-size: 1rem; flex-shrink: 0; }
+.card { background: var(--bg-glass); border: 1px solid var(--border-glass); border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 16px;}
+details.card { padding: 0; margin-bottom: 16px;}
+details.card > summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid transparent;
+    transition: 0.2s;
+    padding: 0;
+}
+details.card > summary::-webkit-details-marker { display: none; }
+details.card > summary::after {
+    content: "▼";
+    margin-right: 18px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    transition: transform 0.2s;
+}
+details[open].card > summary { border-bottom-color: var(--border-glass); }
+details[open].card > summary::after { transform: rotate(180deg); }
+
+.card-header { padding: 14px 18px; display: flex; align-items: center; gap: 10px; flex: 1; border-bottom: 1px solid var(--border-glass); }
+details.card > summary > .card-header { border-bottom: none; }
+
+.card-icon { font-size: 1rem; flex-shrink: 0; background: rgba(255,255,255,0.05); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px;}
 .card-title { font-weight: 700; font-size: 0.95rem; flex: 1; }
 .mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
 .mini-link:hover { background: rgba(0,186,152,0.2); }

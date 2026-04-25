@@ -66,6 +66,14 @@ async def _fetch_link_meta(url: str) -> dict:
         except Exception:
             pass
         return {"title": title, "type": link_type}
+        
+    # Google Maps判定
+    if "maps.google.com" in url or "maps.app.goo.gl" in url or "goo.gl/maps" in url:
+        link_type = "map"
+        
+    # Amazon判定
+    if "amazon.co.jp" in url or "amzn.to" in url:
+        link_type = "book"
 
     # レシピドメイン判定
     recipe_domains = ["cookpad.com", "kurashiru.com", "delishkitchen.tv", "macaro-ni.jp",
@@ -83,6 +91,9 @@ async def _fetch_link_meta(url: str) -> dict:
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
                     if match:
                         title = match.group(1).strip()[:200]
+                    # Amazonタイトルのクリーンアップ
+                    if link_type == "book":
+                        title = title.replace("Amazon.co.jp:", "").replace("Amazon |", "").strip()
                     # タイトルやHTMLからレシピを追加判定
                     if link_type == "web":
                         recipe_kw = ["レシピ", "作り方", "献立", "材料", "recipe", "cooking"]
@@ -1099,6 +1110,59 @@ async def get_links():
     from api.database import get_all_links
     links = await get_all_links()
     return {"links": links}
+
+class LinkUpdateRequest(BaseModel):
+    purpose: str = ""
+    summary: str = ""
+    memo: str = ""
+    target_date: str = ""
+    linked_note_url: str = ""
+    type: str = ""
+    add_to_calendar: bool = False
+
+@router.put("/links/{link_id}", dependencies=[Depends(verify_api_key)])
+async def update_link(link_id: int, req: LinkUpdateRequest):
+    """リンクの詳細情報を更新する"""
+    from api import app
+    from api.database import get_link_by_id, update_link_details
+
+    link = await get_link_by_id(link_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません")
+
+    await update_link_details(
+        link_id, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, req.type or link["type"]
+    )
+
+    # カレンダーに追加フラグが立っており、日付が設定されている場合
+    if req.add_to_calendar and req.target_date:
+        bot = getattr(app.state, "bot", None)
+        if bot and bot.calendar_service:
+            # title にバッジをつける
+            prefix = "🗺️[行]" if req.type == "map" else "🍳[食]" if req.type == "recipe" else "📎[記]"
+            cal_title = f"{prefix} {link['title']}"
+            desc = f"■目的: {req.purpose}\n■メモ: {req.memo}\n■リンク: {link['url']}"
+            try:
+                # 終日予定として登録。start=XXXX-XX-XX, end=XXXX-XX-XX (翌日にはしない簡易版か、Google API的には翌日を指定する)
+                # target_dateは yyyy-mm-dd を想定
+                import datetime
+                date_obj = datetime.datetime.strptime(req.target_date, "%Y-%m-%d")
+                start_date = date_obj.strftime("%Y-%m-%d")
+                end_date = (date_obj + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+                
+                service = bot.calendar_service.get_service()
+                event_body = {
+                    "summary": cal_title,
+                    "description": desc,
+                    "colorId": "10" if req.type == "map" else "11", # 10=Green(Basil), 11=Red(Tomato)
+                    "start": {"date": start_date},
+                    "end": {"date": end_date}
+                }
+                service.events().insert(calendarId="primary", body=event_body).execute()
+            except Exception as e:
+                logging.error(f"Calendar Sync Error for link {link_id}: {e}")
+
+    return {"status": "success"}
 
 
 @router.post("/links/{link_id}/summarize", dependencies=[Depends(verify_api_key)])

@@ -128,38 +128,55 @@
                         <div id="dash-news" class="card-body list-body"></div>
                     </div>
                     
-                    <div class="card stocked-links-card">
-                        <div class="card-header">
-                            <span class="card-icon">🌐</span>
-                            <span class="card-title">ウェブクリップ</span>
-                        </div>
+                    <details class="card stocked-links-card">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">🌐</span>
+                                <span class="card-title">ウェブクリップ</span>
+                            </div>
+                        </summary>
                         <div id="dash-stocked-web" class="card-body list-body"></div>
-                    </div>
+                    </details>
 
-                    <div class="card stocked-links-card">
-                        <div class="card-header">
-                            <span class="card-icon">📺</span>
-                            <span class="card-title">YouTube</span>
-                        </div>
+                    <details class="card stocked-links-card">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">📺</span>
+                                <span class="card-title">YouTube</span>
+                            </div>
+                        </summary>
                         <div id="dash-stocked-youtube" class="card-body list-body"></div>
-                    </div>
+                    </details>
 
-                    <div class="card stocked-links-card">
-                        <div class="card-header">
-                            <span class="card-icon">🍳</span>
-                            <span class="card-title">レシピ</span>
-                        </div>
+                    <details class="card stocked-links-card">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">🍳</span>
+                                <span class="card-title">レシピ</span>
+                            </div>
+                        </summary>
                         <div id="dash-stocked-recipe" class="card-body list-body"></div>
-                    </div>
+                    </details>
 
-                    <div class="card bookshelf-card">
-                        <div class="card-header">
-                            <span class="card-icon">📚</span>
-                            <span class="card-title">読書 & ナレッジ</span>
-                            <button class="mini-link" onclick="openBookModal()">＋追加</button>
-                        </div>
-                        <div class="card-body" id="dash-bookshelf"></div>
-                    </div>
+                    <details class="card stocked-links-card">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">🗺️</span>
+                                <span class="card-title">Googleマップ</span>
+                            </div>
+                        </summary>
+                        <div id="dash-stocked-map" class="card-body list-body"></div>
+                    </details>
+
+                    <details class="card bookshelf-card">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">📚</span>
+                                <span class="card-title">書籍 & ナレッジ</span>
+                            </div>
+                        </summary>
+                        <div id="dash-stocked-book" class="card-body list-body"></div>
+                    </details>
                 </div>
             </div>
 
@@ -306,6 +323,54 @@
                 <button class="modal-btn" id="edit-toggle-btn" style="background:rgba(0,186,152,0.1); color:var(--accent);">完了/未完了</button>
                 <button class="modal-btn submit" id="edit-save-btn">保存</button>
             </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== LINK DETAILS MODAL (積読管理用) ========== -->
+    <div id="link-details-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3 id="link-modal-title" style="margin-bottom:12px;">リンク詳細編集</h3>
+            <div style="font-size:0.8rem; color:var(--accent); margin-bottom:16px;" id="link-modal-type-badge"></div>
+            
+            <div class="modal-list" style="max-height: 50vh; padding-right: 5px; gap: 12px; margin-top:0;">
+                <div id="field-purpose" style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">目的/鑑賞ステータス</label>
+                    <input type="text" id="link-purpose-input" class="modern-input" style="padding:10px;" placeholder="目的を入力...">
+                </div>
+
+                <div id="field-date" style="display:none; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">日付 (カレンダー連動)</label>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <input type="date" id="link-date-input" class="modern-input" style="padding:10px; flex:1;">
+                        <label style="font-size:0.8rem; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="link-calendar-check" checked> 予定に追加</label>
+                    </div>
+                </div>
+
+                <div id="field-url" style="display:none; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">関連ノートURL (NotebookLM等)</label>
+                    <input type="text" id="link-note-url-input" class="modern-input" style="padding:10px;" placeholder="https://...">
+                </div>
+
+                <div id="field-summary" style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">要約 / 読書ノート</label>
+                    <textarea id="link-summary-input" class="modern-input" style="padding:10px; height:80px; resize:vertical;" placeholder="AIの要約やノートをコピペ..."></textarea>
+                </div>
+
+                <div id="field-memo" style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">メモ</label>
+                    <textarea id="link-memo-input" class="modern-input" style="padding:10px; height:60px; resize:vertical;" placeholder="個人的なメモ..."></textarea>
+                </div>
+            </div>
+
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeLinkDetailsModal()">キャンセル</button>
+                <button class="modal-btn submit" id="link-save-btn">保存</button>
+            </div>
+            
+            <div id="link-extra-actions" style="margin-top: 12px; display: none;">
+                <button class="modal-btn cancel" style="width:100%; border:1px solid var(--border-glass);" id="link-move-recipe-btn">🍳 レシピに移動する</button>
+            </div>
         </div>
     </div>
     <!-- ========== ADD EVENT MODAL ========== -->
@@ -339,27 +404,7 @@
         </div>
     </div>
 
-    <!-- ========== BOOK REGISTER MODAL ========== -->
-    <div id="book-modal" class="modal-overlay hidden">
-        <div class="modal-card">
-            <h3>📚 書籍を登録</h3>
-            <div class="modal-body mt-20">
-                <div class="input-group">
-                    <label>書籍タイトル</label>
-                    <input type="text" id="book-title-input" class="modern-input" placeholder="影響力の武器、7つの習慣...">
-                </div>
-                <div class="input-group mt-10">
-                    <label>NotebookLM URL (任意)</label>
-                    <input type="text" id="book-nlm-url-input" class="modern-input" placeholder="https://notebooklm.google.com/notebook/...">
-                </div>
-            </div>
-            <div class="modal-actions mt-20">
-                <button class="modal-btn cancel" onclick="closeBookModal()">キャンセル</button>
-                <button class="modal-btn submit" onclick="saveBook()">登録</button>
-            </div>
-        </div>
-    </div>
-
+    <div id="toast-container"></div>
     <!-- ========== TASK BREAKDOWN MODAL ========== -->
     <div id="breakdown-modal" class="modal-overlay hidden">
         <div class="modal-card">
@@ -388,24 +433,6 @@
             </div>
         </div>
     </div>
-    <!-- ========== PASTE SUMMARY MODAL ========== -->
-    <div id="paste-summary-modal" class="modal-overlay hidden">
-        <div class="modal-card">
-            <h3 id="paste-summary-title" style="margin-bottom: 12px; font-size: 1rem; color: var(--accent);">リンク</h3>
-            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 16px;">
-                Geminiなどで要約したテキストを以下に貼り付けてください。
-            </p>
-            <div class="modal-input-area" style="margin-bottom: 20px;">
-                <textarea id="paste-summary-text" class="modern-input" rows="8" placeholder="要約テキストをここに貼り付け..." style="resize: vertical;"></textarea>
-            </div>
-            <div class="modal-actions mt-20">
-                <button class="modal-btn cancel" onclick="closePasteSummaryModal()">キャンセル</button>
-                <button class="modal-btn submit" id="paste-submit-btn" onclick="submitPasteSummary()">保存</button>
-            </div>
-        </div>
-    </div>
-
-    <div id="toast-container"></div>
-    <script src="/static/js/app_v12.js?v=29"></script>
+    <script src="/static/js/app_v12.js?v=30"></script>
 </body>
 </html>

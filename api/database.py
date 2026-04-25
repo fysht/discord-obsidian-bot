@@ -65,6 +65,19 @@ async def init_db():
                 added_at TEXT NOT NULL
             )
         """)
+        
+        # 新規拡張カラムの追加 (存在しない場合)
+        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''")
+        except: pass
+        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN summary TEXT DEFAULT ''")
+        except: pass
+        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN memo TEXT DEFAULT ''")
+        except: pass
+        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN target_date TEXT DEFAULT ''")
+        except: pass
+        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN linked_note_url TEXT DEFAULT ''")
+        except: pass
+
         await db.commit()
 
 
@@ -135,7 +148,7 @@ async def get_all_links():
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at FROM stocked_links ORDER BY id DESC"
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url FROM stocked_links ORDER BY id DESC"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -145,11 +158,24 @@ async def get_link_by_id(link_id: int):
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at FROM stocked_links WHERE id = ?",
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url FROM stocked_links WHERE id = ?",
             (link_id,)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+async def update_link_details(link_id: int, purpose: str, summary: str, memo: str, target_date: str, linked_note_url: str, link_type: str):
+    """リンクの詳細情報を更新する"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            """
+            UPDATE stocked_links
+            SET purpose = ?, summary = ?, memo = ?, target_date = ?, linked_note_url = ?, type = ?
+            WHERE id = ?
+            """,
+            (purpose, summary, memo, target_date, linked_note_url, link_type, link_id)
+        )
+        await db.commit()
 
 async def mark_link_as_saved(link_id: int):
     """リンクを保存済み(saved)に更新"""
