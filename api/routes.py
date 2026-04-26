@@ -46,6 +46,7 @@ async def _fetch_link_meta(url: str) -> dict:
     title = "Untitled"
     link_type = "web"
 
+    # YouTube判定とタイトル取得強化
     if "youtube.com" in url or "youtu.be" in url:
         link_type = "youtube"
         try:
@@ -80,20 +81,15 @@ async def _fetch_link_meta(url: str) -> dict:
 
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            }
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
                 if response.status == 200:
                     html = await response.text(errors="replace")
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
                     if match:
-                        title = _re.sub(r'<[^>]+>', '', match.group(1)).strip()[:200]
-                        if link_type == "book" or "amazon" in url:
-                            title = title.replace("Amazon.co.jp:", "").replace("Amazon |", "").replace("Amazon.co.jp :", "").strip()
-                    
+                        title = match.group(1).strip()[:200]
+                    if link_type == "book":
+                        title = title.replace("Amazon.co.jp:", "").replace("Amazon |", "").strip()
                     if link_type == "web":
                         recipe_kw = ["レシピ", "作り方", "献立", "材料", "recipe", "cooking"]
                         if any(k in title.lower() for k in recipe_kw): link_type = "recipe"
@@ -103,63 +99,49 @@ async def _fetch_link_meta(url: str) -> dict:
     return {"title": title if title else "Untitled", "type": link_type}
 
 
+# --- Obsidian同期用共通関数 (英語表記統一) ---
 async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: str, 
-                                purpose: str="", target_date: str="", memo: str="", summary: str="", 
-                                added_at_str: str=None, old_title: str=None, old_type: str=None):
+                                purpose: str="", target_date: str="", memo: str="", summary: str=""):
+    """リンク情報をObsidianに作成・更新する"""
     if not chat_service or not chat_service.drive_service: return
     service = chat_service.drive_service.get_service()
     if not service: return
     
     import re
-    if added_at_str:
-        try:
-            base_time = datetime.datetime.fromisoformat(added_at_str)
-        except ValueError:
-            base_time = datetime.datetime.now(JST)
-    else:
-        base_time = datetime.datetime.now(JST)
-
     now = datetime.datetime.now(JST)
-
-    folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Google Maps", "book": "Books"}
-    section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🗺️ Google Maps", "book": "## 📚 Books"}
+    folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Places", "book": "BookNotes"}
+    section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🔗 WebClips", "book": "## 📖 Reading Log"}
     
-    search_title = old_title if old_title else title
-    search_type = old_type if old_type else link_type
-    search_folder_name = folder_map.get(search_type, "WebClips")
-    safe_search_title = re.sub(r'[\\/*?:"<>|]', "", search_title)[:80] or "Untitled"
+    folder_name = folder_map.get(link_type, "WebClips")
+    section_header = section_map.get(link_type, "## 🔗 WebClips")
+    safe_title = re.sub(r'[\\/*?:"<>|]', "", title)[:80] or "Untitled"
     
-    if search_type == "book":
-        filename = f"{safe_search_title}.md"
+    if link_type == "book":
+        filename = f"{safe_title}.md"
+        link_str = f"- [[{folder_name}/{safe_title}|{title}]]"
     else:
-        timestamp = base_time.strftime("%Y%m%d%H%M%S")
-        filename = f"{timestamp}-{safe_search_title}.md"
+        timestamp = now.strftime("%Y%m%d%H%M%S")
+        filename = f"{timestamp}-{safe_title}.md"
+        link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{title}]]"
 
-    new_folder_name = folder_map.get(link_type, "WebClips")
-    new_section_header = section_map.get(link_type, "## 🔗 WebClips")
-    new_link_str = f"- [[{search_folder_name}/{filename}|{title}]]"
-    old_link_str = f"- [[{search_folder_name}/{filename}|{search_title}]]"
-
-    daily_note_date = base_time.strftime("%Y-%m-%d")
+    daily_note_date = now.strftime("%Y-%m-%d")
     
     note_content = f"# {title}\n\n"
-    if purpose: note_content += f"**🎯 Purpose:** {purpose}\n\n"
-    if target_date: note_content += f"**📅 Target Date:** {target_date}\n\n"
-    if memo: note_content += f"**📝 Memo:**\n{memo}\n\n"
-    if summary: note_content += f"**💡 Summary:**\n{summary}\n\n"
-    if url: note_content += f"---\n\n## Link\n{url}\n\n"
-    note_content += f"---\n\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]\n"
+    if purpose: note_content += f"**🎯 Purpose:** {purpose}\n"
+    if target_date: note_content += f"**📅 Target Date:** {target_date}\n"
+    if memo: note_content += f"**📝 Memo:** {memo}\n"
+    if summary: note_content += f"**💡 Summary:**\n{summary}\n"
+    if url: note_content += f"---\n## Link\n{url}\n\n"
+    note_content += f"---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
 
     try:
         drive_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        f_id = await chat_service.drive_service.find_file(service, drive_root, search_folder_name)
-        if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, search_folder_name)
+        f_id = await chat_service.drive_service.find_file(service, drive_root, folder_name)
+        if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, folder_name)
 
-        existing = await chat_service.drive_service.find_file(service, f_id, filename)
-        if existing:
-            await chat_service.drive_service.update_text(service, existing, note_content)
-        else:
-            await chat_service.drive_service.upload_text(service, f_id, filename, note_content)
+        existing = await chat_service.drive_service.find_file(service, f_id, filename) if link_type == "book" else None
+        if existing: await chat_service.drive_service.update_text(service, existing, note_content)
+        else: await chat_service.drive_service.upload_text(service, f_id, filename, note_content)
 
         daily_fid = await chat_service.drive_service.find_file(service, drive_root, "DailyNotes")
         if daily_fid:
@@ -167,20 +149,12 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
             from utils.obsidian_utils import update_section
             if df_id:
                 cur = await chat_service.drive_service.read_text_file(service, df_id)
-                if old_title and (old_title != title or old_type != link_type):
-                    if old_link_str in cur:
-                        cur = cur.replace(old_link_str + "\n", "")
-                        cur = cur.replace(old_link_str, "")
-                        cur = update_section(cur, new_link_str, new_section_header)
-                        await chat_service.drive_service.update_text(service, df_id, cur)
-                else:
-                    if new_link_str not in cur:
-                        cur = update_section(cur, new_link_str, new_section_header)
-                        await chat_service.drive_service.update_text(service, df_id, cur)
+                if link_str not in cur: await chat_service.drive_service.update_text(service, df_id, update_section(cur, link_str, section_header))
             else:
-                initial_content = f"---\ndate: {daily_note_date}\n---\n\n# Daily Note {daily_note_date}\n\n{new_section_header}\n{new_link_str}\n"
+                initial_content = f"---\ndate: {daily_note_date}\n---\n\n# Daily Note {daily_note_date}\n\n{section_header}\n{link_str}\n"
                 await chat_service.drive_service.upload_text(service, daily_fid, f"{daily_note_date}.md", initial_content)
     except Exception as e: logging.error(f"Obsidian Sync Error: {e}")
+
 
 @router.post("/chat", response_model=ChatResponse, dependencies=[Depends(verify_api_key)])
 async def chat(req: ChatRequest):
@@ -194,12 +168,10 @@ async def chat(req: ChatRequest):
             meta = await _fetch_link_meta(url)
             await add_stocked_link(url, meta["type"], meta["title"])
 
-            links = await get_all_links()
-            if links:
-                new_link = links[0]
-                chat_service = getattr(app.state, "chat_service", None)
-                if chat_service:
-                    await sync_link_to_obsidian(chat_service, meta["title"], meta["type"], url, added_at_str=new_link["added_at"])
+            # Obsidianへの即時作成
+            chat_service = getattr(app.state, "chat_service", None)
+            if chat_service:
+                await sync_link_to_obsidian(chat_service, meta["title"], meta["type"], url)
 
             type_label = {"web": "🌐 ウェブ", "youtube": "📺 YouTube", "recipe": "🍳 レシピ", "map": "🗺️ マップ", "book": "📚 書籍"}.get(meta["type"], "🔗 リンク")
             reply = f"「{meta['title']}」を{type_label}としてストックし、ノートを作成しました。"
@@ -295,31 +267,28 @@ async def dashboard():
             habits = await chat_service.tasks_service.get_raw_tasks("習慣")
         except Exception: pass
 
-    weather_data = {"summary": "取得失敗"}
-    news = []
     try:
-        info_svc = getattr(bot, "info_service", None) or InfoService()
-        weather_data = await info_svc.get_weather()
-        
-        raw_news = await info_svc.get_news(limit=5)
+        weather_data = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
+        raw_news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
+        news = []
         for n in raw_news:
             parts = n.split('\n')
             if len(parts) >= 2: news.append({"title": parts[0], "link": parts[1]})
             else: news.append({"title": n, "link": "#"})
-    except Exception as e:
-        logging.error(f"Weather/News fetch ERROR in Dashboard: {e}")
+    except Exception:
+        weather_data = {"summary": "取得失敗"}
+        news = []
 
-    fitbit_cog = bot.get_cog("FitbitCog") if bot else None
+    fitbit_cog = bot.get_cog("FitbitCog")
     if fitbit_cog and fitbit_cog.is_ready:
         try:
-            target_date = now.date()
+            target_date = datetime.datetime.now(JST).date()
             stats = await fitbit_cog.fitbit_service.get_stats(target_date)
             if stats:
                 score = stats.get("sleep_score")
                 raw_duration = stats.get("total_sleep_minutes")
                 sleep_stats = {"score": score or "N/A", "duration": fitbit_cog._format_minutes(raw_duration) if raw_duration else "N/A"}
-        except Exception as e:
-            logging.error(f"API Dashboard Fitbit fetch error: {e}")
+        except: pass
 
     return {
         "tasks": tasks, "alter_log": alter_log, "date": display_date, "g_calendar": g_calendar,
@@ -482,6 +451,7 @@ class LinkCreateRequest(BaseModel):
 
 @router.post("/links", dependencies=[Depends(verify_api_key)])
 async def create_link(req: LinkCreateRequest):
+    """手動でのリンク（レシピ等）追加"""
     from api import app
     await add_stocked_link(req.url, req.type, req.title)
     
@@ -490,7 +460,7 @@ async def create_link(req: LinkCreateRequest):
     new_link = links[0]
     
     chat_service = getattr(app.state, "chat_service", None)
-    await sync_link_to_obsidian(chat_service, req.title, req.type, req.url, added_at_str=new_link["added_at"])
+    await sync_link_to_obsidian(chat_service, req.title, req.type, req.url)
     return {"status": "success", "link_id": new_link["id"]}
 
 class LinkUpdateRequest(BaseModel):
@@ -511,35 +481,26 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
     link = await get_link_by_id(link_id)
     if not link: raise HTTPException(status_code=404, detail="リンク未検出")
 
-    old_type = link["type"]
-    old_title = link["title"]
-    new_title = req.title or old_title
-    new_type = req.type or old_type
+    new_title = req.title or link["title"]
+    new_type = req.type or link["type"]
     
+    # DB更新
     await update_link_details(link_id, new_title, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, new_type)
 
+    # Obsidian更新 (Drive)
     chat_service = getattr(app.state, "chat_service", None)
-    if chat_service:
-        await sync_link_to_obsidian(
-            chat_service, new_title, new_type, link["url"], 
-            req.purpose, req.target_date, req.memo, req.summary, 
-            link["added_at"], old_title, old_type
-        )
+    await sync_link_to_obsidian(chat_service, new_title, new_type, link["url"], req.purpose, req.target_date, req.memo, req.summary)
 
+    # カレンダー追加
     if req.add_to_calendar and req.target_date:
         bot = getattr(app.state, "bot", None)
         if bot and bot.calendar_service:
             prefix = {"map": "🗺️[行]", "recipe": "🍳[食]", "book": "📚[本]"}.get(new_type, "📎[記]")
-            color_map = {"map": "10", "recipe": "11", "book": "9"}
-            color_id = color_map.get(new_type, "1")
             try:
                 dt = datetime.datetime.strptime(req.target_date, "%Y-%m-%d")
                 bot.calendar_service.get_service().events().insert(calendarId="primary", body={
-                    "summary": f"{prefix} {new_title}", 
-                    "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
-                    "start": {"date": dt.strftime("%Y-%m-%d")}, 
-                    "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")},
-                    "colorId": color_id
+                    "summary": f"{prefix} {new_title}", "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
+                    "start": {"date": dt.strftime("%Y-%m-%d")}, "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")}
                 }).execute()
             except: pass
 
