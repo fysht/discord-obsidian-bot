@@ -1,7 +1,15 @@
 const API_BASE = '';
 let apiKey = localStorage.getItem('secretary_api_key') || '';
 let lastMsgDate = null;
-let currentLinkSort = 'newest'; // 'newest', 'oldest', 'title'
+
+// 各カテゴリーごとのソート状態を保持するオブジェクト
+let linkSorts = {
+    web: 'newest',
+    youtube: 'newest',
+    recipe: 'newest',
+    map: 'newest',
+    book: 'newest'
+};
 
 const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
@@ -236,14 +244,15 @@ async function loadDashboard() {
         const diaryEl = $('#dash-alter-log');
         if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
         
-        loadStockedLinks();
-
         // 「書籍＆ナレッジ」のテキストを「書籍」に置換
         document.querySelectorAll('.section-title').forEach(el => {
             if(el.textContent.includes('書籍＆ナレッジ')) {
                 el.textContent = el.textContent.replace('書籍＆ナレッジ', '書籍');
             }
         });
+
+        loadStockedLinks();
+
     } catch (err) { console.error(err); }
 }
 
@@ -271,8 +280,8 @@ window.openManualAddModal = (type) => {
     }).catch(() => showToast('追加に失敗しました', true));
 };
 
-window.changeLinkSort = (val) => {
-    currentLinkSort = val;
+window.changeLinkSort = (type, val) => {
+    linkSorts[type] = val;
     loadStockedLinks();
 };
 
@@ -287,54 +296,74 @@ window.loadStockedLinks = async () => {
 
         let links = data.links || [];
         
-        const sortFn = (a, b) => {
-            if (currentLinkSort === 'newest') return new Date(b.added_at) - new Date(a.added_at);
-            if (currentLinkSort === 'oldest') return new Date(a.added_at) - new Date(b.added_at);
-            if (currentLinkSort === 'title') return a.title.localeCompare(b.title);
-            return 0;
+        const getSortFn = (type) => {
+            return (a, b) => {
+                const sortType = linkSorts[type];
+                if (sortType === 'newest') return new Date(b.added_at) - new Date(a.added_at);
+                if (sortType === 'oldest') return new Date(a.added_at) - new Date(b.added_at);
+                if (sortType === 'title') return a.title.localeCompare(b.title);
+                return 0;
+            };
         };
 
-        const webLinks = links.filter(l => l.type === 'web').sort(sortFn);
-        const ytLinks = links.filter(l => l.type === 'youtube').sort(sortFn);
-        const recipeLinks = links.filter(l => l.type === 'recipe').sort(sortFn);
-        const mapLinks = links.filter(l => l.type === 'map').sort(sortFn);
-        const bookLinks = links.filter(l => l.type === 'book').sort(sortFn);
+        const webLinks = links.filter(l => l.type === 'web').sort(getSortFn('web'));
+        const ytLinks = links.filter(l => l.type === 'youtube').sort(getSortFn('youtube'));
+        const recipeLinks = links.filter(l => l.type === 'recipe').sort(getSortFn('recipe'));
+        const mapLinks = links.filter(l => l.type === 'map').sort(getSortFn('map'));
+        const bookLinks = links.filter(l => l.type === 'book').sort(getSortFn('book'));
 
         const setupHeader = (id, type) => {
             const container = $(`#${id}`);
             if(!container) return;
             const prev = container.previousElementSibling;
+            
             if (prev && !prev.querySelector('.header-controls')) {
                 const ctrl = document.createElement('div');
                 ctrl.className = 'header-controls';
                 ctrl.style.display = 'inline-flex';
                 ctrl.style.gap = '8px';
-                ctrl.style.marginLeft = '10px';
-                ctrl.innerHTML = `<button class="modal-btn" style="padding:2px 8px; font-size:0.7rem;" onclick="openManualAddModal('${type}')">＋ 手動追加</button>`;
+                ctrl.style.marginLeft = 'auto';
+                ctrl.style.alignItems = 'center';
+                
+                // 個別のソートプルダウン
+                const sortSelect = document.createElement('select');
+                sortSelect.style.cssText = "background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:2px 4px; border-radius:4px; font-size:0.75rem; cursor:pointer;";
+                sortSelect.innerHTML = `
+                    <option value="newest" ${linkSorts[type]==='newest'?'selected':''}>新しい順</option>
+                    <option value="oldest" ${linkSorts[type]==='oldest'?'selected':''}>古い順</option>
+                    <option value="title" ${linkSorts[type]==='title'?'selected':''}>タイトル順</option>
+                `;
+                sortSelect.onchange = (e) => changeLinkSort(type, e.target.value);
+                
+                const addBtn = document.createElement('button');
+                addBtn.className = 'modal-btn';
+                addBtn.style.cssText = "padding:2px 8px; font-size:0.7rem;";
+                addBtn.textContent = '＋ 追加';
+                addBtn.onclick = () => openManualAddModal(type);
+                
+                ctrl.appendChild(sortSelect);
+                ctrl.appendChild(addBtn);
+                
+                prev.style.display = 'flex';
+                prev.style.justifyContent = 'space-between';
+                prev.style.alignItems = 'center';
                 prev.appendChild(ctrl);
+            } else if (prev) {
+                // 既に存在する場合は選択状態を更新
+                const sel = prev.querySelector('select');
+                if (sel) sel.value = linkSorts[type];
             }
         };
+
         setupHeader('dash-stocked-web', 'web');
         setupHeader('dash-stocked-youtube', 'youtube');
         setupHeader('dash-stocked-recipe', 'recipe');
         setupHeader('dash-stocked-map', 'map');
         setupHeader('dash-stocked-book', 'book');
 
-        if (!$('#link-sort-wrapper') && webEl) {
-            const wrap = document.createElement('div');
-            wrap.id = 'link-sort-wrapper';
-            wrap.innerHTML = `
-                <div style="text-align:right; margin-bottom: 10px;">
-                    <select style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:4px 8px; border-radius:4px; font-size:0.8rem; cursor:pointer;" onchange="changeLinkSort(this.value)">
-                        <option value="newest" ${currentLinkSort==='newest'?'selected':''}>新しい順</option>
-                        <option value="oldest" ${currentLinkSort==='oldest'?'selected':''}>古い順</option>
-                        <option value="title" ${currentLinkSort==='title'?'selected':''}>タイトル順</option>
-                    </select>
-                </div>
-            `;
-            const parent = webEl.parentElement;
-            if (parent) parent.insertBefore(wrap, parent.firstChild);
-        }
+        // 古い全体のソートプルダウンがあれば削除
+        const oldWrap = $('#link-sort-wrapper');
+        if (oldWrap) oldWrap.remove();
 
         const renderGroup = (container, items) => {
             if (!container) return;
