@@ -183,7 +183,7 @@ class DailyOrganizeCog(commands.Cog):
                 "\n".join(data["events"])
                 if isinstance(data["events"], list)
                 else str(data["events"]),
-                "## 📝 Events & Actions",
+                "## 🪟 Lifelog",
             )
         if data.get("insights") and len(data["insights"]) > 0:
             content = update_section(

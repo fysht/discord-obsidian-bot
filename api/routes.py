@@ -189,7 +189,7 @@ async def chat(req: ChatRequest):
     await save_message("user", req.message)
 
     from google.genai import types
-    db_history = await get_history(limit=30)
+    db_history = await get_history(limit=15)
     history_messages = []
     for m in reversed(db_history[1:]): 
         role = "model" if m["role"] == "assistant" else "user"
@@ -242,16 +242,37 @@ async def dashboard():
     if task_match:
         for line in task_match.group(1).strip().split("\n"):
             line = line.strip()
-            if line.startswith("- [x]"): tasks.append({"text": line[6:].strip(), "done": True})
-            elif line.startswith("- [/]"): tasks.append({"text": line[6:].strip(), "done": False})
+            if line.startswith("- "):
+                # タスク形式 ([x], [/]) と タイムライン形式の両方に対応
+                cb_match = re.search(r"- \[(.)\] (.*)", line)
+                if cb_match:
+                    tasks.append({"text": cb_match.group(2), "done": (cb_match.group(1) == 'x')})
+                else:
+                    # タイムライン形式 (HH:mm - HH:mm活動名)
+                    tasks.append({"text": line[2:].strip(), "is_log": True})
 
     alter_log = ""
-    alter_match = re.search(r"## 💡 Insights & Thoughts\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
-    if not alter_match: alter_match = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
-    if not alter_match: alter_match = re.search(r"## 🕵️ AI Assessment\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    def extract_alter_log(text):
+        m = re.search(r"## 💡 Insights & Thoughts\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+        if not m: m = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+        if not m: m = re.search(r"## 🕵️ AI Assessment\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+        return m.group(1).strip() if m else None
+
+    alter_log = extract_alter_log(content)
     
-    if alter_match: alter_log = alter_match.group(1).strip()
-    else: alter_log = "本日の観察ログはまだ生成されていません。"
+    # 当日のログがない場合、昨日のノートから取得を試みる
+    if not alter_log and folder_id:
+        yesterday_str = (datetime.datetime.now(JST) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        y_fid = await chat_service.drive_service.find_file(service, folder_id, f"{yesterday_str}.md")
+        if y_fid:
+            try:
+                y_content = await chat_service.drive_service.read_text_file(service, y_fid)
+                alter_log = extract_alter_log(y_content)
+                if alter_log: alter_log = f"【昨日の分析】\n{alter_log}"
+            except Exception: pass
+
+    if not alter_log:
+        alter_log = "本日の観察ログはまだ生成されていません。"
 
     g_calendar = []
     if hasattr(chat_service, "calendar_service") and chat_service.calendar_service:
@@ -445,6 +466,49 @@ async def update_habit(req: BaseModel):
 @router.post("/habits/delete", dependencies=[Depends(verify_api_key)])
 async def delete_habit_endpoint(req: BaseModel):
     return {"status": "success"}
+
+@router.get("/task_candidates", dependencies=[Depends(verify_api_key)])
+async def task_candidates():
+    """タスク開始用の履歴（直近10件）と、終了用の現在実行中タスクを取得"""
+    from api import app
+    import datetime
+    from config import JST
+    import re
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service: return {"start": [], "end": []}
+
+    service = chat_service.drive_service.get_service()
+    folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+    
+    # 履歴（過去7日分からユニークなタスクを抽出）
+    start_candidates = []
+    end_candidates = []
+    seen = set()
+    
+    for i in range(7):
+        d = (datetime.datetime.now(JST) - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{d}.md")
+        if f_id:
+            content = await chat_service.drive_service.read_text_file(service, f_id)
+            if "## 🎯 Tasks" in content:
+                section = content.split("## 🎯 Tasks")[1].split("##")[0]
+                for line in section.split("\n"):
+                    match = re.search(r"- \[(.*?)\] (.*)", line)
+                    if match:
+                        state = match.group(1)
+                        # 時刻部分を削除
+                        task_name = re.sub(r"\(.*?\)", "", match.group(2)).strip()
+                        if task_name and task_name not in seen:
+                            start_candidates.append(task_name)
+                            seen.add(task_name)
+                        if state == "/" and i == 0: # 今日の実行中
+                             end_candidates.append(task_name)
+    
+    return {
+        "start": start_candidates[:10],
+        "end": end_candidates
+    }
 
 @router.get("/book_notes", dependencies=[Depends(verify_api_key)])
 async def get_book_notes(title: str):

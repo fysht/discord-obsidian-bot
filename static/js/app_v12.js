@@ -88,6 +88,23 @@ if (pwToggleBtn) {
     });
 }
 
+const resetChatBtn = $('#reset-chat-btn');
+if (resetChatBtn) {
+    resetChatBtn.addEventListener('click', async () => {
+        if (!confirm('チャット履歴を完全に消去しますか？（AI側の短期記憶もクリアされます）')) return;
+        try {
+            await apiFetch('/api/reset_history', { method: 'POST' });
+            if (chatMessages) {
+                chatMessages.innerHTML = '<div class="chat-welcome"><h2>リセットしました。</h2><p>また新しくお話ししましょう！</p></div>';
+                lastMsgDate = null;
+            }
+            showToast('チャットをリセットしました');
+        } catch (err) {
+            showToast('リセットに失敗しました', true);
+        }
+    });
+}
+
 $$('.nav-item').forEach(item => {
     item.addEventListener('click', () => { switchTab(item.dataset.tab); });
 });
@@ -131,6 +148,9 @@ if (chatForm) {
         try {
             const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: msg }) });
             appendMsg('assistant', data.reply);
+            
+            // AI応答後にダッシュボードをリロードして反映させる
+            if (typeof loadDashboard === 'function') loadDashboard();
         } catch (err) {
             appendMsg('assistant', 'すみません、エラーが発生しました。');
         } finally {
@@ -252,11 +272,24 @@ async function loadDashboard() {
 
         const obTaskEl = $('#dash-tasks');
         if (obTaskEl && data.tasks) {
-            obTaskEl.innerHTML = data.tasks.length ? data.tasks.map(t => `
-                <div class="list-item">
-                    <div class="li-text" style="text-decoration: ${t.done ? 'line-through' : 'none'}">${escapeHtml(t.text)}</div>
-                </div>
-            `).join('') : '<div class="loading-placeholder">ログはありません</div>';
+            obTaskEl.innerHTML = data.tasks.length ? data.tasks.map(t => {
+                const isLog = t.is_log || false;
+                const isRunning = isLog && t.text.includes('▶');
+                
+                if (isLog) {
+                    return `
+                        <div class="list-item" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; padding-left: 12px; margin-bottom: 6px; align-items: flex-start; flex-direction: column;">
+                            <div class="li-text" style="font-family:'Courier New', Courier, monospace; font-size:0.85rem; line-height:1.5;">${escapeHtml(t.text)}</div>
+                        </div>
+                    `;
+                } else {
+                    return `
+                        <div class="list-item">
+                            <div class="li-text" style="text-decoration: ${t.done ? 'line-through' : 'none'}">${escapeHtml(t.text)}</div>
+                        </div>
+                    `;
+                }
+            }).join('') : '<div class="loading-placeholder">ログはありません</div>';
         }
 
         loadHabits();

@@ -119,13 +119,6 @@ class PartnerCog(commands.Cog):
         else:
             await self.drive_service.upload_text(service, folder_id, file_name, new_content)
 
-    async def _log_life_activity_to_obsidian(self, activity_name: str, status: str):
-        now = datetime.datetime.now(JST)
-        time_str = now.strftime("%H:%M")
-        marker = "▶" if status == "start" else "■"
-        log_line = f"- {time_str} {marker} {activity_name}"
-        await self._append_raw_message_to_obsidian(log_line, target_heading="## 🗒️ Logs")
-        return f"Obsidianに記録しました: {activity_name} ({status})"
 
     async def _save_thought_reflection_to_obsidian(self, theme: str, summary: str, next_step: str):
         now = datetime.datetime.now(JST)
@@ -159,6 +152,65 @@ class PartnerCog(commands.Cog):
         except Exception as e:
             logging.error(f"DailyNote 読み取りエラー: {e}")
         return ""
+
+    async def _save_todays_obsidian_note(self, content: str):
+        """今日のデイリーノートを保存（作成・更新）する。"""
+        service = self.drive_service.get_service()
+        if not service: return
+        try:
+            folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+            if not folder_id: folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
+            filename = f"{datetime.datetime.now(JST).strftime('%Y-%m-%d')}.md"
+            file_id = await self.drive_service.find_file(service, folder_id, filename)
+            if file_id:
+                await self.drive_service.update_text(service, file_id, content)
+            else:
+                await self.drive_service.upload_text(service, folder_id, filename, content)
+        except Exception as e:
+            logging.error(f"DailyNote 保存エラー: {e}")
+
+    async def _log_life_activity_to_obsidian(self, activity_name: str, status: str):
+        import re
+        now = datetime.datetime.now(JST)
+        time_str = now.strftime("%H:%M")
+        
+        # 1. 今日のノートを取得
+        content = await self._get_todays_obsidian_note()
+        if not content:
+            content = f"# Daily Note {now.strftime('%Y-%m-%d')}\n"
+
+        target_heading = "## 🪟 Lifelog"
+        
+        # 2. ロジック実行
+        if status == "start":
+            # 開始ログを追加
+            new_line = f"- {time_str} ▶ {activity_name}"
+            content = update_section(content, new_line, target_heading)
+        else:
+            # 終了ログ：直近の「▶ 活動名」を探して「START - END 活動名」に書き換える
+            lines = content.split("\n")
+            found = False
+            for i in range(len(lines)-1, -1, -1):
+                # まだ終了時間が設定されていない同じ活動名の開始ログを探す
+                if f"▶ {activity_name}" in lines[i] and "-" not in lines[i].split("▶")[0]:
+                    # マッチング: - HH:mm ▶ 活動名
+                    match = re.search(r"- (\d{2}:\d{2}) ▶", lines[i])
+                    if match:
+                        start_time = match.group(1)
+                        lines[i] = f"- {start_time} - {time_str} {activity_name}"
+                        found = True
+                        break
+            
+            if found:
+                content = "\n".join(lines)
+            else:
+                # 開始が見つからない場合は単独の終了ログ
+                new_line = f"- {time_str} ■ {activity_name}"
+                content = update_section(content, new_line, target_heading)
+
+        # 3. 保存
+        await self._save_todays_obsidian_note(content)
+        return f"Lifelogに記録したよ: {activity_name} ({status})"
 
     async def _search_drive_notes(self, keywords: str):
         # 簡易的な検索（実際にはより高度な実装が必要だが、現状維持）
