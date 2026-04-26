@@ -351,7 +351,35 @@ class PartnerCog(commands.Cog):
             logging.error(f"App Resp Error: {e}")
             return "エラーが発生しちゃった、もう一回送ってくれる？"
 
-    async def _dispatch_tool_call(self, function_call):
+
+    def _get_function_tools(self):
+        return [
+            types.Tool(
+                function_declarations=[
+                    types.FunctionDeclaration(name="create_calendar_event", description="Googleカレンダーに新しい予定を追加する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])),
+                    types.FunctionDeclaration(name="delete_calendar_event", description="予定を削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING), "keyword": types.Schema(type=types.Type.STRING)}, required=["date", "keyword"])),
+                    types.FunctionDeclaration(name="check_tasks", description="タスクを確認する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"list_name": types.Schema(type=types.Type.STRING)})),
+                    types.FunctionDeclaration(name="add_task", description="タスクを追加する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["title"])),
+                    types.FunctionDeclaration(name="complete_task", description="タスクを完了する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["keyword"])),
+                    types.FunctionDeclaration(name="delete_task", description="指定されたキーワードに合致するタスクを削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["keyword"])),
+                    types.FunctionDeclaration(name="record_habit", description="習慣を記録する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING), "frequency_days": types.Schema(type=types.Type.INTEGER)}, required=["habit_name"])),
+                    types.FunctionDeclaration(name="list_habits", description="習慣一覧を取得する。"),
+                    types.FunctionDeclaration(name="delete_habit", description="習慣を削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])),
+                    types.FunctionDeclaration(name="log_life_activity", description="ObsidianのLifelogセクションに活動を記録する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"activity_name": types.Schema(type=types.Type.STRING), "status": types.Schema(type=types.Type.STRING, enum=["start", "end"])}, required=["activity_name", "status"])),
+                    types.FunctionDeclaration(name="save_thought_reflection", description="思考や内省、気づきをObsidianに保存する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"theme": types.Schema(type=types.Type.STRING), "summary": types.Schema(type=types.Type.STRING), "next_step": types.Schema(type=types.Type.STRING)}, required=["theme", "summary"])),
+                    types.FunctionDeclaration(name="create_permanent_note", description="永続的なノート（知識・概念）をObsidianに作成する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING), "content": types.Schema(type=types.Type.STRING)}, required=["title", "content"])),
+                    types.FunctionDeclaration(name="search_memory", description="Google Drive内の過去のノートを検索する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.ARRAY, items=types.Schema(type=types.Type.STRING))}, required=["keywords"])),
+                    types.FunctionDeclaration(name="check_schedule", description="指定された日付の予定一覧を取得する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")}, required=["date"])),
+                    types.FunctionDeclaration(name="report_sleep", description="睡眠データを解析・報告する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")})),
+                    types.FunctionDeclaration(name="report_health", description="健康データ（歩数、心拍等）を解析・報告する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")})),
+                    types.FunctionDeclaration(name="sync_location", description="位置情報の履歴を同期する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING, description="YYYY-MM-DD")}, required=["date"])),
+                    types.FunctionDeclaration(name="record_study_note", description="学習メモを保存する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"subject": types.Schema(type=types.Type.STRING), "memo": types.Schema(type=types.Type.STRING)}, required=["subject", "memo"])),
+                    types.FunctionDeclaration(name="record_book_note", description="読書メモを保存する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"book_title": types.Schema(type=types.Type.STRING), "memo": types.Schema(type=types.Type.STRING)}, required=["book_title", "memo"])),
+                    types.FunctionDeclaration(name="record_stock_trade", description="株取引の記録・メモを保存する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"code": types.Schema(type=types.Type.STRING), "name": types.Schema(type=types.Type.STRING), "memo": types.Schema(type=types.Type.STRING)}, required=["code", "name", "memo"])),
+                ]
+            )
+        ]
+\n    async def _dispatch_tool_call(self, function_call):
         name = function_call.name
         args = function_call.args
         
