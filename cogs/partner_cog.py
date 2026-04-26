@@ -278,7 +278,7 @@ class PartnerCog(commands.Cog):
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt),
                 )
-                reply_text = final_res.text.strip() if final_res.text else "全プロセス完了したよ！"
+                reply_text = final_res.text.strip() if final_res.text else "了解、進めておくね。"
             else:
                 reply_text = response.text.strip() if response.text else "..."
 
@@ -322,7 +322,7 @@ class PartnerCog(commands.Cog):
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt),
                 )
-                reply_text = final_res.text.strip() if final_res.text else "手配しておいたよ！"
+                reply_text = final_res.text.strip() if final_res.text else "了解、手配しておく。"
             else:
                 reply_text = response.text.strip() if response.text else "了解！"
 

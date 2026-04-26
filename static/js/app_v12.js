@@ -303,6 +303,195 @@ function renderTaskGroup(container, tasks, listName) {
     `).join('') : '<div class="loading-placeholder">未完了のタスクはありません</div>';
 }
 
+// ========== ACTIONS ==========
+window.sendActionCommand = (cmd) => {
+    if (!messageInput) return;
+    messageInput.value = cmd;
+    const event = new Event('submit', { cancelable: true });
+    $('#chat-form').dispatchEvent(event);
+};
+
+window.openIntelligentTaskModal = async (mode) => {
+    const modal = $('#task-modal');
+    const list = $('#modal-list');
+    const title = $('#modal-title');
+    if (!modal || !list || !title) return;
+
+    title.textContent = mode === 'start' ? 'タスク開始' : 'タスク終了';
+    list.innerHTML = '<div class="loading-placeholder">候補を取得中...</div>';
+    modal.classList.remove('hidden');
+
+    try {
+        const data = await apiFetch('/api/task_candidates');
+        const candidates = mode === 'start' ? data.start : data.end;
+        
+        if (!candidates || candidates.length === 0) {
+            list.innerHTML = '<div class="loading-placeholder">候補がありません</div>';
+        } else {
+            list.innerHTML = candidates.map(c => `
+                <div class="modal-item" onclick="selectTaskCandidate('${c}')">${escapeHtml(c)}</div>
+            `).join('');
+        }
+    } catch (err) {
+        console.error(err);
+        list.innerHTML = '<div class="loading-placeholder">データ取得に失敗しました</div>';
+    }
+
+    const confirmBtn = $('#task-confirm-btn');
+    if (confirmBtn) {
+        confirmBtn.onclick = () => {
+            const val = $('#custom-task-input').value.trim();
+            if (val) selectTaskCandidate(val);
+        };
+    }
+};
+
+window.selectTaskCandidate = (name) => {
+    const isStart = $('#modal-title').textContent === 'タスク開始';
+    const modeStr = isStart ? '開始' : '終了';
+    sendActionCommand(`${name}${modeStr}`);
+    closeTaskModal();
+};
+
+window.closeTaskModal = () => {
+    $('#task-modal').classList.add('hidden');
+    $('#custom-task-input').value = '';
+};
+
+window.runBriefing = async () => {
+    showToast('ブリーフィングを生成中...');
+    try {
+        const data = await apiFetch('/api/briefing', { method: 'POST' });
+        appendMsg('assistant', data.reply);
+        showToast(data.type === 'morning' ? '朝のブリーフィングです' : '夜のレビューです');
+    } catch (e) {
+        console.error(e);
+        showToast('ブリーフィングの生成に失敗しました', true);
+    }
+};
+
+window.runTaskTriage = async (listName) => {
+    showToast(`「${listName}」のタスクを整理中...`);
+    try {
+        const data = await apiFetch('/api/task_triage', { 
+            method: 'POST',
+            body: JSON.stringify({ list_name: listName })
+        });
+        appendMsg('assistant', data.reply);
+        showToast('整理提案が完了しました');
+    } catch (e) {
+        console.error(e);
+        showToast('タスク整理の提案生成に失敗しました', true);
+    }
+};
+
+window.openTaskBreakdownModal = () => {
+    $('#breakdown-task-input').value = '';
+    $('#breakdown-result').style.display = 'none';
+    const genBtn = $('#breakdown-generate-btn');
+    if(genBtn) {
+        genBtn.style.display = '';
+        genBtn.textContent = 'AIで分解';
+        genBtn.disabled = false;
+    }
+    $('#breakdown-apply-btn').style.display = 'none';
+    $('#breakdown-list').innerHTML = '';
+    currentBreakdownSubtasks = [];
+    $('#breakdown-modal').classList.remove('hidden');
+};
+
+let currentBreakdownSubtasks = [];
+window.generateBreakdown = async () => {
+    const task = $('#breakdown-task-input').value.trim();
+    if (!task) { showToast('タスクを入力してください', true); return; }
+
+    const btn = $('#breakdown-generate-btn');
+    btn.textContent = '分析中...';
+    btn.disabled = true;
+
+    try {
+        const data = await apiFetch('/api/task_breakdown', {
+            method: 'POST',
+            body: JSON.stringify({ message: task })
+        });
+
+        currentBreakdownSubtasks = data.subtasks;
+        const listEl = $('#breakdown-list');
+        listEl.innerHTML = data.subtasks.map((st, i) => `
+            <div class="modal-item" style="display:flex; justify-content:space-between; align-items:center; cursor:default;">
+                <span>${escapeHtml(st.title)}</span>
+                <span style="font-size:0.75rem; color:var(--text-muted);">${escapeHtml(st.estimate || '')}</span>
+            </div>
+        `).join('');
+
+        $('#breakdown-result').style.display = '';
+        $('#breakdown-generate-btn').style.display = 'none';
+        $('#breakdown-apply-btn').style.display = '';
+    } catch (e) {
+        console.error(e);
+        showToast('タスク分解に失敗しました', true);
+    } finally {
+        btn.textContent = 'AIで分解';
+        btn.disabled = false;
+    }
+};
+
+window.applyBreakdown = async () => {
+    if (currentBreakdownSubtasks.length === 0) return;
+    const listName = $('#breakdown-list-name').value;
+    const btn = $('#breakdown-apply-btn');
+    btn.textContent = '追加中...';
+    btn.disabled = true;
+
+    try {
+        const data = await apiFetch('/api/task_breakdown/apply', {
+            method: 'POST',
+            body: JSON.stringify({ list_name: listName, subtasks: currentBreakdownSubtasks })
+        });
+        showToast(data.message || '追加しました');
+        appendMsg('assistant', data.message);
+        $('#breakdown-modal').classList.add('hidden');
+        loadDashboard();
+    } catch (e) {
+        console.error(e);
+        showToast('タスク追加に失敗しました', true);
+    } finally {
+        btn.textContent = 'Tasksに追加';
+        btn.disabled = false;
+    }
+};
+
+window.runHealthCorrelation = async () => {
+    showToast('1週間のデータを分析中... (少し時間がかかります)');
+    try {
+        const data = await apiFetch('/api/health_correlation', { method: 'POST' });
+        appendMsg('assistant', data.analysis);
+    } catch (e) {
+        console.error(e);
+        showToast('健康分析に失敗しました', true);
+    }
+};
+
+window.triggerDailyReport = async () => {
+    if (!confirm('今日の日次整理を実行しますか？\n会話ログを元にDaily Journal、Events & Actions等を生成し、Obsidianに保存します。')) return;
+    showToast('日次整理を実行中...');
+    try {
+        const data = await apiFetch('/api/daily_report', { method: 'POST' });
+        showToast(data.message || '日次整理が完了しました');
+        loadDashboard();
+    } catch { showToast('日次整理に失敗しました', true); }
+};
+
+window.copyDailySummary = async () => {
+    const events = $('#dash-tasks')?.innerText || "";
+    const insights = $('#dash-alter-log')?.innerText || "";
+    const content = `本日の記録:\n\n${events}\n\n${insights}`;
+    try {
+        await navigator.clipboard.writeText(content);
+        showToast('今日のサマリーをコピーしました！');
+    } catch { showToast('コピーに失敗しました', true); }
+};
+
 window.openManualAddModal = (type) => {
     const title = prompt("タイトルを入力してください:");
     if (!title) return;
@@ -440,7 +629,50 @@ window.loadStockedLinks = async () => {
         renderGroup(recipeEl, recipeLinks);
         renderGroup(mapEl, mapLinks);
         renderGroup(bookEl, bookLinks);
+        
+        loadNotebooks();
+
     } catch (e) { console.error("StockedLinks fetch error", e); }
+};
+
+// ========== NOTEBOOK LM ==========
+window.loadNotebooks = () => {
+    const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
+    const container = $('#dash-notebooks');
+    if (!container) return;
+    if (notebooks.length === 0) {
+        container.innerHTML = '<div class="p-20 text-center text-secondary">登録されたノートはありません</div>';
+        return;
+    }
+    container.innerHTML = notebooks.map((nb, idx) => `
+        <div class="list-item">
+            <div class="li-text" style="cursor:pointer;" onclick="window.open('${nb.url}', '_blank')">
+                <div style="font-weight:600;">${escapeHtml(nb.title)}</div>
+                <div class="text-secondary" style="font-size:0.7rem;">最後に追加: ${nb.updated}</div>
+            </div>
+            <button class="icon-btn" onclick="deleteNotebook(${idx})" style="color:#ff4444;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+        </div>
+    `).join('');
+};
+
+window.registerNotebook = () => {
+    const title = prompt('ノートのタイトル:');
+    if (!title) return;
+    const url = prompt('NotebookLMのURL:');
+    if (!url || !url.includes('notebooklm.google.com')) return alert('無効なURLです');
+    const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
+    notebooks.push({ title, url, updated: new Date().toLocaleDateString() });
+    localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
+    loadNotebooks();
+};
+
+window.deleteNotebook = (idx) => {
+    if (confirm('削除しますか？')) {
+        const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
+        notebooks.splice(idx, 1);
+        localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
+        loadNotebooks();
+    }
 };
 
 let currentEditLinkId = null;
