@@ -244,7 +244,7 @@ class ChatService:
 
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.5-pro",
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt, tools=function_tools
@@ -275,7 +275,7 @@ class ChatService:
 
                 contents.append(types.Content(role="user", parts=function_responses))
                 follow_up = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-pro",
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt),
                 )

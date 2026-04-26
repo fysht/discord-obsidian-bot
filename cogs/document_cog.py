@@ -101,7 +101,7 @@ class DocumentCog(commands.Cog):
             try:
                 # 今回は精度の高い返答を行わせるため、flashモデルを利用
                 response = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-pro",
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=PROMPT_DOCUMENT_DRAFTING,

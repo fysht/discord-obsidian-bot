@@ -116,7 +116,7 @@ class EnglishLearningCog(commands.Cog):
 """
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash", contents=prompt
+                model="gemini-2.5-pro", contents=prompt
             )
             vocab_table = response.text.strip()
 

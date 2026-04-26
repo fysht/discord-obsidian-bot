@@ -73,7 +73,7 @@ class WeeklyReviewCog(commands.Cog):
         try:
             if self.gemini_client:
                 response = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-pro",
                     contents=prompt,
                 )
                 

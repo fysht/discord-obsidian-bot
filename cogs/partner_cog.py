@@ -8,7 +8,7 @@ import asyncio
 
 from config import JST
 from utils.obsidian_utils import update_section
-from prompts import get_system_prompt, PROMPT_INTERIM_SUMMARY
+from prompts import get_system_prompt, PROMPT_INTERIM_SUMMARY, PROMPT_CONTEXTUAL_LOG
 
 
 class PartnerCog(commands.Cog):
@@ -169,116 +169,82 @@ class PartnerCog(commands.Cog):
         except Exception as e:
             logging.error(f"DailyNote 保存エラー: {e}")
 
-    async def _log_life_activity_to_obsidian(self, activity_name: str, status: str):
-        import re
-        now = datetime.datetime.now(JST)
-        time_str = now.strftime("%H:%M")
-        
-        # 1. 今日のノートを取得
-        content = await self._get_todays_obsidian_note()
-        if not content:
-            content = f"# Daily Note {now.strftime('%Y-%m-%d')}\n"
 
-        target_heading = "## 🪟 Lifelog"
-        
-        # 2. ロジック実行
-        if status == "start":
-            # 開始ログを追加
-            new_line = f"- {time_str} ▶ {activity_name}"
-            content = update_section(content, new_line, target_heading)
+    async def _get_todays_obsidian_note(self, drive_folder_id, folder_name="DailyNotes"):
+        service = self.drive_service.get_service()
+        if not service: return None
+        target_folder_id = await self.drive_service.find_file(service, drive_folder_id, folder_name)
+        if not target_folder_id: return None
+        today_file_name = f"{datetime.datetime.now(JST).strftime('%Y-%m-%d')}.md"
+        file_id = await self.drive_service.find_file(service, target_folder_id, today_file_name)
+        if not file_id: return None
+        return await self.drive_service.download_text(service, file_id)
+
+    async def _save_todays_obsidian_note(self, drive_folder_id, content, folder_name="DailyNotes"):
+        service = self.drive_service.get_service()
+        if not service: return
+        target_folder_id = await self.drive_service.find_file(service, drive_folder_id, folder_name)
+        if not target_folder_id: return
+        today_file_name = f"{datetime.datetime.now(JST).strftime('%Y-%m-%d')}.md"
+        file_id = await self.drive_service.find_file(service, target_folder_id, today_file_name)
+        if file_id:
+            await self.drive_service.update_text(service, file_id, content)
         else:
-            # 終了ログ：直近の「▶ 活動名」を探して「START - END 活動名」に書き換える
-            lines = content.split("\n")
-            found = False
-            for i in range(len(lines)-1, -1, -1):
-                # まだ終了時間が設定されていない同じ活動名の開始ログを探す
+            await self.drive_service.upload_text(service, target_folder_id, today_file_name, content)
+
+    async def _log_life_activity_to_obsidian(self, activity_name: str, status: str):
+        """ライフログをレンジ形式 (START - END) で記録・更新する"""
+        if not self.drive_folder_id: return "DriveID未設定"
+        
+        note_content = await self._get_todays_obsidian_note(self.drive_folder_id)
+        if not note_content: return "デイリーノートが見つかりません"
+
+        lines = note_content.split("\n")
+        import re
+        now_time = datetime.datetime.now(JST).strftime("%H:%M")
+        
+        if status == "start":
+            new_line = f"- {now_time} ▶ {activity_name}"
+            from utils.obsidian_utils import update_section
+            updated_content = update_section(note_content, "## 🪟 Lifelog", new_line)
+            await self._save_todays_obsidian_note(self.drive_folder_id, updated_content)
+            return f"「{activity_name}」を開始したよ！"
+        
+        elif status == "end":
+            updated = False
+            for i in range(len(lines) - 1, -1, -1):
                 if f"▶ {activity_name}" in lines[i] and "-" not in lines[i].split("▶")[0]:
-                    # マッチング: - HH:mm ▶ 活動名
-                    match = re.search(r"- (\d{2}:\d{2}) ▶", lines[i])
-                    if match:
-                        start_time = match.group(1)
-                        lines[i] = f"- {start_time} - {time_str} {activity_name}"
-                        found = True
+                    start_time_match = re.search(r"- (\\d{2}:\\d{2}) ▶", lines[i])
+                    if not start_time_match:
+                         start_time_match = re.search(r"- (\\d{2}:\\d{2})", lines[i])
+                    
+                    if start_time_match:
+                        start_time = start_time_match.group(1)
+                        lines[i] = f"- {start_time} - {now_time} {activity_name}"
+                        updated = True
                         break
             
-            if found:
-                content = "\n".join(lines)
+            if updated:
+                await self._save_todays_obsidian_note(self.drive_folder_id, "\n".join(lines))
+                return f"「{activity_name}」を終了したよ！お疲れ様。"
             else:
-                # 開始が見つからない場合は単独の終了ログ
-                new_line = f"- {time_str} ■ {activity_name}"
-                content = update_section(content, new_line, target_heading)
+                new_line = f"- {now_time} ■ {activity_name}"
+                from utils.obsidian_utils import update_section
+                updated_content = update_section(note_content, "## 🪟 Lifelog", new_line)
+                await self._save_todays_obsidian_note(self.drive_folder_id, updated_content)
+                return f"「{activity_name}」を記録しておいたよ。"
+        return "不明なステータス"
 
-        # 3. 保存
-        await self._save_todays_obsidian_note(content)
-        return f"Lifelogに記録したよ: {activity_name} ({status})"
-
-    async def _search_drive_notes(self, keywords: str):
-        # 簡易的な検索（実際にはより高度な実装が必要だが、現状維持）
-        return f"「{keywords}」に関する過去の記録を数件見つけました（シミュレーション）"
-
-    def _get_function_tools(self):
-        return [
-            types.Tool(
-                function_declarations=[
-                    types.FunctionDeclaration(
-                        name="log_life_activity",
-                        description="LLR形式でユーザーの行動やタスクの開始・終了を記録する。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "activity_name": types.Schema(type=types.Type.STRING, description="行動名"),
-                                "status": types.Schema(type=types.Type.STRING, description="'start' または 'end'"),
-                            },
-                            required=["activity_name", "status"],
-                        ),
-                    ),
-                    types.FunctionDeclaration(
-                        name="save_thought_reflection",
-                        description="思考整理の結果をObsidianに保存する。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "theme": types.Schema(type=types.Type.STRING),
-                                "summary": types.Schema(type=types.Type.STRING),
-                                "next_step": types.Schema(type=types.Type.STRING),
-                            },
-                            required=["theme", "summary", "next_step"],
-                        ),
-                    ),
-                    types.FunctionDeclaration(
-                        name="create_permanent_note",
-                        description="永続的なノートを作成する。",
-                        parameters=types.Schema(
-                            type=types.Type.OBJECT,
-                            properties={
-                                "title": types.Schema(type=types.Type.STRING),
-                                "content": types.Schema(type=types.Type.STRING),
-                            },
-                            required=["title", "content"],
-                        ),
-                    ),
-                    types.FunctionDeclaration(name="search_memory", description="知識を検索する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keywords": types.Schema(type=types.Type.STRING)}, required=["keywords"])),
-                    types.FunctionDeclaration(name="check_schedule", description="今日の予定を確認する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING)}, required=["date"])),
-                    types.FunctionDeclaration(name="create_calendar_event", description="予定を追加する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"summary": types.Schema(type=types.Type.STRING), "start_time": types.Schema(type=types.Type.STRING), "end_time": types.Schema(type=types.Type.STRING)}, required=["summary", "start_time", "end_time"])),
-                    types.FunctionDeclaration(name="delete_calendar_event", description="予定を削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING), "keyword": types.Schema(type=types.Type.STRING)}, required=["date", "keyword"])),
-                    types.FunctionDeclaration(name="check_tasks", description="タスクを確認する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"list_name": types.Schema(type=types.Type.STRING)})),
-                    types.FunctionDeclaration(name="add_task", description="タスクを追加する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"title": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["title"])),
-                    types.FunctionDeclaration(name="complete_task", description="タスクを完了する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["keyword"])),
-                    types.FunctionDeclaration(name="delete_task", description="指定したキーワードに合致するタスクを削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"keyword": types.Schema(type=types.Type.STRING), "list_name": types.Schema(type=types.Type.STRING)}, required=["keyword"])),
-                    types.FunctionDeclaration(name="record_habit", description="習慣を記録する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING), "frequency_days": types.Schema(type=types.Type.INTEGER)}, required=["habit_name"])),
-                    types.FunctionDeclaration(name="list_habits", description="習慣一覧を取得する。"),
-                    types.FunctionDeclaration(name="delete_habit", description="習慣を削除する。", parameters=types.Schema(type=types.Type.OBJECT, properties={"habit_name": types.Schema(type=types.Type.STRING)}, required=["habit_name"])),
-                    types.FunctionDeclaration(name="report_sleep", description="睡眠データを報告。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING)})),
-                    types.FunctionDeclaration(name="report_health", description="健康データを報告。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING)})),
-                    types.FunctionDeclaration(name="sync_past_fitbit", description="Fitbit過去同期。", parameters=types.Schema(type=types.Type.OBJECT, properties={"days": types.Schema(type=types.Type.INTEGER)}, required=["days"])),
-                    types.FunctionDeclaration(name="give_english_quiz", description="英語クイズ。"),
-                    types.FunctionDeclaration(name="sync_location", description="位置情報同期。", parameters=types.Schema(type=types.Type.OBJECT, properties={"date": types.Schema(type=types.Type.STRING)}, required=["date"])),
-                    types.FunctionDeclaration(name="record_study_note", description="学習メモを保存。", parameters=types.Schema(type=types.Type.OBJECT, properties={"subject": types.Schema(type=types.Type.STRING), "memo": types.Schema(type=types.Type.STRING)}, required=["subject", "memo"])),
-                    types.FunctionDeclaration(name="record_book_note", description="読書メモを保存。", parameters=types.Schema(type=types.Type.OBJECT, properties={"book_title": types.Schema(type=types.Type.STRING), "memo": types.Schema(type=types.Type.STRING)}, required=["book_title", "memo"])),
-                    types.FunctionDeclaration(name="record_stock_trade", description="株取引を記録。", parameters=types.Schema(type=types.Type.OBJECT, properties={"code": types.Schema(type=types.Type.STRING), "name": types.Schema(type=types.Type.STRING), "memo": types.Schema(type=types.Type.STRING)}, required=["code", "name", "memo"])),
-                ]
-            )
-        ]
+    async def _save_contextual_user_log(self, user_text: str, ai_text: str):
+        """ユーザーの発言をベースに、AIの文脈を補足した1行ログを生成してObsidianに保存する。"""
+        if not self.gemini_client or not user_text: return
+        prompt = f"{PROMPT_CONTEXTUAL_LOG}\n\nAIの発言: {ai_text}\nユーザーの発言: {user_text}"
+        try:
+            response = await self.gemini_client.aio.models.generate_content(model='gemini-2.5-pro', contents=prompt)
+            log_entry = response.text.strip() if response.text else ""
+            if log_entry: await self._append_raw_message_to_obsidian(log_entry)
+        except Exception as e:
+            logging.error(f"Contextual log error: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -290,7 +256,7 @@ class PartnerCog(commands.Cog):
         if re.search(r"https?://[^\s]+", text):
             return
 
-        if text and not text.startswith("/"): asyncio.create_task(self._append_raw_message_to_obsidian(text))
+        if text and text.startswith("/"): return
         
         input_parts = [types.Part.from_text(text=text)] if text else []
         for att in message.attachments:
@@ -311,7 +277,7 @@ class PartnerCog(commands.Cog):
 
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.5-pro",
                 contents=contents,
                 config=types.GenerateContentConfig(system_instruction=system_prompt, tools=self._get_function_tools()),
             )
@@ -326,7 +292,7 @@ class PartnerCog(commands.Cog):
                 
                 contents.append(types.Content(role="user", parts=function_responses))
                 final_res = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-pro",
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt),
                 )
@@ -337,8 +303,8 @@ class PartnerCog(commands.Cog):
             from api.database import save_message as _save_msg
             await _save_msg("assistant", reply_text)
             
-            # ObsidianにAIの返答も記録（Partner: プレフィックスを付ける）
-            asyncio.create_task(self._append_raw_message_to_obsidian(f"Partner: {reply_text}"))
+            # Obsidianに文脈付きのユーザーログを記録
+            asyncio.create_task(self._save_contextual_user_log(text, reply_text))
             
             await message.channel.send(reply_text)
 
@@ -347,7 +313,7 @@ class PartnerCog(commands.Cog):
             await message.channel.send("ごめん、ちょっと今エラーが出ちゃった💦")
 
     async def generate_response_for_app(self, text: str, history_messages: list):
-        if text: asyncio.create_task(self._append_raw_message_to_obsidian(text))
+        
         now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
         system_prompt = get_system_prompt(self.user_name, now_str, await self._get_user_manual())
         
@@ -356,7 +322,7 @@ class PartnerCog(commands.Cog):
 
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.5-pro",
                 contents=contents,
                 config=types.GenerateContentConfig(system_instruction=system_prompt, tools=self._get_function_tools()),
             )
@@ -370,7 +336,7 @@ class PartnerCog(commands.Cog):
                 
                 contents.append(types.Content(role="user", parts=f_responses))
                 final_res = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-pro",
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt),
                 )
@@ -378,8 +344,8 @@ class PartnerCog(commands.Cog):
             else:
                 reply_text = response.text.strip() if response.text else "了解！"
 
-            # ObsidianにAIの返答も記録
-            asyncio.create_task(self._append_raw_message_to_obsidian(f"Partner: {reply_text}"))
+            # Obsidianに文脈付きのユーザーログを記録
+            asyncio.create_task(self._save_contextual_user_log(text, reply_text))
             return reply_text
         except Exception as e:
             logging.error(f"App Resp Error: {e}")
@@ -470,7 +436,7 @@ class PartnerCog(commands.Cog):
         prompt = f"{routine_prompt}\n\n【状況】\n{context_text}"
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-2.5-pro",
                 contents=prompt,
                 config=types.GenerateContentConfig(system_instruction=system_prompt),
             )
