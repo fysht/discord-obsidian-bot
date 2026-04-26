@@ -9,12 +9,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=33">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=35">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
-    <!-- ========== LOGIN SCREEN ========== -->
     <div id="login-screen" class="screen active">
         <div class="login-container">
             <div class="login-card">
@@ -37,9 +36,7 @@
         </div>
     </div>
 
-    <!-- ========== MAIN SCREEN ========== -->
     <div id="main-screen" class="screen">
-        <!-- TOP HEADER -->
         <header class="top-header">
             <div class="header-partner">
                 <div class="partner-avatar">
@@ -72,9 +69,7 @@
             </div>
         </header>
 
-        <!-- TAB CONTENTS -->
         <main class="content-area">
-            <!-- ========== CHAT TAB ========== -->
             <div id="tab-chat" class="tab-pane active">
                 <div id="chat-messages" class="chat-messages">
                     <div class="chat-welcome">
@@ -107,7 +102,6 @@
                 </div>
             </div>
 
-            <!-- ========== INFO TAB (WEATHER/NEWS) ========== -->
             <div id="tab-info" class="tab-pane">
                 <div class="scroll-container">
                     <div class="date-header" id="dash-date-label">---</div>
@@ -134,7 +128,15 @@
                                 <span class="card-title">ウェブクリップ</span>
                             </div>
                         </summary>
-                        <div id="dash-stocked-web" class="card-body list-body"></div>
+                        <div class="list-controls" style="display:flex; justify-content:flex-end; gap:8px; padding: 0 16px 8px;">
+                            <select onchange="changeLinkSort('web', this.value)" style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">
+                                <option value="newest">新しい順</option>
+                                <option value="oldest">古い順</option>
+                                <option value="title">タイトル順</option>
+                            </select>
+                            <button class="modal-btn" style="padding:4px 10px; font-size:0.75rem;" onclick="openManualAddModal('web')">＋ 追加</button>
+                        </div>
+                        <div id="dash-stocked-web" class="card-body list-body" style="padding-top:0;"></div>
                     </details>
 
                     <details class="card stocked-links-card">
@@ -144,7 +146,15 @@
                                 <span class="card-title">YouTube</span>
                             </div>
                         </summary>
-                        <div id="dash-stocked-youtube" class="card-body list-body"></div>
+                        <div class="list-controls" style="display:flex; justify-content:flex-end; gap:8px; padding: 0 16px 8px;">
+                            <select onchange="changeLinkSort('youtube', this.value)" style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">
+                                <option value="newest">新しい順</option>
+                                <option value="oldest">古い順</option>
+                                <option value="title">タイトル順</option>
+                            </select>
+                            <button class="modal-btn" style="padding:4px 10px; font-size:0.75rem;" onclick="openManualAddModal('youtube')">＋ 追加</button>
+                        </div>
+                        <div id="dash-stocked-youtube" class="card-body list-body" style="padding-top:0;"></div>
                     </details>
 
                     <details class="card stocked-links-card">
@@ -154,7 +164,15 @@
                                 <span class="card-title">レシピ</span>
                             </div>
                         </summary>
-                        <div id="dash-stocked-recipe" class="card-body list-body"></div>
+                        <div class="list-controls" style="display:flex; justify-content:flex-end; gap:8px; padding: 0 16px 8px;">
+                            <select onchange="changeLinkSort('recipe', this.value)" style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">
+                                <option value="newest">新しい順</option>
+                                <option value="oldest">古い順</option>
+                                <option value="title">タイトル順</option>
+                            </select>
+                            <button class="modal-btn" style="padding:4px 10px; font-size:0.75rem;" onclick="openManualAddModal('recipe')">＋ 追加</button>
+                        </div>
+                        <div id="dash-stocked-recipe" class="card-body list-body" style="padding-top:0;"></div>
                     </details>
 
                     <details class="card stocked-links-card">
@@ -164,10 +182,17 @@
                                 <span class="card-title">Googleマップ</span>
                             </div>
                         </summary>
-                        <div id="dash-stocked-map" class="card-body list-body"></div>
+                        <div class="list-controls" style="display:flex; justify-content:flex-end; gap:8px; padding: 0 16px 8px;">
+                            <select onchange="changeLinkSort('map', this.value)" style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">
+                                <option value="newest">新しい順</option>
+                                <option value="oldest">古い順</option>
+                                <option value="title">タイトル順</option>
+                            </select>
+                            <button class="modal-btn" style="padding:4px 10px; font-size:0.75rem;" onclick="openManualAddModal('map')">＋ 追加</button>
+                        </div>
+                        <div id="dash-stocked-map" class="card-body list-body" style="padding-top:0;"></div>
                     </details>
 
-                    <!-- タイトルを「書籍」に変更 -->
                     <details class="card bookshelf-card">
                         <summary>
                             <div class="card-header">
@@ -175,12 +200,19 @@
                                 <span class="card-title">書籍</span>
                             </div>
                         </summary>
-                        <div id="dash-stocked-book" class="card-body list-body"></div>
+                        <div class="list-controls" style="display:flex; justify-content:flex-end; gap:8px; padding: 0 16px 8px;">
+                            <select onchange="changeLinkSort('book', this.value)" style="background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:4px 8px; border-radius:4px; font-size:0.75rem; cursor:pointer;">
+                                <option value="newest">新しい順</option>
+                                <option value="oldest">古い順</option>
+                                <option value="title">タイトル順</option>
+                            </select>
+                            <button class="modal-btn" style="padding:4px 10px; font-size:0.75rem;" onclick="openManualAddModal('book')">＋ 追加</button>
+                        </div>
+                        <div id="dash-stocked-book" class="card-body list-body" style="padding-top:0;"></div>
                     </details>
                 </div>
             </div>
 
-            <!-- ========== LOG TAB (OBSIDIAN/SLEEP/DIARY) ========== -->
             <div id="tab-log" class="tab-pane">
                 <div class="scroll-container">
                     <div class="card habits-card">
@@ -239,7 +271,6 @@
                 </div>
             </div>
 
-            <!-- ========== SCHEDULE TAB (CALENDAR/TASKS) ========== -->
             <div id="tab-schedule" class="tab-pane">
                 <div class="scroll-container">
                     <div class="card calendar-card">
@@ -271,7 +302,6 @@
             </div>
         </main>
 
-        <!-- BOTTOM NAVIGATION -->
         <nav class="bottom-nav">
             <button class="nav-item active" data-tab="chat">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -292,7 +322,6 @@
         </nav>
     </div>
 
-    <!-- ========== MODALS ========== -->
     <div id="task-modal" class="modal-overlay hidden">
         <div class="modal-card">
             <h3 id="modal-title">タスク選択</h3>
@@ -416,7 +445,6 @@
             </div>
         </div>
     </div>
-    <!-- ファイルバージョンを 33 に変更 -->
-    <script src="/static/js/app_v12.js?v=33"></script>
+    <script src="/static/js/app_v12.js?v=35"></script>
 </body>
 </html>
