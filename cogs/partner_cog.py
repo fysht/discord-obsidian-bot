@@ -214,9 +214,9 @@ class PartnerCog(commands.Cog):
             updated = False
             for i in range(len(lines) - 1, -1, -1):
                 if f"▶ {activity_name}" in lines[i] and "-" not in lines[i].split("▶")[0]:
-                    start_time_match = re.search(r"- (\\d{2}:\\d{2}) ▶", lines[i])
+                    start_time_match = re.search(r"- (\d{2}:\d{2}) ▶", lines[i])
                     if not start_time_match:
-                         start_time_match = re.search(r"- (\\d{2}:\\d{2})", lines[i])
+                         start_time_match = re.search(r"- (\d{2}:\d{2})", lines[i])
                     
                     if start_time_match:
                         start_time = start_time_match.group(1)
@@ -379,7 +379,8 @@ class PartnerCog(commands.Cog):
                 ]
             )
         ]
-\n    async def _dispatch_tool_call(self, function_call):
+
+    async def _dispatch_tool_call(self, function_call):
         name = function_call.name
         args = function_call.args
         
