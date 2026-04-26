@@ -342,7 +342,17 @@ async def task_action(req: TaskActionRequest):
 
 @router.post("/reset_history", dependencies=[Depends(verify_api_key)])
 async def reset_history():
+    from api import app
+    from api.database import backup_db_to_drive
+    import asyncio
+    
     await clear_history()
+    
+    bot = getattr(app.state, "bot", None)
+    if bot and bot.drive_service:
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
+        
     return {"status": "success"}
 
 class CalendarActionRequest(BaseModel):
@@ -461,6 +471,15 @@ async def create_link(req: LinkCreateRequest):
     
     chat_service = getattr(app.state, "chat_service", None)
     await sync_link_to_obsidian(chat_service, req.title, req.type, req.url)
+    
+    # クラウドバックアップ
+    bot = getattr(app.state, "bot", None)
+    if bot and bot.drive_service:
+        import asyncio
+        from api.database import backup_db_to_drive
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
+
     return {"status": "success", "link_id": new_link["id"]}
 
 class LinkUpdateRequest(BaseModel):
@@ -503,10 +522,28 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
                     "start": {"date": dt.strftime("%Y-%m-%d")}, "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")}
                 }).execute()
             except: pass
+    
+    # クラウドバックアップ
+    bot = getattr(app.state, "bot", None)
+    if bot and bot.drive_service:
+        import asyncio
+        from api.database import backup_db_to_drive
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
 
     return {"status": "success"}
 
 @router.delete("/links/{link_id}", dependencies=[Depends(verify_api_key)])
 async def delete_link(link_id: int):
+    from api import app
     await delete_stocked_link(link_id)
+    
+    # クラウドバックアップ
+    bot = getattr(app.state, "bot", None)
+    if bot and bot.drive_service:
+        import asyncio
+        from api.database import backup_db_to_drive
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
+        
     return {"status": "success"}
