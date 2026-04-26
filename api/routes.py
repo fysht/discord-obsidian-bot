@@ -79,6 +79,7 @@ async def _fetch_link_meta(url: str) -> dict:
                       "orangepage.net", "lettuceclub.net", "kyounoryouri.jp", "ajinomoto.co.jp"]
     if any(d in url for d in recipe_domains): link_type = "recipe"
 
+    # Amazon等の厳しいサイトのタイトル取得確率を上げるためのヘッダー強化
     try:
         async with aiohttp.ClientSession() as session:
             headers = {
@@ -91,7 +92,9 @@ async def _fetch_link_meta(url: str) -> dict:
                     html = await response.text(errors="replace")
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
                     if match:
+                        # タグを除去して取得
                         title = _re.sub(r'<[^>]+>', '', match.group(1)).strip()[:200]
+                        # Amazonや不要なドメイン表記のクリーンアップ
                         if link_type == "book" or "amazon" in url:
                             title = title.replace("Amazon.co.jp:", "").replace("Amazon |", "").replace("Amazon.co.jp :", "").strip()
                     
@@ -104,14 +107,17 @@ async def _fetch_link_meta(url: str) -> dict:
     return {"title": title if title else "Untitled", "type": link_type}
 
 
+# --- Obsidian同期用共通関数 (英語表記統一・Markdown巨大化修正・増殖防止) ---
 async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: str, 
                                 purpose: str="", target_date: str="", memo: str="", summary: str="", 
                                 added_at_str: str=None, old_title: str=None, old_type: str=None):
+    """リンク情報をObsidianに作成・更新する"""
     if not chat_service or not chat_service.drive_service: return
     service = chat_service.drive_service.get_service()
     if not service: return
     
     import re
+    # added_at_str（ストック追加日時）があればそれを基準にタイムスタンプを生成（ファイル名固定のため）
     if added_at_str:
         try:
             base_time = datetime.datetime.fromisoformat(added_at_str)
@@ -125,6 +131,7 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
     folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Google Maps", "book": "Books"}
     section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🗺️ Google Maps", "book": "## 📚 Books"}
     
+    # 古いタイトルと古い種類から、上書きすべきファイル名を特定
     search_title = old_title if old_title else title
     search_type = old_type if old_type else link_type
     search_folder_name = folder_map.get(search_type, "WebClips")
@@ -136,13 +143,16 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
         timestamp = base_time.strftime("%Y%m%d%H%M%S")
         filename = f"{timestamp}-{safe_search_title}.md"
 
+    # 新しいリンク文字列やセクション
     new_folder_name = folder_map.get(link_type, "WebClips")
     new_section_header = section_map.get(link_type, "## 🔗 WebClips")
-    new_link_str = f"- [[{search_folder_name}/{filename}|{title}]]"
+    new_link_str = f"- [[{search_folder_name}/{filename}|{title}]]" # ファイル名は変わらないのでsearch_folderを使う
     old_link_str = f"- [[{search_folder_name}/{filename}|{search_title}]]"
 
+    # デイリーノートの対象日は「追加日時」とする（過去分を修正した際に本日のデイリーに飛ばないようにするため）
     daily_note_date = base_time.strftime("%Y-%m-%d")
     
+    # 英語表記に統一しつつ、見出し線(---)の前に必ず空行(\n\n)を入れることで巨大化バグを防ぐ
     note_content = f"# {title}\n\n"
     if purpose: note_content += f"**🎯 Purpose:** {purpose}\n\n"
     if target_date: note_content += f"**📅 Target Date:** {target_date}\n\n"
@@ -156,18 +166,21 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
         f_id = await chat_service.drive_service.find_file(service, drive_root, search_folder_name)
         if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, search_folder_name)
 
+        # 既存ファイルの検索・更新
         existing = await chat_service.drive_service.find_file(service, f_id, filename)
         if existing:
             await chat_service.drive_service.update_text(service, existing, note_content)
         else:
             await chat_service.drive_service.upload_text(service, f_id, filename, note_content)
 
+        # デイリーノートの追記・移動
         daily_fid = await chat_service.drive_service.find_file(service, drive_root, "DailyNotes")
         if daily_fid:
             df_id = await chat_service.drive_service.find_file(service, daily_fid, f"{daily_note_date}.md")
             from utils.obsidian_utils import update_section
             if df_id:
                 cur = await chat_service.drive_service.read_text_file(service, df_id)
+                # タイトルやカテゴリが変更された場合、古い記述を消して新しい場所に移動
                 if old_title and (old_title != title or old_type != link_type):
                     if old_link_str in cur:
                         cur = cur.replace(old_link_str + "\n", "")
@@ -175,6 +188,7 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
                         cur = update_section(cur, new_link_str, new_section_header)
                         await chat_service.drive_service.update_text(service, df_id, cur)
                 else:
+                    # 新規または変更なし
                     if new_link_str not in cur:
                         cur = update_section(cur, new_link_str, new_section_header)
                         await chat_service.drive_service.update_text(service, df_id, cur)
@@ -196,6 +210,7 @@ async def chat(req: ChatRequest):
             meta = await _fetch_link_meta(url)
             await add_stocked_link(url, meta["type"], meta["title"])
 
+            # 投稿直後の最新リンクを取得して added_at を正しく同期に渡す
             links = await get_all_links()
             if links:
                 new_link = links[0]
@@ -297,28 +312,37 @@ async def dashboard():
             habits = await chat_service.tasks_service.get_raw_tasks("習慣")
         except Exception: pass
 
+    # === 天気・ニュース取得の強化 ===
     try:
-        weather_data = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
-        raw_news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
+        # 直接インスタンス化して取得を試みる
+        info_svc = InfoService()
+        weather_data = await info_svc.get_weather()
+        
+        raw_news = await info_svc.get_news(limit=5)
         news = []
         for n in raw_news:
             parts = n.split('\n')
             if len(parts) >= 2: news.append({"title": parts[0], "link": parts[1]})
             else: news.append({"title": n, "link": "#"})
-    except Exception:
+    except Exception as e:
+        logging.error(f"Weather/News fetch ERROR: {e}")
         weather_data = {"summary": "取得失敗"}
         news = []
 
-    fitbit_cog = bot.get_cog("FitbitCog")
+    # === Fitbitデータ取得の強化 ===
+    fitbit_cog = bot.get_cog("FitbitCog") if bot else None
     if fitbit_cog and fitbit_cog.is_ready:
         try:
-            target_date = datetime.datetime.now(JST).date()
-            stats = await fitbit_cog.fitbit_service.get_stats(target_date)
+            # 日付文字列（YYYY-MM-DD）として渡す
+            target_date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            stats = await fitbit_cog.fitbit_service.get_stats(target_date_str)
             if stats:
                 score = stats.get("sleep_score")
                 raw_duration = stats.get("total_sleep_minutes")
                 sleep_stats = {"score": score or "N/A", "duration": fitbit_cog._format_minutes(raw_duration) if raw_duration else "N/A"}
-        except: pass
+        except Exception as e:
+             logging.error(f"API Dashboard Fitbit fetch error: {e}")
+             pass
 
     return {
         "tasks": tasks, "alter_log": alter_log, "date": display_date, "g_calendar": g_calendar,
@@ -525,7 +549,6 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
             link["added_at"], old_title, old_type
         )
 
-    # 種類によってカレンダーの色を分ける (Map: 10/緑, Recipe: 11/赤, Book: 9/青, その他: 1/デフォルト)
     if req.add_to_calendar and req.target_date:
         bot = getattr(app.state, "bot", None)
         if bot and bot.calendar_service:
