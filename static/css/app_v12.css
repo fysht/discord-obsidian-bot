@@ -1,556 +1,563 @@
-/* ==========================================
-   Manager AI — LINE-inspired Premium CSS v3.0
-   ========================================== */
+const API_BASE = '';
+let apiKey = localStorage.getItem('secretary_api_key') || '';
+let lastMsgDate = null;
+let currentLinkSort = 'newest';
 
-:root {
-    --bg-base: #0f0f15;
-    --bg-elevated: #1a1a25;
-    --bg-glass: rgba(26, 26, 37, 0.7);
-    --border-glass: rgba(255, 255, 255, 0.08);
-    
-    --accent: #00ba98; /* LINE-like green approach */
-    --accent-glow: rgba(0, 186, 152, 0.2);
-    --accent-gradient: linear-gradient(135deg, #00ba98, #00d4ff);
-    
-    --text-primary: #f2f2f5;
-    --text-secondary: #a4abbd;
-    --text-muted: #626a7a;
-    
-    --safe-bottom: env(safe-area-inset-bottom, 0px);
-    --safe-top: env(safe-area-inset-top, 0px);
-    
-    --shadow-deep: 0 10px 40px rgba(0,0,0,0.6);
-    --radius-xl: 28px;
-    --radius-lg: 18px;
-    --radius-md: 12px;
+const $ = sel => document.querySelector(sel);
+const $$ = sel => document.querySelectorAll(sel);
+
+function showScreen(id) {
+    $$('.screen').forEach(s => s.classList.remove('active'));
+    $(`#${id}`).classList.add('active');
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-
-body {
-    height: 100vh;
-    height: 100dvh;
-    font-family: 'Inter', 'Noto Sans JP', sans-serif;
-    background-color: var(--bg-base);
-    color: var(--text-primary);
-    overflow: hidden;
-    line-height: 1.5;
-}
-.login-screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-base); z-index: 1000; }
-.login-container { width: 100%; max-width: 400px; padding: 24px; }
-.login-card { background: var(--bg-elevated); border-radius: var(--radius-xl); padding: 40px 32px; box-shadow: var(--shadow-deep); text-align: center; border: 1px solid var(--border-glass); }
-.login-avatar { width: 80px; height: 80px; margin: 0 auto 20px; }
-.login-avatar img { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 2.5px solid var(--accent); }
-.login-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 8px; }
-.login-subtitle { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 32px; }
-
-.login-input-wrapper { position: relative; margin-bottom: 20px; }
-.login-input { width: 100%; height: 56px; padding: 0 50px 0 20px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-glass); border-radius: var(--radius-md); color: #fff; font-size: 1.1rem; outline: none; transition: 0.3s; }
-.login-input:focus { border-color: var(--accent); background: rgba(0,186,152,0.05); }
-.pw-toggle { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; }
-
-.login-btn { width: 100%; height: 56px; background: var(--accent-gradient); color: #fff; border: none; border-radius: var(--radius-md); font-size: 1rem; font-weight: 700; cursor: pointer; transition: 0.3s; }
-.login-btn:active { transform: scale(0.98); opacity: 0.9; }
-.login-error { color: #ff4444; font-size: 0.85rem; margin-top: 16px; min-height: 1.2em; }
-
-/* ========== SCREEN SYSTEM ========== */
-.screen { display: none; height: 100%; flex-direction: column; }
-.screen.active { display: flex; animation: fadeIn 0.4s ease; }
-
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-
-/* ========== TOP HEADER ========== */
-.top-header {
-    height: calc(56px + var(--safe-top));
-    padding: var(--safe-top) 16px 0;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: rgba(15,15,21,0.92);
-    backdrop-filter: blur(12px);
-    border-bottom: 1px solid var(--border-glass);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-}
-.header-partner { display: flex; align-items: center; gap: 12px; }
-.partner-avatar { position: relative; width: 34px; height: 34px; flex-shrink: 0; }
-.partner-avatar img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid var(--accent); display: block; }
-.status-indicator { position: absolute; bottom: 2px; right: 2px; width: 10px; height: 10px; background: #00ba98; border: 2px solid var(--bg-dark); border-radius: 50%; }
-.version-tag { font-size: 0.6rem; color: var(--text-muted); opacity: 0.5; margin: 0 5px; }
-.partner-info { display: flex; flex-direction: column; }
-.partner-name { font-size: 0.95rem; font-weight: 700; line-height: 1.2; }
-.partner-status { font-size: 0.7rem; color: var(--text-muted); font-weight: 500; }
-
-.header-right { display: flex; align-items: center; gap: 4px; }
-.icon-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px; border-radius: 50%; transition: 0.2s; display: flex; align-items: center; justify-content: center; }
-.icon-btn svg { width: 20px; height: 20px; }
-.icon-btn:hover { background: rgba(255,255,255,0.05); color: #fff; }
-
-/* ========== CONTENT AREA ========== */
-.content-area {
-    flex: 1;
-    overflow: hidden;
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-}
-.tab-pane {
-    flex: 1;
-    display: none;
-    flex-direction: column;
-    overflow-y: auto;              /* 全タブをスクロール可能に */
-    -webkit-overflow-scrolling: touch;
-    min-height: 0;
-    /* 余白はscroll-container側で管理する */
-}
-.tab-pane.active { display: flex; }
-/* チャットタブだけはflexbox制御（入力欄を下部固定にするため） */
-#tab-chat {
-    overflow: hidden;           /* チャットタブはmessages領域自体がスクロール */
+function showToast(msg, isError = false) {
+    const container = $('#toast-container');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = `toast ${isError ? 'error' : ''}`;
+    toast.textContent = msg;
+    container.appendChild(toast);
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        setTimeout(() => toast.remove(), 500);
+    }, 3000);
 }
 
-@keyframes tabSlideUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+const escapeHtml = t => {
+    const d = document.createElement('div');
+    d.textContent = t;
+    return d.innerHTML;
+};
 
-/* ========== BOTTOM NAV ========== */
-.bottom-nav {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: calc(65px + var(--safe-bottom));
-    background: rgba(26,26,37,0.95);
-    backdrop-filter: blur(15px);
-    border-top: 1px solid var(--border-glass);
-    display: flex;
-    padding-bottom: var(--safe-bottom);
-    z-index: 200;
-}
-.nav-item {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    gap: 4px;
-    transition: 0.3s;
-}
-.nav-item svg { transition: 0.2s; }
-.nav-item span { font-size: 0.65rem; font-weight: 600; }
-.nav-item.active { color: var(--accent); }
-.nav-item.active svg { transform: translateY(-2px); }
-
-/* ========== CARDS & SCROLL ========== */
-.scroll-container { 
-    padding: 20px;
-    display: flex; 
-    flex-direction: column; 
-    gap: 16px; 
-}
-.scroll-container::after {
-    content: '';
-    display: block;
-    height: calc(85px + var(--safe-bottom));
-    flex-shrink: 0;
-}
-.date-header { text-align: center; font-size: 1.1rem; font-weight: 700; color: var(--text-secondary); margin: 8px 0; }
-.card { background: var(--bg-glass); border: 1px solid var(--border-glass); border-radius: var(--radius-lg); overflow: hidden; margin-bottom: 16px;}
-details.card { padding: 0; margin-bottom: 16px;}
-details.card > summary {
-    list-style: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    border-bottom: 1px solid transparent;
-    transition: 0.2s;
-    padding: 0;
-}
-details.card > summary::-webkit-details-marker { display: none; }
-details.card > summary::after {
-    content: "▼";
-    margin-right: 18px;
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    transition: transform 0.2s;
-}
-details[open].card > summary { border-bottom-color: var(--border-glass); }
-details[open].card > summary::after { transform: rotate(180deg); }
-
-.card-header { padding: 14px 18px; display: flex; align-items: center; gap: 10px; flex: 1; border-bottom: 1px solid var(--border-glass); }
-details.card > summary > .card-header { border-bottom: none; }
-
-.card-icon { font-size: 1rem; flex-shrink: 0; background: rgba(255,255,255,0.05); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px;}
-.card-title { font-weight: 700; font-size: 0.95rem; flex: 1; }
-.mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
-.mini-link:hover { background: rgba(0,186,152,0.2); }
-
-.card-body { padding: 14px 18px; font-size: 0.95rem; min-height: 40px; }
-.loading-placeholder { 
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    color: var(--text-muted); 
-    padding: 14px 18px; 
-    font-size: 0.85rem; 
-    width: 100%;
-    min-height: 50px;
-}
-.list-body { padding: 4px 0; }
-
-/* ========== LIST ITEMS (EDITABLE) ========== */
-.list-item {
-    display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-bottom: 1px solid var(--border-glass);
-    transition: 0.2s;
-}
-.list-item:last-child { border-bottom: none; }
-.li-time { font-size: 0.8rem; color: var(--text-muted); min-width: 45px; text-align: right; }
-.li-text { flex: 1; font-weight: 500; font-size: 0.9rem; }
-.edit-btn { background: none; border: none; color: var(--text-muted); cursor: pointer; opacity: 0.4; transition: 0.2s; }
-.list-item:hover .edit-btn { opacity: 1; color: var(--accent); }
-
-/* ========== CHAT ========== */
-.chat-messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; min-height: 0; }
-.chat-welcome { padding: 60px 40px; text-align: center; }
-.chat-welcome h2 { font-size: 1.8rem; margin-bottom: 12px; }
-.chat-welcome p { color: var(--text-secondary); }
-
-.message { max-width: 85%; align-self: flex-start; display: flex; gap: 10px; }
-.message.user { align-self: flex-end; flex-direction: row-reverse; }
-.msg-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 1.2px solid var(--accent); flex-shrink: 0; }
-.msg-content { display: flex; flex-direction: column; gap: 4px; }
-.msg-bubble { padding: 10px 14px; border-radius: 18px; font-size: 0.92rem; line-height: 1.5; background: var(--bg-elevated); border: 1px solid var(--border-glass); word-break: break-all; }
-.message.user .msg-bubble { background: var(--accent); color: #000; border: none; border-top-right-radius: 4px; }
-.message.assistant .msg-bubble { border-top-left-radius: 4px; }
-.msg-time { font-size: 0.65rem; color: var(--text-muted); opacity: 0.7; margin-top: 4px; }
-.msg-date-separator { align-self: center; background: rgba(0,0,0,0.3); color: var(--text-muted); font-size: 0.75rem; padding: 4px 12px; border-radius: 12px; margin: 10px 0; font-weight: 600; }
-
-.action-chips-container { padding: 12px 0; border-top: 1px solid var(--border-glass); overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 0; }
-.action-chips { display: flex; gap: 10px; padding: 0 16px; width: max-content; }
-.chip-btn { padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-glass); color: #fff; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
-.chip-btn.special { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-
-#chat-form { width: 100%; }
-.chat-input-area {
-    padding: 12px 16px;
-    padding-bottom: calc(16px + 65px + var(--safe-bottom));
-    background: var(--bg-base);
-    border-top: 1px solid var(--border-glass);
-    display: flex;
-    gap: 10px;
-    align-items: flex-end;
-    flex-shrink: 0;
-    width: 100%;
-}
-.input-wrapper { 
-    display: flex; 
-    align-items: flex-end; 
-    gap: 10px; 
-    padding: 8px 8px 8px 16px; 
-    background: var(--bg-elevated); 
-    border-radius: 24px; 
-    border: 1px solid var(--border-glass); 
-    flex: 1; /* 横幅いっぱいに広げる */
-}
-#message-input { flex: 1; background: none; border: none; outline: none; color: #fff; font-size: 1rem; padding: 4px 0; resize: none; max-height: 120px; }
-.send-btn { width: 36px; height: 36px; border-radius: 50%; background: var(--accent-gradient); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
-
-/* ========== MODALS ========== */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; transition: 0.3s; }
-.modal-overlay.hidden { opacity: 0; pointer-events: none; }
-.modal-card { background: var(--bg-elevated); border-radius: var(--radius-xl); padding: 32px; width: 100%; max-width: 440px; box-shadow: var(--shadow-deep); }
-.modal-list { max-height: 300px; overflow-y: auto; margin: 20px 0; display: flex; flex-direction: column; gap: 8px; }
-.modal-item { padding: 14px 20px; background: rgba(255,255,255,0.05); border-radius: var(--radius-md); border: 1px solid var(--border-glass); cursor: pointer; transition: 0.2s; }
-.modal-item:hover { background: rgba(0,186,152,0.1); border-color: var(--accent); }
-
-.modal-input-area { margin-bottom: 24px; }
-.modern-input { width: 100%; padding: 14px; background: rgba(0,0,0,0.2); border: 1px solid var(--border-glass); border-radius: var(--radius-md); color: #fff; font-size: 1rem; outline: none; }
-.modal-actions { display: flex; gap: 12px; }
-.modal-btn { flex: 1; padding: 14px; border-radius: var(--radius-md); border: none; font-weight: 700; cursor: pointer; font-size: 0.95rem; transition: 0.2s; }
-.modal-btn.cancel { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
-.modal-btn.delete { background: rgba(255, 68, 68, 0.1); color: #ff4444; border: 1px solid rgba(255,68,68,0.2); }
-.modal-btn.submit { background: var(--accent-gradient); color: #fff; }
-
-/* ========== UTILS ========== */
-.news-item { display: flex; align-items: center; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--border-glass); }
-.news-dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; flex-shrink: 0; }
-.news-text { flex: 1; font-size: 0.85rem; color: var(--text-primary); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.news-text:hover { color: var(--accent); }
-
-.diary-content { white-space: pre-wrap; line-height: 1.8; color: var(--text-secondary); font-family: 'Noto Sans JP', serif; }
-.mt-20 { margin-top: 20px; }
-.mt-10 { margin-top: 10px; }
-
-/* ========== WEATHER SLOTS ========== */
-.weather-summary {
-    font-weight: 600;
-    font-size: 0.95rem;
-    margin-bottom: 8px;
-    line-height: 1.6;
-}
-.weather-temps {
-    display: flex;
-    gap: 16px;
-    font-size: 0.85rem;
-    margin-bottom: 12px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border-glass);
-}
-.temp-max { color: #ff7b54; font-weight: 600; }
-.temp-min { color: #54b4ff; font-weight: 600; }
-.weather-slots {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-}
-.weather-day-label {
-    font-size: 0.7rem;
-    font-weight: 700;
-    color: var(--accent);
-    letter-spacing: 0.5px;
-    padding: 8px 0 4px;
-    border-top: 1px solid var(--border-glass);
-}
-.weather-day-label:first-child { border-top: none; padding-top: 0; }
-.weather-slot {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 0;
-    font-size: 0.85rem;
-}
-.ws-time {
-    width: 40px;
-    color: var(--text-muted);
-    font-weight: 500;
-    flex-shrink: 0;
-    font-size: 0.82rem;
-}
-.ws-icon {
-    font-size: 1.2rem;
-    width: 28px;
-    text-align: center;
-    flex-shrink: 0;
-}
-.ws-weather {
-    flex: 1;
-    color: var(--text-secondary);
-    font-size: 0.8rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.ws-pop {
-    width: 52px;
-    text-align: right;
-    color: var(--accent);
-    font-weight: 600;
-    font-size: 0.82rem;
-    flex-shrink: 0;
-}
-
-/* Toast Notifications */
-#toast-container {
-    position: fixed;
-    top: calc(60px + var(--safe-top));
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 9999;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    pointer-events: none;
-}
-.toast {
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-md);
-    padding: 12px 24px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    box-shadow: var(--shadow-deep);
-    animation: toastIn 0.3s ease;
-    transition: opacity 0.5s ease;
-    pointer-events: auto;
-}
-.toast.error {
-    border-color: #ff4444;
-    color: #ff6666;
-}
-@keyframes toastIn {
-    from { opacity: 0; transform: translateY(-10px); }
-    to { opacity: 1; transform: translateY(0); }
-}
-
-/* Checkbox */
-.checkbox-custom {
-    width: 20px;
-    height: 20px;
-    border: 2px solid var(--text-muted);
-    border-radius: 6px;
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: 0.2s;
-    position: relative;
-}
-.checkbox-custom:hover {
-    border-color: var(--accent);
-    background: rgba(0,186,152,0.1);
-}
-
-/* Section action button */
-.section-action-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 100%;
-    padding: 12px;
-    margin-top: 12px;
-    background: rgba(0,186,152,0.08);
-    border: 1px dashed rgba(0,186,152,0.3);
-    border-radius: var(--radius-md);
-    color: var(--accent);
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: 0.2s;
-}
-.section-action-btn:hover {
-    background: rgba(0,186,152,0.15);
-    border-color: var(--accent);
-}
-
-/* Switch Toggle Style */
-.eng-mode-toggle { display: flex; align-items: center; gap: 6px; margin-right: 12px; }
-.eng-mode-toggle span { font-size: 0.6rem; font-weight: 700; color: var(--text-muted); }
-.switch { position: relative; display: inline-block; width: 34px; height: 18px; }
-.switch input { opacity: 0; width: 0; height: 0; }
-.slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #333; transition: .4s; }
-.slider:before { position: absolute; content: ""; height: 14px; width: 14px; left: 2px; bottom: 2px; background-color: white; transition: .4s; }
-input:checked + .slider { background-color: var(--accent); }
-input:checked + .slider:before { transform: translateX(16px); }
-.slider.round { border-radius: 18px; }
-.slider.round:before { border-radius: 50%; }
-
-/* ========== HABIT TRACKER ========== */
-.habit-progress-wrap {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--border-glass);
-}
-.habit-progress-bar {
-    flex: 1;
-    height: 6px;
-    background: rgba(255,255,255,0.06);
-    border-radius: 3px;
-    overflow: hidden;
-}
-.habit-progress-fill {
-    height: 100%;
-    background: var(--accent-gradient);
-    border-radius: 3px;
-    transition: width 0.5s ease;
-    width: 0%;
-}
-.habit-progress-label {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    font-weight: 600;
-    min-width: 30px;
-    text-align: right;
-}
-.habit-item {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--border-glass);
-    transition: background 0.3s;
-}
-.habit-item:last-child { border-bottom: none; }
-.habit-item.done {
-    background: rgba(0,186,152,0.06);
-}
-.habit-check-btn {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    border: 2px solid var(--text-muted);
-    background: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: 0.3s;
-    flex-shrink: 0;
-    color: transparent;
-    font-size: 0.75rem;
-}
-.habit-check-btn:hover { border-color: var(--accent); }
-.habit-item.done .habit-check-btn {
-    border-color: var(--accent);
-    background: var(--accent);
-    color: #fff;
-}
-.habit-name { flex: 1; font-weight: 500; font-size: 0.9rem; }
-.habit-item.done .habit-name {
-    color: var(--text-muted);
-    text-decoration: line-through;
-}
-.habit-streak {
-    font-size: 0.75rem;
-    color: #ff7b54;
-    font-weight: 700;
-    white-space: nowrap;
-}
-
-/* ========== BOOKSHELF ========== */
-.book-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 10px 18px;
-    border-bottom: 1px solid var(--border-glass);
-}
-.book-item:last-child { border-bottom: none; }
-.book-title { flex: 1; font-weight: 600; font-size: 0.88rem; cursor: pointer; }
-.book-title:hover { color: var(--accent); }
-.book-actions { display: flex; gap: 4px; flex-shrink: 0; }
-.book-btn {
-    background: rgba(0,186,152,0.1);
-    border: none;
-    color: var(--accent);
-    border-radius: 6px;
-    padding: 4px 8px;
-    font-size: 0.7rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: 0.2s;
-}
-.book-btn:hover { background: rgba(0,186,152,0.2); }
-.book-btn.nlm { background: rgba(66,133,244,0.1); color: #4285f4; }
-.book-btn.nlm:hover { background: rgba(66,133,244,0.2); }
-.book-btn.delete { background: rgba(255,68,68,0.1); color: #ff4444; }
-.book-btn.delete:hover { background: rgba(255,68,68,0.2); }
-
-/* Hide Bottom Nav during Input on Small Screens */
-@media (max-width: 768px) {
-    body:has(#message-input:focus) .bottom-nav {
-        display: none;
+async function apiFetch(path, options = {}) {
+    const headers = { 'Content-Type': 'application/json', 'X-Api-Key': apiKey, ...(options.headers || {}) };
+    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    if (res.status === 401) {
+        localStorage.removeItem('secretary_api_key');
+        apiKey = '';
+        showScreen('login-screen');
+        throw new Error('Unauthorized');
     }
-    body:has(#message-input:focus) .content-area {
-        padding-bottom: 0;
+    if (!res.ok) throw new Error(`API Error: ${res.status}`);
+    return res.json();
+}
+
+const loginForm = $('#login-form');
+if (loginForm) {
+    loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const pw = $('#password-input').value.trim();
+        if (!pw) return;
+        try {
+            const data = await fetch(`${API_BASE}/api/auth`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: pw }),
+            }).then(r => {
+                if (!r.ok) throw new Error('Password mismatch');
+                return r.json();
+            });
+            apiKey = data.api_key;
+            localStorage.setItem('secretary_api_key', apiKey);
+            showScreen('main-screen');
+            initMain();
+        } catch (err) { $('#login-error').textContent = 'パスワードが違います'; }
+    });
+}
+
+const pwToggleBtn = $('#pw-toggle-btn');
+if (pwToggleBtn) {
+    pwToggleBtn.addEventListener('click', () => {
+        const input = $('#password-input');
+        if (input.type === 'password') {
+            input.type = 'text';
+            pwToggleBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
+        } else {
+            input.type = 'password';
+            pwToggleBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+        }
+    });
+}
+
+$$('.nav-item').forEach(item => {
+    item.addEventListener('click', () => { switchTab(item.dataset.tab); });
+});
+
+function switchTab(tab) {
+    $$('.nav-item').forEach(i => i.classList.remove('active'));
+    document.querySelector(`.nav-item[data-tab="${tab}"]`)?.classList.add('active');
+    
+    $$('.tab-pane').forEach(p => p.classList.remove('active'));
+    $(`#tab-${tab}`)?.classList.add('active');
+    
+    const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定' };
+    const titleEl = $('#current-tab-title');
+    if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
+
+    if (tab !== 'chat') loadDashboard();
+}
+
+const chatMessages = $('#chat-messages');
+const messageInput = $('#message-input');
+const sendBtn = $('#send-btn');
+let isChatSending = false;
+const chatForm = $('#chat-form');
+
+if (chatForm) {
+    chatForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (isChatSending) return;
+        const msg = messageInput.value.trim();
+        if (!msg) return;
+
+        isChatSending = true;
+        sendBtn.style.opacity = '0.5';
+        sendBtn.disabled = true;
+
+        appendMsg('user', msg);
+        messageInput.value = '';
+        messageInput.style.height = '40px';
+        sendBtn.classList.remove('active');
+
+        try {
+            const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: msg }) });
+            appendMsg('assistant', data.reply);
+        } catch (err) {
+            appendMsg('assistant', 'すみません、エラーが発生しました。');
+        } finally {
+            isChatSending = false;
+            sendBtn.style.opacity = '1';
+            sendBtn.disabled = false;
+        }
+    });
+}
+
+if (messageInput) {
+    messageInput.addEventListener('input', () => {
+        messageInput.style.height = '40px';
+        messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+        sendBtn.classList.toggle('active', messageInput.value.trim() !== '');
+    });
+}
+
+function appendMsg(role, content, isoTimestamp = null) {
+    if (!chatMessages) return;
+    const now = isoTimestamp ? new Date(isoTimestamp) : new Date();
+    const dStr = `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日(${['日','月','火','水','木','金','土'][now.getDay()]})`;
+    const tStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+
+    if (lastMsgDate !== dStr) {
+        const sep = document.createElement('div');
+        sep.className = 'msg-date-separator';
+        sep.textContent = dStr;
+        chatMessages.appendChild(sep);
+        lastMsgDate = dStr;
+    }
+
+    const div = document.createElement('div');
+    div.className = `message ${role}`;
+    let html = '';
+    if (role === 'assistant') html += `<img src="/static/icons/avatar.png" class="msg-avatar">`;
+    let processedContent = escapeHtml(content).replace(/\n/g, '<br>');
+    
+    html += `
+        <div class="msg-content">
+            <div class="msg-bubble" style="word-break: break-all;">${processedContent}</div>
+        </div>
+        <div class="msg-time">${tStr}</div>
+    `;
+    div.innerHTML = html;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function loadDashboard() {
+    if (!apiKey) return;
+    try {
+        const data = await apiFetch('/api/dashboard');
+        
+        const dateLabel = $('#dash-date-label');
+        if (dateLabel) dateLabel.textContent = data.date || '---';
+
+        const weatherEl = $('#dash-weather');
+        if (weatherEl) {
+            if (data.weather && data.weather.summary !== "取得失敗") {
+                const w = data.weather;
+                let html = `<div class="weather-summary">${escapeHtml(w.summary)}</div>`;
+                if (w.max_temp || w.min_temp) {
+                    html += `<div class="weather-temps">
+                        <span class="temp-max">↑${w.max_temp}℃</span>
+                        <span class="temp-min">↓${w.min_temp}℃</span>
+                    </div>`;
+                }
+                if (w.slots && w.slots.length > 0) {
+                    let currentDay = '';
+                    html += `<div class="weather-slots">`;
+                    w.slots.forEach(s => {
+                        if (s.day !== currentDay) {
+                            currentDay = s.day;
+                            html += `<div class="weather-day-label">${escapeHtml(s.day)}</div>`;
+                        }
+                        html += `<div class="weather-slot">
+                            <div class="ws-time">${s.time}</div>
+                            <div class="ws-icon">${s.icon}</div>
+                            <div class="ws-weather">${escapeHtml(s.weather || '')}</div>
+                            <div class="ws-pop">☂${s.pop}</div>
+                        </div>`;
+                    });
+                    html += `</div>`;
+                }
+                weatherEl.innerHTML = html;
+            } else weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした</div>`;
+        }
+
+        const newsEl = $('#dash-news');
+        if (newsEl) {
+            if (data.news && data.news.length > 0) {
+                newsEl.innerHTML = data.news.map(n => `
+                    <div class="news-item">
+                        <span class="news-dot"></span>
+                        <a href="${n.link}" target="_blank" class="news-text">${escapeHtml(n.title)}</a>
+                    </div>
+                `).join('');
+            } else newsEl.innerHTML = '<div class="loading-placeholder">現在、ニュースはありません</div>';
+        }
+
+        renderTaskGroup($('#dash-google-tasks-work'), data.google_tasks_work, '仕事');
+        renderTaskGroup($('#dash-google-tasks-private'), data.google_tasks_private, 'プライベート');
+
+        const calEl = $('#dash-google-calendar');
+        if (calEl && data.g_calendar) {
+            calEl.innerHTML = data.g_calendar.length ? data.g_calendar.map(ev => {
+                return `
+                    <div class="list-item">
+                        <div class="li-time">${ev.time || '終日'}</div>
+                        <div class="li-text">${escapeHtml(ev.summary)}</div>
+                    </div>
+                `;
+            }).join('') : '<div class="loading-placeholder">予定はありません</div>';
+        }
+
+        const obTaskEl = $('#dash-tasks');
+        if (obTaskEl && data.tasks) {
+            obTaskEl.innerHTML = data.tasks.length ? data.tasks.map(t => `
+                <div class="list-item">
+                    <div class="li-text" style="text-decoration: ${t.done ? 'line-through' : 'none'}">${escapeHtml(t.text)}</div>
+                </div>
+            `).join('') : '<div class="loading-placeholder">ログはありません</div>';
+        }
+
+        loadHabits();
+        
+        const diaryEl = $('#dash-alter-log');
+        if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
+        
+        loadStockedLinks();
+    } catch (err) { console.error(err); }
+}
+
+function renderTaskGroup(container, tasks, listName) {
+    if (!container) return;
+    container.innerHTML = tasks && tasks.length ? tasks.map(t => `
+        <div class="list-item">
+            <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', false, '${listName}')"></div>
+            <div class="li-text">${escapeHtml(t.title)}</div>
+        </div>
+    `).join('') : '<div class="loading-placeholder">未完了のタスクはありません</div>';
+}
+
+window.openManualAddModal = (type) => {
+    const title = prompt("タイトルを入力してください:");
+    if (!title) return;
+    const url = prompt("URLがあれば入力してください（任意）:", "") || "";
+    
+    apiFetch('/api/links', {
+        method: 'POST',
+        body: JSON.stringify({ title, type: type, url })
+    }).then(() => {
+        showToast('手動で追加しました');
+        loadStockedLinks();
+    }).catch(() => showToast('追加に失敗しました', true));
+};
+
+window.changeLinkSort = (type, val) => {
+    linkSorts[type] = val;
+    loadStockedLinks();
+};
+
+window.loadStockedLinks = async () => {
+    try {
+        const data = await apiFetch('/api/links');
+        const webEl = $('#dash-stocked-web');
+        const ytEl = $('#dash-stocked-youtube');
+        const recipeEl = $('#dash-stocked-recipe');
+        const mapEl = $('#dash-stocked-map');
+        const bookEl = $('#dash-stocked-book');
+
+        let links = data.links || [];
+        
+        const getSortFn = (type) => {
+            return (a, b) => {
+                const sortType = linkSorts[type];
+                if (sortType === 'newest') return new Date(b.added_at) - new Date(a.added_at);
+                if (sortType === 'oldest') return new Date(a.added_at) - new Date(b.added_at);
+                if (sortType === 'title') return a.title.localeCompare(b.title);
+                return 0;
+            };
+        };
+
+        const webLinks = links.filter(l => l.type === 'web').sort(getSortFn('web'));
+        const ytLinks = links.filter(l => l.type === 'youtube').sort(getSortFn('youtube'));
+        const recipeLinks = links.filter(l => l.type === 'recipe').sort(getSortFn('recipe'));
+        const mapLinks = links.filter(l => l.type === 'map').sort(getSortFn('map'));
+        const bookLinks = links.filter(l => l.type === 'book').sort(getSortFn('book'));
+
+        const setupHeader = (id, type) => {
+            const container = $(`#${id}`);
+            if(!container) return;
+            const prev = container.previousElementSibling;
+            
+            if (prev && !prev.querySelector('.header-controls')) {
+                const ctrl = document.createElement('div');
+                ctrl.className = 'header-controls';
+                ctrl.style.display = 'inline-flex';
+                ctrl.style.gap = '8px';
+                ctrl.style.marginLeft = 'auto';
+                ctrl.style.alignItems = 'center';
+                
+                const sortSelect = document.createElement('select');
+                sortSelect.style.cssText = "background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:2px 4px; border-radius:4px; font-size:0.75rem; cursor:pointer;";
+                sortSelect.innerHTML = `
+                    <option value="newest" ${linkSorts[type]==='newest'?'selected':''}>新しい順</option>
+                    <option value="oldest" ${linkSorts[type]==='oldest'?'selected':''}>古い順</option>
+                    <option value="title" ${linkSorts[type]==='title'?'selected':''}>タイトル順</option>
+                `;
+                sortSelect.onchange = (e) => changeLinkSort(type, e.target.value);
+                
+                const addBtn = document.createElement('button');
+                addBtn.className = 'modal-btn';
+                addBtn.style.cssText = "padding:2px 8px; font-size:0.7rem;";
+                addBtn.textContent = '＋ 追加';
+                addBtn.onclick = () => openManualAddModal(type);
+                
+                ctrl.appendChild(sortSelect);
+                ctrl.appendChild(addBtn);
+                
+                prev.style.display = 'flex';
+                prev.style.justifyContent = 'space-between';
+                prev.style.alignItems = 'center';
+                prev.appendChild(ctrl);
+            } else if (prev) {
+                const sel = prev.querySelector('select');
+                if (sel) sel.value = linkSorts[type];
+            }
+        };
+
+        setupHeader('dash-stocked-web', 'web');
+        setupHeader('dash-stocked-youtube', 'youtube');
+        setupHeader('dash-stocked-recipe', 'recipe');
+        setupHeader('dash-stocked-map', 'map');
+        setupHeader('dash-stocked-book', 'book');
+
+        const oldWrap = $('#link-sort-wrapper');
+        if (oldWrap) oldWrap.remove();
+
+        const renderGroup = (container, items) => {
+            if (!container) return;
+            if (items.length === 0) {
+                container.innerHTML = '<div style="padding:10px 18px; color:var(--text-muted); font-size:0.85rem;">登録なし</div>';
+                return;
+            }
+            container.innerHTML = items.map(lk => {
+                const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                const actionBtn = `<button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:rgba(0,186,152,0.1); color:var(--accent);" onclick='openLinkDetailsModal(${JSON.stringify(lk).replace(/'/g, "&#39;")})'>📝 詳細編集</button>`;
+                
+                let extraInfo = '';
+                if(lk.purpose) extraInfo += `<span style="font-size:0.75rem; color:var(--accent); margin-right:8px;">🎯 ${escapeHtml(lk.purpose)}</span>`;
+                if(lk.target_date) extraInfo += `<span style="font-size:0.75rem; color:var(--text-secondary); margin-right:8px;">📅 ${escapeHtml(lk.target_date)}</span>`;
+
+                return `
+                    <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:4px; min-width: 0;">
+                        <div style="display:flex; align-items:flex-start; gap:6px; min-width: 0;">
+                            ${lk.url ? `<a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.85rem; line-height:1.4; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>` 
+                                     : `<span style="flex:1; color:var(--text); font-weight:500; font-size:0.85rem; line-height:1.4; display:block;">${escapeHtml(lk.title)}</span>`}
+                        </div>
+                        ${extraInfo ? `<div style="margin-top:2px;">${extraInfo}</div>` : ''}
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
+                            <span style="font-size:0.65rem; color:var(--text-muted);">${dateStr}</span>
+                            <div style="display:flex; gap:5px;">
+                                ${actionBtn}
+                                <button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:rgba(255,80,80,0.15); color:#ff5050;" onclick="deleteStockedLink(${lk.id})">削除</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        };
+
+        renderGroup(webEl, webLinks);
+        renderGroup(ytEl, ytLinks);
+        renderGroup(recipeEl, recipeLinks);
+        renderGroup(mapEl, mapLinks);
+        renderGroup(bookEl, bookLinks);
+    } catch (e) { console.error("StockedLinks fetch error", e); }
+};
+
+let currentEditLinkId = null;
+window.openLinkDetailsModal = (lk) => {
+    currentEditLinkId = lk.id;
+    
+    $('#link-modal-title').innerHTML = `<input type="text" id="link-title-input" value="${escapeHtml(lk.title)}" style="width:100%; background:rgba(0,0,0,0.2); border:1px solid var(--border-glass); color:#fff; padding:8px; border-radius:4px; font-size:0.9rem;" placeholder="タイトル">`;
+    
+    $('#link-modal-type-badge').innerHTML = `
+        <select id="link-type-select" style="background:var(--bg-elevated); color:inherit; border:1px solid var(--border-glass); border-radius:4px; outline:none; font-size:0.75rem; font-weight:bold; cursor:pointer; padding:2px 4px;">
+            <option value="web" ${lk.type==='web'?'selected':''}>🌐 ウェブ</option>
+            <option value="youtube" ${lk.type==='youtube'?'selected':''}>📺 YouTube</option>
+            <option value="recipe" ${lk.type==='recipe'?'selected':''}>🍳 レシピ</option>
+            <option value="map" ${lk.type==='map'?'selected':''}>🗺️ マップ</option>
+            <option value="book" ${lk.type==='book'?'selected':''}>📚 書籍</option>
+        </select>
+    `;
+
+    $('#field-purpose').style.display = 'flex';
+    $('#field-summary').style.display = 'flex';
+    $('#field-memo').style.display = 'flex';
+    $('#field-date').style.display = ['recipe', 'map', 'book'].includes(lk.type) ? 'flex' : 'none';
+    
+    if (!$('#purpose-options')) {
+        const dl = document.createElement('datalist');
+        dl.id = 'purpose-options';
+        dl.innerHTML = `<option value="後で読む/見る"><option value="今週中に実行"><option value="鑑賞済み/完了"><option value="参考資料"><option value="作ってみたい">`;
+        document.body.appendChild(dl);
+    }
+    const pInput = $('#link-purpose-input');
+    if (pInput) pInput.setAttribute('list', 'purpose-options');
+
+    $('#link-purpose-input').value = lk.purpose || '';
+    $('#link-date-input').value = lk.target_date || '';
+    $('#link-note-url-input').value = lk.linked_note_url || '';
+    $('#link-summary-input').value = lk.summary || '';
+    $('#link-memo-input').value = lk.memo || '';
+    $('#link-calendar-check').checked = true;
+
+    $('#link-details-modal').classList.remove('hidden');
+};
+
+window.closeLinkDetailsModal = () => {
+    $('#link-details-modal').classList.add('hidden');
+    currentEditLinkId = null;
+};
+
+$('#link-save-btn')?.addEventListener('click', async () => {
+    if(!currentEditLinkId) return;
+    const btn = $('#link-save-btn');
+    btn.textContent = '保存中...';
+    btn.disabled = true;
+    
+    const reqData = {
+        title: $('#link-title-input').value,
+        type: $('#link-type-select').value,
+        purpose: $('#link-purpose-input').value,
+        summary: $('#link-summary-input').value,
+        memo: $('#link-memo-input').value,
+        target_date: $('#link-date-input').value,
+        linked_note_url: $('#link-note-url-input').value,
+        add_to_calendar: $('#link-calendar-check').checked
+    };
+
+    try {
+        await apiFetch(`/api/links/${currentEditLinkId}`, {
+            method: 'PUT',
+            body: JSON.stringify(reqData)
+        });
+        showToast('保存・同期しました');
+        closeLinkDetailsModal();
+        loadStockedLinks();
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    } finally {
+        btn.textContent = '保存';
+        btn.disabled = false;
+    }
+});
+
+window.deleteStockedLink = async (linkId) => {
+    if (!confirm('このデータを削除しますか？')) return;
+    try {
+        await apiFetch(`/api/links/${linkId}`, { method: 'DELETE' });
+        showToast('削除しました');
+        loadStockedLinks();
+    } catch (e) { showToast('削除に失敗しました', true); }
+};
+
+function initMain() {
+    loadHistory();
+    loadDashboard();
+
+    const params = new URLSearchParams(window.location.search);
+    const sharedUrl = params.get('url') || '';
+    const sharedText = params.get('text') || '';
+    const sharedTitle = params.get('title') || '';
+
+    const urlToStock = sharedUrl || (sharedText ? (sharedText.match(/https?:\/\/[^\s]+/) || [''])[0] : '');
+    if (urlToStock && apiKey) {
+        window.history.replaceState({}, '', '/');
+        switchTab('chat');
+        setTimeout(async () => {
+            const msg = sharedTitle ? `${sharedTitle}\n${urlToStock}` : urlToStock;
+            appendMsg('user', msg);
+            try {
+                const data = await apiFetch('/api/chat', {
+                    method: 'POST',
+                    body: JSON.stringify({ message: msg })
+                });
+                appendMsg('assistant', data.reply);
+            } catch (e) {
+                appendMsg('assistant', 'リンクのストックに失敗しました。');
+            }
+        }, 500);
     }
 }
 
-@media (max-width: 480px) {
-    .modal-card { padding: 24px 20px; }
+async function loadHistory() {
+    try {
+        const data = await apiFetch('/api/history?limit=20');
+        if (chatMessages) {
+            chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
+            lastMsgDate = null;
+            data.messages.forEach(m => appendMsg(m.role, m.content, m.timestamp));
+        }
+    } catch {}
 }
+
+window.addEventListener('DOMContentLoaded', () => { if (apiKey) { showScreen('main-screen'); initMain(); } else { showScreen('login-screen'); } });
+
+async function loadHabits() {
+    try {
+        const data = await apiFetch('/api/habits');
+        const container = $('#dash-habits');
+        if (!container) return;
+        if (!data.habits || data.habits.length === 0) {
+            container.innerHTML = '<div class="p-20 text-center text-secondary">登録された習慣はありません</div>';
+            return;
+        }
+        container.innerHTML = data.habits.map(h => {
+            const isDone = data.today_done.includes(h.id);
+            return `
+                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}">
+                    <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone ? 'disabled' : ''}>✔</button>
+                    <div class="habit-name">${escapeHtml(h.name)}</div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) { }
+}
+window.completeHabit = async (habitName, hId) => {
+    try {
+        const item = $(`#habit-item-${hId}`);
+        if(item) item.classList.add('done');
+        showToast(`「${habitName}」を完了しました！🎉`);
+        await apiFetch('/api/habits/complete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
+    } catch { showToast('失敗しました', true); }
+};

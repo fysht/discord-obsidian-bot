@@ -14,7 +14,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
 <body>
-    <!-- ========== LOGIN SCREEN ========== -->
     <div id="login-screen" class="screen active">
         <div class="login-container">
             <div class="login-card">
@@ -37,9 +36,7 @@
         </div>
     </div>
 
-    <!-- ========== MAIN SCREEN ========== -->
     <div id="main-screen" class="screen">
-        <!-- TOP HEADER -->
         <header class="top-header">
             <div class="header-partner">
                 <div class="partner-avatar">
@@ -72,9 +69,7 @@
             </div>
         </header>
 
-        <!-- TAB CONTENTS -->
         <main class="content-area">
-            <!-- ========== CHAT TAB ========== -->
             <div id="tab-chat" class="tab-pane active">
                 <div id="chat-messages" class="chat-messages">
                     <div class="chat-welcome">
@@ -107,10 +102,8 @@
                 </div>
             </div>
 
-            <!-- ========== INFO TAB (WEATHER/NEWS) ========== -->
             <div id="tab-info" class="tab-pane">
                 <div class="scroll-container">
-                    <!-- Date at top of Info Tab -->
                     <div class="date-header" id="dash-date-label">---</div>
 
                     <div class="card weather-card">
@@ -128,7 +121,7 @@
                         <div id="dash-news" class="card-body list-body"></div>
                     </div>
                     
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" open>
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🌐</span>
@@ -138,7 +131,7 @@
                         <div id="dash-stocked-web" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" open>
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">📺</span>
@@ -148,7 +141,7 @@
                         <div id="dash-stocked-youtube" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" open>
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🍳</span>
@@ -158,7 +151,7 @@
                         <div id="dash-stocked-recipe" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" open>
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🗺️</span>
@@ -168,11 +161,11 @@
                         <div id="dash-stocked-map" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card bookshelf-card">
+                    <details class="card bookshelf-card" open>
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">📚</span>
-                                <span class="card-title">書籍 & ナレッジ</span>
+                                <span class="card-title">書籍</span>
                             </div>
                         </summary>
                         <div id="dash-stocked-book" class="card-body list-body"></div>
@@ -180,7 +173,6 @@
                 </div>
             </div>
 
-            <!-- ========== LOG TAB (OBSIDIAN/SLEEP/DIARY) ========== -->
             <div id="tab-log" class="tab-pane">
                 <div class="scroll-container">
                     <div class="card habits-card">
@@ -239,7 +231,6 @@
                 </div>
             </div>
 
-            <!-- ========== SCHEDULE TAB (CALENDAR/TASKS) ========== -->
             <div id="tab-schedule" class="tab-pane">
                 <div class="scroll-container">
 
@@ -274,7 +265,6 @@
             </div>
         </main>
 
-        <!-- BOTTOM NAVIGATION (LINE-like) -->
         <nav class="bottom-nav">
             <button class="nav-item active" data-tab="chat">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -295,13 +285,11 @@
         </nav>
     </div>
 
-    <!-- ========== INTELLIGENT TASK MODAL ========== -->
     <div id="task-modal" class="modal-overlay hidden">
         <div class="modal-card">
             <h3 id="modal-title">タスク選択</h3>
             <div id="modal-list" class="modal-list">
-                <!-- 候補がここに並ぶ -->
-            </div>
+                </div>
             <div class="modal-input-area">
                 <input type="text" id="custom-task-input" class="modern-input" placeholder="新しいタスク名を入力...">
             </div>
@@ -312,7 +300,6 @@
         </div>
     </div>
 
-    <!-- ========== EDIT MODAL (FOR CAL/TASK) ========== -->
     <div id="edit-modal" class="modal-overlay hidden">
         <div class="modal-card">
             <h3 id="edit-modal-title">編集</h3>
@@ -323,11 +310,9 @@
                 <button class="modal-btn" id="edit-toggle-btn" style="background:rgba(0,186,152,0.1); color:var(--accent);">完了/未完了</button>
                 <button class="modal-btn submit" id="edit-save-btn">保存</button>
             </div>
-            </div>
         </div>
     </div>
 
-    <!-- ========== LINK DETAILS MODAL (積読管理用) ========== -->
     <div id="link-details-modal" class="modal-overlay hidden">
         <div class="modal-card">
             <h3 id="link-modal-title" style="margin-bottom:12px;">リンク詳細編集</h3>
@@ -373,7 +358,6 @@
             </div>
         </div>
     </div>
-    <!-- ========== ADD EVENT MODAL ========== -->
     <div id="event-modal" class="modal-overlay hidden">
         <div class="modal-card">
             <h3>予定を追加</h3>
@@ -405,7 +389,6 @@
     </div>
 
     <div id="toast-container"></div>
-    <!-- ========== TASK BREAKDOWN MODAL ========== -->
     <div id="breakdown-modal" class="modal-overlay hidden">
         <div class="modal-card">
             <h3>🔨 タスク分解</h3>

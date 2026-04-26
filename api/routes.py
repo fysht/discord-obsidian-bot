@@ -79,11 +79,10 @@ async def _fetch_link_meta(url: str) -> dict:
                       "orangepage.net", "lettuceclub.net", "kyounoryouri.jp", "ajinomoto.co.jp"]
     if any(d in url for d in recipe_domains): link_type = "recipe"
 
-    # Amazon等の厳しいサイトのタイトル取得確率を上げるためのヘッダー強化
     try:
         async with aiohttp.ClientSession() as session:
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
             }
@@ -92,9 +91,7 @@ async def _fetch_link_meta(url: str) -> dict:
                     html = await response.text(errors="replace")
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
                     if match:
-                        # タグを除去して取得
                         title = _re.sub(r'<[^>]+>', '', match.group(1)).strip()[:200]
-                        # Amazonや不要なドメイン表記のクリーンアップ
                         if link_type == "book" or "amazon" in url:
                             title = title.replace("Amazon.co.jp:", "").replace("Amazon |", "").replace("Amazon.co.jp :", "").strip()
                     
@@ -107,17 +104,14 @@ async def _fetch_link_meta(url: str) -> dict:
     return {"title": title if title else "Untitled", "type": link_type}
 
 
-# --- Obsidian同期用共通関数 (英語表記統一・Markdown巨大化修正) ---
 async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: str, 
                                 purpose: str="", target_date: str="", memo: str="", summary: str="", 
-                                added_at_str: str=None):
-    """リンク情報をObsidianに作成・更新する"""
+                                added_at_str: str=None, old_title: str=None, old_type: str=None):
     if not chat_service or not chat_service.drive_service: return
     service = chat_service.drive_service.get_service()
     if not service: return
     
     import re
-    # added_at_str（ストック追加日時）があればそれを基準にタイムスタンプを生成（上書き時のファイル名固定のため）
     if added_at_str:
         try:
             base_time = datetime.datetime.fromisoformat(added_at_str)
@@ -128,26 +122,27 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
 
     now = datetime.datetime.now(JST)
 
-    folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Places", "book": "BookNotes"}
-    section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🔗 WebClips", "book": "## 📖 Reading Log"}
+    folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Google Maps", "book": "Books"}
+    section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🗺️ Google Maps", "book": "## 📚 Books"}
     
-    folder_name = folder_map.get(link_type, "WebClips")
-    section_header = section_map.get(link_type, "## 🔗 WebClips")
-    safe_title = re.sub(r'[\\/*?:"<>|]', "", title)[:80] or "Untitled"
+    search_title = old_title if old_title else title
+    search_type = old_type if old_type else link_type
+    search_folder_name = folder_map.get(search_type, "WebClips")
+    safe_search_title = re.sub(r'[\\/*?:"<>|]', "", search_title)[:80] or "Untitled"
     
-    # ファイル名の生成（本以外は追加時のタイムスタンプをプレフィックスにする）
-    if link_type == "book":
-        filename = f"{safe_title}.md"
-        link_str = f"- [[{folder_name}/{safe_title}|{title}]]"
+    if search_type == "book":
+        filename = f"{safe_search_title}.md"
     else:
         timestamp = base_time.strftime("%Y%m%d%H%M%S")
-        filename = f"{timestamp}-{safe_title}.md"
-        link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{title}]]"
+        filename = f"{timestamp}-{safe_search_title}.md"
 
-    # デイリーノートの対象日は「追加日時」とする（過去分を修正した際に本日のデイリーに飛ばないようにするため）
+    new_folder_name = folder_map.get(link_type, "WebClips")
+    new_section_header = section_map.get(link_type, "## 🔗 WebClips")
+    new_link_str = f"- [[{search_folder_name}/{filename}|{title}]]"
+    old_link_str = f"- [[{search_folder_name}/{filename}|{search_title}]]"
+
     daily_note_date = base_time.strftime("%Y-%m-%d")
     
-    # 英語表記に統一しつつ、見出し線(---)の前に必ず空行(\n\n)を入れることで巨大化バグを防ぐ
     note_content = f"# {title}\n\n"
     if purpose: note_content += f"**🎯 Purpose:** {purpose}\n\n"
     if target_date: note_content += f"**📅 Target Date:** {target_date}\n\n"
@@ -158,27 +153,33 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
 
     try:
         drive_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        f_id = await chat_service.drive_service.find_file(service, drive_root, folder_name)
-        if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, folder_name)
+        f_id = await chat_service.drive_service.find_file(service, drive_root, search_folder_name)
+        if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, search_folder_name)
 
-        # 既存ファイルの検索・更新 (書籍以外でもプレフィックスでマッチさせることでリネーム対応可)
         existing = await chat_service.drive_service.find_file(service, f_id, filename)
         if existing:
             await chat_service.drive_service.update_text(service, existing, note_content)
         else:
             await chat_service.drive_service.upload_text(service, f_id, filename, note_content)
 
-        # デイリーノートの追記（まだリンクがない場合のみ）
         daily_fid = await chat_service.drive_service.find_file(service, drive_root, "DailyNotes")
         if daily_fid:
             df_id = await chat_service.drive_service.find_file(service, daily_fid, f"{daily_note_date}.md")
             from utils.obsidian_utils import update_section
             if df_id:
                 cur = await chat_service.drive_service.read_text_file(service, df_id)
-                if link_str not in cur:
-                    await chat_service.drive_service.update_text(service, df_id, update_section(cur, link_str, section_header))
+                if old_title and (old_title != title or old_type != link_type):
+                    if old_link_str in cur:
+                        cur = cur.replace(old_link_str + "\n", "")
+                        cur = cur.replace(old_link_str, "")
+                        cur = update_section(cur, new_link_str, new_section_header)
+                        await chat_service.drive_service.update_text(service, df_id, cur)
+                else:
+                    if new_link_str not in cur:
+                        cur = update_section(cur, new_link_str, new_section_header)
+                        await chat_service.drive_service.update_text(service, df_id, cur)
             else:
-                initial_content = f"---\ndate: {daily_note_date}\n---\n\n# Daily Note {daily_note_date}\n\n{section_header}\n{link_str}\n"
+                initial_content = f"---\ndate: {daily_note_date}\n---\n\n# Daily Note {daily_note_date}\n\n{new_section_header}\n{new_link_str}\n"
                 await chat_service.drive_service.upload_text(service, daily_fid, f"{daily_note_date}.md", initial_content)
     except Exception as e: logging.error(f"Obsidian Sync Error: {e}")
 
@@ -195,10 +196,12 @@ async def chat(req: ChatRequest):
             meta = await _fetch_link_meta(url)
             await add_stocked_link(url, meta["type"], meta["title"])
 
-            # Obsidianへの即時作成
-            chat_service = getattr(app.state, "chat_service", None)
-            if chat_service:
-                await sync_link_to_obsidian(chat_service, meta["title"], meta["type"], url)
+            links = await get_all_links()
+            if links:
+                new_link = links[0]
+                chat_service = getattr(app.state, "chat_service", None)
+                if chat_service:
+                    await sync_link_to_obsidian(chat_service, meta["title"], meta["type"], url, added_at_str=new_link["added_at"])
 
             type_label = {"web": "🌐 ウェブ", "youtube": "📺 YouTube", "recipe": "🍳 レシピ", "map": "🗺️ マップ", "book": "📚 書籍"}.get(meta["type"], "🔗 リンク")
             reply = f"「{meta['title']}」を{type_label}としてストックし、ノートを作成しました。"
@@ -478,7 +481,6 @@ class LinkCreateRequest(BaseModel):
 
 @router.post("/links", dependencies=[Depends(verify_api_key)])
 async def create_link(req: LinkCreateRequest):
-    """手動でのリンク（レシピ等）追加"""
     from api import app
     await add_stocked_link(req.url, req.type, req.title)
     
@@ -487,7 +489,7 @@ async def create_link(req: LinkCreateRequest):
     new_link = links[0]
     
     chat_service = getattr(app.state, "chat_service", None)
-    await sync_link_to_obsidian(chat_service, req.title, req.type, req.url)
+    await sync_link_to_obsidian(chat_service, req.title, req.type, req.url, added_at_str=new_link["added_at"])
     return {"status": "success", "link_id": new_link["id"]}
 
 class LinkUpdateRequest(BaseModel):
@@ -504,8 +506,6 @@ class LinkUpdateRequest(BaseModel):
 async def update_link(link_id: int, req: LinkUpdateRequest):
     from api import app
     import datetime
-    import re
-    from utils.obsidian_utils import update_section
 
     link = await get_link_by_id(link_id)
     if not link: raise HTTPException(status_code=404, detail="リンク未検出")
@@ -515,72 +515,31 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
     new_title = req.title or old_title
     new_type = req.type or old_type
     
-    # DB更新
     await update_link_details(link_id, new_title, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, new_type)
 
-    # Obsidian更新 (Drive)
     chat_service = getattr(app.state, "chat_service", None)
-    
-    if chat_service and chat_service.drive_service:
-        # 古いリンク情報から消去すべきファイル名やリストの文字列を推測
-        try:
-            base_time = datetime.datetime.fromisoformat(link["added_at"])
-        except ValueError:
-            base_time = datetime.datetime.now(JST)
-
-        folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Places", "book": "BookNotes"}
-        section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🔗 WebClips", "book": "## 📖 Reading Log"}
-
-        # 編集前の情報を元にした古いパスやリンク文字列
-        old_folder_name = folder_map.get(old_type, "WebClips")
-        old_section_header = section_map.get(old_type, "## 🔗 WebClips")
-        old_safe_title = re.sub(r'[\\/*?:"<>|]', "", old_title)[:80] or "Untitled"
-        
-        if old_type == "book":
-            old_filename = f"{old_safe_title}.md"
-            old_link_str = f"- [[{old_folder_name}/{old_safe_title}|{old_title}]]"
-        else:
-            old_timestamp = base_time.strftime("%Y%m%d%H%M%S")
-            old_filename = f"{old_timestamp}-{old_safe_title}.md"
-            old_link_str = f"- [[{old_folder_name}/{old_timestamp}-{old_safe_title}|{old_title}]]"
-
-        # 編集の反映 (新しい情報をファイルとして上書き保存＆移動等)
-        # ※ファイル名自体はadded_atをベースにするため、同一ファイルが上書き（またはDrive上でリネーム）されます
+    if chat_service:
         await sync_link_to_obsidian(
             chat_service, new_title, new_type, link["url"], 
-            req.purpose, req.target_date, req.memo, req.summary, link["added_at"]
+            req.purpose, req.target_date, req.memo, req.summary, 
+            link["added_at"], old_title, old_type
         )
 
-        # 種類(type)やタイトルが変更された場合、デイリーノート側の記載を移動／修正する処理
-        if old_type != new_type or old_title != new_title:
-            service = chat_service.drive_service.get_service()
-            if service:
-                daily_note_date = base_time.strftime("%Y-%m-%d")
-                drive_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-                daily_fid = await chat_service.drive_service.find_file(service, drive_root, "DailyNotes")
-                if daily_fid:
-                    df_id = await chat_service.drive_service.find_file(service, daily_fid, f"{daily_note_date}.md")
-                    if df_id:
-                        cur = await chat_service.drive_service.read_text_file(service, df_id)
-                        # 古い文字列が含まれていれば削除（空行を作らないよう改行ごと消す）
-                        if old_link_str in cur:
-                            cur = cur.replace(old_link_str + "\n", "")
-                            cur = cur.replace(old_link_str, "") # 改行がない場合を考慮
-                            await chat_service.drive_service.update_text(service, df_id, cur)
-
-                            # 新しいセクションへの追加は sync_link_to_obsidian で行われるため、ここでは削除のみ。
-                            # （※もし同期関数で追加漏れが出た場合を考慮して再度追加させることも可能ですが、基本はsync_linkに任せます）
-
-    # カレンダー追加
+    # 種類によってカレンダーの色を分ける (Map: 10/緑, Recipe: 11/赤, Book: 9/青, その他: 1/デフォルト)
     if req.add_to_calendar and req.target_date:
         bot = getattr(app.state, "bot", None)
         if bot and bot.calendar_service:
             prefix = {"map": "🗺️[行]", "recipe": "🍳[食]", "book": "📚[本]"}.get(new_type, "📎[記]")
+            color_map = {"map": "10", "recipe": "11", "book": "9"}
+            color_id = color_map.get(new_type, "1")
             try:
                 dt = datetime.datetime.strptime(req.target_date, "%Y-%m-%d")
                 bot.calendar_service.get_service().events().insert(calendarId="primary", body={
-                    "summary": f"{prefix} {new_title}", "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
-                    "start": {"date": dt.strftime("%Y-%m-%d")}, "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")}
+                    "summary": f"{prefix} {new_title}", 
+                    "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
+                    "start": {"date": dt.strftime("%Y-%m-%d")}, 
+                    "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")},
+                    "colorId": color_id
                 }).execute()
             except: pass
 
