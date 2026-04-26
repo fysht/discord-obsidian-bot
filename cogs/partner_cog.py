@@ -145,6 +145,21 @@ class PartnerCog(commands.Cog):
         await self.drive_service.upload_text(service, folder_id, filename, full_content)
         return f"永久ノート「{title}」を作成しました。"
 
+    async def _get_todays_obsidian_note(self):
+        """今日のデイリーノートの内容を取得する。"""
+        service = self.drive_service.get_service()
+        if not service: return ""
+        try:
+            folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+            if not folder_id: return ""
+            filename = f"{datetime.datetime.now(JST).strftime('%Y-%m-%d')}.md"
+            file_id = await self.drive_service.find_file(service, folder_id, filename)
+            if file_id:
+                return await self.drive_service.read_text_file(service, file_id)
+        except Exception as e:
+            logging.error(f"DailyNote 読み取りエラー: {e}")
+        return ""
+
     async def _search_drive_notes(self, keywords: str):
         # 簡易的な検索（実際にはより高度な実装が必要だが、現状維持）
         return f"「{keywords}」に関する過去の記録を数件見つけました（シミュレーション）"

@@ -14,6 +14,8 @@ from prompts import (
     PROMPT_HABIT_CHECK,
     PROMPT_ROUTINE_MORNING,
     PROMPT_SPONTANEOUS_CHAT,
+    PROMPT_ROUTINE_TOMORROW,
+    PROMPT_ROUTINE_DAILY_REVIEW,
 )
 from services.info_service import InfoService
 
@@ -46,6 +48,10 @@ class PartnerRoutineCog(commands.Cog):
             self.spontaneous_message_task.start()
         if not self.update_manual_task.is_running():
             self.update_manual_task.start()
+        if not self.tomorrow_plan_task.is_running():
+            self.tomorrow_plan_task.start()
+        if not self.obsidian_review_task.is_running():
+            self.obsidian_review_task.start()
 
     def cog_unload(self):
         self.inactivity_check_task.cancel()
@@ -55,6 +61,8 @@ class PartnerRoutineCog(commands.Cog):
         self.morning_routine_task.cancel()
         self.spontaneous_message_task.cancel()
         self.update_manual_task.cancel()
+        self.tomorrow_plan_task.cancel()
+        self.obsidian_review_task.cancel()
 
     # ==========================================
     # 毎晩23:45に「取扱説明書」を自動更新
@@ -125,8 +133,8 @@ class PartnerRoutineCog(commands.Cog):
         if not (9 <= now.hour <= 22):
             return
 
-        # 7%の確率で発動（1日に1回あるかないか程度）
-        if random.random() > 0.07:
+        # 20%の確率で発動（1日に1〜2回程度、より積極的に）
+        if random.random() > 0.20:
             return
 
         partner_cog = self.bot.get_cog("PartnerCog")
@@ -265,6 +273,53 @@ class PartnerRoutineCog(commands.Cog):
 
         await partner_cog.generate_and_send_routine_message(
             context_data, PROMPT_HABIT_CHECK
+        )
+
+    # ==========================================
+    # 明日の予定と天気を教える（21:00）
+    # ==========================================
+    @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
+    async def tomorrow_plan_task(self):
+        await asyncio.sleep(random.randint(0, 600))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog: return
+
+        # 明日の日付
+        tomorrow = datetime.datetime.now(JST) + timedelta(days=1)
+        tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+
+        schedule_text = "（予定を取得できませんでした）"
+        if self.calendar_service:
+            schedule_text = await self.calendar_service.list_events_for_date(tomorrow_str)
+
+        weather_text = "（天気情報を取得できませんでした）"
+        if self.info_service:
+            weather_data = await self.info_service.get_weather()
+            # 気象庁APIのslotsから明日の分を探すか、summaryから判断
+            # ここではシンプルに今のロジックを流用しつつ「明日」の情報を強調
+            weather_text = f"{weather_data.get('summary', '不明')} (最高{weather_data.get('max_temp','--')}℃ / 最低{weather_data.get('min_temp','--')}℃)"
+
+        context_data = f"【明日の予定】\n{schedule_text}\n\n【明日の天気】\n{weather_text}"
+        await partner_cog.generate_and_send_routine_message(
+            context_data, PROMPT_ROUTINE_TOMORROW
+        )
+
+    # ==========================================
+    # 今日のObsidianデイリーノートを振り返る（20:00）
+    # ==========================================
+    @tasks.loop(time=datetime.time(hour=20, minute=0, tzinfo=JST))
+    async def obsidian_review_task(self):
+        await asyncio.sleep(random.randint(0, 600))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog: return
+
+        # Obsidianのデイリーノートを取得
+        daily_note = await partner_cog._get_todays_obsidian_note()
+        if not daily_note or len(daily_note.strip()) < 50:
+            return # 内容が少なすぎる場合はスキップ
+
+        await partner_cog.generate_and_send_routine_message(
+            daily_note, PROMPT_ROUTINE_DAILY_REVIEW
         )
 
     @spontaneous_message_task.before_loop
