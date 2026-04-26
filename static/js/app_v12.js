@@ -199,6 +199,26 @@ async function loadDashboard() {
                         <span class="temp-min">↓${w.min_temp}℃</span>
                     </div>`;
                 }
+                if (w.slots && w.slots.length > 0) {
+                    html += `<div class="weather-slots">`;
+                    let lastDay = '';
+                    w.slots.forEach(s => {
+                        if (s.day !== lastDay) {
+                            html += `<div class="weather-day-label">${escapeHtml(s.day)}</div>`;
+                            lastDay = s.day;
+                        }
+                        html += `
+                            <div class="weather-slot">
+                                <div class="ws-time">${escapeHtml(s.time)}</div>
+                                <div class="ws-icon">${s.icon}</div>
+                                <div class="ws-weather">${escapeHtml(s.weather)}</div>
+                                <div class="ws-pop">${escapeHtml(s.pop)}</div>
+                                <div class="ws-temp">${escapeHtml(s.temp)}℃</div>
+                            </div>
+                        `;
+                    });
+                    html += `</div>`;
+                }
                 weatherEl.innerHTML = html;
             } else weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした</div>`;
         }
@@ -240,6 +260,23 @@ async function loadDashboard() {
         }
 
         loadHabits();
+        
+        const sleepEl = $('#dash-sleep');
+        if (sleepEl) {
+            if (data.sleep && data.sleep.score !== "N/A") {
+                sleepEl.innerHTML = `
+                    <div class="sleep-stats">
+                        <div class="sleep-score">
+                            <span class="ss-value">${data.sleep.score}</span>
+                            <span class="ss-label">点</span>
+                        </div>
+                        <div class="sleep-duration">${data.sleep.duration}</div>
+                    </div>
+                `;
+            } else {
+                sleepEl.innerHTML = '<div class="loading-placeholder">昨夜のデータがありません</div>';
+            }
+        }
         
         const diaryEl = $('#dash-alter-log');
         if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');

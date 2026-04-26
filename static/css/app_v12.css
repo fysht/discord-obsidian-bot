@@ -352,6 +352,42 @@ details.card > summary > .card-header { border-bottom: none; }
     font-size: 0.82rem;
     flex-shrink: 0;
 }
+.ws-temp {
+    width: 45px;
+    text-align: right;
+    color: var(--text-primary);
+    font-weight: 600;
+    font-size: 0.82rem;
+    flex-shrink: 0;
+}
+
+/* ========== HEALTH / SLEEP ========== */
+.sleep-stats {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 4px;
+}
+.sleep-score {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+}
+.ss-value {
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--accent);
+}
+.ss-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+.sleep-duration {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
 
 /* Toast Notifications */
 #toast-container {
