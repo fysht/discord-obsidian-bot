@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 import datetime
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Header
@@ -101,7 +102,8 @@ async def _fetch_link_meta(url: str) -> dict:
 
 # --- Obsidian同期用共通関数 (英語表記統一) ---
 async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: str, 
-                                purpose: str="", target_date: str="", memo: str="", summary: str=""):
+                                purpose: str="", target_date: str="", memo: str="", summary: str="",
+                                is_update: bool = False):
     """リンク情報をObsidianに作成・更新する"""
     if not chat_service or not chat_service.drive_service: return
     service = chat_service.drive_service.get_service()
@@ -116,33 +118,57 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
     section_header = section_map.get(link_type, "## 🔗 WebClips")
     safe_title = re.sub(r'[\\/*?:"<>|]', "", title)[:80] or "Untitled"
     
-    if link_type == "book":
-        filename = f"{safe_title}.md"
-        link_str = f"- [[{folder_name}/{safe_title}|{title}]]"
-    else:
-        timestamp = now.strftime("%Y%m%d%H%M%S")
-        filename = f"{timestamp}-{safe_title}.md"
-        link_str = f"- [[{folder_name}/{timestamp}-{safe_title}|{title}]]"
-
-    daily_note_date = now.strftime("%Y-%m-%d")
+    # 既存ファイルの検索ロジック (タイムスタンプの有無に関わらずタイトルで判定)
+    existing_id = None
+    target_filename = f"{safe_title}.md"
     
-    note_content = f"# {title}\n\n"
-    if purpose: note_content += f"**🎯 Purpose:** {purpose}\n"
-    if target_date: note_content += f"**📅 Target Date:** {target_date}\n"
-    if memo: note_content += f"**📝 Memo:** {memo}\n"
-    if summary: note_content += f"**💡 Summary:**\n{summary}\n"
-    if url: note_content += f"---\n## Link\n{url}\n\n"
-    note_content += f"---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
-
     try:
         drive_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         f_id = await chat_service.drive_service.find_file(service, drive_root, folder_name)
         if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, folder_name)
 
-        existing = await chat_service.drive_service.find_file(service, f_id, filename) if link_type == "book" else None
-        if existing: await chat_service.drive_service.update_text(service, existing, note_content)
-        else: await chat_service.drive_service.upload_text(service, f_id, filename, note_content)
+        # ドライブ内をタイトルで検索
+        q_title = safe_title.replace("'", "\\'")
+        query = f"'{f_id}' in parents and name contains '{q_title}' and trashed = false"
+        results = await asyncio.to_thread(lambda: service.files().list(q=query, fields="files(id, name)").execute())
+        for f in results.get("files", []):
+            fname = f["name"]
+            if fname == f"{safe_title}.md" or fname.endswith(f"-{safe_title}.md"):
+                existing_id = f["id"]
+                target_filename = fname # 既存のファイル名を維持
+                break
+    except Exception as e:
+        logging.error(f"Obsidian Search Error: {e}")
+        return
 
+    if not existing_id:
+        if is_update:
+            return # 詳細編集時は新規作成しない
+        if link_type != "book":
+            timestamp = now.strftime("%Y%m%d%H%M%S")
+            target_filename = f"{timestamp}-{safe_title}.md"
+
+    daily_note_date = now.strftime("%Y-%m-%d")
+    
+    # Markdownコンテンツ作成 (空行を追加してセテックス見出し化を防止)
+    note_content = f"# {title}\n\n"
+    if purpose: note_content += f"**🎯 Purpose:** {purpose}\n"
+    if target_date: note_content += f"**📅 Target Date:** {target_date}\n"
+    if memo: note_content += f"**📝 Memo:** {memo}\n"
+    if summary: note_content += f"\n**💡 Summary:**\n{summary}\n"
+    
+    if url: note_content += f"\n---\n## Link\n{url}\n\n"
+    note_content += f"\n---\nSaved: {now.strftime('%Y-%m-%d %H:%M')}\n[[{daily_note_date}]]"
+
+    try:
+        if existing_id:
+            await chat_service.drive_service.update_text(service, existing_id, note_content)
+            return # 更新時はデイリーノートへの追記をスキップ
+        else:
+            await chat_service.drive_service.upload_text(service, f_id, target_filename, note_content)
+
+        # デイリーノートへの追記 (新規作成時のみ)
+        link_str = f"- [[{folder_name}/{target_filename.replace('.md', '')}|{title}]]"
         daily_fid = await chat_service.drive_service.find_file(service, drive_root, "DailyNotes")
         if daily_fid:
             df_id = await chat_service.drive_service.find_file(service, daily_fid, f"{daily_note_date}.md")
@@ -572,7 +598,7 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
 
     # Obsidian更新 (Drive)
     chat_service = getattr(app.state, "chat_service", None)
-    await sync_link_to_obsidian(chat_service, new_title, new_type, link["url"], req.purpose, req.target_date, req.memo, req.summary)
+    await sync_link_to_obsidian(chat_service, new_title, new_type, link["url"], req.purpose, req.target_date, req.memo, req.summary, is_update=True)
 
     # カレンダー追加
     if req.add_to_calendar and req.target_date:
