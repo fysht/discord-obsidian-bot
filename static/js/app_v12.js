@@ -826,7 +826,7 @@ function initMain() {
 
 async function loadHistory() {
     try {
-        const data = await apiFetch('/api/history?limit=20');
+        const data = await apiFetch('/api/history?limit=100');
         if (chatMessages) {
             chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
             lastMsgDate = null;

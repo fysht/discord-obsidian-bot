@@ -92,7 +92,7 @@ async def save_message(role: str, content: str):
         await db.commit()
 
 
-async def get_history(limit: int = 20):
+async def get_history(limit: int = 100):
     """直近の会話履歴を取得"""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row

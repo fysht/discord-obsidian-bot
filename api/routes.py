@@ -207,7 +207,7 @@ async def chat(req: ChatRequest):
     return ChatResponse(reply=reply)
 
 @router.get("/history", dependencies=[Depends(verify_api_key)])
-async def history(limit: int = 30):
+async def history(limit: int = 100):
     return {"messages": await get_history(limit=limit)}
 
 @router.get("/dashboard", dependencies=[Depends(verify_api_key)])
