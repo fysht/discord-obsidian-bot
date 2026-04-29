@@ -226,22 +226,7 @@ details.card > summary > .card-header { border-bottom: none; }
 .msg-bubble { padding: 10px 14px; border-radius: 18px; font-size: 0.92rem; line-height: 1.5; background: var(--bg-elevated); border: 1px solid var(--border-glass); word-break: break-all; }
 .message.user .msg-bubble { background: var(--accent); color: #000; border: none; border-top-right-radius: 4px; }
 .message.assistant .msg-bubble { border-top-left-radius: 4px; }
-.msg-meta { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.msg-time { font-size: 0.65rem; color: var(--text-muted); opacity: 0.7; }
-.msg-delete-btn {
-    display: none;
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: 0.65rem;
-    cursor: pointer;
-    padding: 0 2px;
-    line-height: 1;
-    opacity: 0.6;
-    transition: 0.15s;
-}
-.msg-delete-btn:hover { color: #ff5050; opacity: 1; }
-.message:hover .msg-delete-btn { display: inline; }
+.msg-time { font-size: 0.65rem; color: var(--text-muted); opacity: 0.7; margin-top: 4px; }
 .msg-date-separator { align-self: center; background: rgba(0,0,0,0.3); color: var(--text-muted); font-size: 0.75rem; padding: 4px 12px; border-radius: 12px; margin: 10px 0; font-weight: 600; }
 
 .action-chips-container { padding: 12px 0; border-top: 1px solid var(--border-glass); overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 0; }

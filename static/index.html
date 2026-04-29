@@ -485,6 +485,17 @@
             <p style="color:var(--text-secondary); font-size:0.9rem;">素晴らしい！今日も完璧です</p>
         </div>
     </div>
+    <!-- ========== MESSAGE DELETE CONFIRM ========== -->
+    <div id="msg-delete-confirm" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:280px; text-align:center; padding:28px 24px;">
+            <p style="color:var(--text-secondary); margin-bottom:20px; font-size:0.95rem;">このメッセージを削除しますか？</p>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closeMsgDeleteConfirm()">キャンセル</button>
+                <button class="modal-btn delete" onclick="confirmMsgDelete()">削除</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== NOTE SAVE MODAL ========== -->
     <div id="note-save-modal" class="modal-overlay hidden">
         <div class="modal-card">

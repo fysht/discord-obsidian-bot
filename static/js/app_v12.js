@@ -192,21 +192,14 @@ function appendMsg(role, content, isoTimestamp = null) {
     html += `
         <div class="msg-content">
             <div class="msg-bubble" style="word-break: break-all;">${processedContent}</div>
-        </div>
-        <div class="msg-meta">
-            <span class="msg-time">${tStr}</span>
-            <button class="msg-delete-btn" onclick="deleteMsg(this)" title="削除">✕</button>
+            <div class="msg-time">${tStr}</div>
         </div>
     `;
     div.innerHTML = html;
+    attachLongPress(div);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
     if (role === 'assistant') notifyManager(content);
-}
-
-function deleteMsg(btn) {
-    const msgEl = btn.closest('.message');
-    if (msgEl) msgEl.remove();
 }
 
 async function loadDashboard() {
@@ -1285,6 +1278,44 @@ function startConfetti() {
     }
     draw();
 }
+// ===== メッセージ長押し削除 =====
+
+let _longPressTimer = null;
+let _longPressTarget = null;
+
+function attachLongPress(el) {
+    const DURATION = 600;
+
+    const onStart = () => {
+        _longPressTimer = setTimeout(() => {
+            _longPressTarget = el;
+            $('#msg-delete-confirm')?.classList.remove('hidden');
+        }, DURATION);
+    };
+    const onCancel = () => {
+        clearTimeout(_longPressTimer);
+        _longPressTimer = null;
+    };
+
+    el.addEventListener('touchstart', onStart, { passive: true });
+    el.addEventListener('touchend', onCancel);
+    el.addEventListener('touchmove', onCancel, { passive: true });
+    el.addEventListener('mousedown', onStart);
+    el.addEventListener('mouseup', onCancel);
+    el.addEventListener('mouseleave', onCancel);
+    el.addEventListener('contextmenu', e => { e.preventDefault(); onStart(); setTimeout(onCancel, 0); });
+}
+
+function closeMsgDeleteConfirm() {
+    $('#msg-delete-confirm')?.classList.add('hidden');
+    _longPressTarget = null;
+}
+
+function confirmMsgDelete() {
+    if (_longPressTarget) _longPressTarget.remove();
+    closeMsgDeleteConfirm();
+}
+
 // ===== 手書きメモ読み取り =====
 
 let pendingNote = null;
@@ -1343,6 +1374,7 @@ function appendImagePreview(src) {
                 <img src="${src}" style="max-width:200px; max-height:200px; border-radius:10px; display:block;" onload="URL.revokeObjectURL(this.src)">
             </div>
         </div>`;
+    attachLongPress(div);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
@@ -1394,10 +1426,7 @@ function appendNoteCard(note) {
             <div class="note-card">
                 <div class="note-card-header">
                     <span class="note-cat-badge">${catLabel}</span>
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <span style="font-size:0.7rem; color:var(--text-muted);">${tStr}</span>
-                        <button class="msg-delete-btn" onclick="deleteMsg(this)" title="削除">✕</button>
-                    </div>
+                    <span style="font-size:0.7rem; color:var(--text-muted);">${tStr}</span>
                 </div>
                 <div class="note-card-body">${structuredHtml}</div>
                 ${actionsHtml}
@@ -1405,7 +1434,9 @@ function appendNoteCard(note) {
                     <button class="note-save-btn" onclick="openNoteSaveModal()">保存する →</button>
                 </div>
             </div>
+            <div class="msg-time">${tStr}</div>
         </div>`;
+    attachLongPress(div);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
 }
