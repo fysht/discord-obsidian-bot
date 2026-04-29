@@ -1048,6 +1048,9 @@ async function loadHabits() {
             if (label) label.textContent = `${doneCount}/${total}`;
         }
 
+        const heatmapSection = $('#habit-heatmap-section');
+        if (heatmapSection) heatmapSection.style.display = '';
+
         container.innerHTML = data.habits.map(h => {
             const isDone = data.today_done.includes(h.id);
             const streakText = (data.streaks && data.streaks[h.id]) || '';
@@ -1069,6 +1072,15 @@ async function loadHabits() {
                 </div>
             `;
         }).join('');
+
+        // 全完了チェック（初期ロード時は発火しない）
+        const isInitialLoad = (window._prevHabitDoneCount === undefined);
+        if (isInitialLoad) {
+            window._prevHabitDoneCount = (doneCount === total) ? total : -1;
+        } else if (doneCount > 0 && doneCount === total && window._prevHabitDoneCount !== total) {
+            triggerCelebration();
+        }
+        window._prevHabitDoneCount = doneCount;
     } catch (e) { console.error('loadHabits error', e); }
 }
 
@@ -1077,7 +1089,8 @@ window.completeHabit = async (habitName, hId) => {
         const item = $(`#habit-item-${hId}`);
         if (item) item.classList.add('done');
         showToast(`「${habitName}」を完了しました！🎉`);
-        await apiFetch('/api/habits/complete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
+        const result = await apiFetch('/api/habits/complete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
+        checkMilestone(result.message || '');
         loadHabits();
     } catch { showToast('失敗しました', true); }
 };
@@ -1129,4 +1142,114 @@ async function loadSleepTrend() {
     } finally {
         _sleepTrendLoading = false;
     }
+}
+
+// ========== MILESTONE MODAL ==========
+const MILESTONE_DEFS = [
+    { days:100, icon:'👑', msg:'100日連続達成！', sub:'伝説的な継続力。誇りに思ってください' },
+    { days: 60, icon:'🔥', msg:'60日連続達成！',  sub:'2ヶ月継続。これは本物の意志力です' },
+    { days: 30, icon:'🔥', msg:'30日連続達成！',  sub:'1ヶ月！もう習慣はあなたの一部です' },
+    { days: 14, icon:'⚡', msg:'14日連続達成！',  sub:'2週間継続！習慣が身についてきた証拠' },
+    { days:  7, icon:'⚡', msg:'7日連続達成！',   sub:'1週間続けた！最高のスタートです' },
+];
+function checkMilestone(message) {
+    const match = message.match(/現在\s*(\d+)\s*日連続達成中/);
+    if (!match) return;
+    const streak = parseInt(match[1]);
+    const milestone = MILESTONE_DEFS.find(m => m.days === streak);
+    if (milestone) showMilestoneModal(milestone);
+}
+function showMilestoneModal(m) {
+    const modal = $('#milestone-modal');
+    if (!modal) return;
+    $('#milestone-icon').textContent = m.icon;
+    $('#milestone-title').textContent = m.msg;
+    $('#milestone-sub').textContent = m.sub;
+    modal.classList.remove('hidden');
+    setTimeout(() => modal.classList.add('hidden'), 3000);
+}
+window.closeMilestoneModal = () => $('#milestone-modal')?.classList.add('hidden');
+
+// ========== HABIT HEATMAP ==========
+let _heatmapOpen = false;
+function toggleHeatmap() {
+    const heatmapDiv = $('#habit-heatmap');
+    const chevron = $('#heatmap-chevron');
+    if (!heatmapDiv) return;
+    _heatmapOpen = !_heatmapOpen;
+    heatmapDiv.style.display = _heatmapOpen ? 'block' : 'none';
+    if (chevron) chevron.textContent = _heatmapOpen ? '▼' : '▶';
+    if (_heatmapOpen) loadHeatmap();
+}
+async function loadHeatmap() {
+    const grid = $('#heatmap-grid');
+    if (!grid) return;
+    try {
+        const data = await apiFetch('/api/habits/history?days=28');
+        grid.innerHTML = data.history.map(d => {
+            const bg = d.rate === 0 ? 'rgba(255,255,255,0.04)'
+                : d.rate < 0.5 ? 'rgba(0,186,152,0.25)'
+                : d.rate < 1.0 ? 'rgba(0,186,152,0.6)'
+                : 'var(--accent)';
+            return `<div title="${d.date}: ${d.done}/${d.total}" style="aspect-ratio:1;border-radius:3px;background:${bg};cursor:default;"></div>`;
+        }).join('');
+    } catch(e) { console.error('loadHeatmap error', e); }
+}
+
+// ========== CELEBRATION CONFETTI ==========
+function triggerCelebration() {
+    const modal = $('#celebration-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        setTimeout(() => modal.classList.add('hidden'), 3000);
+    }
+    startConfetti();
+    setTimeout(stopConfetti, 3500);
+}
+window.closeCelebrationModal = () => {
+    $('#celebration-modal')?.classList.add('hidden');
+    stopConfetti();
+};
+function startConfetti() {
+    const canvas = $('#confetti-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    const colors = ['#00ba98','#00d4ff','#ffcc00','#ff6600','#ff4ecd'];
+    const particles = Array.from({length:80}, () => ({
+        x: Math.random()*canvas.width,
+        y: Math.random()*canvas.height - canvas.height,
+        r: Math.random()*6+3,
+        d: Math.random()*80+20,
+        color: colors[Math.floor(Math.random()*colors.length)],
+        tilt: 0,
+        tiltAngle: 0,
+        tiltAngleIncremental: Math.random()*0.07+0.05
+    }));
+    let angle = 0;
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        angle += 0.01;
+        particles.forEach(p => {
+            p.tiltAngle += p.tiltAngleIncremental;
+            p.y += (Math.cos(angle + p.d) + 2 + p.r / 2) * 1.2;
+            p.x += Math.sin(angle);
+            p.tilt = Math.sin(p.tiltAngle) * 12;
+            ctx.beginPath();
+            ctx.lineWidth = p.r;
+            ctx.strokeStyle = p.color;
+            ctx.moveTo(p.x + p.tilt + p.r / 3, p.y);
+            ctx.lineTo(p.x + p.tilt, p.y + p.tilt + p.r / 5);
+            ctx.stroke();
+        });
+        canvas._confettiAnimId = requestAnimationFrame(draw);
+    }
+    draw();
+}
+function stopConfetti() {
+    const canvas = $('#confetti-canvas');
+    if (!canvas) return;
+    cancelAnimationFrame(canvas._confettiAnimId);
+    canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
 }

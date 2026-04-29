@@ -591,6 +591,26 @@ async def update_habit(req: BaseModel):
 async def delete_habit_endpoint(req: BaseModel):
     return {"status": "success"}
 
+@router.get("/habits/history", dependencies=[Depends(verify_api_key)])
+async def get_habit_history(days: int = 28):
+    import datetime as dt
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        return {"history": []}
+    data = await habit_cog._load_data()
+    today = dt.datetime.now(JST).date()
+    total_habits = len(data.get("habits", []))
+    history = []
+    for i in range(days - 1, -1, -1):
+        d = today - dt.timedelta(days=i)
+        d_str = d.strftime("%Y-%m-%d")
+        done = len(data.get("logs", {}).get(d_str, []))
+        rate = (done / total_habits) if total_habits > 0 else 0.0
+        history.append({"date": d.strftime("%m/%d"), "rate": round(rate, 2), "done": done, "total": total_habits})
+    return {"history": history}
+
 @router.get("/task_candidates", dependencies=[Depends(verify_api_key)])
 async def task_candidates():
     """タスク開始用の履歴（直近10件）と、終了用の現在実行中タスクを取得"""
