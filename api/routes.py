@@ -448,9 +448,50 @@ async def google_tasks_action(req: GTaskActionRequest):
     else: res = "不明なアクションです"
     return {"status": "success", "message": res}
 
+class GTaskMoveRequest(BaseModel):
+    task_id: str
+    previous_task_id: Optional[str] = None
+    list_name: str = None
+
+@router.post("/google_tasks_move", dependencies=[Depends(verify_api_key)])
+async def google_tasks_move(req: GTaskMoveRequest):
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not bot.tasks_service: raise HTTPException(status_code=503, detail="タスクサービス未設定")
+    res = await bot.tasks_service.move_task(req.task_id, req.previous_task_id, req.list_name)
+    return {"status": "success", "message": res}
+
+@router.get("/sleep_trend", dependencies=[Depends(verify_api_key)])
+async def sleep_trend():
+    from api import app
+    import asyncio as _asyncio
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        return {"trend": []}
+    fitbit_cog = bot.get_cog("FitbitCog")
+    if not fitbit_cog or not fitbit_cog.is_ready:
+        return {"trend": []}
+
+    async def fetch_day(i):
+        date = datetime.datetime.now(JST).date() - datetime.timedelta(days=i)
+        try:
+            stats = await fitbit_cog.fitbit_service.get_stats(date)
+            if stats:
+                return {
+                    "date": date.strftime("%m/%d"),
+                    "score": stats.get("sleep_score"),
+                    "duration": stats.get("total_sleep_minutes"),
+                }
+        except Exception:
+            pass
+        return {"date": date.strftime("%m/%d"), "score": None, "duration": None}
+
+    results = await _asyncio.gather(*[fetch_day(i) for i in range(6, -1, -1)])
+    return {"trend": list(results)}
+
 @router.post("/execute_tool", dependencies=[Depends(verify_api_key)])
 async def execute_tool(req: BaseModel):
-    pass 
+    pass
 
 @router.post("/daily_report", dependencies=[Depends(verify_api_key)])
 async def daily_report():
@@ -484,6 +525,31 @@ async def complete_habit(req: HabitCompleteRequest):
     habit_cog = bot.get_cog("HabitCog") if bot else None
     result_msg = await habit_cog._process_habit_completion(req.habit_name)
     return {"status": "success", "message": result_msg}
+
+class HabitAddRequest(BaseModel):
+    name: str
+    frequency_days: int = 1
+
+@router.post("/habits/add", dependencies=[Depends(verify_api_key)])
+async def add_habit(req: HabitAddRequest):
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        raise HTTPException(status_code=503, detail="HabitCog不在")
+
+    data = await habit_cog._load_data()
+    existing = next((h for h in data["habits"] if h["name"].lower() == req.name.lower()), None)
+    if not existing:
+        existing_ids = [int(h["id"]) for h in data["habits"]] if data["habits"] else [0]
+        new_id = str(max(existing_ids) + 1)
+        data["habits"].append({"id": new_id, "name": req.name, "frequency_days": req.frequency_days})
+        await habit_cog._save_data(data)
+
+    if hasattr(bot, "tasks_service") and bot.tasks_service:
+        await bot.tasks_service.add_task(req.name, list_name="習慣")
+
+    return {"status": "success"}
 
 @router.post("/habits/update", dependencies=[Depends(verify_api_key)])
 async def update_habit(req: BaseModel):

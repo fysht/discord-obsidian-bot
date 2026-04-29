@@ -309,6 +309,7 @@ async function loadDashboard() {
             } else {
                 sleepEl.innerHTML = '<div class="loading-placeholder">昨夜のデータがありません</div>';
             }
+            loadSleepTrend();
         }
         
         const diaryEl = $('#dash-alter-log');
@@ -326,15 +327,184 @@ async function loadDashboard() {
     } catch (err) { console.error(err); }
 }
 
+let _currentWorkTasks = [];
+let _currentPrivateTasks = [];
+
 function renderTaskGroup(container, tasks, listName) {
     if (!container) return;
-    container.innerHTML = tasks && tasks.length ? tasks.map(t => `
-        <div class="list-item">
-            <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', false, '${listName}')"></div>
-            <div class="li-text">${escapeHtml(t.title)}</div>
+    if (listName === '仕事') _currentWorkTasks = tasks || [];
+    if (listName === 'プライベート') _currentPrivateTasks = tasks || [];
+
+    container.innerHTML = tasks && tasks.length ? tasks.map((t, idx) => `
+        <div class="list-item" style="gap:6px;">
+            <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')"></div>
+            <div class="li-text" style="flex:1;">${escapeHtml(t.title)}</div>
+            <div style="display:flex; flex-direction:column; gap:1px;">
+                <button class="icon-btn" style="padding:2px; font-size:0.7rem; opacity:${idx === 0 ? '0.3' : '1'};" ${idx === 0 ? 'disabled' : ''} onclick="moveGTask('${t.id}', 'up', '${listName}')">▲</button>
+                <button class="icon-btn" style="padding:2px; font-size:0.7rem; opacity:${idx === tasks.length - 1 ? '0.3' : '1'};" ${idx === tasks.length - 1 ? 'disabled' : ''} onclick="moveGTask('${t.id}', 'down', '${listName}')">▼</button>
+            </div>
         </div>
     `).join('') : '<div class="loading-placeholder">未完了のタスクはありません</div>';
 }
+
+window.toggleGoogleTask = async (taskId, listName) => {
+    try {
+        await apiFetch('/api/google_tasks_action', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'toggle', task_id: taskId, completed: true, list_name: listName })
+        });
+        showToast('完了にしました！');
+        loadDashboard();
+    } catch (e) {
+        showToast('更新に失敗しました', true);
+    }
+};
+
+window.moveGTask = async (taskId, direction, listName) => {
+    const tasks = listName === '仕事' ? _currentWorkTasks : _currentPrivateTasks;
+    const idx = tasks.findIndex(t => t.id === taskId);
+    if (idx === -1) return;
+
+    let previousId = null;
+    if (direction === 'up') {
+        if (idx <= 0) return;
+        previousId = idx >= 2 ? tasks[idx - 2].id : null;
+    } else {
+        if (idx >= tasks.length - 1) return;
+        previousId = tasks[idx + 1].id;
+    }
+
+    try {
+        await apiFetch('/api/google_tasks_move', {
+            method: 'POST',
+            body: JSON.stringify({ task_id: taskId, previous_task_id: previousId, list_name: listName })
+        });
+        loadDashboard();
+    } catch (e) {
+        showToast('移動に失敗しました', true);
+    }
+};
+
+// ========== MISSING UTILITY FUNCTIONS ==========
+window.forceReload = () => window.location.reload(true);
+
+window.closeBreakdownModal = () => {
+    $('#breakdown-modal')?.classList.add('hidden');
+};
+
+window.closeEditModal = () => {
+    $('#edit-modal')?.classList.add('hidden');
+};
+
+// ========== ADD TASK MODAL ==========
+window.openAddTaskModal = (listName) => {
+    const modal = $('#add-task-modal');
+    if (!modal) return;
+    const title = { '仕事': '仕事タスクを追加', 'プライベート': 'プライベートタスクを追加', '習慣': '習慣を追加' };
+    $('#add-task-modal-title').textContent = title[listName] || 'タスクを追加';
+    $('#add-task-list-name').value = listName;
+    $('#add-task-title-input').value = '';
+    modal.classList.remove('hidden');
+    setTimeout(() => $('#add-task-title-input').focus(), 100);
+};
+
+window.closeAddTaskModal = () => {
+    $('#add-task-modal')?.classList.add('hidden');
+};
+
+window.saveNewTask = async () => {
+    const title = $('#add-task-title-input').value.trim();
+    const listName = $('#add-task-list-name').value;
+    if (!title) { showToast('タスクを入力してください', true); return; }
+
+    const btn = $('#add-task-save-btn');
+    btn.textContent = '追加中...';
+    btn.disabled = true;
+
+    try {
+        if (listName === '習慣') {
+            await apiFetch('/api/habits/add', { method: 'POST', body: JSON.stringify({ name: title }) });
+        } else {
+            await apiFetch('/api/google_tasks_action', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'add', title, list_name: listName })
+            });
+        }
+        showToast(`「${title}」を追加しました`);
+        closeAddTaskModal();
+        loadDashboard();
+    } catch (e) {
+        showToast('追加に失敗しました', true);
+    } finally {
+        btn.textContent = '追加';
+        btn.disabled = false;
+    }
+};
+
+// Enterキーで送信
+document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !$('#add-task-modal')?.classList.contains('hidden')) {
+        const focused = document.activeElement;
+        if (focused && focused.id === 'add-task-title-input') saveNewTask();
+    }
+});
+
+// ========== CALENDAR EVENT MODAL ==========
+window.openAddEventModal = () => {
+    const now = new Date();
+    const toLocal = d => {
+        const off = d.getTimezoneOffset() * 60000;
+        return new Date(d - off).toISOString().slice(0, 16);
+    };
+    const start = new Date(now);
+    start.setMinutes(0, 0, 0);
+    start.setHours(start.getHours() + 1);
+    const end = new Date(start);
+    end.setHours(end.getHours() + 1);
+
+    $('#event-summary').value = '';
+    $('#event-start').value = toLocal(start);
+    $('#event-end').value = toLocal(end);
+    $('#event-desc').value = '';
+    $('#event-modal').classList.remove('hidden');
+    setTimeout(() => $('#event-summary').focus(), 100);
+};
+
+window.closeEventModal = () => {
+    $('#event-modal')?.classList.add('hidden');
+};
+
+window.saveEvent = async () => {
+    const summary = $('#event-summary').value.trim();
+    if (!summary) { showToast('タイトルを入力してください', true); return; }
+
+    const start = $('#event-start').value;
+    const end = $('#event-end').value;
+    const desc = $('#event-desc').value;
+
+    const btn = document.querySelector('#event-modal .modal-btn.submit');
+    if (btn) { btn.textContent = '追加中...'; btn.disabled = true; }
+
+    try {
+        await apiFetch('/api/calendar_action', {
+            method: 'POST',
+            body: JSON.stringify({
+                action: 'add',
+                summary,
+                start_time: start.replace('T', ' ') + ':00',
+                end_time: end.replace('T', ' ') + ':00',
+                description: desc
+            })
+        });
+        showToast('予定を追加しました');
+        closeEventModal();
+        loadDashboard();
+    } catch (e) {
+        showToast('追加に失敗しました', true);
+    } finally {
+        if (btn) { btn.textContent = '追加'; btn.disabled = false; }
+    }
+};
 
 // ========== ACTIONS ==========
 window.sendActionCommand = (cmd) => {
@@ -844,24 +1014,98 @@ async function loadHabits() {
         if (!container) return;
         if (!data.habits || data.habits.length === 0) {
             container.innerHTML = '<div class="p-20 text-center text-secondary">登録された習慣はありません</div>';
+            const wrap = $('#habit-progress-wrap');
+            if (wrap) wrap.style.display = 'none';
             return;
         }
+
+        const doneCount = data.habits.filter(h => data.today_done.includes(h.id)).length;
+        const total = data.habits.length;
+        const progressPct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+
+        const wrap = $('#habit-progress-wrap');
+        if (wrap) {
+            wrap.style.display = '';
+            const fill = $('#habit-progress-fill');
+            if (fill) fill.style.width = `${progressPct}%`;
+            const label = $('#habit-progress-label');
+            if (label) label.textContent = `${doneCount}/${total}`;
+        }
+
         container.innerHTML = data.habits.map(h => {
             const isDone = data.today_done.includes(h.id);
+            const streakText = (data.streaks && data.streaks[h.id]) || '';
+            const streakMatch = streakText.match(/(\d+)/);
+            const streakNum = streakMatch ? parseInt(streakMatch[1]) : 0;
+
+            let streakBadge = '';
+            if (streakNum > 0) {
+                const color = streakNum >= 30 ? '#ff6600' : streakNum >= 14 ? '#ff9900' : streakNum >= 7 ? '#ffcc00' : streakNum >= 3 ? 'var(--primary)' : 'var(--text-muted)';
+                const icon = streakNum >= 30 ? '🔥' : streakNum >= 7 ? '⚡' : '✨';
+                streakBadge = `<span style="font-size:0.72rem; color:${color}; font-weight:700; white-space:nowrap; min-width:30px; text-align:right;">${icon}${streakNum}</span>`;
+            }
+
             return `
                 <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}">
                     <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone ? 'disabled' : ''}>✔</button>
-                    <div class="habit-name">${escapeHtml(h.name)}</div>
+                    <div class="habit-name" style="flex:1;">${escapeHtml(h.name)}</div>
+                    ${streakBadge}
                 </div>
             `;
         }).join('');
-    } catch (e) { }
+    } catch (e) { console.error('loadHabits error', e); }
 }
+
 window.completeHabit = async (habitName, hId) => {
     try {
         const item = $(`#habit-item-${hId}`);
-        if(item) item.classList.add('done');
+        if (item) item.classList.add('done');
         showToast(`「${habitName}」を完了しました！🎉`);
         await apiFetch('/api/habits/complete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
+        loadHabits();
     } catch { showToast('失敗しました', true); }
 };
+
+async function loadSleepTrend() {
+    const container = $('#dash-sleep');
+    if (!container) return;
+    try {
+        const data = await apiFetch('/api/sleep_trend');
+        if (!data.trend || data.trend.every(d => !d.score)) return;
+
+        const validScores = data.trend.map(d => d.score || 0);
+        const maxScore = Math.max(...validScores, 1);
+
+        const barsHtml = data.trend.map(d => {
+            const score = d.score || 0;
+            const barHeight = score > 0 ? Math.max(4, Math.round((score / 100) * 56)) : 4;
+            const color = score >= 80 ? 'var(--primary)' : score >= 60 ? '#ffaa00' : score > 0 ? '#ff5555' : 'rgba(255,255,255,0.1)';
+            const durationMin = d.duration || 0;
+            const dh = Math.floor(durationMin / 60);
+            const dm = durationMin % 60;
+            const durationStr = dh > 0 ? `${dh}h${dm}m` : durationMin > 0 ? `${durationMin}m` : '-';
+            return `
+                <div style="display:flex; flex-direction:column; align-items:center; gap:3px; flex:1; min-width:0;">
+                    <div style="font-size:0.62rem; color:var(--text-secondary); font-weight:600;">${score || '-'}</div>
+                    <div style="display:flex; flex-direction:column; justify-content:flex-end; height:56px;">
+                        <div style="height:${barHeight}px; background:${color}; width:100%; border-radius:3px; transition:height 0.4s; min-width:20px;"></div>
+                    </div>
+                    <div style="font-size:0.6rem; color:var(--text-muted); white-space:nowrap;">${d.date}</div>
+                    <div style="font-size:0.58rem; color:var(--text-muted); white-space:nowrap;">${durationStr}</div>
+                </div>
+            `;
+        }).join('');
+
+        const trendDiv = document.createElement('div');
+        trendDiv.style.cssText = 'margin-top:12px; border-top:1px solid var(--border-glass); padding-top:10px;';
+        trendDiv.innerHTML = `
+            <div style="font-size:0.72rem; color:var(--text-secondary); margin-bottom:8px; font-weight:500;">📈 1週間の推移</div>
+            <div style="display:flex; align-items:flex-end; gap:4px; padding:0 2px;">
+                ${barsHtml}
+            </div>
+        `;
+        container.appendChild(trendDiv);
+    } catch (e) {
+        console.error('Sleep trend error', e);
+    }
+}

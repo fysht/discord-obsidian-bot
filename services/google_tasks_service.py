@@ -252,3 +252,22 @@ class GoogleTasksService:
         except Exception:
             return []
 
+    async def move_task(self, task_id: str, previous_task_id: str = None, list_name: str = None):
+        """タスクの順序を変更する。previous_task_idの後に移動。Noneなら先頭に移動"""
+        service = self.get_service()
+        if not service:
+            return "Tasks APIに接続できませんでした。"
+        try:
+            list_id = await self._get_tasklist_id(service, list_name)
+            loop = asyncio.get_running_loop()
+            kwargs = {"tasklist": list_id, "task": task_id}
+            if previous_task_id:
+                kwargs["previous"] = previous_task_id
+            await loop.run_in_executor(
+                None,
+                lambda: service.tasks().move(**kwargs).execute(),
+            )
+            return "タスクを移動しました。"
+        except Exception as e:
+            return f"タスクの移動に失敗しました: {e}"
+

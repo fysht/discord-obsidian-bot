@@ -190,6 +190,7 @@
                             <span class="card-icon">🔥</span>
                             <span class="card-title">習慣トラッカー</span>
                             <button class="mini-link" onclick="openAddTaskModal('習慣')">＋追加</button>
+                            <a href="https://tasks.google.com/" target="_blank" class="mini-link">開く</a>
                         </div>
                         <div id="habit-progress-wrap" class="habit-progress-wrap" style="display:none;">
                             <div class="habit-progress-bar"><div class="habit-progress-fill" id="habit-progress-fill"></div></div>
@@ -260,6 +261,7 @@
                             <span class="card-icon">💼</span>
                             <span class="card-title">仕事</span>
                             <button class="mini-link" onclick="openAddTaskModal('仕事')">＋追加</button>
+                            <a href="https://tasks.google.com/" target="_blank" class="mini-link">開く</a>
                         </div>
                         <div id="dash-google-tasks-work" class="card-body list-body"></div>
                     </div>
@@ -269,6 +271,7 @@
                             <span class="card-icon">🏠</span>
                             <span class="card-title">プライベート</span>
                             <button class="mini-link" onclick="openAddTaskModal('プライベート')">＋追加</button>
+                            <a href="https://tasks.google.com/" target="_blank" class="mini-link">開く</a>
                         </div>
                         <div id="dash-google-tasks-private" class="card-body list-body"></div>
                     </div>
@@ -375,6 +378,24 @@
             </div>
         </div>
     </div>
+    <!-- ========== ADD TASK MODAL ========== -->
+    <div id="add-task-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3 id="add-task-modal-title">タスクを追加</h3>
+            <input type="hidden" id="add-task-list-name" value="">
+            <div class="modal-body mt-20">
+                <div class="input-group">
+                    <label>タスク名</label>
+                    <input type="text" id="add-task-title-input" class="modern-input" placeholder="タスクを入力...">
+                </div>
+            </div>
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeAddTaskModal()">キャンセル</button>
+                <button class="modal-btn submit" id="add-task-save-btn" onclick="saveNewTask()">追加</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== ADD EVENT MODAL ========== -->
     <div id="event-modal" class="modal-overlay hidden">
         <div class="modal-card">
