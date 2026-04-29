@@ -23,10 +23,7 @@ class DailyOrganizeCog(commands.Cog):
         self.tasks_service = getattr(bot, "tasks_service", None)
         self.info_service = getattr(bot, "info_service", InfoService())
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        if not self.daily_organize_task.is_running():
-            self.daily_organize_task.start()
+        self.daily_organize_task.start()
 
     def cog_unload(self):
         self.daily_organize_task.cancel()
@@ -210,6 +207,11 @@ class DailyOrganizeCog(commands.Cog):
             await self.drive_service.upload_text(
                 service, daily_folder, f"{date_str}.md", content
             )
+
+
+    @daily_organize_task.before_loop
+    async def before_daily_organize(self):
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot: commands.Bot):

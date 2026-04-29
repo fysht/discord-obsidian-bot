@@ -29,8 +29,6 @@ class PartnerRoutineCog(commands.Cog):
         self.calendar_service = getattr(bot, "calendar_service", None)
         self.info_service = getattr(bot, "info_service", InfoService())
 
-    @commands.Cog.listener()
-    async def on_ready(self):
         for task in [
             self.inactivity_check_task,
             self.nightly_reflection_task,
@@ -42,8 +40,7 @@ class PartnerRoutineCog(commands.Cog):
             self.tomorrow_plan_task,
             self.obsidian_review_task,
         ]:
-            if not task.is_running():
-                task.start()
+            task.start()
 
     def cog_unload(self):
         for task in [

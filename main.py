@@ -118,12 +118,11 @@ async def main():
     fastapi_app.state.bot = bot
 
     # CogをロードしてスケジュールタスクをDiscordなしで起動する
+    # _ready をCogロード前に初期化し、ロード後に set() するだけで十分
+    # （全タスクは __init__ で start() し、before_loop で wait_until_ready() を待つ）
+    bot._ready = asyncio.Event()
     await bot.setup_hook()
-    # discord.py 2.x では _ready は login() 後に初期化されるため、手動で設定する
-    import asyncio as _asyncio
-    bot._ready = _asyncio.Event()
-    bot._ready.set()          # wait_until_ready() を解決する
-    bot.dispatch("ready")     # on_ready リスナーを起動する
+    bot._ready.set()
 
     port = int(os.getenv("PORT", 10000))
     config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=port, log_level="info")

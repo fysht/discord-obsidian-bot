@@ -17,10 +17,7 @@ class WeeklyReviewCog(commands.Cog):
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
 
-    @commands.Cog.listener()
-    async def on_ready(self):
-        if not self.weekly_review_task.is_running():
-            self.weekly_review_task.start()
+        self.weekly_review_task.start()
 
     def cog_unload(self):
         self.weekly_review_task.cancel()
@@ -101,6 +98,11 @@ class WeeklyReviewCog(commands.Cog):
                     extracted.append(line.strip())
 
         return "\n".join(extracted)
+
+
+    @weekly_review_task.before_loop
+    async def before_weekly_review(self):
+        await self.bot.wait_until_ready()
 
 
 async def setup(bot: commands.Bot):
