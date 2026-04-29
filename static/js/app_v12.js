@@ -292,8 +292,10 @@ async function loadDashboard() {
             }).join('') : '<div class="loading-placeholder">ログはありません</div>';
         }
 
-        loadHabits();
-        
+        renderTaskGroup($('#dash-habits'), data.habits, '習慣');
+        const habitProgressWrap = $('#habit-progress-wrap');
+        if (habitProgressWrap) habitProgressWrap.style.display = 'none';
+
         const sleepEl = $('#dash-sleep');
         if (sleepEl) {
             if (data.sleep && data.sleep.score !== "N/A") {
@@ -329,11 +331,13 @@ async function loadDashboard() {
 
 let _currentWorkTasks = [];
 let _currentPrivateTasks = [];
+let _currentHabitTasks = [];
 
 function renderTaskGroup(container, tasks, listName) {
     if (!container) return;
     if (listName === '仕事') _currentWorkTasks = tasks || [];
     if (listName === 'プライベート') _currentPrivateTasks = tasks || [];
+    if (listName === '習慣') _currentHabitTasks = tasks || [];
 
     container.innerHTML = tasks && tasks.length ? tasks.map((t, idx) => `
         <div class="list-item" style="gap:6px;">
@@ -361,7 +365,7 @@ window.toggleGoogleTask = async (taskId, listName) => {
 };
 
 window.moveGTask = async (taskId, direction, listName) => {
-    const tasks = listName === '仕事' ? _currentWorkTasks : _currentPrivateTasks;
+    const tasks = listName === '仕事' ? _currentWorkTasks : listName === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
     const idx = tasks.findIndex(t => t.id === taskId);
     if (idx === -1) return;
 
@@ -422,14 +426,10 @@ window.saveNewTask = async () => {
     btn.disabled = true;
 
     try {
-        if (listName === '習慣') {
-            await apiFetch('/api/habits/add', { method: 'POST', body: JSON.stringify({ name: title }) });
-        } else {
-            await apiFetch('/api/google_tasks_action', {
-                method: 'POST',
-                body: JSON.stringify({ action: 'add', title, list_name: listName })
-            });
-        }
+        await apiFetch('/api/google_tasks_action', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'add', title, list_name: listName })
+        });
         showToast(`「${title}」を追加しました`);
         closeAddTaskModal();
         loadDashboard();
