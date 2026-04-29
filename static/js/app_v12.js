@@ -338,15 +338,46 @@ function renderTaskGroup(container, tasks, listName) {
     if (listName === 'プライベート') _currentPrivateTasks = tasks || [];
     if (listName === '習慣') _currentHabitTasks = tasks || [];
 
-    container.innerHTML = tasks && tasks.length ? tasks.map((t) => `
-        <div class="list-item" style="gap:6px;">
-            <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')"></div>
-            <div class="li-text" style="flex:1;">${escapeHtml(t.title)}</div>
-        </div>
-    `).join('') : '<div class="loading-placeholder">未完了のタスクはありません</div>';
+    const activeTasks = (tasks || []).filter(t => !t.completed);
+    const doneTasks = (tasks || []).filter(t => t.completed);
+
+    if (!tasks || tasks.length === 0) {
+        container.innerHTML = '<div class="loading-placeholder">未完了のタスクはありません</div>';
+        return;
+    }
+
+    container.innerHTML = [
+        ...activeTasks.map(t => `
+            <div class="list-item" style="gap:6px;" id="gtask-item-${t.id}">
+                <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')" style="cursor:pointer;"></div>
+                <div class="li-text" style="flex:1;">${escapeHtml(t.title)}</div>
+            </div>
+        `),
+        ...doneTasks.map(t => `
+            <div class="list-item" style="gap:6px; opacity:0.5;" id="gtask-item-${t.id}">
+                <div class="checkbox-custom" style="background:var(--primary); border-color:var(--primary); pointer-events:none; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;">✓</div>
+                <div class="li-text" style="flex:1; text-decoration:line-through; color:var(--text-muted);">${escapeHtml(t.title)}</div>
+            </div>
+        `)
+    ].join('');
 }
 
 window.toggleGoogleTask = async (taskId, listName) => {
+    const item = $(`#gtask-item-${taskId}`);
+    if (item) {
+        item.style.opacity = '0.5';
+        const cb = item.querySelector('.checkbox-custom');
+        if (cb) {
+            cb.style.background = 'var(--primary)';
+            cb.style.borderColor = 'var(--primary)';
+            cb.style.color = '#fff';
+            cb.style.fontSize = '0.7rem';
+            cb.textContent = '✓';
+            cb.onclick = null;
+        }
+        const text = item.querySelector('.li-text');
+        if (text) text.style.textDecoration = 'line-through';
+    }
     try {
         await apiFetch('/api/google_tasks_action', {
             method: 'POST',
@@ -356,6 +387,7 @@ window.toggleGoogleTask = async (taskId, listName) => {
         loadDashboard();
     } catch (e) {
         showToast('更新に失敗しました', true);
+        loadDashboard();
     }
 };
 

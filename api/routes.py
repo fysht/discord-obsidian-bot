@@ -319,8 +319,20 @@ async def dashboard():
     habits = []
     if hasattr(chat_service, "tasks_service") and chat_service.tasks_service:
         try:
-            google_tasks_work = await chat_service.tasks_service.get_raw_tasks("仕事")
-            google_tasks_private = await chat_service.tasks_service.get_raw_tasks("プライベート")
+            work_uncompleted = await chat_service.tasks_service.get_raw_tasks("仕事")
+            work_done_today = await chat_service.tasks_service.get_completed_tasks_today("仕事")
+            google_tasks_work = work_uncompleted + [
+                {"id": f"done_w_{i}", "title": t, "notes": "", "completed": True}
+                for i, t in enumerate(work_done_today)
+            ]
+
+            private_uncompleted = await chat_service.tasks_service.get_raw_tasks("プライベート")
+            private_done_today = await chat_service.tasks_service.get_completed_tasks_today("プライベート")
+            google_tasks_private = private_uncompleted + [
+                {"id": f"done_p_{i}", "title": t, "notes": "", "completed": True}
+                for i, t in enumerate(private_done_today)
+            ]
+
             habits = await chat_service.tasks_service.get_raw_tasks("習慣")
         except Exception: pass
 
