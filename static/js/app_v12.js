@@ -293,9 +293,7 @@ async function loadDashboard() {
             }).join('') : '<div class="loading-placeholder">ログはありません</div>';
         }
 
-        renderTaskGroup($('#dash-habits'), data.habits, '習慣');
-        const habitProgressWrap = $('#habit-progress-wrap');
-        if (habitProgressWrap) habitProgressWrap.style.display = 'none';
+        loadHabits();
 
         const sleepEl = $('#dash-sleep');
         if (sleepEl) {
