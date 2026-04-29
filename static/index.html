@@ -100,6 +100,10 @@
                 <div class="chat-input-area">
                     <form id="chat-form">
                         <div class="input-wrapper">
+                            <button type="button" class="img-attach-btn" id="img-attach-btn" title="手書きメモを読み取る">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                            </button>
+                            <input type="file" id="image-input" accept="image/*" style="display:none;">
                             <textarea id="message-input" placeholder="メッセージを入力..." rows="1"></textarea>
                             <button type="submit" class="send-btn" id="send-btn">
                                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -481,6 +485,70 @@
             <p style="color:var(--text-secondary); font-size:0.9rem;">素晴らしい！今日も完璧です</p>
         </div>
     </div>
+    <!-- ========== NOTE SAVE MODAL ========== -->
+    <div id="note-save-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <h3 style="margin-bottom:16px;">📝 ノートを保存</h3>
+
+            <div class="save-mode-toggle">
+                <label class="save-mode-option">
+                    <input type="radio" name="save-mode" value="new" checked>
+                    <span>新規ノートを作成</span>
+                </label>
+                <label class="save-mode-option">
+                    <input type="radio" name="save-mode" value="append">
+                    <span>既存のノートに追記</span>
+                </label>
+            </div>
+
+            <!-- 新規作成セクション -->
+            <div id="save-new-section" style="margin-top:14px; display:flex; flex-direction:column; gap:10px;">
+                <div style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">タイトル</label>
+                    <input type="text" id="note-title-input" class="modern-input" style="padding:10px;" placeholder="ノートのタイトル">
+                </div>
+                <div style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">カテゴリ</label>
+                    <select id="note-category-select" class="modern-input" style="padding:10px;">
+                        <option value="study">📚 勉強</option>
+                        <option value="work">💼 仕事</option>
+                        <option value="idea">💡 アイデア</option>
+                        <option value="other">📝 その他</option>
+                    </select>
+                </div>
+                <div id="note-subject-wrap" style="display:none; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">科目名</label>
+                    <input type="text" id="note-subject-input" class="modern-input" style="padding:10px;" placeholder="数学、英語 など">
+                </div>
+            </div>
+
+            <!-- 追記セクション -->
+            <div id="save-append-section" style="margin-top:14px; display:none; flex-direction:column; gap:4px;">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">追記先ノート</label>
+                <select id="note-target-select" class="modern-input" style="padding:10px;">
+                    <option value="">読み込み中...</option>
+                </select>
+            </div>
+
+            <!-- 内容（編集可能） -->
+            <div style="margin-top:12px; display:flex; flex-direction:column; gap:4px;">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">内容（編集可能）</label>
+                <textarea id="note-content-input" class="modern-input" style="padding:10px; height:110px; resize:vertical;"></textarea>
+            </div>
+
+            <!-- アクションアイテム -->
+            <div id="note-actions-wrap" style="display:none; margin-top:10px;">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">📌 抽出されたタスク（Google Tasksにも追加）</label>
+                <div id="note-action-items" style="margin-top:6px; display:flex; flex-direction:column; gap:4px;"></div>
+            </div>
+
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeNoteSaveModal()">キャンセル</button>
+                <button class="modal-btn submit" onclick="executeNoteSave()">保存</button>
+            </div>
+        </div>
+    </div>
+
     <canvas id="confetti-canvas" style="position:fixed;inset:0;pointer-events:none;z-index:2000;"></canvas>
 
     <!-- ========== MILESTONE MODAL ========== -->

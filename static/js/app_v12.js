@@ -1277,6 +1277,268 @@ function startConfetti() {
     }
     draw();
 }
+// ===== 手書きメモ読み取り =====
+
+let pendingNote = null;
+let notesListCache = null;
+
+const imgAttachBtn = $('#img-attach-btn');
+const imageInput = $('#image-input');
+
+if (imgAttachBtn) {
+    imgAttachBtn.addEventListener('click', () => imageInput && imageInput.click());
+}
+
+if (imageInput) {
+    imageInput.addEventListener('change', async () => {
+        const file = imageInput.files[0];
+        if (!file) return;
+        imageInput.value = '';
+
+        // チャットに画像プレビューを表示
+        const objectUrl = URL.createObjectURL(file);
+        appendImagePreview(objectUrl);
+
+        // base64変換
+        const base64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result.split(',')[1]);
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+
+        // 読み取り中インジケーター
+        const loadingId = appendLoadingBubble('📖 手書きメモを読み取り中...');
+
+        try {
+            const result = await apiFetch('/api/note_from_image', {
+                method: 'POST',
+                body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
+            });
+            removeLoadingBubble(loadingId);
+            pendingNote = result;
+            appendNoteCard(result);
+        } catch (err) {
+            removeLoadingBubble(loadingId);
+            appendMsg('assistant', '読み取りに失敗しました。もう一度お試しください。');
+        }
+    });
+}
+
+function appendImagePreview(src) {
+    if (!chatMessages) return;
+    const div = document.createElement('div');
+    div.className = 'message user';
+    div.innerHTML = `
+        <div class="msg-content">
+            <div class="msg-bubble" style="padding:6px; background:transparent; border:1px solid var(--border-glass);">
+                <img src="${src}" style="max-width:200px; max-height:200px; border-radius:10px; display:block;" onload="URL.revokeObjectURL(this.src)">
+            </div>
+        </div>`;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function appendLoadingBubble(text) {
+    if (!chatMessages) return null;
+    const id = 'loading-' + Date.now();
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.id = id;
+    div.innerHTML = `
+        <img src="/static/icons/avatar.png" class="msg-avatar">
+        <div class="msg-content">
+            <div class="msg-bubble loading-bubble">${escapeHtml(text)}</div>
+        </div>`;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return id;
+}
+
+function removeLoadingBubble(id) {
+    if (!id) return;
+    const el = document.getElementById(id);
+    if (el) el.remove();
+}
+
+const CATEGORY_LABEL = { work: '💼 仕事', study: '📚 勉強', idea: '💡 アイデア', task: '📋 タスク', other: '📝 その他' };
+
+function appendNoteCard(note) {
+    if (!chatMessages) return;
+    const now = new Date();
+    const tStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+    const catLabel = CATEGORY_LABEL[note.category] || '📝';
+
+    const actionsHtml = note.action_items && note.action_items.length > 0
+        ? `<div class="note-card-actions-list">
+             <div style="font-size:0.75rem; color:var(--text-secondary); margin-bottom:4px;">📌 抽出されたタスク</div>
+             ${note.action_items.map(a => `<div class="note-action-chip">${escapeHtml(a)}</div>`).join('')}
+           </div>`
+        : '';
+
+    const structuredHtml = escapeHtml(note.structured_content || note.transcription || '').replace(/\n/g, '<br>');
+
+    const div = document.createElement('div');
+    div.className = 'message assistant';
+    div.innerHTML = `
+        <img src="/static/icons/avatar.png" class="msg-avatar">
+        <div class="msg-content">
+            <div class="note-card">
+                <div class="note-card-header">
+                    <span class="note-cat-badge">${catLabel}</span>
+                    <span style="font-size:0.7rem; color:var(--text-muted);">${tStr}</span>
+                </div>
+                <div class="note-card-body">${structuredHtml}</div>
+                ${actionsHtml}
+                <div class="note-card-footer">
+                    <button class="note-save-btn" onclick="openNoteSaveModal()">保存する →</button>
+                </div>
+            </div>
+        </div>`;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function openNoteSaveModal() {
+    if (!pendingNote) return;
+
+    // 内容と初期値をセット
+    const contentInput = $('#note-content-input');
+    const titleInput = $('#note-title-input');
+    const categorySelect = $('#note-category-select');
+    const subjectInput = $('#note-subject-input');
+
+    if (contentInput) contentInput.value = pendingNote.structured_content || pendingNote.transcription || '';
+    if (titleInput) titleInput.value = pendingNote.subject || '';
+    if (categorySelect) {
+        categorySelect.value = pendingNote.category || 'other';
+        toggleSubjectField();
+    }
+    if (subjectInput) subjectInput.value = pendingNote.subject || '';
+
+    // アクションアイテム表示
+    const actionsWrap = $('#note-actions-wrap');
+    const actionItemsEl = $('#note-action-items');
+    if (actionsWrap && actionItemsEl && pendingNote.action_items && pendingNote.action_items.length > 0) {
+        actionItemsEl.innerHTML = pendingNote.action_items.map((a, i) =>
+            `<label style="display:flex; align-items:center; gap:8px; font-size:0.85rem;">
+               <input type="checkbox" data-action-idx="${i}" checked style="accent-color:var(--accent);">
+               <span>${escapeHtml(a)}</span>
+             </label>`
+        ).join('');
+        actionsWrap.style.display = 'block';
+    } else if (actionsWrap) {
+        actionsWrap.style.display = 'none';
+    }
+
+    // ラジオの初期化
+    const radioNew = document.querySelector('input[name="save-mode"][value="new"]');
+    if (radioNew) { radioNew.checked = true; toggleSaveMode('new'); }
+
+    // ノート一覧を取得（キャッシュあれば再利用）
+    await loadNotesList();
+
+    $('#note-save-modal')?.classList.remove('hidden');
+}
+
+function closeNoteSaveModal() {
+    $('#note-save-modal')?.classList.add('hidden');
+}
+
+function toggleSaveMode(mode) {
+    const newSec = $('#save-new-section');
+    const appendSec = $('#save-append-section');
+    if (mode === 'new') {
+        if (newSec) newSec.style.display = 'flex';
+        if (appendSec) appendSec.style.display = 'none';
+    } else {
+        if (newSec) newSec.style.display = 'none';
+        if (appendSec) appendSec.style.display = 'flex';
+    }
+}
+
+function toggleSubjectField() {
+    const cat = $('#note-category-select')?.value;
+    const wrap = $('#note-subject-wrap');
+    if (wrap) wrap.style.display = cat === 'study' ? 'flex' : 'none';
+}
+
+// ラジオボタンのイベント登録
+document.querySelectorAll('input[name="save-mode"]').forEach(radio => {
+    radio.addEventListener('change', () => toggleSaveMode(radio.value));
+});
+$('#note-category-select')?.addEventListener('change', toggleSubjectField);
+
+async function loadNotesList() {
+    if (notesListCache) {
+        renderNotesList(notesListCache);
+        return;
+    }
+    try {
+        const data = await apiFetch('/api/notes/list');
+        notesListCache = data.notes || [];
+        renderNotesList(notesListCache);
+    } catch (e) {
+        const sel = $('#note-target-select');
+        if (sel) sel.innerHTML = '<option value="">取得に失敗しました</option>';
+    }
+}
+
+function renderNotesList(notes) {
+    const sel = $('#note-target-select');
+    if (!sel) return;
+    sel.innerHTML = notes.map(n =>
+        `<option value="${n.id}" data-folder="${n.folder}" data-filename="${n.filename}">${escapeHtml(n.name)}</option>`
+    ).join('');
+}
+
+async function executeNoteSave() {
+    if (!pendingNote) return;
+
+    const mode = document.querySelector('input[name="save-mode"]:checked')?.value || 'new';
+    const content = $('#note-content-input')?.value?.trim() || '';
+    if (!content) { showToast('内容を入力してください', true); return; }
+
+    // チェックされたアクションアイテムのみ収集
+    const actionItems = [];
+    document.querySelectorAll('#note-action-items input[type="checkbox"]:checked').forEach(cb => {
+        const idx = parseInt(cb.dataset.actionIdx);
+        if (pendingNote.action_items && pendingNote.action_items[idx]) {
+            actionItems.push(pendingNote.action_items[idx]);
+        }
+    });
+
+    const payload = { mode, content, action_items: actionItems };
+
+    if (mode === 'new') {
+        payload.title = $('#note-title-input')?.value?.trim() || pendingNote.subject || 'メモ';
+        payload.category = $('#note-category-select')?.value || 'other';
+        payload.subject = $('#note-subject-input')?.value?.trim() || '';
+    } else {
+        const sel = $('#note-target-select');
+        const selected = sel?.options[sel.selectedIndex];
+        if (!selected || !selected.value) { showToast('追記先を選択してください', true); return; }
+        payload.target_id = selected.value;
+        payload.target_folder = selected.dataset.folder || '';
+        payload.target_filename = selected.dataset.filename || '';
+    }
+
+    const saveBtn = document.querySelector('#note-save-modal .modal-btn.submit');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
+
+    try {
+        await apiFetch('/api/save_note', { method: 'POST', body: JSON.stringify(payload) });
+        closeNoteSaveModal();
+        showToast('ノートを保存しました ✓');
+        notesListCache = null; // 次回再取得
+        pendingNote = null;
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    } finally {
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+    }
+}
+
 function stopConfetti() {
     const canvas = $('#confetti-canvas');
     if (!canvas) return;
