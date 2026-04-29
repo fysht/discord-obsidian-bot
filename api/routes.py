@@ -610,7 +610,9 @@ async def complete_habit(req: HabitCompleteRequest):
     from api import app
     bot = getattr(app.state, "bot", None)
     habit_cog = bot.get_cog("HabitCog") if bot else None
-    result_msg = await habit_cog._process_habit_completion(req.habit_name)
+    if not habit_cog:
+        return {"status": "error", "message": "HabitCog not available"}
+    result_msg = await habit_cog.complete_habit(req.habit_name)
     return {"status": "success", "message": result_msg}
 
 class HabitAddRequest(BaseModel):
