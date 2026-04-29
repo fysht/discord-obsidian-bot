@@ -12,7 +12,7 @@ from api.database import (
     delete_stocked_link, get_todays_log, clear_history
 )
 from services.info_service import InfoService
-from web_parser import fetch_maps_info
+from web_parser import fetch_maps_info, parse_url_with_readability
 from config import JST
 
 router = APIRouter(prefix="/api")
@@ -83,8 +83,17 @@ async def _fetch_link_meta(url: str) -> dict:
         except Exception: pass
         return {"title": title, "type": link_type}
         
-    if "amazon.co.jp" in url or "amzn.to" in url:
+    if "amazon.co.jp" in url or "amzn.to" in url or "amazon.com" in url:
         link_type = "book"
+        try:
+            pw_title, _ = await asyncio.wait_for(parse_url_with_readability(url), timeout=45.0)
+            if pw_title and pw_title not in ("No Title Found", "Untitled", ""):
+                title = pw_title.replace("Amazon.co.jp:", "").replace("Amazon.com:", "").replace("Amazon |", "").strip()
+                title = _re.sub(r"\s*:\s*Amazon\.co\.jp.*$", "", title).strip()
+                title = _re.sub(r"\s*:\s*Amazon\.com.*$", "", title).strip()
+        except Exception as e:
+            logging.error(f"Amazon Playwright fetch failed for {url}: {e}")
+        return {"title": title if title else "Untitled", "type": link_type}
 
     recipe_domains = ["cookpad.com", "kurashiru.com", "delishkitchen.tv", "macaro-ni.jp",
                       "orangepage.net", "lettuceclub.net", "kyounoryouri.jp", "ajinomoto.co.jp"]
@@ -92,15 +101,17 @@ async def _fetch_link_meta(url: str) -> dict:
 
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+            }
             async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
                 if response.status == 200:
                     html = await response.text(errors="replace")
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
                     if match:
                         title = match.group(1).strip()[:200]
-                    if link_type == "book":
-                        title = title.replace("Amazon.co.jp:", "").replace("Amazon |", "").strip()
                     if link_type == "web":
                         recipe_kw = ["レシピ", "作り方", "献立", "材料", "recipe", "cooking"]
                         if any(k in title.lower() for k in recipe_kw): link_type = "recipe"
