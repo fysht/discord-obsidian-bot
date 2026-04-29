@@ -5,39 +5,22 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
-import re
 
 from google import genai
 
-# --- 変更点：サービス群のインポート名を統一 ---
 from services.google_drive_service import GoogleDriveService
 from services.google_calendar_service import GoogleCalendarService
 from services.google_tasks_service import GoogleTasksService
 from services.info_service import InfoService
 
-try:
-    from obsidian_handler import add_memo_async
-except ImportError:
-    logging.error(
-        "obsidian_handler.pyが見つからないため、起動時メモ処理が無効になります。"
-    )
-    add_memo_async = None
-
-# --- 1. 設定読み込み ---
 log_format = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
 load_dotenv()
 
 
-# --- トークン復元処理 (Render対応) ---
 def restore_token_from_env():
-    """
-    Renderの環境変数 GOOGLE_TOKEN_JSON から token.json を復元します。
-    """
     token_json = os.getenv("GOOGLE_TOKEN_JSON")
     token_path = "token.json"
-
-    # ファイルがまだなく、環境変数がある場合のみ作成
     if not os.path.exists(token_path) and token_json:
         try:
             logging.info("環境変数 GOOGLE_TOKEN_JSON から token.json を復元します...")
@@ -47,56 +30,33 @@ def restore_token_from_env():
             logging.error(f"token.json の復元に失敗しました: {e}")
 
 
-# Bot起動前にトークンを復元
 restore_token_from_env()
 
-TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-MEMO_CHANNEL_ID = int(os.getenv("MEMO_CHANNEL_ID", "0"))
 GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
 
-# --- 2. Bot本体のクラス定義 ---
 class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        intents.reactions = True
         super().__init__(command_prefix="!", intents=intents)
 
-        # --- GoogleDriveServiceの生成 ---
         if GOOGLE_DRIVE_FOLDER_ID:
             self.drive_service = GoogleDriveService(GOOGLE_DRIVE_FOLDER_ID)
         else:
             self.drive_service = None
             logging.warning("GOOGLE_DRIVE_FOLDER_IDが設定されていません。")
 
-        # --- GoogleCalendarServiceの生成 ---
-        if (
-            self.drive_service
-            and hasattr(self.drive_service, "creds")
-            and self.drive_service.creds
-        ):
+        if self.drive_service and self.drive_service.creds:
             calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary")
             self.calendar_service = GoogleCalendarService(
                 self.drive_service.creds, calendar_id
             )
-        else:
-            self.calendar_service = None
-            logging.warning("カレンダー用の認証情報がありません。")
-
-        # --- ★修正：GoogleTasksServiceの生成 (credsを渡す) ---
-        if (
-            self.drive_service
-            and hasattr(self.drive_service, "creds")
-            and self.drive_service.creds
-        ):
             self.tasks_service = GoogleTasksService(self.drive_service.creds)
         else:
+            self.calendar_service = None
             self.tasks_service = None
-            logging.warning("タスク用の認証情報がありません。")
+            logging.warning("Google認証情報がありません。Calendar/Tasksは無効です。")
 
-        # --- Geminiクライアントの生成 ---
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             self.gemini_client = genai.Client(api_key=api_key)
@@ -104,25 +64,20 @@ class MyBot(commands.Bot):
             self.gemini_client = None
             logging.warning("GEMINI_API_KEYが設定されていません。")
 
-        # --- 天気・ニュース取得サービスの生成 ---
         self.info_service = InfoService()
 
     async def setup_hook(self):
-        """Cogを動的にロードする"""
         logging.info("Cogの読み込みを開始します...")
         cogs_dir = Path(__file__).parent / "cogs"
 
         successful_loads = 0
         failed_loads = []
 
-        # cogsフォルダ内のファイルを自動で読み込む
         for filename in os.listdir(cogs_dir):
             if filename == "__pycache__":
                 continue
-
             if filename.endswith(".py") and not filename.startswith("__"):
                 cog_name = f"cogs.{filename[:-3]}"
-
                 try:
                     await self.load_extension(cog_name)
                     logging.info(f" -> {cog_name} を読み込みました。")
@@ -135,58 +90,24 @@ class MyBot(commands.Bot):
 
         logging.info(f"Cog読み込み完了: {successful_loads}個成功")
         if failed_loads:
-            logging.error(
-                f"Cog読み込み失敗: {len(failed_loads)}個 - {', '.join(failed_loads)}"
-            )
-
-        try:
-            await self.tree.sync()
-            logging.info(
-                f"グローバルに {len(self.tree.get_commands())} 個のスラッシュコマンドを同期しました。"
-            )
-        except Exception as e:
-            logging.error(
-                f"スラッシュコマンド同期中に予期せぬエラー: {e}", exc_info=True
-            )
-
-    async def on_ready(self):
-        logging.info(f"{self.user} としてログインしました (Render - Main Bot)")
-        logging.info("--- Bot is ready and listening for events ---")
-
-        if add_memo_async and GOOGLE_DRIVE_FOLDER_ID:
-            await self.process_offline_memos()
-
-    async def process_offline_memos(self):
-        pass
+            logging.error(f"Cog読み込み失敗: {len(failed_loads)}個 - {', '.join(failed_loads)}")
 
 
-# --- 3. 起動処理 ---
 async def main():
     bot = MyBot()
 
-    # TOKENのチェックは行うが、Webサーバー起動を優先するためreturnはしない
-    if not TOKEN:
-        logging.error(
-            "DISCORD_BOT_TOKENが設定されていません。Discord側は起動しません。"
-        )
-
-
-    # --- FastAPI の初期化 ---
     import uvicorn
     from api import app as fastapi_app
     from api.routes import router as api_router
     from api.database import init_db, restore_db_from_drive
     from api.chat_service import ChatService
 
-    # APIルーターを登録
     fastapi_app.include_router(api_router)
 
-    # DBの復元と初期化
     if bot.drive_service and GOOGLE_DRIVE_FOLDER_ID:
         await restore_db_from_drive(bot.drive_service, GOOGLE_DRIVE_FOLDER_ID)
     await init_db()
 
-    # ChatServiceの初期化（Botと同じサービスインスタンスを共有）
     chat_service = ChatService(
         gemini_client=bot.gemini_client,
         drive_service=bot.drive_service,
@@ -194,33 +115,26 @@ async def main():
         tasks_service=bot.tasks_service,
     )
     fastapi_app.state.chat_service = chat_service
+    fastapi_app.state.bot = bot
 
-    # uvicornをasyncioで起動する設定
+    # CogをロードしてスケジュールタスクをDiscordなしで起動する
+    await bot.setup_hook()
+    bot._ready.set()          # wait_until_ready() を解決する
+    bot.dispatch("ready")     # on_ready リスナーを起動する
+
     port = int(os.getenv("PORT", 10000))
     config = uvicorn.Config(fastapi_app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
 
-    fastapi_app.state.bot = bot  # API側からBotインスタンスにアクセス可能にする
-
-    # Discord BotとFastAPIを並列で起動
     logging.info(f"Manager AI サーバーをポート {port} で起動します...")
-    tasks = [server.serve()]
-    if TOKEN:
-        tasks.append(bot.start(TOKEN))
-    else:
-        logging.warning("TOKENがないため、Webサーバー（PWA）のみを起動します。")
-
     try:
-        await asyncio.gather(*tasks)
+        await server.serve()
     except Exception as e:
         logging.error(f"サーバーの起動中にエラーが発生しました: {e}", exc_info=True)
 
-
-URL_REGEX = re.compile(r"https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("プログラムが手動で終了されました。")
-

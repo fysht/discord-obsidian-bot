@@ -74,10 +74,13 @@ class FitbitService:
         except Exception as e:
             logging.error(f"Fitbit Token Save Error: {e}")
 
+    async def close(self):
+        if self.session and not self.session.closed:
+            await self.session.close()
+
     async def _refresh_access_token(self):
         async with self._refresh_lock:
-            # 有効期限のチェック（60秒の余裕を持たせる）
-            now = datetime.datetime.now()
+            now = datetime.datetime.now(JST)
             if self.access_token and self.access_token_expires_at and self.access_token_expires_at > now + datetime.timedelta(seconds=60):
                 return True
 
@@ -98,8 +101,8 @@ class FitbitService:
                         resp_json = await resp.json()
                         self.access_token = resp_json["access_token"]
                         new_refresh = resp_json["refresh_token"]
-                        expires_in = resp_json.get("expires_in", 28800) # デフォルト8時間
-                        self.access_token_expires_at = datetime.datetime.now() + datetime.timedelta(seconds=expires_in)
+                        expires_in = resp_json.get("expires_in", 28800)
+                        self.access_token_expires_at = datetime.datetime.now(JST) + datetime.timedelta(seconds=expires_in)
                         
                         await self._save_token(new_refresh)
                         return True

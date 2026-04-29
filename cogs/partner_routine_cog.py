@@ -1,10 +1,11 @@
 import os
 import asyncio
-from discord.ext import commands, tasks
 import logging
 import datetime
-from datetime import timedelta
 import random
+from datetime import timedelta
+
+from discord.ext import commands, tasks
 
 from config import JST
 from prompts import (
@@ -23,65 +24,58 @@ from services.info_service import InfoService
 class PartnerRoutineCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.gemini_client = bot.gemini_client
-
         self.tasks_service = getattr(bot, "tasks_service", None)
-        # ★ 追加: カレンダーサービスを取得できるように設定
         self.calendar_service = getattr(bot, "calendar_service", None)
         self.info_service = getattr(bot, "info_service", InfoService())
 
     @commands.Cog.listener()
     async def on_ready(self):
-        if not self.inactivity_check_task.is_running():
-            self.inactivity_check_task.start()
-        if not self.nightly_reflection_task.is_running():
-            self.nightly_reflection_task.start()
-        if not self.weekend_stock_review_task.is_running():
-            self.weekend_stock_review_task.start()
-        if not self.habit_check_task.is_running():
-            self.habit_check_task.start()
-        if not self.morning_routine_task.is_running():
-            self.morning_routine_task.start()
-
-        if not self.spontaneous_message_task.is_running():
-            self.spontaneous_message_task.start()
-        if not self.update_manual_task.is_running():
-            self.update_manual_task.start()
-        if not self.tomorrow_plan_task.is_running():
-            self.tomorrow_plan_task.start()
-        if not self.obsidian_review_task.is_running():
-            self.obsidian_review_task.start()
+        for task in [
+            self.inactivity_check_task,
+            self.nightly_reflection_task,
+            self.weekend_stock_review_task,
+            self.habit_check_task,
+            self.morning_routine_task,
+            self.spontaneous_message_task,
+            self.update_manual_task,
+            self.tomorrow_plan_task,
+            self.obsidian_review_task,
+        ]:
+            if not task.is_running():
+                task.start()
 
     def cog_unload(self):
-        self.inactivity_check_task.cancel()
-        self.nightly_reflection_task.cancel()
-        self.weekend_stock_review_task.cancel()
-        self.habit_check_task.cancel()
-        self.morning_routine_task.cancel()
-        self.spontaneous_message_task.cancel()
-        self.update_manual_task.cancel()
-        self.tomorrow_plan_task.cancel()
-        self.obsidian_review_task.cancel()
+        for task in [
+            self.inactivity_check_task,
+            self.nightly_reflection_task,
+            self.weekend_stock_review_task,
+            self.habit_check_task,
+            self.morning_routine_task,
+            self.spontaneous_message_task,
+            self.update_manual_task,
+            self.tomorrow_plan_task,
+            self.obsidian_review_task,
+        ]:
+            task.cancel()
 
     # ==========================================
     # 毎晩23:45に「取扱説明書」を自動更新
     # ==========================================
     @tasks.loop(time=datetime.time(hour=23, minute=45, tzinfo=JST))
     async def update_manual_task(self):
-        # 人間らしさのため0〜10分のランダム遅延
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
-        # 今日の会話ログを取得(PWA履歴)
+        if not partner_cog:
+            return
+
         today_log = await partner_cog.fetch_todays_chat_log()
         if not today_log.strip():
-            return  # 会話がなければスキップ
+            return
 
-        # 現在の取扱説明書を取得
         current_manual = await partner_cog._get_user_manual()
 
         from prompts import PROMPT_UPDATE_MANUAL
-
         prompt = PROMPT_UPDATE_MANUAL.format(
             current_manual=current_manual, chat_log=today_log
         )
@@ -93,7 +87,6 @@ class PartnerRoutineCog(commands.Cog):
             )
             new_manual = response.text.strip()
 
-            # Google Driveの .bot フォルダ（隠しフォルダ）に保存
             service = partner_cog.drive_service.get_service()
             folder_id = await partner_cog.drive_service.find_file(
                 service, partner_cog.drive_folder_id, ".bot"
@@ -115,25 +108,20 @@ class PartnerRoutineCog(commands.Cog):
                     service, folder_id, "UserManual.md", new_manual
                 )
 
-            # パートナーの脳内キャッシュを最新化
             partner_cog.user_manual_cache = new_manual
             partner_cog.last_manual_fetch = datetime.datetime.now()
             logging.info("【UserManual】取扱説明書の更新と保存が完了しました！")
-
         except Exception as e:
             logging.error(f"Manual Update Error: {e}")
 
     # ==========================================
-    # 記憶を使った「完全な気まぐれ発言」
+    # 気まぐれメッセージ（毎時20%の確率）
     # ==========================================
     @tasks.loop(hours=1)
     async def spontaneous_message_task(self):
-        # 9時から22時の間のみ（深夜・早朝は避ける）
         now = datetime.datetime.now(JST)
         if not (9 <= now.hour <= 22):
             return
-
-        # 20%の確率で発動（1日に1〜2回程度、より積極的に）
         if random.random() > 0.20:
             return
 
@@ -141,31 +129,27 @@ class PartnerRoutineCog(commands.Cog):
         if not partner_cog:
             return
 
-        # もし直近1時間以内に会話していたら、ウザくならないようにスキップ
-        if hasattr(partner_cog, "last_interaction"):
-            if (
-                datetime.datetime.now(JST) - partner_cog.last_interaction
-            ).total_seconds() < 3600:
-                return
+        if (
+            datetime.datetime.now(JST) - partner_cog.last_interaction
+        ).total_seconds() < 3600:
+            return
 
-        # コア・メモリーを取得してプロンプトを作成
         manual = await partner_cog._get_user_manual()
         prompt = PROMPT_SPONTANEOUS_CHAT.format(user_manual=manual)
-
-        # 定期メッセージ関数を使って送信
         await partner_cog.generate_and_send_routine_message(
             "（気まぐれな雑談メッセージを生成してください）", prompt
         )
 
+    # ==========================================
+    # 朝のルーティン（7:00）
+    # ==========================================
     @tasks.loop(time=datetime.time(hour=7, minute=0, tzinfo=JST))
     async def morning_routine_task(self):
-        # 人間らしさのため0〜15分のランダム遅延
         await asyncio.sleep(random.randint(0, 900))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return
 
-        # ★ 追加: 今日のカレンダーの予定を取得
         schedule_text = "（予定を取得できませんでした）"
         if self.calendar_service:
             today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -187,17 +171,23 @@ class PartnerRoutineCog(commands.Cog):
         news_text = (
             "\n".join(news_list) if news_list else "（ニュースを取得できませんでした）"
         )
-
-        # ★ 変更: context_data に【今日の予定】を結合
-        context_data = f"【今日の予定】\n{schedule_text}\n\n【未完了のタスク】\n{tasks_text}\n\n【今日の天気】\n{weather} (最高{max_t}℃ / 最侎{min_t}℃)\n\n【ニュース】\n{news_text}"
+        context_data = (
+            f"【今日の予定】\n{schedule_text}\n\n"
+            f"【未完了のタスク】\n{tasks_text}\n\n"
+            f"【今日の天気】\n{weather} (最高{max_t}℃ / 最低{min_t}℃)\n\n"
+            f"【ニュース】\n{news_text}"
+        )
         await partner_cog.generate_and_send_routine_message(
             context_data, PROMPT_ROUTINE_MORNING
         )
 
+    # ==========================================
+    # 無活動チェック（15分ごと）
+    # ==========================================
     @tasks.loop(minutes=15)
     async def inactivity_check_task(self):
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog or not hasattr(partner_cog, "last_interaction"):
+        if not partner_cog:
             return
 
         now = datetime.datetime.now(JST)
@@ -210,18 +200,21 @@ class PartnerRoutineCog(commands.Cog):
             )
             partner_cog.last_interaction = now
 
+    # ==========================================
+    # 夜の振り返り（22:00）
+    # ==========================================
     @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
     async def nightly_reflection_task(self):
-        # 人間らしさのため0〜15分のランダム遅延
         await asyncio.sleep(random.randint(0, 900))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return
 
-        # PWAの機能として取得(channelはNoneでも動くように改修済み)
         today_log = await partner_cog.fetch_todays_chat_log()
-
-        prompt = f"{PROMPT_ROUTINE_NIGHTLY}\n\n【今日の会話ログ】\n{today_log if today_log.strip() else '今日は特に会話がありませんでした。'}"
+        prompt = (
+            f"{PROMPT_ROUTINE_NIGHTLY}\n\n【今日の会話ログ】\n"
+            f"{today_log if today_log.strip() else '今日は特に会話がありませんでした。'}"
+        )
 
         try:
             if self.gemini_client:
@@ -229,33 +222,37 @@ class PartnerRoutineCog(commands.Cog):
                     model="gemini-2.5-pro", contents=prompt
                 )
                 from api.database import save_message, backup_db_to_drive
-                import asyncio
-                
+
                 reply_text = response.text.strip()
                 await save_message("assistant", reply_text)
                 if partner_cog.drive_service:
-                    asyncio.create_task(backup_db_to_drive(partner_cog.drive_service, partner_cog.drive_folder_id))
-
+                    asyncio.create_task(
+                        backup_db_to_drive(
+                            partner_cog.drive_service, partner_cog.drive_folder_id
+                        )
+                    )
         except Exception as e:
             logging.error(f"Nightly Reflection Error: {e}")
 
+    # ==========================================
+    # 週末の株レビュー（金曜20:00）
+    # ==========================================
     @tasks.loop(time=datetime.time(hour=20, minute=0, tzinfo=JST))
     async def weekend_stock_review_task(self):
         if datetime.datetime.now(JST).weekday() != 4:
             return
-
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return
-
-        context_data = "今週の株式市場が閉まりました。週末です。"
         await partner_cog.generate_and_send_routine_message(
-            context_data, PROMPT_WEEKEND_STOCK_REVIEW
+            "今週の株式市場が閉まりました。週末です。", PROMPT_WEEKEND_STOCK_REVIEW
         )
 
+    # ==========================================
+    # 習慣チェック（21:00）
+    # ==========================================
     @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
     async def habit_check_task(self):
-        # 人間らしさのため0〜10分のランダム遅延
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
         habit_cog = self.bot.get_cog("HabitCog")
@@ -276,28 +273,32 @@ class PartnerRoutineCog(commands.Cog):
         )
 
     # ==========================================
-    # 明日の予定と天気を教える（21:00）
+    # 明日の予定（21:00）
     # ==========================================
     @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
     async def tomorrow_plan_task(self):
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog: return
+        if not partner_cog:
+            return
 
-        # 明日の日付
         tomorrow = datetime.datetime.now(JST) + timedelta(days=1)
         tomorrow_str = tomorrow.strftime("%Y-%m-%d")
 
         schedule_text = "（予定を取得できませんでした）"
         if self.calendar_service:
-            schedule_text = await self.calendar_service.list_events_for_date(tomorrow_str)
+            schedule_text = await self.calendar_service.list_events_for_date(
+                tomorrow_str
+            )
 
         weather_text = "（天気情報を取得できませんでした）"
         if self.info_service:
             weather_data = await self.info_service.get_weather()
-            # 気象庁APIのslotsから明日の分を探すか、summaryから判断
-            # ここではシンプルに今のロジックを流用しつつ「明日」の情報を強調
-            weather_text = f"{weather_data.get('summary', '不明')} (最高{weather_data.get('max_temp','--')}℃ / 最低{weather_data.get('min_temp','--')}℃)"
+            weather_text = (
+                f"{weather_data.get('summary', '不明')} "
+                f"(最高{weather_data.get('max_temp','--')}℃ / "
+                f"最低{weather_data.get('min_temp','--')}℃)"
+            )
 
         context_data = f"【明日の予定】\n{schedule_text}\n\n【明日の天気】\n{weather_text}"
         await partner_cog.generate_and_send_routine_message(
@@ -305,18 +306,18 @@ class PartnerRoutineCog(commands.Cog):
         )
 
     # ==========================================
-    # 今日のObsidianデイリーノートを振り返る（20:00）
+    # Obsidianデイリーノートの振り返り（20:00）
     # ==========================================
     @tasks.loop(time=datetime.time(hour=20, minute=0, tzinfo=JST))
     async def obsidian_review_task(self):
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog: return
+        if not partner_cog:
+            return
 
-        # Obsidianのデイリーノートを取得
         daily_note = await partner_cog._get_todays_obsidian_note()
         if not daily_note or len(daily_note.strip()) < 50:
-            return # 内容が少なすぎる場合はスキップ
+            return
 
         await partner_cog.generate_and_send_routine_message(
             daily_note, PROMPT_ROUTINE_DAILY_REVIEW
@@ -324,7 +325,14 @@ class PartnerRoutineCog(commands.Cog):
 
     @spontaneous_message_task.before_loop
     @update_manual_task.before_loop
-    async def before_new_tasks(self):
+    @morning_routine_task.before_loop
+    @inactivity_check_task.before_loop
+    @nightly_reflection_task.before_loop
+    @weekend_stock_review_task.before_loop
+    @habit_check_task.before_loop
+    @tomorrow_plan_task.before_loop
+    @obsidian_review_task.before_loop
+    async def before_tasks(self):
         await self.bot.wait_until_ready()
 
 

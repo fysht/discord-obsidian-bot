@@ -16,7 +16,6 @@ from services.info_service import InfoService
 class DailyOrganizeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
         self.drive_service = bot.drive_service
@@ -34,7 +33,6 @@ class DailyOrganizeCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=23, minute=55, tzinfo=JST))
     async def daily_organize_task(self):
-        channel = self.bot.get_channel(self.memo_channel_id)
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return
@@ -45,8 +43,7 @@ class DailyOrganizeCog(commands.Cog):
         if self.tasks_service:
             current_tasks_text = await self.tasks_service.get_uncompleted_tasks()
 
-        # channelがNoneの場合でもPWA DBからログを取得する（partner_cogの改修に対応）
-        log_text = await partner_cog.fetch_todays_chat_log(channel)
+        log_text = await partner_cog.fetch_todays_chat_log()
 
         weather_res = await self.info_service.get_weather()
         weather = weather_res.get("summary", "取得失敗")
@@ -105,11 +102,10 @@ class DailyOrganizeCog(commands.Cog):
         result["meta"] = {
             "weather": f'"{weather}"' if weather != "取得失敗" else "取得失敗",
             "temp_max": f'"{max_t}"' if max_t != "N/A" else "N/A",
-            "temp_min": f'"{min_t}"' if min_t != "N/A" else "N/A"
+            "temp_min": f'"{min_t}"' if min_t != "N/A" else "N/A",
         }
         await self._execute_organization(result, today_str)
 
-        # ★ ここを修正: リスト名（仕事/プライベート）を受け取ってGoogle Tasksへ登録
         if result.get("next_actions") and self.tasks_service:
             for act_data in result["next_actions"]:
                 if isinstance(act_data, str):

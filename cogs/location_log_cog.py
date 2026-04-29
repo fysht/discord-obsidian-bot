@@ -6,9 +6,7 @@ import io
 import asyncio
 import re
 
-import discord
 from discord.ext import commands, tasks
-from discord import app_commands
 import googlemaps
 from geopy.distance import great_circle
 from googleapiclient.http import MediaIoBaseDownload
@@ -38,7 +36,6 @@ ACTIVITY_TYPE_MAP = {
 class LocationLogCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         self.drive_service = bot.drive_service
         self.home_coordinates = self._parse_coordinates(os.getenv("HOME_COORDINATES"))
@@ -283,7 +280,6 @@ class LocationLogCog(commands.Cog):
 
         return True
 
-    # ★ 追加: AIツールから直接呼び出せる同期メソッド
     async def perform_manual_sync(self, target_date: str) -> str:
         if not DATE_REGEX.match(target_date):
             return "❌ 日付の形式が正しくありません。(例: 2026-02-15)"
@@ -328,7 +324,6 @@ class LocationLogCog(commands.Cog):
         if not service:
             return
 
-        channel = self.bot.get_channel(self.memo_channel_id)
         timeline_folder_id = await loop.run_in_executor(
             None, self._find_folder_in_root, service, "Timeline"
         )
@@ -376,7 +371,7 @@ class LocationLogCog(commands.Cog):
                 f"処理済み_{timestamp}_{file_name}",
             )
 
-            if channel and processed_dates:
+            if processed_dates:
                 dates_str = ", ".join(sorted(processed_dates))
                 partner_cog = self.bot.get_cog("PartnerCog")
                 if partner_cog:
@@ -385,22 +380,8 @@ class LocationLogCog(commands.Cog):
                         context, PROMPT_LOCATION_SYNC
                     )
                 else:
-                    msg = f"📍 {dates_str} の移動記録を保存したよ！"
                     from api.database import save_message as _save_msg
-                    await _save_msg("assistant", msg)
-                    pass
-
-    @app_commands.command(
-        name="location_sync",
-        description="過去のロケーション履歴を指定して手動で同期します。",
-    )
-    @app_commands.describe(target_date="同期したい日付 (例: 2026-02-15)")
-    async def sync_location_manual(
-        self, interaction: discord.Interaction, target_date: str
-    ):
-        await interaction.response.defer(ephemeral=False)
-        result = await self.perform_manual_sync(target_date)
-        await interaction.followup.send(result)
+                    await _save_msg("assistant", f"📍 {dates_str} の移動記録を保存したよ！")
 
     @process_timeline_json.before_loop
     async def before_process(self):

@@ -26,7 +26,7 @@ class GoogleTasksService:
                 None, lambda: service.tasklists().list().execute()
             )
             for item in res.get("items", []):
-                if list_name.lower() in item["title"].lower():
+                if list_name.lower() == item["title"].lower():
                     return item["id"]
             # 見つからなかった場合は新規作成する
             res = await loop.run_in_executor(

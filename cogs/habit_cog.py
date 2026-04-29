@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import datetime, time, timedelta
 import re
+
 from discord.ext import commands, tasks
 
 from config import JST, BOT_FOLDER
@@ -15,7 +16,6 @@ class HabitCog(commands.Cog):
         self.bot = bot
         self.drive_service = bot.drive_service
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        self.memo_channel_id = int(os.getenv("MEMO_CHANNEL_ID", 0))
         self.sync_habits_loop.start()
         self.nightly_habit_sync.start()
 
@@ -51,6 +51,10 @@ class HabitCog(commands.Cog):
         b_folder = await self.drive_service.find_file(
             service, self.drive_folder_id, BOT_FOLDER
         )
+        if not b_folder:
+            b_folder = await self.drive_service.create_folder(
+                service, self.drive_folder_id, BOT_FOLDER
+            )
         f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
         content = json.dumps(data, ensure_ascii=False, indent=2)
         if f_id:
@@ -61,7 +65,6 @@ class HabitCog(commands.Cog):
             )
 
     async def complete_habit(self, habit_name_or_keyword: str, frequency_days: int = 1):
-        """Discordから完了報告された場合の処理"""
         if hasattr(self.bot, "tasks_service") and self.bot.tasks_service:
             await self.bot.tasks_service.complete_task_by_keyword(
                 habit_name_or_keyword, list_name="習慣"
@@ -102,12 +105,21 @@ class HabitCog(commands.Cog):
             data["logs"][today_str].append(h_id)
             await self._save_data(data)
             stats_msg = self._get_habit_stats(data, h_id, today_str)
-            # ★ 変更: AIに毎回違う言葉で褒めさせるための「システム通知」の裏プロンプト
             return f"【システム通知】習慣「{target_habit['name']}」の完了を記録しました。（{stats_msg}）\nこの記録を踏まえて、ユーザーをLINE風のタメ口で全力で褒めてください！毎回同じ定型文にならないよう表現を変え、もし3日、7日、14日、30日などのキリの良い記録であれば、さらにテンション高めでお祝いしてください。"
         else:
             stats_msg = self._get_habit_stats(data, h_id, today_str)
-            # ★ 変更: すでに完了している場合もAIに優しく褒めさせる
             return f"【システム通知】習慣「{target_habit['name']}」はすでに今日の分が記録済みです。（{stats_msg}）\nこのことを踏まえて、ユーザーの継続をLINE風のタメ口で優しく褒めてあげてください。定型文は避けてください。"
+
+    async def get_incomplete_habits(self) -> list[str]:
+        """今日まだ完了していない習慣の名前リストを返す"""
+        data = await self._load_data()
+        today_str = datetime.now(JST).strftime("%Y-%m-%d")
+        today_logs = data.get("logs", {}).get(today_str, [])
+        return [
+            h["name"]
+            for h in data.get("habits", [])
+            if h["id"] not in today_logs
+        ]
 
     @tasks.loop(minutes=30)
     async def sync_habits_loop(self):
@@ -153,12 +165,10 @@ class HabitCog(commands.Cog):
             if newly_completed:
                 await self._save_data(data)
 
-                channel = self.bot.get_channel(self.memo_channel_id)
                 partner_cog = self.bot.get_cog("PartnerCog")
-                if channel and partner_cog:
+                if partner_cog:
                     for h in newly_completed:
                         stats_msg = self._get_habit_stats(data, h["id"], today_str)
-                        # ★ 変更: 定型文を禁止し、ダイナミックに褒める指示へ変更
                         instruction = f"ユーザーがGoogleカレンダー上で習慣「{h['name']}」を完了させたのを検知しました。現在の記録は「{stats_msg}」です。これを踏まえて、LINE風の温かいタメ口で全力で褒める短いメッセージを送ってください。定型文は禁止です。毎日違う言葉でモチベーションを上げ、3日や7日などキリの良い数字なら特別にお祝いしてください！"
                         await partner_cog.generate_and_send_routine_message(
                             "", instruction
@@ -208,7 +218,6 @@ class HabitCog(commands.Cog):
                         data["logs"][today_str].append(new_id)
 
             await self._save_data(data)
-            # ★ 1日1回、ここでのみObsidianのフロントマターへ一括記録する
             await self._sync_to_obsidian(today_str, data)
             logging.info("夜の習慣最終チェックとObsidianへの保存が完了しました。")
         except Exception as e:
@@ -249,7 +258,9 @@ class HabitCog(commands.Cog):
         return f"リストの中に「{habit_name_or_keyword}」に一致する習慣は見つかりませんでした。"
 
     def _get_habit_stats(self, data, habit_id, today_str):
-        target_habit = next((h for h in data["habits"] if h["id"] == habit_id), None)
+        target_habit = next(
+            (h for h in data["habits"] if h["id"] == habit_id), None
+        )
         freq = target_habit.get("frequency_days", 1) if target_habit else 1
 
         if freq == 1:
@@ -295,14 +306,12 @@ class HabitCog(commands.Cog):
             for h in data["habits"]
         }
 
-        frontmatter_pattern = r"^---\n(.*?)\n---"
-        match = re.search(frontmatter_pattern, content, re.DOTALL)
-
         fm_map = {}
         body = content
+        match = re.search(r"^---\n(.*?)\n---", content, re.DOTALL)
         if match:
             fm_content = match.group(1)
-            body = content[match.end() :]
+            body = content[match.end():]
             for line in fm_content.split("\n"):
                 if ":" in line:
                     key, val = line.split(":", 1)
