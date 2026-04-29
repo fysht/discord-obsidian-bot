@@ -535,17 +535,60 @@ async def get_habits():
     import datetime
     bot = getattr(app.state, "bot", None)
     habit_cog = bot.get_cog("HabitCog") if bot else None
-    if not habit_cog: return {"habits": [], "today_done": [], "streaks": {}}
+    tasks_service = getattr(bot, "tasks_service", None) if bot else None
 
-    data = await habit_cog._load_data()
+    if not tasks_service:
+        return {"habits": [], "today_done": [], "streaks": {}}
+
     today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+
+    # Google Tasks「習慣」リストをマスターとして取得
+    raw_uncompleted = await tasks_service.get_raw_tasks("習慣")
+    completed_today_titles = await tasks_service.get_completed_tasks_today("習慣")
+
+    # 未完了 + 今日完了済み = 今日表示すべき全習慣
+    all_names = [t["title"] for t in raw_uncompleted] + completed_today_titles
+    if not all_names:
+        return {"habits": [], "today_done": [], "streaks": {}}
+
+    if not habit_cog:
+        habits_list = [{"id": str(i), "name": n, "frequency_days": 1} for i, n in enumerate(all_names)]
+        today_done = [str(i) for i, n in enumerate(all_names) if n in completed_today_titles]
+        return {"habits": habits_list, "today_done": today_done, "streaks": {}}
+
+    # HabitCog データと同期（Google Tasks にあってHabitCog にないものを追加）
+    data = await habit_cog._load_data()
+    changed = False
+    for name in all_names:
+        existing = next((h for h in data["habits"] if h["name"].lower() == name.lower()), None)
+        if not existing:
+            existing_ids = [int(h["id"]) for h in data["habits"]] if data["habits"] else [0]
+            new_id = str(max(existing_ids) + 1)
+            data["habits"].append({"id": new_id, "name": name, "frequency_days": 1})
+            changed = True
+
+    # 今日の完了ログに Google Tasks 完了済みを反映
+    if today_str not in data["logs"]:
+        data["logs"][today_str] = []
+    for name in completed_today_titles:
+        matching = next((h for h in data["habits"] if h["name"].lower() == name.lower()), None)
+        if matching and matching["id"] not in data["logs"][today_str]:
+            data["logs"][today_str].append(matching["id"])
+            changed = True
+
+    if changed:
+        await habit_cog._save_data(data)
+
     today_logs = data.get("logs", {}).get(today_str, [])
 
+    # Google Tasks の順序を維持してレスポンスを組み立てる
     habits_list = []
     streaks = {}
-    for h in data.get("habits", []):
-        habits_list.append({"id": h["id"], "name": h["name"], "frequency_days": h.get("frequency_days", 1)})
-        streaks[h["id"]] = habit_cog._get_habit_stats(data, h["id"], today_str)
+    for name in all_names:
+        matching = next((h for h in data["habits"] if h["name"].lower() == name.lower()), None)
+        if matching:
+            habits_list.append({"id": matching["id"], "name": matching["name"], "frequency_days": matching.get("frequency_days", 1)})
+            streaks[matching["id"]] = habit_cog._get_habit_stats(data, matching["id"], today_str)
 
     return {"habits": habits_list, "today_done": today_logs, "streaks": streaks}
 

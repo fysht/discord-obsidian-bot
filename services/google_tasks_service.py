@@ -252,6 +252,34 @@ class GoogleTasksService:
         except Exception:
             return []
 
+    async def reset_completed_tasks(self, list_name: str = "習慣"):
+        """完了済みタスクをすべて needsAction にリセットする（翌日用）"""
+        service = self.get_service()
+        if not service:
+            return
+        try:
+            list_id = await self._get_tasklist_id(service, list_name)
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(
+                None,
+                lambda: service.tasks().list(
+                    tasklist=list_id, showCompleted=True, showHidden=True
+                ).execute(),
+            )
+            for t in res.get("items", []):
+                if t.get("status") == "completed":
+                    task_id = t["id"]
+                    await loop.run_in_executor(
+                        None,
+                        lambda tid=task_id: service.tasks().patch(
+                            tasklist=list_id,
+                            task=tid,
+                            body={"status": "needsAction"},
+                        ).execute(),
+                    )
+        except Exception as e:
+            logging.error(f"reset_completed_tasks error: {e}")
+
     async def move_task(self, task_id: str, previous_task_id: str = None, list_name: str = None):
         """タスクの順序を変更する。previous_task_idの後に移動。Noneなら先頭に移動"""
         service = self.get_service()

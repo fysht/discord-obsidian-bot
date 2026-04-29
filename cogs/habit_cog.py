@@ -219,6 +219,9 @@ class HabitCog(commands.Cog):
 
             await self._save_data(data)
             await self._sync_to_obsidian(today_str, data)
+
+            # 翌日のために Google Tasks の完了済み習慣を未完了にリセット
+            await self.bot.tasks_service.reset_completed_tasks("習慣")
             logging.info("夜の習慣最終チェックとObsidianへの保存が完了しました。")
         except Exception as e:
             logging.error(f"Nightly habit sync error: {e}")
