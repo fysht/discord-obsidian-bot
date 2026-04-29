@@ -1280,34 +1280,41 @@ function startConfetti() {
 }
 // ===== メッセージ長押し削除 =====
 
-let _longPressTimer = null;
 let _longPressTarget = null;
 
 function attachLongPress(el) {
     const DURATION = 600;
+    let timer = null;
 
-    const onStart = () => {
-        _longPressTimer = setTimeout(() => {
-            _longPressTarget = el;
-            $('#msg-delete-confirm')?.classList.remove('hidden');
-        }, DURATION);
-    };
-    const onCancel = () => {
-        clearTimeout(_longPressTimer);
-        _longPressTimer = null;
+    const onLongPress = () => {
+        _longPressTarget = el;
+        if (navigator.vibrate) navigator.vibrate(40);
+        document.getElementById('msg-delete-confirm')?.classList.remove('hidden');
     };
 
-    el.addEventListener('touchstart', onStart, { passive: true });
-    el.addEventListener('touchend', onCancel);
-    el.addEventListener('touchmove', onCancel, { passive: true });
-    el.addEventListener('mousedown', onStart);
-    el.addEventListener('mouseup', onCancel);
-    el.addEventListener('mouseleave', onCancel);
-    el.addEventListener('contextmenu', e => { e.preventDefault(); onStart(); setTimeout(onCancel, 0); });
+    const start = () => {
+        clearTimeout(timer);
+        timer = setTimeout(onLongPress, DURATION);
+    };
+
+    const cancel = () => {
+        clearTimeout(timer);
+        timer = null;
+    };
+
+    el.addEventListener('touchstart', start, { passive: true });
+    el.addEventListener('touchend', cancel);
+    el.addEventListener('touchmove', cancel, { passive: true });
+    // touchcancel は無視 — iOSでは touchcancel 後もタイマーを発火させる必要がある
+
+    el.addEventListener('mousedown', start);
+    el.addEventListener('mouseup', cancel);
+    el.addEventListener('mouseleave', cancel);
+    el.addEventListener('contextmenu', e => e.preventDefault());
 }
 
 function closeMsgDeleteConfirm() {
-    $('#msg-delete-confirm')?.classList.add('hidden');
+    document.getElementById('msg-delete-confirm')?.classList.add('hidden');
     _longPressTarget = null;
 }
 
