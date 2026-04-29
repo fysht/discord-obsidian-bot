@@ -119,6 +119,9 @@ async def main():
 
     # CogをロードしてスケジュールタスクをDiscordなしで起動する
     await bot.setup_hook()
+    # discord.py 2.x では _ready は login() 後に初期化されるため、手動で設定する
+    import asyncio as _asyncio
+    bot._ready = _asyncio.Event()
     bot._ready.set()          # wait_until_ready() を解決する
     bot.dispatch("ready")     # on_ready リスナーを起動する
 
