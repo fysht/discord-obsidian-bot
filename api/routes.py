@@ -515,7 +515,10 @@ async def sleep_trend():
 
     result = {"trend": results}
     cached["data"] = result
-    cached["expires_at"] = now_dt + datetime.timedelta(minutes=10)
+    # 直近2日のいずれかのスコアがnullの場合は短時間だけキャッシュ（データ同期待ち）
+    recent_missing = any(results[i].get("score") is None for i in [-1, -2] if i + len(results) >= 0)
+    ttl = datetime.timedelta(minutes=2) if recent_missing else datetime.timedelta(minutes=10)
+    cached["expires_at"] = now_dt + ttl
     return result
 
 @router.post("/execute_tool", dependencies=[Depends(verify_api_key)])

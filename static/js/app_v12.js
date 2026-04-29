@@ -339,14 +339,10 @@ function renderTaskGroup(container, tasks, listName) {
     if (listName === 'プライベート') _currentPrivateTasks = tasks || [];
     if (listName === '習慣') _currentHabitTasks = tasks || [];
 
-    container.innerHTML = tasks && tasks.length ? tasks.map((t, idx) => `
+    container.innerHTML = tasks && tasks.length ? tasks.map((t) => `
         <div class="list-item" style="gap:6px;">
             <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')"></div>
             <div class="li-text" style="flex:1;">${escapeHtml(t.title)}</div>
-            <div style="display:flex; flex-direction:column; gap:1px;">
-                <button class="icon-btn" style="padding:2px; font-size:0.7rem; opacity:${idx === 0 ? '0.3' : '1'};" ${idx === 0 ? 'disabled' : ''} onclick="moveGTask('${t.id}', 'up', '${listName}')">▲</button>
-                <button class="icon-btn" style="padding:2px; font-size:0.7rem; opacity:${idx === tasks.length - 1 ? '0.3' : '1'};" ${idx === tasks.length - 1 ? 'disabled' : ''} onclick="moveGTask('${t.id}', 'down', '${listName}')">▼</button>
-            </div>
         </div>
     `).join('') : '<div class="loading-placeholder">未完了のタスクはありません</div>';
 }
