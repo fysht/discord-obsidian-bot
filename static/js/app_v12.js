@@ -1066,9 +1066,12 @@ window.completeHabit = async (habitName, hId) => {
     } catch { showToast('失敗しました', true); }
 };
 
+let _sleepTrendLoading = false;
 async function loadSleepTrend() {
+    if (_sleepTrendLoading) return;
     const container = $('#dash-sleep');
     if (!container) return;
+    _sleepTrendLoading = true;
     try {
         const data = await apiFetch('/api/sleep_trend');
         if (!data.trend || data.trend.every(d => !d.score)) return;
@@ -1107,5 +1110,7 @@ async function loadSleepTrend() {
         container.appendChild(trendDiv);
     } catch (e) {
         console.error('Sleep trend error', e);
+    } finally {
+        _sleepTrendLoading = false;
     }
 }

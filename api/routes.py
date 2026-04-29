@@ -19,6 +19,16 @@ router = APIRouter(prefix="/api")
 
 API_KEY = os.getenv("PWA_API_KEY", "secretary-ai-default-key")
 
+_sleep_trend_cache: dict = {"data": None, "expires_at": None}
+_dashboard_sleep_cache: dict = {"data": None, "expires_at": None}
+_fitbit_semaphore: asyncio.Semaphore | None = None
+
+def _get_fitbit_semaphore() -> asyncio.Semaphore:
+    global _fitbit_semaphore
+    if _fitbit_semaphore is None:
+        _fitbit_semaphore = asyncio.Semaphore(2)
+    return _fitbit_semaphore
+
 async def verify_api_key(x_api_key: str = Header(None)):
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="認証に失敗しました。")
@@ -328,14 +338,22 @@ async def dashboard():
 
     fitbit_cog = bot.get_cog("FitbitCog")
     if fitbit_cog and fitbit_cog.is_ready:
-        try:
-            target_date = datetime.datetime.now(JST).date()
-            stats = await fitbit_cog.fitbit_service.get_stats(target_date)
-            if stats:
-                score = stats.get("sleep_score")
-                raw_duration = stats.get("total_sleep_minutes")
-                sleep_stats = {"score": score or "N/A", "duration": fitbit_cog._format_minutes(raw_duration) if raw_duration else "N/A"}
-        except: pass
+        now_dt = datetime.datetime.now(JST)
+        cached = _dashboard_sleep_cache
+        if cached["data"] and cached["expires_at"] and now_dt < cached["expires_at"]:
+            sleep_stats = cached["data"]
+        else:
+            try:
+                async with _get_fitbit_semaphore():
+                    stats = await fitbit_cog.fitbit_service.get_stats(now_dt.date())
+                if stats:
+                    score = stats.get("sleep_score")
+                    raw_duration = stats.get("total_sleep_minutes")
+                    sleep_stats = {"score": score or "N/A", "duration": fitbit_cog._format_minutes(raw_duration) if raw_duration else "N/A"}
+                    cached["data"] = sleep_stats
+                    cached["expires_at"] = now_dt + datetime.timedelta(minutes=10)
+            except Exception:
+                pass
 
     return {
         "tasks": tasks, "alter_log": alter_log, "date": display_date, "g_calendar": g_calendar,
@@ -464,7 +482,11 @@ async def google_tasks_move(req: GTaskMoveRequest):
 @router.get("/sleep_trend", dependencies=[Depends(verify_api_key)])
 async def sleep_trend():
     from api import app
-    import asyncio as _asyncio
+    now_dt = datetime.datetime.now(JST)
+    cached = _sleep_trend_cache
+    if cached["data"] and cached["expires_at"] and now_dt < cached["expires_at"]:
+        return cached["data"]
+
     bot = getattr(app.state, "bot", None)
     if not bot:
         return {"trend": []}
@@ -473,9 +495,10 @@ async def sleep_trend():
         return {"trend": []}
 
     async def fetch_day(i):
-        date = datetime.datetime.now(JST).date() - datetime.timedelta(days=i)
+        date = now_dt.date() - datetime.timedelta(days=i)
         try:
-            stats = await fitbit_cog.fitbit_service.get_stats(date)
+            async with _get_fitbit_semaphore():
+                stats = await fitbit_cog.fitbit_service.get_stats(date)
             if stats:
                 return {
                     "date": date.strftime("%m/%d"),
@@ -486,8 +509,14 @@ async def sleep_trend():
             pass
         return {"date": date.strftime("%m/%d"), "score": None, "duration": None}
 
-    results = await _asyncio.gather(*[fetch_day(i) for i in range(6, -1, -1)])
-    return {"trend": list(results)}
+    results = []
+    for i in range(6, -1, -1):
+        results.append(await fetch_day(i))
+
+    result = {"trend": results}
+    cached["data"] = result
+    cached["expires_at"] = now_dt + datetime.timedelta(minutes=10)
+    return result
 
 @router.post("/execute_tool", dependencies=[Depends(verify_api_key)])
 async def execute_tool(req: BaseModel):
