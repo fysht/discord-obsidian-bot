@@ -198,6 +198,7 @@ function appendMsg(role, content, isoTimestamp = null) {
     div.innerHTML = html;
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    if (role === 'assistant') notifyManager(content);
 }
 
 async function loadDashboard() {
@@ -961,9 +962,28 @@ window.deleteStockedLink = async (linkId) => {
     } catch (e) { showToast('削除に失敗しました', true); }
 };
 
+function requestNotificationPermission() {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+}
+
+function notifyManager(content) {
+    if (!('Notification' in window)) return;
+    if (Notification.permission !== 'granted') return;
+    if (!document.hidden) return;
+    const preview = content.replace(/<br>/g, ' ').replace(/&[a-z]+;/g, '').slice(0, 80);
+    new Notification('マネージャーからメッセージ', {
+        body: preview || 'メッセージが届きました',
+        icon: '/static/icons/avatar.png',
+    });
+}
+
 function initMain() {
     loadHistory();
     loadDashboard();
+    requestNotificationPermission();
 
     const params = new URLSearchParams(window.location.search);
     const sharedUrl = params.get('url') || '';
