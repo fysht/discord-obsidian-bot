@@ -188,17 +188,25 @@ function appendMsg(role, content, isoTimestamp = null) {
     let html = '';
     if (role === 'assistant') html += `<img src="/static/icons/avatar.png" class="msg-avatar">`;
     let processedContent = escapeHtml(content).replace(/\n/g, '<br>');
-    
+
     html += `
         <div class="msg-content">
             <div class="msg-bubble" style="word-break: break-all;">${processedContent}</div>
         </div>
-        <div class="msg-time">${tStr}</div>
+        <div class="msg-meta">
+            <span class="msg-time">${tStr}</span>
+            <button class="msg-delete-btn" onclick="deleteMsg(this)" title="削除">✕</button>
+        </div>
     `;
     div.innerHTML = html;
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
     if (role === 'assistant') notifyManager(content);
+}
+
+function deleteMsg(btn) {
+    const msgEl = btn.closest('.message');
+    if (msgEl) msgEl.remove();
 }
 
 async function loadDashboard() {
@@ -1386,7 +1394,10 @@ function appendNoteCard(note) {
             <div class="note-card">
                 <div class="note-card-header">
                     <span class="note-cat-badge">${catLabel}</span>
-                    <span style="font-size:0.7rem; color:var(--text-muted);">${tStr}</span>
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span style="font-size:0.7rem; color:var(--text-muted);">${tStr}</span>
+                        <button class="msg-delete-btn" onclick="deleteMsg(this)" title="削除">✕</button>
+                    </div>
                 </div>
                 <div class="note-card-body">${structuredHtml}</div>
                 ${actionsHtml}
