@@ -169,11 +169,24 @@ class PartnerRoutineCog(commands.Cog):
         news_text = (
             "\n".join(news_list) if news_list else "（ニュースを取得できませんでした）"
         )
+
+        # 過去の今日（1年前 / 3ヶ月前）
+        past_journals = ""
+        try:
+            past_journals = await partner_cog._get_past_daily_journals()
+        except Exception as e:
+            logging.debug(f"past journals fetch error: {e}")
+
+        past_section = (
+            f"\n【過去の今日】\n{past_journals}\n" if past_journals else ""
+        )
+
         context_data = (
             f"【今日の予定】\n{schedule_text}\n\n"
-            f"【未完了のタスク】\n{tasks_text}\n\n"
+            f"【未完了のタスク（タイムライン作成のベース）】\n{tasks_text}\n\n"
             f"【今日の天気】\n{weather} (最高{max_t}℃ / 最低{min_t}℃)\n\n"
             f"【ニュース】\n{news_text}"
+            f"{past_section}"
         )
         await partner_cog.generate_and_send_routine_message(
             context_data, PROMPT_ROUTINE_MORNING
@@ -209,8 +222,15 @@ class PartnerRoutineCog(commands.Cog):
             return
 
         today_log = await partner_cog.fetch_todays_chat_log()
+        mit_section = ""
+        try:
+            mit_section = await partner_cog._get_mit_section()
+        except Exception as e:
+            logging.debug(f"MIT section fetch error: {e}")
+        mit_block = f"\n\n【今日のMIT】\n{mit_section}" if mit_section else ""
+
         prompt = (
-            f"{PROMPT_ROUTINE_NIGHTLY}\n\n【今日の会話ログ】\n"
+            f"{PROMPT_ROUTINE_NIGHTLY}{mit_block}\n\n【今日の会話ログ】\n"
             f"{today_log if today_log.strip() else '今日は特に会話がありませんでした。'}"
         )
 
@@ -219,10 +239,11 @@ class PartnerRoutineCog(commands.Cog):
                 response = await self.gemini_client.aio.models.generate_content(
                     model="gemini-2.5-pro", contents=prompt
                 )
-                from api.database import save_message, backup_db_to_drive
+                from api.database import backup_db_to_drive
+                from api.notification_service import save_message_and_notify
 
                 reply_text = response.text.strip()
-                await save_message("assistant", reply_text)
+                await save_message_and_notify("assistant", reply_text)
                 if partner_cog.drive_service:
                     safe_create_task(
                         backup_db_to_drive(

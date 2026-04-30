@@ -62,7 +62,22 @@ class GoogleTasksService:
         except Exception as e:
             return f"タスクの取得に失敗しました: {e}"
 
-    async def add_task(self, title: str, notes: str = "", list_name: str = None):
+    @staticmethod
+    def _normalize_due(due) -> str | None:
+        """RFC3339 形式へ正規化する。'YYYY-MM-DD' → 'YYYY-MM-DDT00:00:00.000Z'。
+        既に T を含むなら最低限の整形のみ。空文字は None にする。"""
+        if not due:
+            return None
+        s = str(due).strip()
+        if not s:
+            return None
+        if "T" not in s:
+            return f"{s}T00:00:00.000Z"
+        if not s.endswith("Z") and "+" not in s[10:]:
+            return s + "Z"
+        return s
+
+    async def add_task(self, title: str, notes: str = "", list_name: str = None, due: str | None = None):
         service = self.get_service()
         if not service:
             return "Tasks APIに接続できませんでした。"
@@ -70,6 +85,9 @@ class GoogleTasksService:
             list_id = await self._get_tasklist_id(service, list_name)
             loop = asyncio.get_running_loop()
             body = {"title": title, "notes": notes}
+            normalized_due = self._normalize_due(due)
+            if normalized_due:
+                body["due"] = normalized_due
             await loop.run_in_executor(
                 None,
                 lambda: service.tasks().insert(tasklist=list_id, body=body).execute(),
@@ -206,23 +224,29 @@ class GoogleTasksService:
         except Exception as e:
             return f"タスクの削除に失敗しました: {e}"
 
-    async def update_task(self, task_id, title=None, notes=None, completed=None, list_name: str = None):
-        """タスクの内容を更新する。completedがTrueなら完了にする"""
+    async def update_task(self, task_id, title=None, notes=None, completed=None, due=None, list_name: str = None):
+        """タスクの内容を更新する。completedがTrueなら完了にする。due に空文字を渡すと締切クリア。"""
         service = self.get_service()
         if not service:
             return "Tasks APIに接続できませんでした。"
         try:
             list_id = await self._get_tasklist_id(service, list_name)
             loop = asyncio.get_running_loop()
-            
+
             # 現在の状態を取得
             task = await loop.run_in_executor(
                 None,
                 lambda: service.tasks().get(tasklist=list_id, task=task_id).execute(),
             )
-            
+
             if title: task["title"] = title
             if notes is not None: task["notes"] = notes
+            if due is not None:
+                normalized = self._normalize_due(due)
+                if normalized:
+                    task["due"] = normalized
+                else:
+                    task.pop("due", None)
             if completed is True:
                 task["status"] = "completed"
             elif completed is False:
@@ -237,7 +261,7 @@ class GoogleTasksService:
             return f"タスクの更新に失敗しました: {e}"
 
     async def get_raw_tasks(self, list_name: str = None):
-        """未完了タスクのパッチ用データをリストで取得する"""
+        """未完了タスクのパッチ用データをリストで取得する。due を含む。"""
         service = self.get_service()
         if not service: return []
         try:
@@ -248,7 +272,15 @@ class GoogleTasksService:
                 lambda: service.tasks().list(tasklist=list_id, showCompleted=False).execute(),
             )
             items = res.get("items", [])
-            return [{"id": t["id"], "title": t["title"], "notes": t.get("notes", "")} for t in items]
+            return [
+                {
+                    "id": t["id"],
+                    "title": t["title"],
+                    "notes": t.get("notes", ""),
+                    "due": t.get("due", ""),
+                }
+                for t in items
+            ]
         except Exception:
             return []
 

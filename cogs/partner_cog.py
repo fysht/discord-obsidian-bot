@@ -75,6 +75,79 @@ class PartnerCog(commands.Cog):
             logging.error(f"DailyNote 読み取りエラー: {e}")
         return ""
 
+    async def _get_past_daily_journals(self) -> str:
+        """1年前と3ヶ月前のデイリーノートから Daily Journal セクションを抜粋して返す。"""
+        if not self.drive_service:
+            return ""
+        service = self.drive_service.get_service()
+        if not service:
+            return ""
+
+        import re as _re
+        now = datetime.datetime.now(JST)
+        # 1年前 / 3ヶ月前（≒90日前）
+        targets = [
+            ("1年前の今日", (now - datetime.timedelta(days=365)).strftime("%Y-%m-%d")),
+            ("3ヶ月前の今日", (now - datetime.timedelta(days=90)).strftime("%Y-%m-%d")),
+        ]
+
+        try:
+            folder_id = await self.drive_service.find_file(
+                service, self.drive_folder_id, "DailyNotes"
+            )
+            if not folder_id:
+                return ""
+        except Exception as e:
+            logging.error(f"DailyNotes folder lookup error: {e}")
+            return ""
+
+        excerpts = []
+        for label, date_str in targets:
+            try:
+                fid = await self.drive_service.find_file(service, folder_id, f"{date_str}.md")
+                if not fid:
+                    continue
+                content = await self.drive_service.read_text_file(service, fid)
+                if not content:
+                    continue
+                m = _re.search(r"## 📔 Daily Journal\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+                if not m:
+                    continue
+                journal = m.group(1).strip()
+                if not journal:
+                    continue
+                # 長すぎたら 200 文字まで
+                snippet = journal[:200].replace("\n", " ")
+                excerpts.append(f"【{label}（{date_str}）】 {snippet}")
+            except Exception as e:
+                logging.debug(f"past journal fetch error ({date_str}): {e}")
+
+        return "\n".join(excerpts)
+
+    async def _get_mit_section(self, date_str: str | None = None) -> str:
+        """指定日の MIT セクションを取得する。デフォルトは今日。"""
+        if not date_str:
+            date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        service = self.drive_service.get_service()
+        if not service:
+            return ""
+        try:
+            folder_id = await self.drive_service.find_file(
+                service, self.drive_folder_id, "DailyNotes"
+            )
+            if not folder_id:
+                return ""
+            fid = await self.drive_service.find_file(service, folder_id, f"{date_str}.md")
+            if not fid:
+                return ""
+            content = await self.drive_service.read_text_file(service, fid)
+            import re as _re
+            m = _re.search(r"## 🎯 MIT\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+            return m.group(1).strip() if m else ""
+        except Exception as e:
+            logging.debug(f"MIT section read error: {e}")
+            return ""
+
     async def _save_todays_obsidian_note(self, content: str):
         """今日のデイリーノートを保存（作成・更新）する。"""
         service = self.drive_service.get_service()
@@ -498,9 +571,96 @@ class PartnerCog(commands.Cog):
                             required=["code", "name", "memo"],
                         ),
                     ),
+                    types.FunctionDeclaration(
+                        name="set_mit",
+                        description=(
+                            "今日の Most Important Tasks (MIT) を3つまで登録する。"
+                            "ユーザーが今日の最重要タスクを宣言したときに呼ぶ。"
+                            "このツールは即実行ではなく確認ボタンを返すため、"
+                            "ユーザーが選んだ3つを items に渡せばOK。"
+                        ),
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "items": types.Schema(
+                                    type=types.Type.ARRAY,
+                                    items=types.Schema(type=types.Type.STRING),
+                                    description="MIT のタイトル文字列リスト（最大3つ）",
+                                ),
+                            },
+                            required=["items"],
+                        ),
+                    ),
+                    types.FunctionDeclaration(
+                        name="get_mit_status",
+                        description=(
+                            "今日の MIT の達成状況を取得する。"
+                            "MIT セクションの行頭が '- [x]' のものは達成、'- [ ]' は未達。"
+                        ),
+                    ),
+                    types.FunctionDeclaration(
+                        name="rollover_mit",
+                        description=(
+                            "今日の未達 MIT を翌日に持ち越す。"
+                            "確認ボタンを返してから実際に書き込む。"
+                        ),
+                    ),
                 ]
             )
         ]
+
+    async def _set_mit_to_obsidian(self, items: list[str]) -> str:
+        """今日の DailyNote の `## 🎯 MIT` セクションに MIT を書き込む。"""
+        if not items:
+            return "MIT が空っぽだよ。"
+        # 最大3つ
+        items = [s.strip() for s in items if s and s.strip()][:3]
+        if not items:
+            return "有効な MIT が無かったよ。"
+
+        note_content = await self._get_todays_obsidian_note()
+        if not note_content:
+            today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            note_content = f"# Daily Note {today_str}\n"
+
+        section_text = "\n".join(f"- [ ] {t}" for t in items)
+        new_content = update_section(note_content, section_text, "## 🎯 MIT")
+        await self._save_todays_obsidian_note(new_content)
+        return f"今日のMIT3つを設定したよ！: {' / '.join(items)}"
+
+    async def _rollover_mit(self) -> str:
+        """今日の未達 MIT を翌日のノートに繰り越す。"""
+        today_section = await self._get_mit_section()
+        if not today_section:
+            return "今日はMITが登録されてないみたい。"
+        import re as _re
+        unfinished = []
+        for line in today_section.split("\n"):
+            m = _re.match(r"^-\s*\[\s\]\s*(.+)$", line.strip())
+            if m:
+                unfinished.append(m.group(1).strip())
+        if not unfinished:
+            return "今日のMITは全部達成したじゃん！繰越しは無しでOK！"
+
+        # 翌日のノートに書き込む
+        tomorrow_str = (datetime.datetime.now(JST) + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        service = self.drive_service.get_service()
+        folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+        if not folder_id:
+            folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
+        f_id = await self.drive_service.find_file(service, folder_id, f"{tomorrow_str}.md")
+        if f_id:
+            content = await self.drive_service.read_text_file(service, f_id)
+        else:
+            content = f"# Daily Note {tomorrow_str}\n"
+
+        section_text = "\n".join(f"- [ ] {t}" for t in unfinished)
+        new_content = update_section(content, section_text, "## 🎯 MIT")
+        if f_id:
+            await self.drive_service.update_text(service, f_id, new_content)
+        else:
+            await self.drive_service.upload_text(service, folder_id, f"{tomorrow_str}.md", new_content)
+        return f"未達のMIT {len(unfinished)} 件を明日に繰り越したよ: {' / '.join(unfinished)}"
 
     async def _dispatch_tool_call(self, function_call):
         name = function_call.name
@@ -512,6 +672,15 @@ class PartnerCog(commands.Cog):
             return f"[ACTION:task_add:title={args['title']}|list_name={args.get('list_name','')}] (タスクに追加するね、OK？)"
         elif name == "delete_task":
             return f"[ACTION:task_delete:keyword={args['keyword']}|list_name={args.get('list_name','')}] (タスクを削除するね、OK？)"
+        elif name == "set_mit":
+            items = args.get("items", []) or []
+            items_str = ",".join(s.replace(",", " ").replace("|", " ") for s in items[:3])
+            return f"[ACTION:mit_set:items={items_str}] (今日のMIT3つ、これでOK？)"
+        elif name == "rollover_mit":
+            return "[ACTION:mit_rollover] (未達のMIT、明日に持ち越すね、OK？)"
+        elif name == "get_mit_status":
+            section = await self._get_mit_section()
+            return section if section else "今日はまだMITが設定されてないみたい。"
         elif name == "complete_task":
             return "タスクの完了はアプリの予定タブから直接チェックできるよ！"
         elif name in ["delete_calendar_event", "delete_habit"]:
@@ -698,7 +867,7 @@ class PartnerCog(commands.Cog):
             )
             if response.text:
                 reply_text = response.text.strip()
-                from api.database import save_message as _save_msg
+                from api.notification_service import save_message_and_notify as _save_msg
                 await _save_msg("assistant", reply_text)
         except Exception as e:
             logging.error(f"Routine message generation error: {e}")

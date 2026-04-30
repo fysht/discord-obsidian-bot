@@ -380,7 +380,7 @@ class LocationLogCog(commands.Cog):
                         context, PROMPT_LOCATION_SYNC
                     )
                 else:
-                    from api.database import save_message as _save_msg
+                    from api.notification_service import save_message_and_notify as _save_msg
                     await _save_msg("assistant", f"📍 {dates_str} の移動記録を保存したよ！")
 
     @process_timeline_json.before_loop

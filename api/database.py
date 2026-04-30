@@ -65,6 +65,21 @@ async def init_db():
                 added_at TEXT NOT NULL
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                endpoint TEXT NOT NULL UNIQUE,
+                p256dh TEXT NOT NULL,
+                auth TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS proactive_alerts_sent (
+                key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            )
+        """)
 
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
@@ -265,4 +280,62 @@ async def delete_stocked_link(link_id: int):
             "DELETE FROM stocked_links WHERE id = ?",
             (link_id,)
         )
+        await db.commit()
+
+
+# --- Push Subscriptions ---
+
+async def add_push_subscription(endpoint: str, p256dh: str, auth: str) -> None:
+    """購読情報を保存。endpoint が既存ならキーを上書きする。"""
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            """
+            INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth, created_at=excluded.created_at
+            """,
+            (endpoint, p256dh, auth, now),
+        )
+        await db.commit()
+
+
+async def remove_push_subscription(endpoint: str) -> None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("DELETE FROM push_subscriptions WHERE endpoint = ?", (endpoint,))
+        await db.commit()
+
+
+async def get_all_push_subscriptions() -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, endpoint, p256dh, auth FROM push_subscriptions"
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+# --- Proactive Alerts dedup ---
+
+async def mark_alert_sent(key: str) -> bool:
+    """通知済みなら False を返す（既に送ってある）。新規なら True で記録。"""
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        try:
+            await db.execute(
+                "INSERT INTO proactive_alerts_sent (key, created_at) VALUES (?, ?)",
+                (key, now),
+            )
+            await db.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False
+
+
+async def cleanup_alert_keys(older_than_hours: int = 48) -> None:
+    """古い通知キーを掃除する（メモリ肥大防止）"""
+    cutoff = (datetime.datetime.now(JST) - datetime.timedelta(hours=older_than_hours)).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("DELETE FROM proactive_alerts_sent WHERE created_at < ?", (cutoff,))
         await db.commit()

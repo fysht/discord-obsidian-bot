@@ -72,7 +72,7 @@ class WeeklyReviewCog(commands.Cog):
 
                 send_msg = f"**【今週の Weekly Review 棚卸しレポート】**\n\n{response.text}"
                 try:
-                    from api.database import save_message as _save_msg
+                    from api.notification_service import save_message_and_notify as _save_msg
                     await _save_msg("assistant", send_msg)
                 except Exception:
                     pass

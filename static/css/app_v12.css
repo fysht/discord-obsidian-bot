@@ -958,3 +958,42 @@ mark.search-hl {
     max-height: 320px;
     overflow-y: auto;
 }
+
+/* ===== ACTION ボタン (マネージャー提案の確認 UI) ===== */
+.msg-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.msg-action-btn {
+    background: var(--primary, #4a6cf7);
+    color: #fff;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 16px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+}
+.msg-action-btn:hover { opacity: 0.85; }
+.msg-action-btn:disabled { opacity: 0.5; cursor: default; }
+.msg-action-btn.done { background: #4caf50; }
+
+/* ===== タスク締切表示 ===== */
+.task-due-chip {
+    margin-left: 6px;
+    font-size: 0.7rem;
+    color: var(--text-muted, #888);
+    white-space: nowrap;
+}
+.task-due-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 2px 4px;
+    font-size: 0.85rem;
+    opacity: 0.5;
+    transition: opacity 0.15s;
+}
+.task-due-btn:hover { opacity: 1; }

@@ -12,8 +12,9 @@ from api.database import (
     get_link_by_id, update_link_details, mark_link_as_saved,
     delete_stocked_link, get_todays_log, clear_history,
     delete_message_by_id, toggle_message_star, get_starred_messages,
-    search_messages,
+    search_messages, add_push_subscription, remove_push_subscription,
 )
+from api import notification_service
 from services.info_service import InfoService
 from web_parser import fetch_maps_info, parse_url_with_readability
 from config import (
@@ -240,7 +241,7 @@ async def chat(req: ChatRequest):
             type_label = {"web": "🌐 ウェブ", "youtube": "📺 YouTube", "recipe": "🍳 レシピ", "map": "🗺️ マップ", "book": "📚 書籍"}.get(meta["type"], "🔗 リンク")
             reply = f"「{meta['title']}」を{type_label}としてストックし、ノートを作成しました。"
             user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
-            asst_id = await save_message("assistant", reply)
+            asst_id = await notification_service.save_message_and_notify("assistant", reply)
             return ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
         except Exception as e:
             logging.error(f"Link stock failed, falling back to AI: {e}")
@@ -271,7 +272,7 @@ async def chat(req: ChatRequest):
             logging.debug(f"reply context attach failed: {e}")
 
     reply = await partner_cog.generate_response_for_app(user_message, history_messages)
-    asst_id = await save_message("assistant", reply)
+    asst_id = await notification_service.save_message_and_notify("assistant", reply)
 
     if bot.drive_service:
         folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
@@ -510,6 +511,7 @@ class GTaskActionRequest(BaseModel):
     title: str = None
     completed: bool = None
     list_name: str = None
+    due: Optional[str] = None  # RFC3339 (YYYY-MM-DDTHH:MM:SS.000Z) または YYYY-MM-DD
 
 @router.post("/google_tasks_action", dependencies=[Depends(verify_api_key)])
 async def google_tasks_action(req: GTaskActionRequest):
@@ -517,11 +519,16 @@ async def google_tasks_action(req: GTaskActionRequest):
     bot = getattr(app.state, "bot", None)
     if not bot or not bot.tasks_service: raise HTTPException(status_code=503, detail="タスクサービス未設定")
 
-    if req.action == "add": res = await bot.tasks_service.add_task(req.title, list_name=req.list_name)
-    elif req.action == "delete": res = await bot.tasks_service.delete_task(req.task_id, list_name=req.list_name)
-    elif req.action == "update": res = await bot.tasks_service.update_task(req.task_id, title=req.title, list_name=req.list_name)
-    elif req.action == "toggle": res = await bot.tasks_service.update_task(req.task_id, completed=req.completed, list_name=req.list_name)
-    else: res = "不明なアクションです"
+    if req.action == "add":
+        res = await bot.tasks_service.add_task(req.title, list_name=req.list_name, due=req.due)
+    elif req.action == "delete":
+        res = await bot.tasks_service.delete_task(req.task_id, list_name=req.list_name)
+    elif req.action == "update":
+        res = await bot.tasks_service.update_task(req.task_id, title=req.title, due=req.due, list_name=req.list_name)
+    elif req.action == "toggle":
+        res = await bot.tasks_service.update_task(req.task_id, completed=req.completed, list_name=req.list_name)
+    else:
+        res = "不明なアクションです"
     return {"status": "success", "message": res}
 
 class GTaskMoveRequest(BaseModel):
@@ -1187,6 +1194,81 @@ async def note_from_images(req: NoteFromImagesRequest):
 class LinkBulkStatusRequest(BaseModel):
     link_ids: List[int]
     status: str = "saved"
+
+
+# ===== MIT (Most Important Tasks) =====
+
+class MitSetRequest(BaseModel):
+    items: List[str]
+
+
+@router.post("/mit_set", dependencies=[Depends(verify_api_key)])
+async def mit_set(req: MitSetRequest):
+    """今日の MIT を DailyNote の `## 🎯 MIT` セクションに書き込む。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="PartnerCog 不在")
+    msg = await partner_cog._set_mit_to_obsidian(req.items)
+    return {"status": "success", "message": msg}
+
+
+@router.post("/mit_rollover", dependencies=[Depends(verify_api_key)])
+async def mit_rollover():
+    """今日の未達 MIT を翌日に持ち越す。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="PartnerCog 不在")
+    msg = await partner_cog._rollover_mit()
+    return {"status": "success", "message": msg}
+
+
+# ===== Web Push 通知 =====
+
+class PushSubscriptionRequest(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+@router.get("/vapid_public_key")
+async def vapid_public_key():
+    """VAPID 公開鍵を返す。サブスクリプション時にフロントが SW に渡す。
+    認証不要にしているのは、未ログイン状態でも SW 登録時に取得したいため
+    （秘密性は無く、漏れても問題ない値）。"""
+    return {"key": notification_service.get_public_key(), "configured": notification_service.is_configured()}
+
+
+@router.post("/push/subscribe", dependencies=[Depends(verify_api_key)])
+async def push_subscribe(req: PushSubscriptionRequest):
+    if not req.endpoint or not req.p256dh or not req.auth:
+        raise HTTPException(status_code=400, detail="購読情報が不完全です。")
+    await add_push_subscription(req.endpoint, req.p256dh, req.auth)
+    return {"status": "success"}
+
+
+class PushUnsubscribeRequest(BaseModel):
+    endpoint: str
+
+
+@router.post("/push/unsubscribe", dependencies=[Depends(verify_api_key)])
+async def push_unsubscribe(req: PushUnsubscribeRequest):
+    await remove_push_subscription(req.endpoint)
+    return {"status": "success"}
+
+
+@router.post("/push/test", dependencies=[Depends(verify_api_key)])
+async def push_test():
+    """通知テスト送信。設定確認用。"""
+    count = await notification_service.send_push("通知テスト", "通知が届けば設定はOKだよ！")
+    return {"status": "success", "delivered": count}
 
 
 @router.post("/links/bulk_status", dependencies=[Depends(verify_api_key)])

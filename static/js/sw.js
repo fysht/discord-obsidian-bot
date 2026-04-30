@@ -1,4 +1,4 @@
-const CACHE_NAME = 'secretary-ai-v6';
+const CACHE_NAME = 'secretary-ai-v7';
 const ASSETS = [
   '/',
   '/static/css/app_v12.css',
@@ -33,14 +33,40 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Push notification handler (Phase 4)
+// Push notification handler
 self.addEventListener('push', (event) => {
-  const data = event.data ? event.data.json() : { title: '秘書AI', body: '新しいメッセージがあります' };
+  let data = { title: 'マネージャー', body: '新しいメッセージがあります', url: '/' };
+  if (event.data) {
+    try { data = { ...data, ...event.data.json() }; }
+    catch (e) { data.body = event.data.text() || data.body; }
+  }
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
       icon: '/static/icons/icon-192.png',
       badge: '/static/icons/icon-192.png',
+      data: { url: data.url || '/' },
     })
   );
+});
+
+// Notification click handler — focus existing tab or open new one
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil((async () => {
+    const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of allClients) {
+      if ('focus' in client) {
+        await client.focus();
+        if ('navigate' in client) {
+          try { await client.navigate(target); } catch (e) { /* ignore */ }
+        }
+        return;
+      }
+    }
+    if (self.clients.openWindow) {
+      await self.clients.openWindow(target);
+    }
+  })());
 });

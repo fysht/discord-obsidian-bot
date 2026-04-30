@@ -127,7 +127,7 @@ class DailyOrganizeCog(commands.Cog):
             "（今日の会話とデータをノートにまとめたよ🌙 今日も一日お疲れ様、おやすみ！）",
         )
         try:
-            from api.database import save_message as _save_msg
+            from api.notification_service import save_message_and_notify as _save_msg
             await _save_msg("assistant", send_msg)
         except Exception:
             pass

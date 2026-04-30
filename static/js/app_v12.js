@@ -205,7 +205,14 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
 
     let html = '';
     if (role === 'assistant') html += `<img src="/static/icons/avatar.png" class="msg-avatar">`;
-    const processedContent = escapeHtml(content).replace(/\n/g, '<br>');
+
+    // [ACTION:...] タグを抽出してボタン描画用に分離
+    const actions = [];
+    const visibleText = String(content || '').replace(/\[ACTION:([^\]]+)\]/g, (_, payload) => {
+        actions.push(payload);
+        return '';
+    }).trim();
+    const processedContent = escapeHtml(visibleText).replace(/\n/g, '<br>');
 
     // 引用 (返信) 表示
     let quoteHtml = '';
@@ -213,9 +220,18 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         quoteHtml = `<div class="msg-quote">${escapeHtml(opts.replyContent.slice(0, 120))}</div>`;
     }
 
+    let actionHtml = '';
+    if (actions.length > 0 && role === 'assistant') {
+        actionHtml = '<div class="msg-actions">' + actions.map((p, i) => {
+            const label = describeAction(p);
+            const safe = encodeURIComponent(p);
+            return `<button class="msg-action-btn" onclick="executeAction('${safe}', this)">${escapeHtml(label)}</button>`;
+        }).join('') + '</div>';
+    }
+
     html += `
         <div class="msg-content">
-            <div class="msg-bubble" style="word-break: break-all;" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}</div>
+            <div class="msg-bubble" style="word-break: break-all;" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}${actionHtml}</div>
             <div class="msg-time">${tStr}</div>
         </div>
     `;
@@ -225,6 +241,72 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
     if (role === 'assistant') notifyManager(content);
     return div;
 }
+
+function _parseActionPayload(payload) {
+    // 例: "calendar_add:summary=会議|start=2026-04-26T14:00:00|end=2026-04-26T15:00:00"
+    const colonIdx = payload.indexOf(':');
+    const action = colonIdx === -1 ? payload : payload.slice(0, colonIdx);
+    const argStr = colonIdx === -1 ? '' : payload.slice(colonIdx + 1);
+    const args = {};
+    if (argStr) {
+        argStr.split('|').forEach(pair => {
+            const eqIdx = pair.indexOf('=');
+            if (eqIdx === -1) return;
+            args[pair.slice(0, eqIdx)] = pair.slice(eqIdx + 1);
+        });
+    }
+    return { action, args };
+}
+
+function describeAction(payload) {
+    const { action, args } = _parseActionPayload(payload);
+    switch (action) {
+        case 'calendar_add': return `📅 カレンダーに追加: ${args.summary || ''}`;
+        case 'task_add':     return `✅ タスクに追加: ${args.title || ''}`;
+        case 'task_delete':  return `🗑 タスクを削除: ${args.keyword || ''}`;
+        case 'mit_set':      return `🎯 今日のMITを登録 (${(args.items || '').split(',').filter(Boolean).length}件)`;
+        case 'mit_rollover': return `📤 未達MITを翌日へ繰越`;
+        default:             return `▶ ${action} を実行`;
+    }
+}
+
+window.executeAction = async function(encodedPayload, btn) {
+    const payload = decodeURIComponent(encodedPayload);
+    const { action, args } = _parseActionPayload(payload);
+    if (btn) { btn.disabled = true; btn.textContent = '実行中...'; }
+    try {
+        if (action === 'calendar_add') {
+            await apiFetch('/api/calendar_action', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'add', summary: args.summary, start_time: args.start, end_time: args.end })
+            });
+            showToast('カレンダーに登録しました');
+        } else if (action === 'task_add') {
+            await apiFetch('/api/google_tasks_action', {
+                method: 'POST',
+                body: JSON.stringify({ action: 'add', title: args.title, list_name: args.list_name || null })
+            });
+            showToast('タスクに追加しました');
+        } else if (action === 'task_delete') {
+            // keyword ベースの削除はサーバ側が未実装。ガイダンス表示。
+            showToast('削除はタスク一覧から行ってください', true);
+        } else if (action === 'mit_set') {
+            const items = (args.items || '').split(',').map(s => s.trim()).filter(Boolean);
+            await apiFetch('/api/mit_set', { method: 'POST', body: JSON.stringify({ items }) });
+            showToast('今日のMITを登録しました');
+        } else if (action === 'mit_rollover') {
+            await apiFetch('/api/mit_rollover', { method: 'POST' });
+            showToast('未達MITを翌日に繰り越しました');
+        } else {
+            showToast('未対応のアクションです', true);
+        }
+        if (btn) { btn.textContent = '完了 ✓'; btn.classList.add('done'); }
+    } catch (e) {
+        console.error(e);
+        showToast('実行に失敗しました', true);
+        if (btn) { btn.disabled = false; btn.textContent = describeAction(payload); }
+    }
+};
 
 async function loadDashboard() {
     if (!apiKey) return;
@@ -372,12 +454,16 @@ function renderTaskGroup(container, tasks, listName) {
     }
 
     container.innerHTML = [
-        ...activeTasks.map(t => `
+        ...activeTasks.map(t => {
+            const dueLabel = t.due ? _formatDueLabel(t.due) : '';
+            const dueAttr = t.due ? t.due.slice(0, 10) : '';
+            return `
             <div class="list-item" style="gap:6px;" id="gtask-item-${t.id}">
                 <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')" style="cursor:pointer;"></div>
-                <div class="li-text" style="flex:1;">${escapeHtml(t.title)}</div>
-            </div>
-        `),
+                <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
+                <button class="task-due-btn" onclick="openTaskDueEditor('${t.id}', '${listName}', '${escapeHtml(t.title)}', '${dueAttr}')" title="締切を編集">📅</button>
+            </div>`;
+        }),
         ...doneTasks.map(t => `
             <div class="list-item" style="gap:6px; opacity:0.5;" id="gtask-item-${t.id}">
                 <div class="checkbox-custom" style="background:var(--primary); border-color:var(--primary); pointer-events:none; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;">✓</div>
@@ -386,6 +472,36 @@ function renderTaskGroup(container, tasks, listName) {
         `)
     ].join('');
 }
+
+function _formatDueLabel(due) {
+    try {
+        const d = new Date(due);
+        if (isNaN(d.getTime())) return '';
+        const now = new Date();
+        const diff = Math.round((d - now) / (1000 * 60 * 60 * 24));
+        if (diff < 0) return `🔴期限切れ`;
+        if (diff === 0) return `🟠今日`;
+        if (diff === 1) return `🟡明日`;
+        return `📅${d.getMonth()+1}/${d.getDate()}`;
+    } catch (e) { return ''; }
+}
+
+window.openTaskDueEditor = (taskId, listName, title, currentDue) => {
+    const newDue = prompt(`「${title}」の締切日を入力 (YYYY-MM-DD、空欄でクリア):`, currentDue || '');
+    if (newDue === null) return; // cancel
+    const trimmed = newDue.trim();
+    if (trimmed && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        showToast('YYYY-MM-DD 形式で入力してください', true);
+        return;
+    }
+    apiFetch('/api/google_tasks_action', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'update', task_id: taskId, list_name: listName, due: trimmed })
+    }).then(() => {
+        showToast(trimmed ? `締切を ${trimmed} に設定しました` : '締切をクリアしました');
+        loadDashboard();
+    }).catch(() => showToast('締切の更新に失敗しました', true));
+};
 
 window.toggleGoogleTask = async (taskId, listName) => {
     const item = $(`#gtask-item-${taskId}`);
@@ -1032,9 +1148,72 @@ window.deleteStockedLink = async (linkId) => {
 function requestNotificationPermission() {
     if (!('Notification' in window)) return;
     if (Notification.permission === 'default') {
-        Notification.requestPermission();
+        Notification.requestPermission().then((perm) => {
+            if (perm === 'granted') subscribePush();
+        });
+    } else if (Notification.permission === 'granted') {
+        subscribePush();
     }
 }
+
+function _urlBase64ToUint8Array(base64String) {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    const raw = atob(base64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; ++i) out[i] = raw.charCodeAt(i);
+    return out;
+}
+
+function _arrayBufferToBase64(buf) {
+    const bytes = new Uint8Array(buf);
+    let bin = '';
+    bytes.forEach(b => bin += String.fromCharCode(b));
+    return btoa(bin);
+}
+
+async function subscribePush() {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    if (!apiKey) return;
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        // VAPID 公開鍵を取得（認証不要なエンドポイント）
+        const vapidRes = await fetch(`${API_BASE}/api/vapid_public_key`).then(r => r.json());
+        if (!vapidRes.configured || !vapidRes.key) {
+            console.info('Web Push 未設定のため購読をスキップ');
+            return;
+        }
+
+        let sub = await reg.pushManager.getSubscription();
+        if (!sub) {
+            sub = await reg.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey: _urlBase64ToUint8Array(vapidRes.key),
+            });
+        }
+        const json = sub.toJSON();
+        const p256dh = json.keys && json.keys.p256dh;
+        const auth = json.keys && json.keys.auth;
+        if (!p256dh || !auth) return;
+
+        await apiFetch('/api/push/subscribe', {
+            method: 'POST',
+            body: JSON.stringify({ endpoint: sub.endpoint, p256dh, auth })
+        });
+        console.info('Web Push 購読完了');
+    } catch (e) {
+        console.error('Push subscribe error:', e);
+    }
+}
+
+window.testPushNotification = async () => {
+    try {
+        const data = await apiFetch('/api/push/test', { method: 'POST' });
+        showToast(`通知テスト送信: ${data.delivered}件配信`);
+    } catch (e) {
+        showToast('通知テストに失敗しました', true);
+    }
+};
 
 function notifyManager(content) {
     if (!('Notification' in window)) return;
