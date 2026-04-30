@@ -8,6 +8,7 @@ from datetime import timedelta
 from discord.ext import commands, tasks
 
 from config import JST
+from utils.async_utils import safe_create_task
 from prompts import (
     PROMPT_ROUTINE_INACTIVITY,
     PROMPT_ROUTINE_NIGHTLY,
@@ -223,10 +224,11 @@ class PartnerRoutineCog(commands.Cog):
                 reply_text = response.text.strip()
                 await save_message("assistant", reply_text)
                 if partner_cog.drive_service:
-                    asyncio.create_task(
+                    safe_create_task(
                         backup_db_to_drive(
                             partner_cog.drive_service, partner_cog.drive_folder_id
-                        )
+                        ),
+                        name="db-backup-routine",
                     )
         except Exception as e:
             logging.error(f"Nightly Reflection Error: {e}")

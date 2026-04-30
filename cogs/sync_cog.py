@@ -64,14 +64,16 @@ class SyncCog(commands.Cog):
             ):
                 return
 
-            # 中身が空の配列 '[]' の場合もスキップする
+            # 中身が空の配列 '[]' の場合もスキップする — asyncコンテキストでは非同期I/Oで読む
             try:
-                with open(PENDING_MEMOS_FILE, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                    if content in ("", "[]"):
-                        return
-            except Exception:
-                pass
+                content = await asyncio.to_thread(
+                    PENDING_MEMOS_FILE.read_text, encoding="utf-8"
+                )
+                content = content.strip()
+                if content in ("", "[]"):
+                    return
+            except Exception as e:
+                self.logger.debug(f"pending memos read failed: {e}")
 
             self.logger.info("【強制同期】保留中のメモの同期処理を開始します...")
             self.logger.info(

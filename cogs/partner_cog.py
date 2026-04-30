@@ -8,6 +8,7 @@ from google.genai import types
 
 from config import JST
 from utils.obsidian_utils import update_section
+from utils.async_utils import safe_create_task
 from prompts import get_system_prompt, PROMPT_INTERIM_SUMMARY, PROMPT_CONTEXTUAL_LOG
 
 
@@ -562,16 +563,18 @@ class PartnerCog(commands.Cog):
             elif name == "report_sleep":
                 fitbit_cog = self.bot.get_cog("FitbitCog")
                 if fitbit_cog:
-                    asyncio.create_task(
-                        fitbit_cog.send_sleep_report(args.get("date"))
+                    safe_create_task(
+                        fitbit_cog.send_sleep_report(args.get("date")),
+                        name="fitbit-sleep-report",
                     )
                     return "睡眠データ解析中..."
                 return "FitbitCog不在"
             elif name == "report_health":
                 fitbit_cog = self.bot.get_cog("FitbitCog")
                 if fitbit_cog:
-                    asyncio.create_task(
-                        fitbit_cog.send_full_health_report(args.get("date"))
+                    safe_create_task(
+                        fitbit_cog.send_full_health_report(args.get("date")),
+                        name="fitbit-health-report",
                     )
                     return "健康データ解析中..."
                 return "FitbitCog不在"
@@ -668,7 +671,10 @@ class PartnerCog(commands.Cog):
             else:
                 reply_text = response.text.strip() if response.text else "了解！"
 
-            asyncio.create_task(self._save_contextual_user_log(text, reply_text))
+            safe_create_task(
+                self._save_contextual_user_log(text, reply_text),
+                name="partner-contextual-log",
+            )
             return reply_text
         except Exception as e:
             logging.error(f"App Resp Error: {e}")

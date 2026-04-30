@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import logging
 from pathlib import Path
@@ -16,6 +17,25 @@ from services.info_service import InfoService
 log_format = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
 logging.basicConfig(level=logging.INFO, format=log_format)
 load_dotenv()
+
+
+def _validate_required_env() -> None:
+    """起動時に必須環境変数の存在を検証する。欠落していれば終了。"""
+    required = ["PWA_API_KEY", "PWA_PASSWORD"]
+    missing = [k for k in required if not os.getenv(k)]
+    if missing:
+        logging.error(
+            "必須環境変数が未設定のため起動できません: %s",
+            ", ".join(missing),
+        )
+        logging.error(
+            ".env もしくはホスティング環境の設定を確認してください。"
+            " 詳細は .env.example を参照。"
+        )
+        sys.exit(1)
+
+
+_validate_required_env()
 
 
 def restore_token_from_env():

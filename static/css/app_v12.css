@@ -692,3 +692,269 @@ input:checked + .slider:before { transform: translateX(16px); }
 @media (max-width: 480px) {
     .modal-card { padding: 24px 20px; }
 }
+
+/* ==========================================
+   v3.1 機能拡充: アクションチップス展開 / 長押し / アクションシート / 検索
+   ========================================== */
+
+/* action-chips: ピン+その他展開 */
+.chip-btn.chip-more {
+    background: rgba(255,255,255,0.04);
+    border: 1px dashed var(--border-glass);
+    color: var(--text-secondary);
+}
+.action-chips-more {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--border-glass);
+    background: var(--bg-elevated);
+    animation: slideDown 0.2s ease-out;
+}
+.action-chips-more.hidden { display: none; }
+@keyframes slideDown {
+    from { transform: translateY(-6px); opacity: 0; }
+    to   { transform: translateY(0); opacity: 1; }
+}
+
+/* 長押し中の視覚フィードバック (プログレスバー) */
+.message.long-press-active .msg-bubble {
+    position: relative;
+    transition: transform 0.1s;
+    transform: scale(0.98);
+}
+.message.long-press-active .msg-bubble::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    background: var(--accent);
+    border-bottom-left-radius: inherit;
+    border-bottom-right-radius: inherit;
+    animation: longpressFill 600ms linear forwards;
+    pointer-events: none;
+}
+@keyframes longpressFill {
+    from { width: 0%; }
+    to   { width: 100%; }
+}
+
+/* スターマーク */
+.message.starred .msg-bubble {
+    box-shadow: 0 0 0 1px rgba(255, 196, 0, 0.5), 0 0 12px rgba(255, 196, 0, 0.18);
+}
+.message.starred .msg-bubble::before {
+    content: '⭐';
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    font-size: 0.85rem;
+    background: var(--bg-elevated);
+    border-radius: 50%;
+    width: 22px;
+    height: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 196, 0, 0.5);
+}
+.message .msg-bubble { position: relative; }
+
+/* アクションシート (長押しメニュー) */
+.action-sheet {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-xl);
+    padding: 12px;
+    width: 100%;
+    max-width: 360px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    box-shadow: var(--shadow-deep);
+    animation: sheetUp 0.2s ease-out;
+}
+@keyframes sheetUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to   { transform: translateY(0); opacity: 1; }
+}
+.action-sheet-title {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    padding: 8px 10px 4px;
+    border-bottom: 1px solid var(--border-glass);
+    margin-bottom: 4px;
+}
+.action-sheet-btn {
+    background: transparent;
+    color: var(--text-primary);
+    border: none;
+    text-align: left;
+    padding: 14px 16px;
+    border-radius: var(--radius-md);
+    font-size: 1rem;
+    cursor: pointer;
+    transition: 0.15s;
+}
+.action-sheet-btn:hover, .action-sheet-btn:active {
+    background: rgba(255,255,255,0.04);
+}
+.action-sheet-btn.danger {
+    color: #ff6b6b;
+}
+.action-sheet-btn.cancel {
+    margin-top: 4px;
+    border-top: 1px solid var(--border-glass);
+    color: var(--text-muted);
+    text-align: center;
+    padding-top: 14px;
+}
+.action-sheet-btn.is-active {
+    background: rgba(0, 186, 152, 0.1);
+    color: var(--accent);
+}
+
+/* 同期スピナー (タスク完了ボタン用) */
+.task-syncing::after {
+    content: '';
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--accent);
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-left: 6px;
+    vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* バリデーションエラー */
+.modern-input.input-invalid {
+    border-color: #ff6b6b !important;
+    background: rgba(255, 107, 107, 0.05);
+}
+
+/* 検索オーバーレイ */
+.search-panel {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-xl);
+    width: 100%;
+    max-width: 480px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.search-input-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-glass);
+    color: var(--text-secondary);
+}
+.search-input-row .modern-input {
+    flex: 1;
+    height: 38px;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-size: 1rem;
+    outline: none;
+}
+.search-results {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 4px;
+}
+.search-hint, .search-empty {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    padding: 30px 20px;
+}
+.search-result-item {
+    padding: 10px 14px;
+    margin: 4px 8px;
+    border-radius: var(--radius-md);
+    background: rgba(255,255,255,0.02);
+    border: 1px solid var(--border-glass);
+    cursor: pointer;
+    transition: 0.15s;
+}
+.search-result-item:hover { background: rgba(0,186,152,0.06); }
+.search-result-role {
+    font-size: 0.7rem;
+    color: var(--accent);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.search-result-snippet {
+    margin-top: 4px;
+    font-size: 0.88rem;
+    color: var(--text-primary);
+    line-height: 1.5;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.search-result-time {
+    margin-top: 6px;
+    font-size: 0.7rem;
+    color: var(--text-muted);
+}
+mark.search-hl {
+    background: rgba(0,186,152,0.25);
+    color: var(--accent);
+    padding: 0 2px;
+    border-radius: 3px;
+}
+
+/* Quick Save ボタン */
+.note-card-footer {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+.note-quick-btn {
+    background: rgba(0,186,152,0.1);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: 0.2s;
+}
+.note-quick-btn:active { opacity: 0.85; }
+
+/* 引用表示 (返信) */
+.msg-quote {
+    border-left: 3px solid var(--accent);
+    padding: 4px 8px;
+    margin-bottom: 6px;
+    background: rgba(0,186,152,0.06);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    border-radius: 4px;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+/* INFO タブ天気・ニュースカードの内部スクロール (密度緩和) */
+.weather-card .card-body, .news-card .card-body {
+    max-height: 320px;
+    overflow-y: auto;
+}

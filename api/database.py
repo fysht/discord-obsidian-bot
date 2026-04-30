@@ -65,45 +65,116 @@ async def init_db():
                 added_at TEXT NOT NULL
             )
         """)
-        
-        # 新規拡張カラムの追加 (存在しない場合)
-        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''")
-        except: pass
-        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN summary TEXT DEFAULT ''")
-        except: pass
-        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN memo TEXT DEFAULT ''")
-        except: pass
-        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN target_date TEXT DEFAULT ''")
-        except: pass
-        try: await db.execute("ALTER TABLE stocked_links ADD COLUMN linked_note_url TEXT DEFAULT ''")
-        except: pass
+
+        # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
+        for ddl in (
+            "ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''",
+            "ALTER TABLE stocked_links ADD COLUMN summary TEXT DEFAULT ''",
+            "ALTER TABLE stocked_links ADD COLUMN memo TEXT DEFAULT ''",
+            "ALTER TABLE stocked_links ADD COLUMN target_date TEXT DEFAULT ''",
+            "ALTER TABLE stocked_links ADD COLUMN linked_note_url TEXT DEFAULT ''",
+            "ALTER TABLE messages ADD COLUMN starred INTEGER DEFAULT 0",
+            "ALTER TABLE messages ADD COLUMN reply_to INTEGER DEFAULT NULL",
+        ):
+            try:
+                await db.execute(ddl)
+            except aiosqlite.OperationalError:
+                pass
 
         await db.commit()
 
 
-async def save_message(role: str, content: str):
-    """メッセージを保存（role: 'user' or 'assistant'）"""
+async def save_message(role: str, content: str, reply_to: int | None = None) -> int:
+    """メッセージを保存し、生成された messages.id を返す。"""
     now = datetime.datetime.now(JST).isoformat()
     async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
-            "INSERT INTO messages (role, content, timestamp) VALUES (?, ?, ?)",
-            (role, content, now),
+        cursor = await db.execute(
+            "INSERT INTO messages (role, content, timestamp, reply_to) VALUES (?, ?, ?, ?)",
+            (role, content, now, reply_to),
         )
         await db.commit()
+        return cursor.lastrowid
 
 
-async def get_history(limit: int = 100):
-    """直近の会話履歴を取得"""
+async def delete_message_by_id(message_id: int) -> bool:
+    """messages テーブルから 1 件削除。1件削除できたら True。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM messages WHERE id = ?",
+            (message_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def toggle_message_star(message_id: int) -> bool | None:
+    """starred を反転させ、新しい状態を返す。対象が無ければ None。"""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT role, content, timestamp FROM messages ORDER BY id DESC LIMIT ?",
+            "SELECT starred FROM messages WHERE id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        new_val = 0 if row["starred"] else 1
+        await db.execute(
+            "UPDATE messages SET starred = ? WHERE id = ?",
+            (new_val, message_id),
+        )
+        await db.commit()
+        return bool(new_val)
+
+
+async def get_starred_messages(limit: int = 100):
+    """お気に入りメッセージ一覧。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, role, content, timestamp, reply_to FROM messages "
+            "WHERE starred = 1 ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def search_messages(q: str, limit: int = 50):
+    """LIKE クエリで内容検索。新しい順に返却。"""
+    if not q:
+        return []
+    pattern = f"%{q}%"
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, role, content, timestamp FROM messages "
+            "WHERE content LIKE ? ORDER BY id DESC LIMIT ?",
+            (pattern, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_history(limit: int = 100):
+    """直近の会話履歴を取得。各エントリに id / starred / reply_to を含む。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, role, content, timestamp, starred, reply_to "
+            "FROM messages ORDER BY id DESC LIMIT ?",
             (limit,),
         )
         rows = await cursor.fetchall()
         # 古い順に並び替えて返す
         return [
-            {"role": row["role"], "content": row["content"], "timestamp": row["timestamp"]}
+            {
+                "id": row["id"],
+                "role": row["role"],
+                "content": row["content"],
+                "timestamp": row["timestamp"],
+                "starred": bool(row["starred"]) if row["starred"] is not None else False,
+                "reply_to": row["reply_to"],
+            }
             for row in reversed(rows)
         ]
 

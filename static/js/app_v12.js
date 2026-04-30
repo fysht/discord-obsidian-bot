@@ -128,6 +128,8 @@ const messageInput = $('#message-input');
 const sendBtn = $('#send-btn');
 let isChatSending = false;
 const chatForm = $('#chat-form');
+let _pendingReplyToId = null;
+let _pendingReplyContent = null;
 
 if (chatForm) {
     chatForm.addEventListener('submit', async (e) => {
@@ -140,15 +142,22 @@ if (chatForm) {
         sendBtn.style.opacity = '0.5';
         sendBtn.disabled = true;
 
-        appendMsg('user', msg);
+        const replyTo = _pendingReplyToId;
+        const replyContent = _pendingReplyContent;
+        const userEl = appendMsg('user', msg, null, { replyContent: replyContent });
+        clearReplyContext();
         messageInput.value = '';
         messageInput.style.height = '40px';
         sendBtn.classList.remove('active');
 
         try {
-            const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: msg }) });
-            appendMsg('assistant', data.reply);
-            
+            const data = await apiFetch('/api/chat', {
+                method: 'POST',
+                body: JSON.stringify({ message: msg, reply_to_id: replyTo }),
+            });
+            if (userEl && data.user_message_id) userEl.dataset.msgId = String(data.user_message_id);
+            appendMsg('assistant', data.reply, null, { id: data.assistant_message_id });
+
             // AI応答後にダッシュボードをリロードして反映させる
             if (typeof loadDashboard === 'function') loadDashboard();
         } catch (err) {
@@ -161,6 +170,12 @@ if (chatForm) {
     });
 }
 
+function clearReplyContext() {
+    _pendingReplyToId = null;
+    _pendingReplyContent = null;
+    if (messageInput) messageInput.placeholder = 'メッセージを入力...';
+}
+
 if (messageInput) {
     messageInput.addEventListener('input', () => {
         messageInput.style.height = '40px';
@@ -169,8 +184,8 @@ if (messageInput) {
     });
 }
 
-function appendMsg(role, content, isoTimestamp = null) {
-    if (!chatMessages) return;
+function appendMsg(role, content, isoTimestamp = null, opts = {}) {
+    if (!chatMessages) return null;
     const now = isoTimestamp ? new Date(isoTimestamp) : new Date();
     const dStr = `${now.getFullYear()}年${now.getMonth()+1}月${now.getDate()}日(${['日','月','火','水','木','金','土'][now.getDay()]})`;
     const tStr = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
@@ -184,22 +199,31 @@ function appendMsg(role, content, isoTimestamp = null) {
     }
 
     const div = document.createElement('div');
-    div.className = `message ${role}`;
+    div.className = `message ${role}` + (opts.starred ? ' starred' : '');
+    if (opts.id) div.dataset.msgId = String(opts.id);
+    if (opts.starred) div.dataset.starred = '1';
+
     let html = '';
     if (role === 'assistant') html += `<img src="/static/icons/avatar.png" class="msg-avatar">`;
-    let processedContent = escapeHtml(content).replace(/\n/g, '<br>');
+    const processedContent = escapeHtml(content).replace(/\n/g, '<br>');
+
+    // 引用 (返信) 表示
+    let quoteHtml = '';
+    if (opts.replyContent) {
+        quoteHtml = `<div class="msg-quote">${escapeHtml(opts.replyContent.slice(0, 120))}</div>`;
+    }
 
     html += `
         <div class="msg-content">
-            <div class="msg-bubble" style="word-break: break-all;">${processedContent}</div>
+            <div class="msg-bubble" style="word-break: break-all;" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}</div>
             <div class="msg-time">${tStr}</div>
         </div>
     `;
     div.innerHTML = html;
-    attachLongPress(div);
     chatMessages.appendChild(div);
     chatMessages.scrollTop = chatMessages.scrollHeight;
     if (role === 'assistant') notifyManager(content);
+    return div;
 }
 
 async function loadDashboard() {
@@ -366,6 +390,7 @@ function renderTaskGroup(container, tasks, listName) {
 window.toggleGoogleTask = async (taskId, listName) => {
     const item = $(`#gtask-item-${taskId}`);
     if (item) {
+        item.classList.add('task-syncing');
         item.style.opacity = '0.5';
         const cb = item.querySelector('.checkbox-custom');
         if (cb) {
@@ -389,6 +414,8 @@ window.toggleGoogleTask = async (taskId, listName) => {
     } catch (e) {
         showToast('更新に失敗しました', true);
         loadDashboard();
+    } finally {
+        if (item) item.classList.remove('task-syncing');
     }
 };
 
@@ -922,11 +949,20 @@ window.openLinkDetailsModal = (lk) => {
         </select>
     `;
 
-    $('#field-purpose').style.display = 'flex';
-    $('#field-summary').style.display = 'flex';
-    $('#field-memo').style.display = 'flex';
-    $('#field-date').style.display = ['recipe', 'map', 'book'].includes(lk.type) ? 'flex' : 'none';
-    
+    // フィールド可視性は LINK_FIELD_VISIBILITY config に集約
+    if (typeof applyLinkFieldVisibility === 'function') {
+        applyLinkFieldVisibility(lk.type);
+    }
+    // type 変更時にも追従
+    const typeSel = $('#link-type-select');
+    if (typeSel) {
+        typeSel.addEventListener('change', () => {
+            if (typeof applyLinkFieldVisibility === 'function') {
+                applyLinkFieldVisibility(typeSel.value);
+            }
+        });
+    }
+
     if (!$('#purpose-options')) {
         const dl = document.createElement('datalist');
         dl.id = 'purpose-options';
@@ -1047,7 +1083,17 @@ async function loadHistory() {
         if (chatMessages) {
             chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
             lastMsgDate = null;
-            data.messages.forEach(m => appendMsg(m.role, m.content, m.timestamp));
+            // 返信先の本文を引きやすいよう辞書化
+            const idMap = new Map();
+            (data.messages || []).forEach(m => idMap.set(m.id, m));
+            (data.messages || []).forEach(m => {
+                const replyContent = m.reply_to ? (idMap.get(m.reply_to)?.content || null) : null;
+                appendMsg(m.role, m.content, m.timestamp, {
+                    id: m.id,
+                    starred: !!m.starred,
+                    replyContent,
+                });
+            });
         }
     } catch {}
 }
@@ -1318,8 +1364,16 @@ function closeMsgDeleteConfirm() {
     _longPressTarget = null;
 }
 
-function confirmMsgDelete() {
-    if (_longPressTarget) _longPressTarget.remove();
+async function confirmMsgDelete() {
+    const target = _longPressTarget;
+    if (!target) { closeMsgDeleteConfirm(); return; }
+    const id = target.dataset.msgId;
+    try {
+        if (id) await apiFetch(`/api/messages/${id}`, { method: 'DELETE' });
+        target.remove();
+    } catch (e) {
+        showToast('削除に失敗しました', true);
+    }
     closeMsgDeleteConfirm();
 }
 
@@ -1335,32 +1389,50 @@ if (imgAttachBtn) {
     imgAttachBtn.addEventListener('click', () => imageInput && imageInput.click());
 }
 
+function _fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+}
+
 if (imageInput) {
     imageInput.addEventListener('change', async () => {
-        const file = imageInput.files[0];
-        if (!file) return;
+        const files = Array.from(imageInput.files || []);
+        if (!files.length) return;
         imageInput.value = '';
 
-        // チャットに画像プレビューを表示
-        const objectUrl = URL.createObjectURL(file);
-        appendImagePreview(objectUrl);
+        // チャットに画像プレビューを表示 (全枚分)
+        files.forEach(f => appendImagePreview(URL.createObjectURL(f)));
 
-        // base64変換
-        const base64 = await new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result.split(',')[1]);
-            reader.onerror = reject;
-            reader.readAsDataURL(file);
-        });
-
-        // 読み取り中インジケーター
-        const loadingId = appendLoadingBubble('📖 手書きメモを読み取り中...');
+        const isMulti = files.length > 1;
+        const loadingId = appendLoadingBubble(
+            isMulti
+                ? `📖 ${files.length}枚の手書きメモを読み取り中...`
+                : '📖 手書きメモを読み取り中...'
+        );
 
         try {
-            const result = await apiFetch('/api/note_from_image', {
-                method: 'POST',
-                body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
-            });
+            let result;
+            if (isMulti) {
+                const images = await Promise.all(files.map(async (f) => ({
+                    image_base64: await _fileToBase64(f),
+                    mime_type: f.type || 'image/jpeg',
+                })));
+                result = await apiFetch('/api/note_from_images', {
+                    method: 'POST',
+                    body: JSON.stringify({ images }),
+                });
+            } else {
+                const file = files[0];
+                const base64 = await _fileToBase64(file);
+                result = await apiFetch('/api/note_from_image', {
+                    method: 'POST',
+                    body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
+                });
+            }
             removeLoadingBubble(loadingId);
             pendingNote = result;
             appendNoteCard(result);
@@ -1438,7 +1510,8 @@ function appendNoteCard(note) {
                 <div class="note-card-body">${structuredHtml}</div>
                 ${actionsHtml}
                 <div class="note-card-footer">
-                    <button class="note-save-btn" onclick="openNoteSaveModal()">保存する →</button>
+                    <button class="note-quick-btn" onclick="quickSaveNote()">⚡ 即保存</button>
+                    <button class="note-save-btn" onclick="openNoteSaveModal()">詳細設定 →</button>
                 </div>
             </div>
             <div class="msg-time">${tStr}</div>
@@ -1594,3 +1667,287 @@ function stopConfetti() {
     cancelAnimationFrame(canvas._confettiAnimId);
     canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
 }
+
+// =====================================================
+// v3.1 機能拡充: アクションシート / 検索 / Quick Save / リンクフィールド可視性
+// =====================================================
+
+// ----- 長押しイベント委譲 (chat-messages 全体に1つだけ) -----
+let _longPressInitialized = false;
+function initLongPressDelegation() {
+    if (_longPressInitialized) return;
+    if (!chatMessages) return;
+    _longPressInitialized = true;
+    const DURATION = 600;
+    let timer = null;
+    let target = null;
+    const start = (e) => {
+        const msg = e.target.closest && e.target.closest('.message');
+        if (!msg) return;
+        target = msg;
+        msg.classList.add('long-press-active');
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            if (navigator.vibrate) navigator.vibrate(40);
+            _longPressTarget = target;
+            target?.classList.remove('long-press-active');
+            openMsgActionSheet();
+        }, DURATION);
+    };
+    const cancel = () => {
+        clearTimeout(timer);
+        timer = null;
+        target?.classList.remove('long-press-active');
+        target = null;
+    };
+    chatMessages.addEventListener('touchstart', start, { passive: true });
+    chatMessages.addEventListener('touchend', cancel);
+    chatMessages.addEventListener('touchmove', cancel, { passive: true });
+    chatMessages.addEventListener('touchcancel', cancel);
+    chatMessages.addEventListener('mousedown', start);
+    chatMessages.addEventListener('mouseup', cancel);
+    chatMessages.addEventListener('mouseleave', cancel);
+    chatMessages.addEventListener('contextmenu', (e) => {
+        if (e.target.closest('.message')) e.preventDefault();
+    });
+}
+
+// 既存の `attachLongPress(div)` 呼び出しは互換性のためノーオプ化。
+// 長押し検知は initLongPressDelegation() による委譲に一本化された。
+function attachLongPress(_el) { /* no-op: handled by delegation */ }
+
+// ----- アクションシート -----
+function _getLongPressText() {
+    if (!_longPressTarget) return '';
+    const bubble = _longPressTarget.querySelector('.msg-bubble');
+    if (!bubble) return '';
+    return bubble.dataset.raw || bubble.innerText;
+}
+
+function openMsgActionSheet() {
+    const sheet = document.getElementById('msg-action-sheet');
+    const starBtn = document.getElementById('msg-action-star-btn');
+    if (starBtn && _longPressTarget) {
+        const isStarred = _longPressTarget.classList.contains('starred');
+        starBtn.textContent = isStarred ? '⭐ お気に入り解除' : '⭐ お気に入り';
+        starBtn.classList.toggle('is-active', isStarred);
+    }
+    sheet?.classList.remove('hidden');
+}
+
+function closeMsgActionSheet(e) {
+    if (e && e.target.closest && e.target.closest('.action-sheet')) return;
+    document.getElementById('msg-action-sheet')?.classList.add('hidden');
+    _longPressTarget = null;
+}
+
+function msgActionCopy() {
+    const text = _getLongPressText();
+    if (text && navigator.clipboard) {
+        navigator.clipboard.writeText(text)
+            .then(() => showToast('コピーしました'))
+            .catch(() => showToast('コピーに失敗しました', true));
+    }
+    closeMsgActionSheet();
+}
+
+function msgActionReply() {
+    const target = _longPressTarget;
+    if (!target) return;
+    const text = _getLongPressText();
+    const idStr = target.dataset.msgId;
+    _pendingReplyToId = idStr ? parseInt(idStr) : null;
+    _pendingReplyContent = text;
+    if (messageInput) {
+        messageInput.placeholder = `↩ 返信中: ${text.slice(0, 28)}${text.length > 28 ? '...' : ''}`;
+        messageInput.focus();
+    }
+    showToast('返信モード ON (送信時に解除)');
+    closeMsgActionSheet();
+}
+
+async function msgActionStar() {
+    const target = _longPressTarget;
+    if (!target) { closeMsgActionSheet(); return; }
+    const id = target.dataset.msgId;
+    if (!id) {
+        showToast('未保存のメッセージはお気に入りにできません', true);
+        closeMsgActionSheet();
+        return;
+    }
+    try {
+        const res = await apiFetch(`/api/messages/${id}/star`, { method: 'POST' });
+        target.classList.toggle('starred', !!res.starred);
+        showToast(res.starred ? '⭐ お気に入りに追加' : 'お気に入り解除');
+    } catch (e) {
+        showToast('操作に失敗しました', true);
+    }
+    closeMsgActionSheet();
+}
+
+async function msgActionDelete() {
+    const target = _longPressTarget;
+    if (!target) { closeMsgActionSheet(); return; }
+    const id = target.dataset.msgId;
+    try {
+        if (id) await apiFetch(`/api/messages/${id}`, { method: 'DELETE' });
+        target.remove();
+        showToast('削除しました');
+    } catch (e) {
+        showToast('削除に失敗しました', true);
+    }
+    closeMsgActionSheet();
+}
+
+// ----- アクションチップス展開トグル -----
+function toggleMoreChips() {
+    const more = document.getElementById('action-chips-more');
+    const toggle = document.getElementById('chip-more-toggle');
+    if (!more) return;
+    const willOpen = more.classList.contains('hidden');
+    more.classList.toggle('hidden', !willOpen);
+    if (toggle) toggle.textContent = willOpen ? '× 閉じる' : '＋ その他';
+}
+
+// ----- ノート Quick Save -----
+async function quickSaveNote() {
+    if (!pendingNote) return;
+    const cat = pendingNote.category || 'other';
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const payload = {
+        mode: 'new',
+        content: pendingNote.structured_content || pendingNote.transcription || '',
+        action_items: pendingNote.action_items || [],
+        title: pendingNote.subject || `メモ_${dateStr}`,
+        category: cat,
+        subject: pendingNote.subject || '',
+    };
+    try {
+        await apiFetch('/api/save_note', { method: 'POST', body: JSON.stringify(payload) });
+        const label = (CATEGORY_LABEL[cat] || '📝');
+        showToast(`保存しました ✓ ${label}`);
+        pendingNote = null;
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    }
+}
+
+// ----- 検索オーバーレイ -----
+function openSearchOverlay() {
+    document.getElementById('search-overlay')?.classList.remove('hidden');
+    setTimeout(() => $('#search-input')?.focus(), 60);
+}
+
+function closeSearchOverlay(e) {
+    if (e && e.target.closest && e.target.closest('.search-panel')) return;
+    document.getElementById('search-overlay')?.classList.add('hidden');
+    const input = $('#search-input');
+    if (input) input.value = '';
+    const results = $('#search-results');
+    if (results) results.innerHTML = '<p class="search-hint">2文字以上で検索開始</p>';
+}
+
+let _searchDebounce = null;
+$('#search-input')?.addEventListener('input', (e) => {
+    clearTimeout(_searchDebounce);
+    const q = e.target.value.trim();
+    _searchDebounce = setTimeout(() => runMessageSearch(q), 220);
+});
+
+async function runMessageSearch(q) {
+    const results = $('#search-results');
+    if (!results) return;
+    if (q.length < 2) {
+        results.innerHTML = '<p class="search-hint">2文字以上で検索開始</p>';
+        return;
+    }
+    try {
+        const data = await apiFetch(`/api/messages/search?q=${encodeURIComponent(q)}&limit=50`);
+        if (!data.results || !data.results.length) {
+            results.innerHTML = '<p class="search-empty">該当するメッセージが見つかりません</p>';
+            return;
+        }
+        const safeQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(safeQ, 'gi');
+        results.innerHTML = data.results.map(m => {
+            const dt = new Date(m.timestamp);
+            const tStr = `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
+            const safeContent = escapeHtml(m.content);
+            const highlighted = safeContent.replace(re, m0 => `<mark class="search-hl">${m0}</mark>`);
+            const roleLabel = m.role === 'assistant' ? 'AI' : 'YOU';
+            return `<div class="search-result-item" onclick="jumpToMessage(${m.id})">
+                <div class="search-result-role">${roleLabel}</div>
+                <div class="search-result-snippet">${highlighted}</div>
+                <div class="search-result-time">${tStr}</div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        results.innerHTML = '<p class="search-empty">検索に失敗しました</p>';
+    }
+}
+
+function jumpToMessage(id) {
+    closeSearchOverlay();
+    const target = chatMessages?.querySelector(`.message[data-msg-id="${id}"]`);
+    if (target) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('long-press-active');
+        setTimeout(() => target.classList.remove('long-press-active'), 1200);
+    } else {
+        showToast('表示中の履歴に該当メッセージがありません');
+    }
+}
+
+// ----- リンク詳細フィールド可視性 (Phase 2-6) -----
+const LINK_FIELD_VISIBILITY = {
+    web:    { purpose: true,  date: false, url: true,  summary: true,  memo: true },
+    youtube:{ purpose: true,  date: false, url: false, summary: true,  memo: true },
+    recipe: { purpose: false, date: false, url: false, summary: false, memo: true },
+    map:    { purpose: true,  date: true,  url: false, summary: false, memo: true },
+    book:   { purpose: true,  date: false, url: true,  summary: true,  memo: true },
+};
+
+function applyLinkFieldVisibility(linkType) {
+    const cfg = LINK_FIELD_VISIBILITY[linkType] || LINK_FIELD_VISIBILITY.web;
+    Object.entries(cfg).forEach(([k, v]) => {
+        const el = document.getElementById(`field-${k}`);
+        if (el) el.style.display = v ? 'flex' : 'none';
+    });
+}
+
+// URL 欄のリアルタイムバリデーション
+$('#link-note-url-input')?.addEventListener('input', (e) => {
+    const ok = !e.target.value || /^https?:\/\//.test(e.target.value);
+    e.target.classList.toggle('input-invalid', !ok);
+});
+
+// ----- ストックリンク一括既読化 (Phase 3-4) -----
+async function markAllLinksRead(type) {
+    if (!confirm(`${type} カテゴリのリンクをすべて既読にしますか？`)) return;
+    try {
+        const data = await apiFetch('/api/links');
+        const targetIds = (data.links || [])
+            .filter(l => l.type === type && l.status !== 'saved')
+            .map(l => l.id);
+        if (!targetIds.length) {
+            showToast('未読のリンクはありません');
+            return;
+        }
+        await apiFetch('/api/links/bulk_status', {
+            method: 'POST',
+            body: JSON.stringify({ link_ids: targetIds, status: 'saved' }),
+        });
+        showToast(`${targetIds.length} 件を既読化しました`);
+        loadDashboard();
+    } catch (e) {
+        showToast('一括既読化に失敗しました', true);
+    }
+}
+
+// ----- 初期化フック -----
+// initMain() はモジュール冒頭で定義済み。長押し委譲を初期化するための拡張ラッパー。
+const _origInitMain = typeof initMain === 'function' ? initMain : null;
+window.initMain = function patchedInitMain() {
+    if (_origInitMain) _origInitMain();
+    initLongPressDelegation();
+};

@@ -8,17 +8,26 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 from api.database import (
-    save_message, get_history, add_stocked_link, get_all_links, 
-    get_link_by_id, update_link_details, mark_link_as_saved, 
-    delete_stocked_link, get_todays_log, clear_history
+    save_message, get_history, add_stocked_link, get_all_links,
+    get_link_by_id, update_link_details, mark_link_as_saved,
+    delete_stocked_link, get_todays_log, clear_history,
+    delete_message_by_id, toggle_message_star, get_starred_messages,
+    search_messages,
 )
 from services.info_service import InfoService
 from web_parser import fetch_maps_info, parse_url_with_readability
-from config import JST
+from config import (
+    JST,
+    require_env,
+    TIMEOUT_HTTP_SHORT,
+    TIMEOUT_HTTP_DEFAULT,
+    TIMEOUT_PLAYWRIGHT,
+)
+from utils.async_utils import safe_create_task
 
 router = APIRouter(prefix="/api")
 
-API_KEY = os.getenv("PWA_API_KEY", "secretary-ai-default-key")
+API_KEY = require_env("PWA_API_KEY")
 
 _sleep_trend_cache: dict = {"data": None, "expires_at": None}
 _dashboard_sleep_cache: dict = {"data": None, "expires_at": None}
@@ -36,17 +45,21 @@ async def verify_api_key(x_api_key: str = Header(None)):
 
 class ChatRequest(BaseModel):
     message: str
+    reply_to_id: Optional[int] = None
 
 class ChatResponse(BaseModel):
     reply: str
+    user_message_id: Optional[int] = None
+    assistant_message_id: Optional[int] = None
 
 class AuthRequest(BaseModel):
     password: str
 
+APP_PASSWORD = require_env("PWA_PASSWORD")
+
 @router.post("/auth")
 async def authenticate(req: AuthRequest):
-    app_password = os.getenv("PWA_PASSWORD", "secretary")
-    if req.password != app_password:
+    if req.password != APP_PASSWORD:
         raise HTTPException(status_code=401, detail="パスワードが正しくありません。")
     return {"api_key": API_KEY}
 
@@ -65,29 +78,31 @@ async def _fetch_link_meta(url: str) -> dict:
             safe_url = urllib.parse.quote(url, safe='')
             oembed = f"https://www.youtube.com/oembed?url={safe_url}&format=json"
             async with aiohttp.ClientSession() as session:
-                async with session.get(oembed, timeout=aiohttp.ClientTimeout(total=8)) as resp:
+                async with session.get(oembed, timeout=aiohttp.ClientTimeout(total=TIMEOUT_HTTP_SHORT)) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         title = data.get("title", "YouTube Video")
                         recipe_kw = ["レシピ", "作り方", "材料", "献立", "recipe", "cooking"]
                         if any(k in title.lower() for k in recipe_kw):
                             link_type = "recipe"
-        except Exception: pass
+        except Exception as e:
+            logging.debug(f"YouTube oEmbed失敗: {e}")
         return {"title": title, "type": link_type}
-        
+
     if "maps.google.com" in url or "maps.app.goo.gl" in url or "goo.gl/maps" in url or "/maps/" in url:
         link_type = "map"
         try:
             place_name, _ = await fetch_maps_info(url)
             if place_name and place_name != "Google Maps Location":
                 title = place_name
-        except Exception: pass
+        except Exception as e:
+            logging.debug(f"Maps情報取得失敗: {e}")
         return {"title": title, "type": link_type}
-        
+
     if "amazon.co.jp" in url or "amzn.to" in url or "amazon.com" in url:
         link_type = "book"
         try:
-            pw_title, _ = await asyncio.wait_for(parse_url_with_readability(url), timeout=45.0)
+            pw_title, _ = await asyncio.wait_for(parse_url_with_readability(url), timeout=TIMEOUT_PLAYWRIGHT)
             if pw_title and pw_title not in ("No Title Found", "Untitled", ""):
                 title = pw_title.replace("Amazon.co.jp:", "").replace("Amazon.com:", "").replace("Amazon |", "").strip()
                 title = _re.sub(r"\s*:\s*Amazon\.co\.jp.*$", "", title).strip()
@@ -107,7 +122,7 @@ async def _fetch_link_meta(url: str) -> dict:
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
             }
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=TIMEOUT_HTTP_DEFAULT), allow_redirects=True) as response:
                 if response.status == 200:
                     html = await response.text(errors="replace")
                     match = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.IGNORECASE | _re.DOTALL)
@@ -208,6 +223,7 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
 async def chat(req: ChatRequest):
     from api import app
     import re
+    from api.database import backup_db_to_drive
 
     url_match = re.search(r"https?://[^\s]+", req.message)
     if url_match:
@@ -223,9 +239,9 @@ async def chat(req: ChatRequest):
 
             type_label = {"web": "🌐 ウェブ", "youtube": "📺 YouTube", "recipe": "🍳 レシピ", "map": "🗺️ マップ", "book": "📚 書籍"}.get(meta["type"], "🔗 リンク")
             reply = f"「{meta['title']}」を{type_label}としてストックし、ノートを作成しました。"
-            await save_message("user", req.message)
-            await save_message("assistant", reply)
-            return ChatResponse(reply=reply)
+            user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
+            asst_id = await save_message("assistant", reply)
+            return ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
         except Exception as e:
             logging.error(f"Link stock failed, falling back to AI: {e}")
 
@@ -234,25 +250,37 @@ async def chat(req: ChatRequest):
     partner_cog = bot.get_cog("PartnerCog")
     if not partner_cog: raise HTTPException(status_code=503, detail="AIコアがロードされていません。")
 
-    await save_message("user", req.message)
+    user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
 
     from google.genai import types
     db_history = await get_history(limit=15)
     history_messages = []
-    for m in reversed(db_history[1:]): 
+    for m in reversed(db_history[1:]):
         role = "model" if m["role"] == "assistant" else "user"
         history_messages.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
 
-    reply = await partner_cog.generate_response_for_app(req.message, history_messages)
-    await save_message("assistant", reply)
+    # 返信先のコンテキストをプロンプト前置で添付
+    user_message = req.message
+    if req.reply_to_id:
+        try:
+            quoted = next((m for m in db_history if m.get("id") == req.reply_to_id), None)
+            if quoted:
+                snippet = quoted["content"][:300]
+                user_message = f"[返信先メッセージ: 「{snippet}」]\n\n{req.message}"
+        except Exception as e:
+            logging.debug(f"reply context attach failed: {e}")
 
-    import asyncio
-    from api.database import backup_db_to_drive
+    reply = await partner_cog.generate_response_for_app(user_message, history_messages)
+    asst_id = await save_message("assistant", reply)
+
     if bot.drive_service:
         folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-chat",
+        )
 
-    return ChatResponse(reply=reply)
+    return ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
 
 @router.get("/history", dependencies=[Depends(verify_api_key)])
 async def history(limit: int = 100):
@@ -282,8 +310,10 @@ async def dashboard():
     if folder_id:
         f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
         if f_id:
-            try: content = await chat_service.drive_service.read_text_file(service, f_id)
-            except Exception: pass
+            try:
+                content = await chat_service.drive_service.read_text_file(service, f_id)
+            except Exception as e:
+                logging.debug(f"daily note read failed: {e}")
 
     tasks = []
     task_match = re.search(r"## 🪟 Lifelog\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
@@ -317,7 +347,8 @@ async def dashboard():
                 y_content = await chat_service.drive_service.read_text_file(service, y_fid)
                 alter_log = extract_alter_log(y_content)
                 if alter_log: alter_log = f"【昨日の分析】\n{alter_log}"
-            except Exception: pass
+            except Exception as e:
+                logging.debug(f"yesterday alter log fetch failed: {e}")
 
     if not alter_log:
         alter_log = "本日の観察ログはまだ生成されていません。"
@@ -346,7 +377,8 @@ async def dashboard():
             ]
 
             habits = await chat_service.tasks_service.get_raw_tasks("習慣")
-        except Exception: pass
+        except Exception as e:
+            logging.debug(f"google tasks fetch failed: {e}")
 
     try:
         weather_data = await bot.info_service.get_weather() if hasattr(bot, "info_service") else await InfoService().get_weather()
@@ -376,8 +408,8 @@ async def dashboard():
                     sleep_stats = {"score": score or "N/A", "duration": fitbit_cog._format_minutes(raw_duration) if raw_duration else "N/A"}
                     cached["data"] = sleep_stats
                     cached["expires_at"] = now_dt + datetime.timedelta(minutes=10)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.debug(f"fitbit dashboard stats failed: {e}")
 
     return {
         "tasks": tasks, "alter_log": alter_log, "date": display_date, "g_calendar": g_calendar,
@@ -433,15 +465,17 @@ async def task_action(req: TaskActionRequest):
 async def reset_history():
     from api import app
     from api.database import backup_db_to_drive
-    import asyncio
-    
+
     await clear_history()
-    
+
     bot = getattr(app.state, "bot", None)
     if bot and bot.drive_service:
         folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
-        
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-reset",
+        )
+
     return {"status": "success"}
 
 class CalendarActionRequest(BaseModel):
@@ -544,10 +578,6 @@ async def sleep_trend():
     ttl = datetime.timedelta(minutes=2) if recent_missing else datetime.timedelta(minutes=10)
     cached["expires_at"] = now_dt + ttl
     return result
-
-@router.post("/execute_tool", dependencies=[Depends(verify_api_key)])
-async def execute_tool(req: BaseModel):
-    pass
 
 @router.post("/daily_report", dependencies=[Depends(verify_api_key)])
 async def daily_report():
@@ -654,11 +684,11 @@ async def add_habit(req: HabitAddRequest):
 
 @router.post("/habits/update", dependencies=[Depends(verify_api_key)])
 async def update_habit(req: BaseModel):
-    return {"status": "success"}
+    raise HTTPException(status_code=501, detail="この機能は未実装です。")
 
 @router.post("/habits/delete", dependencies=[Depends(verify_api_key)])
 async def delete_habit_endpoint(req: BaseModel):
-    return {"status": "success"}
+    raise HTTPException(status_code=501, detail="この機能は未実装です。")
 
 @router.get("/habits/history", dependencies=[Depends(verify_api_key)])
 async def get_habit_history(days: int = 28):
@@ -748,14 +778,16 @@ async def create_link(req: LinkCreateRequest):
     
     chat_service = getattr(app.state, "chat_service", None)
     await sync_link_to_obsidian(chat_service, req.title, req.type, req.url)
-    
+
     # クラウドバックアップ
     bot = getattr(app.state, "bot", None)
     if bot and bot.drive_service:
-        import asyncio
         from api.database import backup_db_to_drive
         folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-link-create",
+        )
 
     return {"status": "success", "link_id": new_link["id"]}
 
@@ -798,15 +830,18 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
                     "summary": f"{prefix} {new_title}", "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
                     "start": {"date": dt.strftime("%Y-%m-%d")}, "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")}
                 }).execute()
-            except: pass
-    
+            except Exception as e:
+                logging.warning(f"link calendar add failed: {e}")
+
     # クラウドバックアップ
     bot = getattr(app.state, "bot", None)
     if bot and bot.drive_service:
-        import asyncio
         from api.database import backup_db_to_drive
         folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-link-update",
+        )
 
     return {"status": "success"}
 
@@ -818,10 +853,12 @@ async def delete_link(link_id: int):
     # クラウドバックアップ
     bot = getattr(app.state, "bot", None)
     if bot and bot.drive_service:
-        import asyncio
         from api.database import backup_db_to_drive
         folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
-        asyncio.create_task(backup_db_to_drive(bot.drive_service, folder_id))
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-link-delete",
+        )
 
     return {"status": "success"}
 
@@ -1033,3 +1070,145 @@ async def save_note(req: SaveNoteRequest):
         raise HTTPException(status_code=500, detail=f"保存に失敗しました: {str(e)}")
 
     return {"status": "success"}
+
+
+# ===== メッセージ操作 (削除 / star / 検索) =====
+
+@router.delete("/messages/{message_id}", dependencies=[Depends(verify_api_key)])
+async def delete_message(message_id: int):
+    """会話履歴から1件削除し、Driveバックアップを起動。"""
+    from api import app
+    from api.database import backup_db_to_drive
+
+    ok = await delete_message_by_id(message_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="該当メッセージが見つかりません。")
+
+    bot = getattr(app.state, "bot", None)
+    if bot and bot.drive_service:
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-msg-delete",
+        )
+    return {"status": "success"}
+
+
+@router.post("/messages/{message_id}/star", dependencies=[Depends(verify_api_key)])
+async def star_message(message_id: int):
+    """お気に入りトグル。新しい状態を返す。"""
+    from api import app
+    from api.database import backup_db_to_drive
+
+    new_state = await toggle_message_star(message_id)
+    if new_state is None:
+        raise HTTPException(status_code=404, detail="該当メッセージが見つかりません。")
+
+    bot = getattr(app.state, "bot", None)
+    if bot and bot.drive_service:
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-msg-star",
+        )
+    return {"status": "success", "starred": new_state}
+
+
+@router.get("/messages/starred", dependencies=[Depends(verify_api_key)])
+async def list_starred_messages(limit: int = 100):
+    return {"messages": await get_starred_messages(limit=limit)}
+
+
+@router.get("/messages/search", dependencies=[Depends(verify_api_key)])
+async def search_messages_endpoint(q: str = "", limit: int = 50):
+    if not q.strip():
+        return {"results": []}
+    rows = await search_messages(q.strip(), limit=limit)
+    return {"results": rows}
+
+
+# ===== 手書きメモ: 複数画像対応 =====
+
+class ImagePayload(BaseModel):
+    image_base64: str
+    mime_type: str = "image/jpeg"
+
+
+class NoteFromImagesRequest(BaseModel):
+    images: List[ImagePayload]
+    hint: str = ""
+
+
+@router.post("/note_from_images", dependencies=[Depends(verify_api_key)])
+async def note_from_images(req: NoteFromImagesRequest):
+    """複数画像を1ノートに統合読み取り。"""
+    import base64
+    from google.genai import types
+    from api import app
+
+    if not req.images:
+        raise HTTPException(status_code=400, detail="画像が指定されていません。")
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    hint_text = f"\n補足情報: {req.hint}" if req.hint else ""
+    prompt = f"""これら {len(req.images)} 枚の手書きメモ画像をまとめて読み取り、1つのノートとして以下のJSON形式で返してください。
+画像の順番がメモの流れを表します。読みにくい箇所は文脈から補完してください。{hint_text}
+
+{{
+  "transcription": "全画像を統合した文字起こし（原文に近い形）",
+  "structured_content": "整理・構造化した内容（Markdown形式。箇条書きや見出しを使い、複数画像の内容を統合する）",
+  "category": "work か study か idea か task か other のいずれか",
+  "subject": "categoryがstudyの場合の科目名（例: 数学、英語）。それ以外は空文字",
+  "action_items": ["タスク・TODOがあれば文字列の配列で。なければ空配列"]
+}}"""
+
+    try:
+        parts = []
+        for img in req.images:
+            image_bytes = base64.b64decode(img.image_base64)
+            parts.append(types.Part.from_bytes(data=image_bytes, mime_type=img.mime_type))
+        parts.append(types.Part.from_text(text=prompt))
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=types.Content(role="user", parts=parts),
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        logging.error(f"note_from_images error: {e}")
+        raise HTTPException(status_code=500, detail=f"読み取りに失敗しました: {str(e)}")
+
+
+# ===== ストックリンク一括既読化 =====
+
+class LinkBulkStatusRequest(BaseModel):
+    link_ids: List[int]
+    status: str = "saved"
+
+
+@router.post("/links/bulk_status", dependencies=[Depends(verify_api_key)])
+async def bulk_update_link_status(req: LinkBulkStatusRequest):
+    """複数リンクのステータスを一括更新する。"""
+    from api import app
+    from api.database import backup_db_to_drive
+
+    if not req.link_ids:
+        return {"status": "success", "updated": 0}
+    # mark_link_as_saved は単一更新だが、一括で繰り返す（件数高々100オーダー想定）
+    for lid in req.link_ids:
+        try:
+            await mark_link_as_saved(lid)
+        except Exception as e:
+            logging.warning(f"bulk_status update {lid} failed: {e}")
+
+    bot = getattr(app.state, "bot", None)
+    if bot and bot.drive_service:
+        folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+        safe_create_task(
+            backup_db_to_drive(bot.drive_service, folder_id),
+            name="db-backup-bulk-status",
+        )
+    return {"status": "success", "updated": len(req.link_ids)}
