@@ -2,6 +2,20 @@ const API_BASE = '';
 let apiKey = localStorage.getItem('secretary_api_key') || '';
 let lastMsgDate = null;
 
+// iOS Safari ではキーボード開閉時に dvh が更新されないため、
+// visualViewport の高さを --app-height に反映してレイアウトを制御する
+(function initViewportHeightFix() {
+    function updateAppHeight() {
+        const h = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+        document.documentElement.style.setProperty('--app-height', h + 'px');
+    }
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', updateAppHeight);
+    }
+    window.addEventListener('resize', updateAppHeight);
+    updateAppHeight();
+})();
+
 // 各カテゴリーごとのソート状態を保持するオブジェクト
 let linkSorts = {
     web: 'newest',

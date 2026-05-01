@@ -30,6 +30,7 @@
 body {
     height: 100vh;
     height: 100dvh;
+    height: var(--app-height, 100dvh); /* iOSキーボード対応: JSがvisualViewport高さで上書き */
     font-family: 'Inter', 'Noto Sans JP', sans-serif;
     background-color: var(--bg-base);
     color: var(--text-primary);
