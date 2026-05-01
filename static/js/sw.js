@@ -33,6 +33,11 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// SKIP_WAITING — app_v12.js から新しい SW を即時有効化する
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
 // Push notification handler
 self.addEventListener('push', (event) => {
   let data = { title: 'マネージャー', body: '新しいメッセージがあります', url: '/' };
@@ -45,6 +50,9 @@ self.addEventListener('push', (event) => {
       body: data.body,
       icon: '/static/icons/icon-192.png',
       badge: '/static/icons/icon-192.png',
+      tag: 'manager-msg',
+      renotify: true,
+      vibrate: [200, 100, 200],
       data: { url: data.url || '/' },
     })
   );

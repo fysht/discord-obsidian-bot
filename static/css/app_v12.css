@@ -203,6 +203,121 @@ details.card > summary > .card-header { border-bottom: none; }
 }
 .list-body { padding: 4px 0; }
 
+/* ========== STOCKED LINK ITEMS (web/yt/recipe/map/book 共通) ========== */
+.stocked-list { padding: 0; }
+.stocked-link {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border-glass);
+    background: transparent;
+    transition: background 0.2s;
+}
+.stocked-link:last-child { border-bottom: none; }
+.stocked-link:active { background: rgba(255,255,255,0.03); }
+
+.stocked-link-title {
+    color: var(--text);
+    font-weight: 600;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    text-decoration: none;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+.stocked-link-title:visited { color: var(--text); }
+.stocked-link-title:hover { color: var(--accent); }
+
+.stocked-link-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.stocked-link-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.75rem;
+    padding: 2px 8px;
+    border-radius: 10px;
+    line-height: 1.4;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.stocked-link-chip.purpose { background: rgba(0,186,152,0.12); color: var(--accent); }
+.stocked-link-chip.date    { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
+.stocked-link-chip.added   { background: transparent; color: var(--text-muted); font-size: 0.7rem; padding: 0; }
+
+.stocked-link-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    align-items: center;
+    margin-top: 2px;
+}
+.stocked-link-btn {
+    border: none;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    padding: 6px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    line-height: 1.2;
+    min-height: 32px;
+    transition: 0.15s;
+}
+.stocked-link-btn:active { transform: scale(0.97); }
+.stocked-link-btn.edit  { background: rgba(0,186,152,0.12); color: var(--accent); }
+.stocked-link-btn.danger { background: rgba(255,80,80,0.12); color: #ff6e6e; }
+
+/* ストックリンクのヘッダー操作群 */
+.stocked-list-controls {
+    display: inline-flex;
+    gap: 6px;
+    margin-left: auto;
+    align-items: center;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+}
+.stocked-list-controls select {
+    background: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border-glass);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    max-width: 130px;
+    min-height: 30px;
+}
+.stocked-list-controls .add-mini {
+    background: rgba(0,186,152,0.12);
+    color: var(--accent);
+    border: none;
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    cursor: pointer;
+    min-height: 30px;
+    line-height: 1;
+}
+
+.stocked-empty {
+    padding: 20px 16px;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
 /* ========== LIST ITEMS (EDITABLE) ========== */
 .list-item {
     display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-bottom: 1px solid var(--border-glass);

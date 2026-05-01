@@ -21,3 +21,22 @@ async def root():
             headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
         )
     return {"message": "Secretary AI API is running."}
+
+
+@app.get("/sw.js")
+async def service_worker():
+    """Service Worker をルートスコープで配信する。
+    SW ファイルは /static/js/sw.js に存在するが、ルート配信＋ Service-Worker-Allowed
+    ヘッダーを付けることでアプリ全体（'/'）をスコープに含められる。
+    これがないと Web Push 通知が登録できず、画面を閉じている間の通知が届かない。"""
+    sw_path = static_dir / "js" / "sw.js"
+    if not sw_path.exists():
+        return {"error": "sw.js not found"}
+    return FileResponse(
+        str(sw_path),
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "no-cache",
+            "Service-Worker-Allowed": "/",
+        },
+    )

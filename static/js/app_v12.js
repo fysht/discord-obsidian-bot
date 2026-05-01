@@ -964,25 +964,26 @@ window.loadStockedLinks = async () => {
             const prev = container.previousElementSibling;
             if (!prev) return;
 
-            let ctrl = prev.querySelector('.header-controls');
+            // 旧バージョンのインライン化された .header-controls が残っていたら除去
+            const legacy = prev.querySelector('.header-controls');
+            if (legacy && !legacy.classList.contains('stocked-list-controls')) {
+                legacy.remove();
+            }
+
+            let ctrl = prev.querySelector('.stocked-list-controls');
             if (!ctrl) {
                 ctrl = document.createElement('div');
-                ctrl.className = 'header-controls';
-                ctrl.style.display = 'inline-flex';
-                ctrl.style.gap = '6px';
-                ctrl.style.marginLeft = 'auto';
-                ctrl.style.alignItems = 'center';
-                ctrl.style.flexWrap = 'wrap';
-                ctrl.style.justifyContent = 'flex-end';
+                ctrl.className = 'stocked-list-controls';
+                ctrl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
 
                 const purposeSelect = document.createElement('select');
                 purposeSelect.dataset.role = 'purpose-filter';
-                purposeSelect.style.cssText = "background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:2px 4px; border-radius:4px; font-size:0.7rem; cursor:pointer; max-width:120px;";
+                purposeSelect.title = '目的で絞り込み';
                 purposeSelect.onchange = (e) => changeLinkPurposeFilter(type, e.target.value);
 
                 const sortSelect = document.createElement('select');
                 sortSelect.dataset.role = 'sort-select';
-                sortSelect.style.cssText = "background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:2px 4px; border-radius:4px; font-size:0.7rem; cursor:pointer;";
+                sortSelect.title = '並び順';
                 sortSelect.innerHTML = `
                     <option value="newest" ${linkSorts[type]==='newest'?'selected':''}>新しい順</option>
                     <option value="oldest" ${linkSorts[type]==='oldest'?'selected':''}>古い順</option>
@@ -991,11 +992,10 @@ window.loadStockedLinks = async () => {
                 sortSelect.onchange = (e) => changeLinkSort(type, e.target.value);
 
                 const addBtn = document.createElement('button');
-                addBtn.className = 'modal-btn';
-                addBtn.style.cssText = "padding:2px 8px; font-size:0.7rem;";
+                addBtn.className = 'add-mini';
                 addBtn.textContent = '＋';
                 addBtn.title = '手動で追加';
-                addBtn.onclick = () => openManualAddModal(type);
+                addBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openManualAddModal(type); };
 
                 ctrl.appendChild(purposeSelect);
                 ctrl.appendChild(sortSelect);
@@ -1026,31 +1026,31 @@ window.loadStockedLinks = async () => {
 
         const renderGroup = (container, items) => {
             if (!container) return;
+            container.classList.add('stocked-list');
             if (items.length === 0) {
-                container.innerHTML = '<div style="padding:10px 18px; color:var(--text-muted); font-size:0.85rem;">登録なし</div>';
+                container.innerHTML = '<div class="stocked-empty">登録なし</div>';
                 return;
             }
             container.innerHTML = items.map(lk => {
                 const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-                const actionBtn = `<button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:rgba(0,186,152,0.1); color:var(--accent);" onclick='openLinkDetailsModal(${JSON.stringify(lk).replace(/'/g, "&#39;")})'>📝 詳細編集</button>`;
-                
-                let extraInfo = '';
-                if(lk.purpose) extraInfo += `<span style="font-size:0.75rem; color:var(--accent); margin-right:8px;">🎯 ${escapeHtml(lk.purpose)}</span>`;
-                if(lk.target_date) extraInfo += `<span style="font-size:0.75rem; color:var(--text-secondary); margin-right:8px;">📅 ${escapeHtml(lk.target_date)}</span>`;
+                const titleText = (lk.title && lk.title !== 'Untitled') ? lk.title : (lk.url || '(無題)');
+                const titleEl = lk.url
+                    ? `<a class="stocked-link-title" href="${lk.url}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
+                    : `<span class="stocked-link-title">${escapeHtml(titleText)}</span>`;
 
+                const chips = [];
+                if (lk.purpose) chips.push(`<span class="stocked-link-chip purpose">🎯 ${escapeHtml(lk.purpose)}</span>`);
+                if (lk.target_date) chips.push(`<span class="stocked-link-chip date">📅 ${escapeHtml(lk.target_date)}</span>`);
+                chips.push(`<span class="stocked-link-chip added">${dateStr}</span>`);
+
+                const lkJson = JSON.stringify(lk).replace(/'/g, "&#39;");
                 return `
-                    <div class="list-item" id="stocked-link-${lk.id}" style="flex-direction:column; align-items:stretch; gap:4px; min-width: 0;">
-                        <div style="display:flex; align-items:flex-start; gap:6px; min-width: 0;">
-                            ${lk.url ? `<a href="${lk.url}" target="_blank" style="flex:1; color:var(--text); text-decoration:none; font-weight:500; font-size:0.85rem; line-height:1.4; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;">${escapeHtml(lk.title !== 'Untitled' ? lk.title : lk.url)}</a>` 
-                                     : `<span style="flex:1; color:var(--text); font-weight:500; font-size:0.85rem; line-height:1.4; display:block;">${escapeHtml(lk.title)}</span>`}
-                        </div>
-                        ${extraInfo ? `<div style="margin-top:2px;">${extraInfo}</div>` : ''}
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-top:4px;">
-                            <span style="font-size:0.65rem; color:var(--text-muted);">${dateStr}</span>
-                            <div style="display:flex; gap:5px;">
-                                ${actionBtn}
-                                <button class="modal-btn" style="padding:3px 8px; font-size:0.7rem; background:rgba(255,80,80,0.15); color:#ff5050;" onclick="deleteStockedLink(${lk.id})">削除</button>
-                            </div>
+                    <div class="stocked-link" id="stocked-link-${lk.id}">
+                        ${titleEl}
+                        <div class="stocked-link-meta">${chips.join('')}</div>
+                        <div class="stocked-link-actions">
+                            <button class="stocked-link-btn edit" onclick='openLinkDetailsModal(${lkJson})'>編集</button>
+                            <button class="stocked-link-btn danger" onclick="deleteStockedLink(${lk.id})">削除</button>
                         </div>
                     </div>
                 `;
@@ -1204,12 +1204,29 @@ window.deleteStockedLink = async (linkId) => {
     } catch (e) { showToast('削除に失敗しました', true); }
 };
 
-function requestNotificationPermission() {
+async function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return null;
+    try {
+        // ルートスコープ ('/' 以下すべて) を Push の対象にするため、
+        // バックエンドが Service-Worker-Allowed: / を付けて配信している /sw.js を登録する。
+        const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        // 即時に最新版を有効化
+        if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+        return reg;
+    } catch (e) {
+        console.error('SW register error:', e);
+        return null;
+    }
+}
+
+async function requestNotificationPermission() {
     if (!('Notification' in window)) return;
+    // Service Worker を必ず先に登録する（registration が無いと PushManager.subscribe できない）
+    await registerServiceWorker();
+
     if (Notification.permission === 'default') {
-        Notification.requestPermission().then((perm) => {
-            if (perm === 'granted') subscribePush();
-        });
+        const perm = await Notification.requestPermission();
+        if (perm === 'granted') subscribePush();
     } else if (Notification.permission === 'granted') {
         subscribePush();
     }
@@ -1235,6 +1252,9 @@ async function subscribePush() {
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
     if (!apiKey) return;
     try {
+        // 登録漏れを防ぐため、ここでも保険として register を呼ぶ
+        // （既に登録済みなら同一の Registration が返る）
+        await registerServiceWorker();
         const reg = await navigator.serviceWorker.ready;
         // VAPID 公開鍵を取得（認証不要なエンドポイント）
         const vapidRes = await fetch(`${API_BASE}/api/vapid_public_key`).then(r => r.json());
