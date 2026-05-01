@@ -132,6 +132,38 @@ $$('.nav-item').forEach(item => {
     item.addEventListener('click', () => { switchTab(item.dataset.tab); });
 });
 
+const settingsBtn = $('#settings-btn');
+if (settingsBtn) {
+    settingsBtn.addEventListener('click', () => openSettingsMenu());
+}
+
+window.openSettingsMenu = () => {
+    const choice = prompt(
+        '設定メニュー（番号を入力）:\n\n1. 通知ステータスを確認\n2. 通知テスト送信\n3. 通知の購読を再登録\n\nキャンセルで閉じる',
+        '1'
+    );
+    if (choice === '1') return checkNotificationStatus();
+    if (choice === '2') return testPushNotification();
+    if (choice === '3') return resubscribePush();
+};
+
+window.resubscribePush = async () => {
+    try {
+        const reg = 'serviceWorker' in navigator ? await navigator.serviceWorker.getRegistration('/') : null;
+        if (reg) {
+            const sub = await reg.pushManager.getSubscription();
+            if (sub) {
+                await sub.unsubscribe();
+                try { await apiFetch('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) }); } catch {}
+            }
+        }
+        const result = await subscribePush();
+        showToast(result.ok ? '購読を再登録しました' : ('再登録NG: ' + result.reason), !result.ok);
+    } catch (e) {
+        showToast('再登録に失敗しました: ' + (e.message || e), true);
+    }
+};
+
 function switchTab(tab) {
     $$('.nav-item').forEach(i => i.classList.remove('active'));
     document.querySelector(`.nav-item[data-tab="${tab}"]`)?.classList.add('active');
@@ -961,20 +993,16 @@ window.loadStockedLinks = async () => {
         const setupHeader = (id, type) => {
             const container = $(`#${id}`);
             if(!container) return;
-            const prev = container.previousElementSibling;
-            if (!prev) return;
+            const details = container.closest('details');
+            if (!details) return;
 
-            // 旧バージョンのインライン化された .header-controls が残っていたら除去
-            const legacy = prev.querySelector('.header-controls');
-            if (legacy && !legacy.classList.contains('stocked-list-controls')) {
-                legacy.remove();
-            }
+            // 旧バージョンが summary 内に残していたコントロールを除去
+            details.querySelectorAll('summary .stocked-list-controls, summary .header-controls').forEach(n => n.remove());
 
-            let ctrl = prev.querySelector('.stocked-list-controls');
+            let ctrl = details.querySelector(':scope > .stocked-list-controls');
             if (!ctrl) {
                 ctrl = document.createElement('div');
                 ctrl.className = 'stocked-list-controls';
-                ctrl.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
 
                 const purposeSelect = document.createElement('select');
                 purposeSelect.dataset.role = 'purpose-filter';
@@ -993,18 +1021,16 @@ window.loadStockedLinks = async () => {
 
                 const addBtn = document.createElement('button');
                 addBtn.className = 'add-mini';
-                addBtn.textContent = '＋';
+                addBtn.textContent = '＋ 追加';
                 addBtn.title = '手動で追加';
-                addBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openManualAddModal(type); };
+                addBtn.onclick = () => openManualAddModal(type);
 
                 ctrl.appendChild(purposeSelect);
                 ctrl.appendChild(sortSelect);
                 ctrl.appendChild(addBtn);
 
-                prev.style.display = 'flex';
-                prev.style.justifyContent = 'space-between';
-                prev.style.alignItems = 'center';
-                prev.appendChild(ctrl);
+                // details 本体内、リスト直前に挿入
+                details.insertBefore(ctrl, container);
             }
 
             const purposeSelect = ctrl.querySelector('[data-role="purpose-filter"]');
@@ -1249,49 +1275,101 @@ function _arrayBufferToBase64(buf) {
 }
 
 async function subscribePush() {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    if (!apiKey) return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+        return { ok: false, reason: 'PushManager 未対応のブラウザです' };
+    }
+    if (!apiKey) return { ok: false, reason: 'APIキー未設定' };
     try {
-        // 登録漏れを防ぐため、ここでも保険として register を呼ぶ
-        // （既に登録済みなら同一の Registration が返る）
         await registerServiceWorker();
         const reg = await navigator.serviceWorker.ready;
-        // VAPID 公開鍵を取得（認証不要なエンドポイント）
         const vapidRes = await fetch(`${API_BASE}/api/vapid_public_key`).then(r => r.json());
         if (!vapidRes.configured || !vapidRes.key) {
-            console.info('Web Push 未設定のため購読をスキップ');
-            return;
+            const reason = 'サーバーのVAPID鍵が未設定です（管理者に確認）';
+            console.warn('Push:', reason);
+            return { ok: false, reason };
         }
 
+        const expectedKey = _urlBase64ToUint8Array(vapidRes.key);
         let sub = await reg.pushManager.getSubscription();
+        // 既存購読があってもサーバーのVAPID鍵と一致しない場合は破棄してから再購読
+        if (sub) {
+            const existingKey = sub.options && sub.options.applicationServerKey;
+            const sameKey = existingKey && new Uint8Array(existingKey).every((b, i) => b === expectedKey[i]);
+            if (!sameKey) {
+                try { await sub.unsubscribe(); } catch {}
+                try { await apiFetch('/api/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint: sub.endpoint }) }); } catch {}
+                sub = null;
+            }
+        }
         if (!sub) {
             sub = await reg.pushManager.subscribe({
                 userVisibleOnly: true,
-                applicationServerKey: _urlBase64ToUint8Array(vapidRes.key),
+                applicationServerKey: expectedKey,
             });
         }
         const json = sub.toJSON();
         const p256dh = json.keys && json.keys.p256dh;
         const auth = json.keys && json.keys.auth;
-        if (!p256dh || !auth) return;
+        if (!p256dh || !auth) return { ok: false, reason: 'pushSubscriptionのキー取得失敗' };
 
         await apiFetch('/api/push/subscribe', {
             method: 'POST',
             body: JSON.stringify({ endpoint: sub.endpoint, p256dh, auth })
         });
         console.info('Web Push 購読完了');
+        return { ok: true, endpoint: sub.endpoint };
     } catch (e) {
         console.error('Push subscribe error:', e);
+        return { ok: false, reason: e.message || String(e) };
     }
 }
 
 window.testPushNotification = async () => {
     try {
         const data = await apiFetch('/api/push/test', { method: 'POST' });
-        showToast(`通知テスト送信: ${data.delivered}件配信`);
+        if (data.delivered > 0) {
+            showToast(`通知テスト送信: ${data.delivered}件配信`);
+        } else {
+            showToast('購読がサーバーに登録されていません。下の「通知ステータスを確認」を実行してください', true);
+        }
     } catch (e) {
         showToast('通知テストに失敗しました', true);
     }
+};
+
+window.checkNotificationStatus = async () => {
+    const lines = [];
+    lines.push(`Notification.permission: ${Notification.permission}`);
+
+    let swReg = null;
+    if ('serviceWorker' in navigator) {
+        swReg = await navigator.serviceWorker.getRegistration('/');
+        lines.push(`Service Worker: ${swReg ? '登録済み (' + (swReg.active ? 'active' : 'pending') + ')' : '未登録'}`);
+    } else {
+        lines.push('Service Worker: 非対応');
+    }
+
+    if (swReg && 'PushManager' in window) {
+        const sub = await swReg.pushManager.getSubscription();
+        lines.push(`Push購読: ${sub ? 'あり' : 'なし'}`);
+    }
+
+    try {
+        const vapidRes = await fetch(`${API_BASE}/api/vapid_public_key`).then(r => r.json());
+        lines.push(`サーバーVAPID設定: ${vapidRes.configured ? 'OK' : '未設定（要修正）'}`);
+    } catch {
+        lines.push('サーバーVAPID取得失敗');
+    }
+
+    if (Notification.permission !== 'granted') {
+        const perm = await Notification.requestPermission();
+        lines.push(`許可リクエスト結果: ${perm}`);
+    }
+
+    const result = await subscribePush();
+    lines.push(`購読登録: ${result.ok ? 'OK' : 'NG - ' + result.reason}`);
+
+    alert(lines.join('\n'));
 };
 
 function notifyManager(content) {

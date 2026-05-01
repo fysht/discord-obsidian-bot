@@ -278,38 +278,44 @@ details.card > summary > .card-header { border-bottom: none; }
 .stocked-link-btn.edit  { background: rgba(0,186,152,0.12); color: var(--accent); }
 .stocked-link-btn.danger { background: rgba(255,80,80,0.12); color: #ff6e6e; }
 
-/* ストックリンクのヘッダー操作群 */
+/* ストックリンクのヘッダー操作群（独立行）*/
 .stocked-list-controls {
-    display: inline-flex;
-    gap: 6px;
-    margin-left: auto;
+    display: flex;
+    gap: 8px;
     align-items: center;
-    flex-wrap: nowrap;
-    justify-content: flex-end;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    background: rgba(255,255,255,0.02);
+    border-bottom: 1px solid var(--border-glass);
 }
 .stocked-list-controls select {
     background: var(--bg-elevated);
     color: var(--text);
     border: 1px solid var(--border-glass);
     border-radius: 8px;
-    padding: 4px 8px;
-    font-size: 0.78rem;
+    padding: 6px 8px;
+    font-size: 0.8rem;
     cursor: pointer;
-    max-width: 130px;
-    min-height: 30px;
+    flex: 1 1 auto;
+    min-width: 110px;
+    max-width: 100%;
+    min-height: 32px;
 }
 .stocked-list-controls .add-mini {
-    background: rgba(0,186,152,0.12);
+    background: rgba(0,186,152,0.15);
     color: var(--accent);
     border: none;
     border-radius: 8px;
-    padding: 4px 10px;
-    font-size: 0.85rem;
+    padding: 6px 12px;
+    font-size: 0.8rem;
     font-weight: 700;
     cursor: pointer;
-    min-height: 30px;
+    min-height: 32px;
     line-height: 1;
+    white-space: nowrap;
+    flex: 0 0 auto;
 }
+.stocked-list-controls .add-mini:active { background: rgba(0,186,152,0.3); }
 
 .stocked-empty {
     padding: 20px 16px;
