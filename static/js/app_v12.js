@@ -25,6 +25,15 @@ let linkSorts = {
     book: 'newest'
 };
 
+// 各カテゴリーごとの目的フィルタ ('' = すべて表示)
+let linkPurposeFilters = {
+    web: '',
+    youtube: '',
+    recipe: '',
+    map: '',
+    book: ''
+};
+
 const $ = sel => document.querySelector(sel);
 const $$ = sel => document.querySelectorAll(sel);
 
@@ -860,26 +869,6 @@ window.runHealthCorrelation = async () => {
     }
 };
 
-window.triggerDailyReport = async () => {
-    if (!confirm('今日の日次整理を実行しますか？\n会話ログを元にDaily Journal、Events & Actions等を生成し、Obsidianに保存します。')) return;
-    showToast('日次整理を実行中...');
-    try {
-        const data = await apiFetch('/api/daily_report', { method: 'POST' });
-        showToast(data.message || '日次整理が完了しました');
-        loadDashboard();
-    } catch { showToast('日次整理に失敗しました', true); }
-};
-
-window.copyDailySummary = async () => {
-    const events = $('#dash-tasks')?.innerText || "";
-    const insights = $('#dash-alter-log')?.innerText || "";
-    const content = `本日の記録:\n\n${events}\n\n${insights}`;
-    try {
-        await navigator.clipboard.writeText(content);
-        showToast('今日のサマリーをコピーしました！');
-    } catch { showToast('コピーに失敗しました', true); }
-};
-
 window.openManualAddModal = (type) => {
     const title = prompt("タイトルを入力してください:");
     if (!title) return;
@@ -896,6 +885,11 @@ window.openManualAddModal = (type) => {
 
 window.changeLinkSort = (type, val) => {
     linkSorts[type] = val;
+    loadStockedLinks();
+};
+
+window.changeLinkPurposeFilter = (type, val) => {
+    linkPurposeFilters[type] = val;
     loadStockedLinks();
 };
 
@@ -920,53 +914,104 @@ window.loadStockedLinks = async () => {
             };
         };
 
-        const webLinks = links.filter(l => l.type === 'web').sort(getSortFn('web'));
-        const ytLinks = links.filter(l => l.type === 'youtube').sort(getSortFn('youtube'));
-        const recipeLinks = links.filter(l => l.type === 'recipe').sort(getSortFn('recipe'));
-        const mapLinks = links.filter(l => l.type === 'map').sort(getSortFn('map'));
-        const bookLinks = links.filter(l => l.type === 'book').sort(getSortFn('book'));
+        // 各タイプ別にフィルタ前のリンク一覧（プルダウン候補生成用）
+        const allByType = {
+            web: links.filter(l => l.type === 'web'),
+            youtube: links.filter(l => l.type === 'youtube'),
+            recipe: links.filter(l => l.type === 'recipe'),
+            map: links.filter(l => l.type === 'map'),
+            book: links.filter(l => l.type === 'book'),
+        };
+
+        const applyPurpose = (arr, type) => {
+            const f = linkPurposeFilters[type];
+            if (!f) return arr;
+            if (f === '__none__') return arr.filter(l => !l.purpose || !l.purpose.trim());
+            return arr.filter(l => (l.purpose || '').trim() === f);
+        };
+
+        const webLinks = applyPurpose(allByType.web, 'web').sort(getSortFn('web'));
+        const ytLinks = applyPurpose(allByType.youtube, 'youtube').sort(getSortFn('youtube'));
+        const recipeLinks = applyPurpose(allByType.recipe, 'recipe').sort(getSortFn('recipe'));
+        const mapLinks = applyPurpose(allByType.map, 'map').sort(getSortFn('map'));
+        const bookLinks = applyPurpose(allByType.book, 'book').sort(getSortFn('book'));
+
+        const buildPurposeOptions = (type) => {
+            const arr = allByType[type] || [];
+            const counts = new Map();
+            let noneCount = 0;
+            for (const l of arr) {
+                const p = (l.purpose || '').trim();
+                if (!p) { noneCount++; continue; }
+                counts.set(p, (counts.get(p) || 0) + 1);
+            }
+            const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+            const cur = linkPurposeFilters[type];
+            const opts = [`<option value="" ${cur===''?'selected':''}>🎯 すべての目的 (${arr.length})</option>`];
+            for (const [purpose, cnt] of sorted) {
+                const safe = escapeHtml(purpose);
+                opts.push(`<option value="${safe}" ${cur===purpose?'selected':''}>${safe} (${cnt})</option>`);
+            }
+            if (noneCount > 0) {
+                opts.push(`<option value="__none__" ${cur==='__none__'?'selected':''}>(目的なし) (${noneCount})</option>`);
+            }
+            return opts.join('');
+        };
 
         const setupHeader = (id, type) => {
             const container = $(`#${id}`);
             if(!container) return;
             const prev = container.previousElementSibling;
-            
-            if (prev && !prev.querySelector('.header-controls')) {
-                const ctrl = document.createElement('div');
+            if (!prev) return;
+
+            let ctrl = prev.querySelector('.header-controls');
+            if (!ctrl) {
+                ctrl = document.createElement('div');
                 ctrl.className = 'header-controls';
                 ctrl.style.display = 'inline-flex';
-                ctrl.style.gap = '8px';
+                ctrl.style.gap = '6px';
                 ctrl.style.marginLeft = 'auto';
                 ctrl.style.alignItems = 'center';
-                
-                // 個別のソートプルダウン
+                ctrl.style.flexWrap = 'wrap';
+                ctrl.style.justifyContent = 'flex-end';
+
+                const purposeSelect = document.createElement('select');
+                purposeSelect.dataset.role = 'purpose-filter';
+                purposeSelect.style.cssText = "background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:2px 4px; border-radius:4px; font-size:0.7rem; cursor:pointer; max-width:120px;";
+                purposeSelect.onchange = (e) => changeLinkPurposeFilter(type, e.target.value);
+
                 const sortSelect = document.createElement('select');
-                sortSelect.style.cssText = "background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:2px 4px; border-radius:4px; font-size:0.75rem; cursor:pointer;";
+                sortSelect.dataset.role = 'sort-select';
+                sortSelect.style.cssText = "background:var(--bg-elevated); color:var(--text); border:1px solid var(--border-glass); padding:2px 4px; border-radius:4px; font-size:0.7rem; cursor:pointer;";
                 sortSelect.innerHTML = `
                     <option value="newest" ${linkSorts[type]==='newest'?'selected':''}>新しい順</option>
                     <option value="oldest" ${linkSorts[type]==='oldest'?'selected':''}>古い順</option>
                     <option value="title" ${linkSorts[type]==='title'?'selected':''}>タイトル順</option>
                 `;
                 sortSelect.onchange = (e) => changeLinkSort(type, e.target.value);
-                
+
                 const addBtn = document.createElement('button');
                 addBtn.className = 'modal-btn';
                 addBtn.style.cssText = "padding:2px 8px; font-size:0.7rem;";
-                addBtn.textContent = '＋ 追加';
+                addBtn.textContent = '＋';
+                addBtn.title = '手動で追加';
                 addBtn.onclick = () => openManualAddModal(type);
-                
+
+                ctrl.appendChild(purposeSelect);
                 ctrl.appendChild(sortSelect);
                 ctrl.appendChild(addBtn);
-                
+
                 prev.style.display = 'flex';
                 prev.style.justifyContent = 'space-between';
                 prev.style.alignItems = 'center';
                 prev.appendChild(ctrl);
-            } else if (prev) {
-                // 既に存在する場合は選択状態を更新
-                const sel = prev.querySelector('select');
-                if (sel) sel.value = linkSorts[type];
             }
+
+            const purposeSelect = ctrl.querySelector('[data-role="purpose-filter"]');
+            if (purposeSelect) purposeSelect.innerHTML = buildPurposeOptions(type);
+
+            const sortSelect = ctrl.querySelector('[data-role="sort-select"]');
+            if (sortSelect) sortSelect.value = linkSorts[type];
         };
 
         setupHeader('dash-stocked-web', 'web');
@@ -1334,10 +1379,18 @@ async function loadHabits() {
                 streakBadge = `<span style="font-size:0.72rem; color:${color}; font-weight:700; white-space:nowrap; min-width:30px; text-align:right;">${icon}${streakNum}</span>`;
             }
 
+            const trigger = (h.trigger || '').trim();
+            const triggerChip = trigger
+                ? `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '${escapeHtml(trigger)}')">⏰ ${escapeHtml(trigger)}</span>`
+                : `<button class="habit-trigger-add" title="いつやるかを設定" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '')">＋いつ</button>`;
+
             return `
                 <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}">
                     <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone ? 'disabled' : ''}>✔</button>
-                    <div class="habit-name" style="flex:1;">${escapeHtml(h.name)}</div>
+                    <div class="habit-name-wrap" style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0;">
+                        <div class="habit-name">${escapeHtml(h.name)}</div>
+                        <div class="habit-trigger-row">${triggerChip}</div>
+                    </div>
                     ${streakBadge}
                 </div>
             `;
@@ -1363,6 +1416,20 @@ window.completeHabit = async (habitName, hId) => {
         checkMilestone(result.message || '');
         loadHabits();
     } catch { showToast('失敗しました', true); }
+};
+
+window.openHabitTriggerModal = (habitName, currentTrigger) => {
+    const msg = `「${habitName}」をいつ行いますか？\n\n例:\n・朝食後\n・歯磨きの前\n・7:30\n・帰宅後すぐ\n\n（空欄で保存すると解除されます）`;
+    const next = prompt(msg, currentTrigger || '');
+    if (next === null) return;
+    const trimmed = next.trim();
+    apiFetch('/api/habits/trigger', {
+        method: 'POST',
+        body: JSON.stringify({ habit_name: habitName, trigger: trimmed })
+    }).then(() => {
+        showToast(trimmed ? `「${habitName}」のタイミングを設定しました` : `「${habitName}」のタイミングを解除しました`);
+        loadHabits();
+    }).catch(() => showToast('保存に失敗しました', true));
 };
 
 let _sleepTrendLoading = false;

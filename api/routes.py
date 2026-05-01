@@ -590,6 +590,29 @@ async def sleep_trend():
 async def daily_report():
     return {"message": "日次整理が完了しました。"}
 
+def _parse_habit_trigger(notes: str) -> tuple[str, str]:
+    """notes 先頭行が "⏰ <trigger>" なら trigger と残りに分割。なければ ('', notes)"""
+    if not notes:
+        return "", ""
+    lines = notes.splitlines()
+    first = lines[0].strip() if lines else ""
+    if first.startswith("⏰"):
+        trigger = first[1:].lstrip(" ：:").strip()
+        rest = "\n".join(lines[1:]).lstrip("\n")
+        return trigger, rest
+    return "", notes
+
+
+def _serialize_habit_notes(trigger: str, rest: str) -> str:
+    trigger = (trigger or "").strip()
+    rest = rest or ""
+    if trigger:
+        if rest:
+            return f"⏰ {trigger}\n\n{rest}"
+        return f"⏰ {trigger}"
+    return rest
+
+
 @router.get("/habits", dependencies=[Depends(verify_api_key)])
 async def get_habits():
     from api import app
@@ -607,13 +630,28 @@ async def get_habits():
     raw_uncompleted = await tasks_service.get_raw_tasks("習慣")
     completed_today_titles = await tasks_service.get_completed_tasks_today("習慣")
 
+    # name -> (task_id, trigger) のマップ（未完了タスクのみ。完了タスクは notes 取得対象外）
+    task_meta_by_name = {}
+    for t in raw_uncompleted:
+        trig, _ = _parse_habit_trigger(t.get("notes", ""))
+        task_meta_by_name[t["title"]] = {"task_id": t["id"], "trigger": trig}
+
     # 未完了 + 今日完了済み = 今日表示すべき全習慣
     all_names = [t["title"] for t in raw_uncompleted] + completed_today_titles
     if not all_names:
         return {"habits": [], "today_done": [], "streaks": {}}
 
+    def _meta(name):
+        return task_meta_by_name.get(name, {"task_id": "", "trigger": ""})
+
     if not habit_cog:
-        habits_list = [{"id": str(i), "name": n, "frequency_days": 1} for i, n in enumerate(all_names)]
+        habits_list = []
+        for i, n in enumerate(all_names):
+            m = _meta(n)
+            habits_list.append({
+                "id": str(i), "name": n, "frequency_days": 1,
+                "trigger": m["trigger"], "task_id": m["task_id"],
+            })
         today_done = [str(i) for i, n in enumerate(all_names) if n in completed_today_titles]
         return {"habits": habits_list, "today_done": today_done, "streaks": {}}
 
@@ -648,7 +686,14 @@ async def get_habits():
     for name in all_names:
         matching = next((h for h in data["habits"] if h["name"].lower() == name.lower()), None)
         if matching:
-            habits_list.append({"id": matching["id"], "name": matching["name"], "frequency_days": matching.get("frequency_days", 1)})
+            m = _meta(name)
+            habits_list.append({
+                "id": matching["id"],
+                "name": matching["name"],
+                "frequency_days": matching.get("frequency_days", 1),
+                "trigger": m["trigger"],
+                "task_id": m["task_id"],
+            })
             streaks[matching["id"]] = habit_cog._get_habit_stats(data, matching["id"], today_str)
 
     return {"habits": habits_list, "today_done": today_logs, "streaks": streaks}
@@ -692,6 +737,36 @@ async def add_habit(req: HabitAddRequest):
 @router.post("/habits/update", dependencies=[Depends(verify_api_key)])
 async def update_habit(req: BaseModel):
     raise HTTPException(status_code=501, detail="この機能は未実装です。")
+
+
+class HabitTriggerRequest(BaseModel):
+    habit_name: str
+    trigger: str = ""
+
+
+@router.post("/habits/trigger", dependencies=[Depends(verify_api_key)])
+async def set_habit_trigger(req: HabitTriggerRequest):
+    """習慣の trigger（いつやるか）を Google Tasks の notes に保存する"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    tasks_service = getattr(bot, "tasks_service", None) if bot else None
+    if not tasks_service:
+        raise HTTPException(status_code=503, detail="タスクサービス未設定")
+
+    raw = await tasks_service.get_raw_tasks("習慣")
+    target = next((t for t in raw if t["title"] == req.habit_name), None)
+    if not target:
+        target = next((t for t in raw if req.habit_name.lower() in t["title"].lower()), None)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"習慣「{req.habit_name}」が見つかりません")
+
+    _, rest = _parse_habit_trigger(target.get("notes", ""))
+    new_notes = _serialize_habit_notes(req.trigger, rest)
+
+    res = await tasks_service.update_task(
+        target["id"], notes=new_notes, list_name="習慣"
+    )
+    return {"status": "success", "message": res, "trigger": req.trigger.strip()}
 
 @router.post("/habits/delete", dependencies=[Depends(verify_api_key)])
 async def delete_habit_endpoint(req: BaseModel):

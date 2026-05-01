@@ -4,6 +4,8 @@ import re
 # デイリーノートの見出し順序定義
 # Botは項目を新規作成する際、この順序に従って適切な位置に挿入します。
 SECTION_ORDER = [
+    # --- 0. Integrated Daily Overview ---
+    "## ⏱ Daily Timeline",  # 全データ統合の時系列ビュー (DailyOrganizeCog)
     # --- 1. Timeline (リアルタイムメモ) ---
     "## 🎯 Tasks",     # LLR風タスク＆時間記録 (PartnerCog)
     "## 🪟 Lifelog",   # 行動記録 (PartnerCog / PWA)

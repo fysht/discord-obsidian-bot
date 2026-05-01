@@ -11,6 +11,7 @@ from config import JST
 from utils.obsidian_utils import update_section, update_frontmatter
 from prompts import PROMPT_DAILY_ORGANIZE
 from services.info_service import InfoService
+from api.database import get_history
 
 
 class DailyOrganizeCog(commands.Cog):
@@ -101,6 +102,14 @@ class DailyOrganizeCog(commands.Cog):
             "temp_max": f'"{max_t}"' if max_t != "N/A" else "N/A",
             "temp_min": f'"{min_t}"' if min_t != "N/A" else "N/A",
         }
+
+        try:
+            timeline_md = await self._build_integrated_timeline(today_str, location_log_text)
+            if timeline_md:
+                result["timeline"] = timeline_md
+        except Exception as e:
+            logging.error(f"DailyOrganize: timeline build error: {e}")
+
         await self._execute_organization(result, today_str)
 
         if result.get("next_actions") and self.tasks_service:
@@ -168,6 +177,15 @@ class DailyOrganizeCog(commands.Cog):
             updates_fm["temp_min"] = meta.get("temp_min")
         content = update_frontmatter(content, updates_fm)
 
+        if data.get("timeline"):
+            # タイムラインは毎晩再生成して全置換するため、既存セクションを除去してから挿入
+            content = re.sub(
+                r"## ⏱ Daily Timeline\n.*?(?=\n## |\Z)",
+                "",
+                content,
+                flags=re.DOTALL,
+            )
+            content = update_section(content, data["timeline"], "## ⏱ Daily Timeline")
         if data.get("journal"):
             content = update_section(content, data["journal"], "## 📔 Daily Journal")
         if data.get("events") and len(data["events"]) > 0:
@@ -208,6 +226,143 @@ class DailyOrganizeCog(commands.Cog):
                 service, daily_folder, f"{date_str}.md", content
             )
 
+
+    async def _build_integrated_timeline(self, date_str: str, location_log_text: str) -> str:
+        """カレンダー予定・チャット会話・睡眠・歩数・ロケーションログを統合し、
+        時系列順のmarkdownを返す。既存の各セクション記述は維持される（このメソッドは追加生成のみ）。
+        """
+        events = []  # list[(time_str_HHMM, icon, line)]
+
+        # --- 1) 睡眠データ（起床ポイント） ---
+        try:
+            fitbit_cog = self.bot.get_cog("FitbitCog")
+            if fitbit_cog and getattr(fitbit_cog, "fitbit_service", None):
+                try:
+                    target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+                    stats = await fitbit_cog.fitbit_service.get_stats(target_date)
+                except Exception:
+                    stats = None
+                if stats:
+                    score = stats.get("sleep_score", "N/A")
+                    total = stats.get("total_sleep_minutes", 0)
+                    if total:
+                        h, m = divmod(int(total), 60)
+                        sleep_text = f"{h}h{m:02d}m"
+                    else:
+                        sleep_text = "N/A"
+                    steps = stats.get("steps", 0)
+                    rhr = stats.get("resting_heart_rate", "N/A")
+                    # 起床は時刻不明だが先頭に置きたいので 06:00 仮置き
+                    events.append((
+                        "06:00",
+                        "🌙",
+                        f"起床（昨夜の睡眠 スコア:{score} / {sleep_text}）",
+                    ))
+                    if steps:
+                        events.append((
+                            "23:50",
+                            "👟",
+                            f"本日の活動: {steps:,}歩 / 安静時心拍 {rhr}",
+                        ))
+        except Exception as e:
+            logging.error(f"timeline: fitbit fetch error: {e}")
+
+        # --- 2) カレンダー予定 ---
+        try:
+            cal_service = getattr(self.bot, "calendar_service", None)
+            if cal_service and hasattr(cal_service, "get_raw_events_for_date"):
+                cal_events = await cal_service.get_raw_events_for_date(date_str)
+                for ev in cal_events or []:
+                    t = ev.get("time", "終日")
+                    summary = ev.get("summary", "(タイトルなし)")
+                    sort_key = t if t and t != "終日" else "00:01"
+                    events.append((sort_key, "📅", f"{t} {summary}"))
+        except Exception as e:
+            logging.error(f"timeline: calendar fetch error: {e}")
+
+        # --- 3) チャット会話（マネージャーとの会話） ---
+        try:
+            history = await get_history(limit=500)
+            for m in history:
+                ts = m.get("timestamp") or ""
+                if not ts.startswith(date_str):
+                    continue
+                try:
+                    dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=JST)
+                    hhmm = dt.astimezone(JST).strftime("%H:%M")
+                except Exception:
+                    hhmm = ts[11:16] if len(ts) >= 16 else "00:00"
+                role = m.get("role")
+                tag = "🧑" if role == "user" else "🤖"
+                content = (m.get("content") or "").replace("\n", " ").strip()
+                if len(content) > 80:
+                    content = content[:77] + "…"
+                if not content:
+                    continue
+                events.append((hhmm, tag, content))
+        except Exception as e:
+            logging.error(f"timeline: history fetch error: {e}")
+
+        # --- 4) ロケーションログ（行単位で時刻抽出） ---
+        try:
+            for line in (location_log_text or "").splitlines():
+                line = line.strip().lstrip("-").strip()
+                if not line:
+                    continue
+                m = re.search(r"(\d{1,2}):(\d{2})", line)
+                if m:
+                    hh = int(m.group(1)); mm = int(m.group(2))
+                    hhmm = f"{hh:02d}:{mm:02d}"
+                    events.append((hhmm, "📍", line))
+        except Exception as e:
+            logging.error(f"timeline: location parse error: {e}")
+
+        # --- 5) ライフログ（タスク開始/終了など Lifelog セクションがあれば取り込み） ---
+        # 既存ノートの「## 🪟 Lifelog」内の時刻付き行を追加
+        try:
+            service = self.drive_service.get_service()
+            if service:
+                daily_folder = await self.drive_service.find_file(
+                    service, self.drive_folder_id, "DailyNotes"
+                )
+                if daily_folder:
+                    f_id = await self.drive_service.find_file(
+                        service, daily_folder, f"{date_str}.md"
+                    )
+                    if f_id:
+                        raw = await self.drive_service.read_text_file(service, f_id)
+                        for sec_header, icon in [
+                            ("## 🪟 Lifelog", "🪟"),
+                            ("## 🎯 Tasks", "🎯"),
+                            ("## 💬 Timeline", "💬"),
+                        ]:
+                            mm = re.search(
+                                rf"{re.escape(sec_header)}\n(.*?)(?=\n## |\Z)",
+                                raw,
+                                re.DOTALL,
+                            )
+                            if not mm:
+                                continue
+                            for line in mm.group(1).splitlines():
+                                line_s = line.strip().lstrip("-").strip()
+                                if not line_s:
+                                    continue
+                                tm = re.search(r"(\d{1,2}):(\d{2})", line_s)
+                                if not tm:
+                                    continue
+                                hh = int(tm.group(1)); mn = int(tm.group(2))
+                                events.append((f"{hh:02d}:{mn:02d}", icon, line_s))
+        except Exception as e:
+            logging.error(f"timeline: lifelog re-import error: {e}")
+
+        if not events:
+            return ""
+
+        events.sort(key=lambda x: x[0])
+        lines = [f"- `{t}` {icon} {text}" for t, icon, text in events]
+        return "\n".join(lines)
 
     @daily_organize_task.before_loop
     async def before_daily_organize(self):

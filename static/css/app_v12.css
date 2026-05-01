@@ -537,11 +537,42 @@ input:checked + .slider:before { transform: translateX(16px); }
     background: var(--accent);
     color: #fff;
 }
-.habit-name { flex: 1; font-weight: 500; font-size: 0.9rem; }
+.habit-name { font-weight: 500; font-size: 0.9rem; }
 .habit-item.done .habit-name {
     color: var(--text-muted);
     text-decoration: line-through;
 }
+.habit-name-wrap { min-width: 0; }
+.habit-trigger-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.habit-trigger-chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.68rem;
+    color: var(--accent);
+    background: rgba(0,186,152,0.1);
+    padding: 1px 6px;
+    border-radius: 8px;
+    cursor: pointer;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.habit-trigger-chip:hover { background: rgba(0,186,152,0.2); }
+.habit-trigger-add {
+    background: transparent;
+    border: 1px dashed var(--border-glass);
+    color: var(--text-muted);
+    font-size: 0.65rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+.habit-trigger-add:hover { color: var(--accent); border-color: var(--accent); }
 .habit-streak {
     font-size: 0.75rem;
     color: #ff7b54;
