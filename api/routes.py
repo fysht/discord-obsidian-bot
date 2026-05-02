@@ -1369,3 +1369,468 @@ async def bulk_update_link_status(req: LinkBulkStatusRequest):
             name="db-backup-bulk-status",
         )
     return {"status": "success", "updated": len(req.link_ids)}
+
+
+# ===== タスク分解 (AI Task Breakdown) =====
+
+class TaskBreakdownRequest(BaseModel):
+    message: str
+
+
+class TaskBreakdownApplyRequest(BaseModel):
+    list_name: str = "プライベート"
+    subtasks: List[dict]
+    parent_title: Optional[str] = ""
+
+
+@router.get("/tasks_for_breakdown", dependencies=[Depends(verify_api_key)])
+async def tasks_for_breakdown():
+    """既存タスクから分解候補を返す（仕事＋プライベート、未完了のみ）"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    tasks_service = getattr(bot, "tasks_service", None) if bot else None
+    if not tasks_service:
+        return {"tasks": []}
+
+    result = []
+    for list_name in ["仕事", "プライベート"]:
+        try:
+            raw = await tasks_service.get_raw_tasks(list_name)
+            for t in raw:
+                result.append({
+                    "id": t["id"],
+                    "title": t["title"],
+                    "list_name": list_name,
+                })
+        except Exception as e:
+            logging.debug(f"tasks_for_breakdown list {list_name}: {e}")
+    return {"tasks": result}
+
+
+@router.post("/task_breakdown", dependencies=[Depends(verify_api_key)])
+async def task_breakdown(req: TaskBreakdownRequest):
+    """親タスクをAIでサブタスクに分解する。"""
+    from api import app
+    from prompts import PROMPT_TASK_BREAKDOWN
+    from google.genai import types as gtypes
+
+    parent = (req.message or "").strip()
+    if not parent:
+        raise HTTPException(status_code=400, detail="タスク内容を指定してください")
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    prompt = PROMPT_TASK_BREAKDOWN.replace("{parent_task}", parent)
+    try:
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=prompt,
+            config=gtypes.GenerateContentConfig(
+                response_mime_type="application/json"
+            ),
+        )
+        data = json.loads(response.text or "{}")
+        subtasks = data.get("subtasks", [])
+        if not isinstance(subtasks, list):
+            subtasks = []
+        return {"subtasks": subtasks, "parent": parent}
+    except Exception as e:
+        logging.error(f"task_breakdown error: {e}")
+        raise HTTPException(status_code=500, detail=f"タスク分解に失敗しました: {str(e)}")
+
+
+@router.post("/task_breakdown/apply", dependencies=[Depends(verify_api_key)])
+async def task_breakdown_apply(req: TaskBreakdownApplyRequest):
+    """分解結果を Google Tasks に追加する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not bot.tasks_service:
+        raise HTTPException(status_code=503, detail="タスクサービス未設定")
+
+    list_name = req.list_name or "プライベート"
+    added = 0
+    for st in req.subtasks:
+        title = (st.get("title") or "").strip()
+        if not title:
+            continue
+        estimate = st.get("estimate")
+        notes = f"⏱ {estimate}" if estimate else ""
+        if req.parent_title:
+            notes = f"親: {req.parent_title}\n{notes}".strip()
+        try:
+            await bot.tasks_service.add_task(title, list_name=list_name, notes=notes)
+            added += 1
+        except TypeError:
+            await bot.tasks_service.add_task(title, list_name=list_name)
+            added += 1
+        except Exception as e:
+            logging.error(f"task add error: {e}")
+
+    return {"status": "success", "added": added, "message": f"{added}件をタスクに追加したよ！"}
+
+
+# ===== 読書機能 (Reading) =====
+
+class ReadingMemoRequest(BaseModel):
+    book_title: str
+    memo: str
+
+
+class ReadingPromptRequest(BaseModel):
+    book_title: str
+    previous_prompts: List[str] = []
+
+
+@router.get("/reading/books", dependencies=[Depends(verify_api_key)])
+async def reading_books():
+    """読書候補となる書籍一覧を返す。
+    1) ストック済みリンクの type=='book'
+    2) BookNotes フォルダ内の既存ノート（過去に読書ログがある書籍）"""
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+
+    books_from_links = []
+    try:
+        links = await get_all_links()
+        for link in links:
+            if link.get("type") == "book":
+                books_from_links.append({
+                    "title": link.get("title", "Untitled"),
+                    "source": "stock",
+                    "link_id": link.get("id"),
+                    "url": link.get("url", ""),
+                })
+    except Exception as e:
+        logging.debug(f"links fetch error: {e}")
+
+    books_from_notes = []
+    if chat_service and chat_service.drive_service:
+        try:
+            service = chat_service.drive_service.get_service()
+            if service:
+                folder_id = await chat_service.drive_service.find_file(
+                    service, chat_service.drive_folder_id, "BookNotes"
+                )
+                if folder_id:
+                    query = f"'{folder_id}' in parents and mimeType='text/markdown' and trashed=false"
+                    results = await asyncio.to_thread(
+                        lambda: service.files().list(
+                            q=query, fields="files(id, name, modifiedTime)",
+                            orderBy="modifiedTime desc", pageSize=30
+                        ).execute()
+                    )
+                    for f in results.get("files", []):
+                        title = f["name"].replace(".md", "")
+                        if not any(b["title"] == title for b in books_from_links):
+                            books_from_notes.append({
+                                "title": title,
+                                "source": "notes",
+                                "link_id": None,
+                                "url": "",
+                            })
+        except Exception as e:
+            logging.debug(f"book notes fetch: {e}")
+
+    return {"books": books_from_links + books_from_notes}
+
+
+@router.post("/reading/save", dependencies=[Depends(verify_api_key)])
+async def reading_save(req: ReadingMemoRequest):
+    """読書メモを書籍ノートに保存する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    book_cog = bot.get_cog("BookCog") if bot else None
+    if not book_cog:
+        raise HTTPException(status_code=503, detail="BookCog不在")
+
+    title = (req.book_title or "").strip() or "無題の書籍"
+    memo = (req.memo or "").strip()
+    if not memo:
+        raise HTTPException(status_code=400, detail="メモが空です")
+
+    ok = await book_cog.append_book_memo(title, memo)
+    if not ok:
+        raise HTTPException(status_code=500, detail="保存に失敗しました")
+    return {"status": "success", "message": f"「{title}」のノートに保存したよ。"}
+
+
+@router.post("/reading/prompt", dependencies=[Depends(verify_api_key)])
+async def reading_prompt(req: ReadingPromptRequest):
+    """読書中のマネージャーからの問いかけを生成する。"""
+    from api import app
+    from prompts import PROMPT_BOOK_READING_PROMPT
+    from google.genai import types as gtypes
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    prev = "\n".join(f"- {p}" for p in (req.previous_prompts or [])) or "（まだなし）"
+    prompt = PROMPT_BOOK_READING_PROMPT.replace(
+        "{book_title}", req.book_title or "無題"
+    ).replace("{previous_prompts}", prev)
+
+    try:
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=prompt,
+        )
+        text = (response.text or "").strip()
+        return {"prompt": text}
+    except Exception as e:
+        logging.error(f"reading_prompt error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ===== 勉強機能 (Study) =====
+
+class StudyMemoRequest(BaseModel):
+    subject: str
+    memo: str
+
+
+@router.get("/study/subjects", dependencies=[Depends(verify_api_key)])
+async def study_subjects():
+    """既存の学習科目一覧を返す。"""
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"subjects": []}
+
+    service = chat_service.drive_service.get_service()
+    if not service:
+        return {"subjects": []}
+
+    subjects = []
+    try:
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "StudyLogs"
+        )
+        if folder_id:
+            query = f"'{folder_id}' in parents and trashed=false"
+            results = await asyncio.to_thread(
+                lambda: service.files().list(
+                    q=query, fields="files(id, name, modifiedTime)",
+                    orderBy="modifiedTime desc", pageSize=30
+                ).execute()
+            )
+            for f in results.get("files", []):
+                name = f["name"]
+                # ファイル名は "{subject}_ノート.md" 形式
+                subject = name.replace("_ノート.md", "").replace(".md", "")
+                subjects.append(subject)
+    except Exception as e:
+        logging.debug(f"study subjects fetch: {e}")
+    return {"subjects": subjects}
+
+
+@router.post("/study/save", dependencies=[Depends(verify_api_key)])
+async def study_save(req: StudyMemoRequest):
+    """学習メモを科目ノートに保存する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    study_cog = bot.get_cog("StudyCog") if bot else None
+    if not study_cog:
+        raise HTTPException(status_code=503, detail="StudyCog不在")
+
+    subject = (req.subject or "").strip() or "雑記"
+    memo = (req.memo or "").strip()
+    if not memo:
+        raise HTTPException(status_code=400, detail="メモが空です")
+
+    ok = await study_cog.append_study_memo(subject, memo)
+    if not ok:
+        raise HTTPException(status_code=500, detail="保存に失敗しました")
+    return {"status": "success", "message": f"「{subject}」の学習ノートに保存したよ。"}
+
+
+# ===== ゼロ秒思考機能 (Zero Second Thinking) =====
+
+class ZTThemeRequest(BaseModel):
+    context: str = ""
+
+
+class ZTDeepDiveRequest(BaseModel):
+    original_theme: str
+    user_memo: str
+
+
+class ZTSaveRequest(BaseModel):
+    theme: str
+    memo: str
+    session_id: Optional[str] = None  # 同一セッション（深掘り含む）を1つのノートに集約
+
+
+@router.post("/zerosec/themes", dependencies=[Depends(verify_api_key)])
+async def zerosec_themes(req: ZTThemeRequest):
+    """ゼロ秒思考のテーマ候補を5つ返す。"""
+    from api import app
+    from prompts import PROMPT_ZT_THEMES_DETAILED
+    from google.genai import types as gtypes
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    prompt = PROMPT_ZT_THEMES_DETAILED.replace(
+        "{context}", req.context or "（特になし）"
+    )
+    try:
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=prompt,
+            config=gtypes.GenerateContentConfig(
+                response_mime_type="application/json"
+            ),
+        )
+        data = json.loads(response.text or "{}")
+        themes = data.get("themes", [])
+        if not isinstance(themes, list):
+            themes = []
+        return {"themes": themes[:5]}
+    except Exception as e:
+        logging.error(f"zerosec_themes error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/zerosec/deep_dive", dependencies=[Depends(verify_api_key)])
+async def zerosec_deep_dive(req: ZTDeepDiveRequest):
+    """ユーザーが書いたメモから、深掘り用の追加テーマを5つ生成する。"""
+    from api import app
+    from prompts import PROMPT_ZT_DEEP_DIVE
+    from google.genai import types as gtypes
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    prompt = (PROMPT_ZT_DEEP_DIVE
+              .replace("{original_theme}", req.original_theme or "")
+              .replace("{user_memo}", req.user_memo or ""))
+    try:
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=prompt,
+            config=gtypes.GenerateContentConfig(
+                response_mime_type="application/json"
+            ),
+        )
+        data = json.loads(response.text or "{}")
+        themes = data.get("themes", [])
+        if not isinstance(themes, list):
+            themes = []
+        return {"themes": themes[:5]}
+    except Exception as e:
+        logging.error(f"zerosec_deep_dive error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/zerosec/save", dependencies=[Depends(verify_api_key)])
+async def zerosec_save(req: ZTSaveRequest):
+    """ゼロ秒思考のメモをノートに保存し、ライフログにも記録する。
+    session_id があれば同一ファイルに追記、なければ新規作成。"""
+    from api import app
+    import re as _re
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="Drive未接続")
+
+    service = chat_service.drive_service.get_service()
+    if not service:
+        raise HTTPException(status_code=503, detail="Drive未接続")
+
+    theme = (req.theme or "").strip() or "無題のテーマ"
+    memo = (req.memo or "").strip()
+    if not memo:
+        raise HTTPException(status_code=400, detail="メモが空です")
+
+    folder_id = await chat_service.drive_service.find_file(
+        service, chat_service.drive_folder_id, "ZeroSecondThinking"
+    )
+    if not folder_id:
+        folder_id = await chat_service.drive_service.create_folder(
+            service, chat_service.drive_folder_id, "ZeroSecondThinking"
+        )
+
+    now = datetime.datetime.now(JST)
+    today_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M")
+
+    # session_id が指定されていれば既存ファイルに追記
+    session_id = req.session_id or now.strftime("%Y%m%d%H%M%S")
+    safe_theme = _re.sub(r'[\\/*?:"<>|]', "", theme)[:60]
+    file_name = f"{today_str}_{session_id}_{safe_theme}.md"
+
+    # 既存セッションの場合は session_id プレフィックスでファイル検索
+    existing_id = None
+    if req.session_id:
+        try:
+            query = (f"'{folder_id}' in parents and trashed=false "
+                     f"and name contains '{session_id}'")
+            results = await asyncio.to_thread(
+                lambda: service.files().list(
+                    q=query, fields="files(id, name)"
+                ).execute()
+            )
+            files = results.get("files", [])
+            if files:
+                existing_id = files[0]["id"]
+                file_name = files[0]["name"]
+        except Exception as e:
+            logging.debug(f"zt existing file lookup: {e}")
+
+    formatted_memo = memo.replace("\n", "\n> ")
+    section_block = (
+        f"\n## 🧠 {time_str} {theme}\n\n> {formatted_memo}\n"
+    )
+
+    if existing_id:
+        existing = await chat_service.drive_service.read_text_file(service, existing_id)
+        new_content = (existing or "").rstrip() + "\n" + section_block
+        await chat_service.drive_service.update_text(service, existing_id, new_content)
+    else:
+        header = (
+            f"---\ntitle: ゼロ秒思考 {today_str} {time_str}\n"
+            f"date: {today_str}\ntags: [zero_second_thinking]\n---\n\n"
+            f"# ゼロ秒思考セッション ({today_str} {time_str})\n"
+            + section_block
+        )
+        await chat_service.drive_service.upload_text(service, folder_id, file_name, header)
+
+    # ライフログにも記録（PartnerCog 経由）
+    bot = getattr(app.state, "bot", None)
+    partner_cog = bot.get_cog("PartnerCog") if bot else None
+    if partner_cog:
+        try:
+            await partner_cog._log_life_activity_to_obsidian(
+                f"ゼロ秒思考: {theme[:30]}", "end"
+            )
+        except Exception as e:
+            logging.debug(f"zt lifelog error: {e}")
+
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "message": f"「{theme}」のメモを保存したよ。",
+    }
+
+
+@router.post("/zerosec/log_start", dependencies=[Depends(verify_api_key)])
+async def zerosec_log_start(req: ZTThemeRequest):
+    """ゼロ秒思考の開始をライフログに記録する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    partner_cog = bot.get_cog("PartnerCog") if bot else None
+    if not partner_cog:
+        return {"status": "skipped"}
+    try:
+        theme = (req.context or "テーマ未指定")[:30]
+        await partner_cog._log_life_activity_to_obsidian(
+            f"ゼロ秒思考: {theme}", "start"
+        )
+    except Exception as e:
+        logging.debug(f"zt start log: {e}")
+    return {"status": "success"}

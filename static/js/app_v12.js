@@ -826,13 +826,72 @@ window.openTaskBreakdownModal = () => {
     $('#breakdown-apply-btn').style.display = 'none';
     $('#breakdown-list').innerHTML = '';
     currentBreakdownSubtasks = [];
+    // ソース選択リセット
+    const manualRadio = document.querySelector('input[name="breakdown-source"][value="manual"]');
+    if (manualRadio) manualRadio.checked = true;
+    onBreakdownSourceChange();
     $('#breakdown-modal').classList.remove('hidden');
 };
 
+window.onBreakdownSourceChange = async () => {
+    const source = document.querySelector('input[name="breakdown-source"]:checked')?.value || 'manual';
+    if (source === 'manual') {
+        $('#breakdown-manual-section').style.display = '';
+        $('#breakdown-existing-section').style.display = 'none';
+    } else {
+        $('#breakdown-manual-section').style.display = 'none';
+        $('#breakdown-existing-section').style.display = '';
+        // 既存タスク一覧を取得
+        const sel = $('#breakdown-existing-select');
+        sel.innerHTML = '<option value="">読み込み中...</option>';
+        try {
+            const data = await apiFetch('/api/tasks_for_breakdown');
+            sel.innerHTML = '';
+            if (!data.tasks || data.tasks.length === 0) {
+                sel.innerHTML = '<option value="">未完了タスクなし</option>';
+                return;
+            }
+            data.tasks.forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = JSON.stringify({title: t.title, list_name: t.list_name});
+                opt.textContent = `[${t.list_name}] ${t.title}`;
+                sel.appendChild(opt);
+            });
+            // デフォルトで先頭の list_name を追加先にも反映
+            try {
+                const first = JSON.parse(sel.options[0].value);
+                if (first.list_name) {
+                    const listSelect = $('#breakdown-list-name');
+                    if (listSelect) listSelect.value = first.list_name;
+                }
+            } catch(e) {}
+        } catch (e) {
+            sel.innerHTML = '<option value="">取得失敗</option>';
+        }
+    }
+};
+
 let currentBreakdownSubtasks = [];
+let currentBreakdownParent = '';
 window.generateBreakdown = async () => {
-    const task = $('#breakdown-task-input').value.trim();
-    if (!task) { showToast('タスクを入力してください', true); return; }
+    const source = document.querySelector('input[name="breakdown-source"]:checked')?.value || 'manual';
+    let task = '';
+    if (source === 'manual') {
+        task = $('#breakdown-task-input').value.trim();
+    } else {
+        const val = $('#breakdown-existing-select').value;
+        if (val) {
+            try {
+                const parsed = JSON.parse(val);
+                task = parsed.title;
+                // 追加先リストを既存タスクのリストに合わせる
+                const listSelect = $('#breakdown-list-name');
+                if (listSelect && parsed.list_name) listSelect.value = parsed.list_name;
+            } catch(e) { task = val; }
+        }
+    }
+    if (!task) { showToast('タスクを選択/入力してください', true); return; }
+    currentBreakdownParent = task;
 
     const btn = $('#breakdown-generate-btn');
     btn.textContent = '分析中...';
@@ -875,7 +934,11 @@ window.applyBreakdown = async () => {
     try {
         const data = await apiFetch('/api/task_breakdown/apply', {
             method: 'POST',
-            body: JSON.stringify({ list_name: listName, subtasks: currentBreakdownSubtasks })
+            body: JSON.stringify({
+                list_name: listName,
+                subtasks: currentBreakdownSubtasks,
+                parent_title: currentBreakdownParent || ''
+            })
         });
         showToast(data.message || '追加しました');
         appendMsg('assistant', data.message);
@@ -889,6 +952,583 @@ window.applyBreakdown = async () => {
         btn.disabled = false;
     }
 };
+
+// ============================================================
+// ゼロ秒思考機能 (Zero Second Thinking)
+// ============================================================
+let ztState = {
+    theme: '',
+    sessionId: null,
+    timerInterval: null,
+    remainingSec: 60,
+};
+
+window.openZeroSecModal = async () => {
+    ztResetSteps();
+    $('#zerosec-modal').classList.remove('hidden');
+    // テーマ候補ロード
+    const listEl = $('#zt-theme-list');
+    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">テーマ生成中...</div>';
+    $('#zt-custom-theme').value = '';
+    try {
+        const data = await apiFetch('/api/zerosec/themes', {
+            method: 'POST',
+            body: JSON.stringify({ context: '' })
+        });
+        renderZtThemes(data.themes || []);
+    } catch (e) {
+        listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); font-size:0.85rem;">テーマ取得に失敗。自分で入力してね。</div>';
+    }
+};
+
+function renderZtThemes(themes) {
+    const listEl = $('#zt-theme-list');
+    if (!themes.length) {
+        listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); font-size:0.85rem;">候補なし。自分で入力してね。</div>';
+        return;
+    }
+    listEl.innerHTML = themes.map((t, i) => `
+        <div class="modal-item zt-theme-item" data-theme="${escapeHtml(t)}" onclick="selectZtTheme(this)">
+            <span>${escapeHtml(t)}</span>
+        </div>
+    `).join('');
+}
+
+window.selectZtTheme = (el) => {
+    document.querySelectorAll('.zt-theme-item').forEach(e => e.classList.remove('selected'));
+    el.classList.add('selected');
+    $('#zt-custom-theme').value = el.dataset.theme;
+};
+
+function ztResetSteps() {
+    $('#zt-step-theme').style.display = '';
+    $('#zt-step-timer').style.display = 'none';
+    $('#zt-step-review').style.display = 'none';
+    if (ztState.timerInterval) {
+        clearInterval(ztState.timerInterval);
+        ztState.timerInterval = null;
+    }
+}
+
+window.closeZeroSecModal = () => {
+    if (ztState.timerInterval) {
+        clearInterval(ztState.timerInterval);
+        ztState.timerInterval = null;
+    }
+    $('#zerosec-modal').classList.add('hidden');
+    ztState = { theme: '', sessionId: null, timerInterval: null, remainingSec: 60 };
+};
+
+window.startZeroSec = async () => {
+    const theme = $('#zt-custom-theme').value.trim();
+    if (!theme) { showToast('テーマを選ぶか入力してね', true); return; }
+    ztState.theme = theme;
+    $('#zt-current-theme').textContent = theme;
+    $('#zt-memo-input').value = '';
+    $('#zt-step-theme').style.display = 'none';
+    $('#zt-step-timer').style.display = '';
+
+    // ライフログ開始（バックグラウンド）
+    apiFetch('/api/zerosec/log_start', {
+        method: 'POST',
+        body: JSON.stringify({ context: theme })
+    }).catch(() => {});
+
+    // 1分タイマー
+    ztState.remainingSec = 60;
+    updateZtTimer();
+    ztState.timerInterval = setInterval(() => {
+        ztState.remainingSec -= 1;
+        updateZtTimer();
+        if (ztState.remainingSec <= 0) {
+            clearInterval(ztState.timerInterval);
+            ztState.timerInterval = null;
+            // タイマー終了後にレビュー画面へ自動遷移
+            ztGoToReview();
+        }
+    }, 1000);
+};
+
+function updateZtTimer() {
+    const m = Math.floor(ztState.remainingSec / 60).toString().padStart(2, '0');
+    const s = (ztState.remainingSec % 60).toString().padStart(2, '0');
+    const display = $('#zt-timer');
+    if (display) {
+        display.textContent = `${m}:${s}`;
+        if (ztState.remainingSec <= 10) display.classList.add('countdown-warning');
+        else display.classList.remove('countdown-warning');
+    }
+}
+
+function ztGoToReview() {
+    $('#zt-review-theme').value = ztState.theme;
+    $('#zt-review-memo').value = $('#zt-memo-input').value;
+    $('#zt-step-timer').style.display = 'none';
+    $('#zt-step-review').style.display = '';
+}
+
+window.finishZeroSec = () => {
+    if (ztState.timerInterval) {
+        clearInterval(ztState.timerInterval);
+        ztState.timerInterval = null;
+    }
+    ztGoToReview();
+};
+
+window.abortZeroSec = () => {
+    if (!confirm('中断する？メモは破棄されるよ')) return;
+    closeZeroSecModal();
+};
+
+window.ztAttachImage = () => {
+    $('#zt-image-input').click();
+};
+
+const ztImageInput = document.getElementById('zt-image-input');
+if (ztImageInput) {
+    ztImageInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        showToast('手書きを読み取り中...');
+        try {
+            const images = await Promise.all(files.map(f => fileToBase64(f)));
+            const data = await apiFetch('/api/note_from_images', {
+                method: 'POST',
+                body: JSON.stringify({
+                    images: images.map(img => ({ image_base64: img.base64, mime_type: img.mime })),
+                    hint: `ゼロ秒思考: ${ztState.theme}`
+                })
+            });
+            const ocrText = data.structured_content || data.transcription || '';
+            const cur = $('#zt-review-memo').value;
+            $('#zt-review-memo').value = cur ? `${cur}\n\n${ocrText}` : ocrText;
+            showToast('取り込み完了');
+        } catch (err) {
+            console.error(err);
+            showToast('画像の読み取りに失敗', true);
+        }
+        e.target.value = '';
+    });
+}
+
+async function ztSaveCommon() {
+    const theme = $('#zt-review-theme').value.trim() || ztState.theme;
+    const memo = $('#zt-review-memo').value.trim();
+    if (!memo) { showToast('メモが空です', true); return null; }
+    const payload = { theme, memo };
+    if (ztState.sessionId) payload.session_id = ztState.sessionId;
+    try {
+        const data = await apiFetch('/api/zerosec/save', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        });
+        if (data.session_id) ztState.sessionId = data.session_id;
+        showToast(data.message || '保存しました');
+        return { theme, memo };
+    } catch (e) {
+        console.error(e);
+        showToast('保存に失敗', true);
+        return null;
+    }
+}
+
+window.ztSaveAndClose = async () => {
+    const res = await ztSaveCommon();
+    if (res) closeZeroSecModal();
+};
+
+window.ztSaveAndDeepDive = async () => {
+    const res = await ztSaveCommon();
+    if (!res) return;
+    // 深掘り用テーマを取得
+    const listEl = $('#zt-theme-list');
+    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">深掘りテーマを生成中...</div>';
+    // Step1（テーマ選択）画面に戻る
+    ztResetSteps();
+    $('#zt-custom-theme').value = '';
+    try {
+        const data = await apiFetch('/api/zerosec/deep_dive', {
+            method: 'POST',
+            body: JSON.stringify({
+                original_theme: res.theme,
+                user_memo: res.memo
+            })
+        });
+        renderZtThemes(data.themes || []);
+    } catch (e) {
+        listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); font-size:0.85rem;">取得失敗。自分で入力してね。</div>';
+    }
+};
+
+// ファイル -> base64 変換ヘルパー
+function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const result = reader.result || '';
+            const base64 = result.toString().split(',')[1] || '';
+            resolve({ base64, mime: file.type || 'image/jpeg' });
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+    });
+}
+
+// ============================================================
+// 読書機能 (Reading)
+// ============================================================
+let readingState = {
+    bookTitle: '',
+    startedAt: null,
+    timerInterval: null,
+    promptInterval: null,
+    sentPrompts: [],
+    enablePrompt: false,
+};
+
+window.openReadingModal = async () => {
+    readingResetSteps();
+    $('#reading-modal').classList.remove('hidden');
+    $('#reading-custom-title').value = '';
+    $('#reading-prompt-toggle').checked = false;
+    const listEl = $('#reading-book-list');
+    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">候補を読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/reading/books');
+        renderBookCandidates(data.books || []);
+    } catch (e) {
+        listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); font-size:0.85rem;">候補取得に失敗。手動入力してね。</div>';
+    }
+};
+
+function renderBookCandidates(books) {
+    const listEl = $('#reading-book-list');
+    if (!books.length) {
+        listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); font-size:0.85rem;">候補なし。手動入力してね。</div>';
+        return;
+    }
+    listEl.innerHTML = books.map(b => {
+        const badge = b.source === 'stock'
+            ? '<span style="font-size:0.7rem; color:var(--accent); margin-left:6px;">📚 ストック</span>'
+            : '<span style="font-size:0.7rem; color:var(--text-muted); margin-left:6px;">📓 履歴</span>';
+        return `
+            <div class="modal-item book-cand-item" data-title="${escapeHtml(b.title)}" onclick="selectBookCand(this)">
+                <span>${escapeHtml(b.title)}${badge}</span>
+            </div>
+        `;
+    }).join('');
+}
+
+window.selectBookCand = (el) => {
+    document.querySelectorAll('.book-cand-item').forEach(e => e.classList.remove('selected'));
+    el.classList.add('selected');
+    $('#reading-custom-title').value = el.dataset.title;
+};
+
+function readingResetSteps() {
+    $('#reading-step-select').style.display = '';
+    $('#reading-step-active').style.display = 'none';
+    if (readingState.timerInterval) clearInterval(readingState.timerInterval);
+    if (readingState.promptInterval) clearInterval(readingState.promptInterval);
+    readingState.timerInterval = null;
+    readingState.promptInterval = null;
+}
+
+window.closeReadingModal = () => {
+    if (readingState.timerInterval) clearInterval(readingState.timerInterval);
+    if (readingState.promptInterval) clearInterval(readingState.promptInterval);
+    $('#reading-modal').classList.add('hidden');
+    readingState = {
+        bookTitle: '', startedAt: null,
+        timerInterval: null, promptInterval: null,
+        sentPrompts: [], enablePrompt: false,
+    };
+};
+
+window.startReading = async () => {
+    const title = $('#reading-custom-title').value.trim();
+    if (!title) { showToast('書籍を選ぶか入力してね', true); return; }
+    readingState.bookTitle = title;
+    readingState.startedAt = Date.now();
+    readingState.sentPrompts = [];
+    readingState.enablePrompt = $('#reading-prompt-toggle').checked;
+    $('#reading-current-book').textContent = title;
+    $('#reading-memo-input').value = '';
+    $('#reading-prompt-area').style.display = 'none';
+    $('#reading-prompt-area').textContent = '';
+    $('#reading-step-select').style.display = 'none';
+    $('#reading-step-active').style.display = '';
+
+    // ライフログ start
+    sendActionCommandSilent(`「${title}」を読み始める`);
+    apiFetch('/api/zerosec/log_start', {
+        method: 'POST',
+        body: JSON.stringify({ context: `読書: ${title}` })
+    }).catch(() => {});
+
+    // 経過時間タイマー
+    updateReadingTimer();
+    readingState.timerInterval = setInterval(updateReadingTimer, 1000);
+
+    // マネージャーからの問いかけ（5分間隔）
+    if (readingState.enablePrompt) {
+        readingState.promptInterval = setInterval(fetchReadingPrompt, 5 * 60 * 1000);
+    }
+};
+
+function updateReadingTimer() {
+    if (!readingState.startedAt) return;
+    const elapsed = Math.floor((Date.now() - readingState.startedAt) / 1000);
+    const h = Math.floor(elapsed / 3600);
+    const m = Math.floor((elapsed % 3600) / 60).toString().padStart(2, '0');
+    const s = (elapsed % 60).toString().padStart(2, '0');
+    const t = h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+    const el = $('#reading-timer');
+    if (el) el.textContent = t;
+}
+
+async function fetchReadingPrompt() {
+    try {
+        const data = await apiFetch('/api/reading/prompt', {
+            method: 'POST',
+            body: JSON.stringify({
+                book_title: readingState.bookTitle,
+                previous_prompts: readingState.sentPrompts
+            })
+        });
+        const text = (data.prompt || '').trim();
+        if (text) {
+            readingState.sentPrompts.push(text);
+            const area = $('#reading-prompt-area');
+            area.textContent = `💬 ${text}`;
+            area.style.display = '';
+        }
+    } catch (e) {
+        console.debug('reading prompt fetch failed', e);
+    }
+}
+
+window.readingAttachImage = () => {
+    $('#reading-image-input').click();
+};
+
+const readingImageInput = document.getElementById('reading-image-input');
+if (readingImageInput) {
+    readingImageInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        showToast('手書きを読み取り中...');
+        try {
+            const images = await Promise.all(files.map(f => fileToBase64(f)));
+            const data = await apiFetch('/api/note_from_images', {
+                method: 'POST',
+                body: JSON.stringify({
+                    images: images.map(img => ({ image_base64: img.base64, mime_type: img.mime })),
+                    hint: `読書メモ: ${readingState.bookTitle}`
+                })
+            });
+            const ocrText = data.structured_content || data.transcription || '';
+            const cur = $('#reading-memo-input').value;
+            $('#reading-memo-input').value = cur ? `${cur}\n\n${ocrText}` : ocrText;
+            showToast('取り込み完了');
+        } catch (err) {
+            console.error(err);
+            showToast('画像の読み取りに失敗', true);
+        }
+        e.target.value = '';
+    });
+}
+
+window.abortReading = () => {
+    if (!confirm('中断する？メモは破棄されるよ')) return;
+    closeReadingModal();
+};
+
+window.finishReading = async () => {
+    const memo = $('#reading-memo-input').value.trim();
+    const title = readingState.bookTitle;
+    const elapsedMin = readingState.startedAt
+        ? Math.round((Date.now() - readingState.startedAt) / 60000)
+        : 0;
+
+    if (memo) {
+        try {
+            const memoWithTime = elapsedMin > 0
+                ? `${memo}\n\n（読書時間: ${elapsedMin}分）`
+                : memo;
+            const data = await apiFetch('/api/reading/save', {
+                method: 'POST',
+                body: JSON.stringify({ book_title: title, memo: memoWithTime })
+            });
+            showToast(data.message || '保存しました');
+        } catch (e) {
+            showToast('保存に失敗', true);
+            return;
+        }
+    } else {
+        showToast(`お疲れさま！${elapsedMin}分の読書を記録したよ`);
+    }
+    // ライフログ end
+    sendActionCommandSilent(`「${title}」読書終了（${elapsedMin}分）`);
+    closeReadingModal();
+};
+
+// ============================================================
+// 勉強機能 (Study)
+// ============================================================
+let studyState = {
+    subject: '',
+    startedAt: null,
+    timerInterval: null,
+};
+
+window.openStudyModal = async () => {
+    studyResetSteps();
+    $('#study-modal').classList.remove('hidden');
+    $('#study-custom-subject').value = '';
+    const listEl = $('#study-subject-list');
+    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">候補を読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/study/subjects');
+        renderStudySubjects(data.subjects || []);
+    } catch (e) {
+        listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); font-size:0.85rem;">候補取得に失敗。手動入力してね。</div>';
+    }
+};
+
+function renderStudySubjects(subjects) {
+    const listEl = $('#study-subject-list');
+    if (!subjects.length) {
+        listEl.innerHTML = '<div style="padding:14px; color:var(--text-muted); font-size:0.85rem;">過去の科目なし。新しく入力してね。</div>';
+        return;
+    }
+    listEl.innerHTML = subjects.map(s => `
+        <div class="modal-item study-subj-item" data-subject="${escapeHtml(s)}" onclick="selectStudySubject(this)">
+            <span>${escapeHtml(s)}</span>
+        </div>
+    `).join('');
+}
+
+window.selectStudySubject = (el) => {
+    document.querySelectorAll('.study-subj-item').forEach(e => e.classList.remove('selected'));
+    el.classList.add('selected');
+    $('#study-custom-subject').value = el.dataset.subject;
+};
+
+function studyResetSteps() {
+    $('#study-step-select').style.display = '';
+    $('#study-step-active').style.display = 'none';
+    if (studyState.timerInterval) clearInterval(studyState.timerInterval);
+    studyState.timerInterval = null;
+}
+
+window.closeStudyModal = () => {
+    if (studyState.timerInterval) clearInterval(studyState.timerInterval);
+    $('#study-modal').classList.add('hidden');
+    studyState = { subject: '', startedAt: null, timerInterval: null };
+};
+
+window.startStudy = async () => {
+    const subject = $('#study-custom-subject').value.trim();
+    if (!subject) { showToast('科目を選ぶか入力してね', true); return; }
+    studyState.subject = subject;
+    studyState.startedAt = Date.now();
+    $('#study-current-subject').textContent = subject;
+    $('#study-memo-input').value = '';
+    $('#study-step-select').style.display = 'none';
+    $('#study-step-active').style.display = '';
+
+    sendActionCommandSilent(`「${subject}」の勉強を始める`);
+    updateStudyTimer();
+    studyState.timerInterval = setInterval(updateStudyTimer, 1000);
+};
+
+function updateStudyTimer() {
+    if (!studyState.startedAt) return;
+    const elapsed = Math.floor((Date.now() - studyState.startedAt) / 1000);
+    const h = Math.floor(elapsed / 3600);
+    const m = Math.floor((elapsed % 3600) / 60).toString().padStart(2, '0');
+    const s = (elapsed % 60).toString().padStart(2, '0');
+    const t = h > 0 ? `${h}:${m}:${s}` : `${m}:${s}`;
+    const el = $('#study-timer');
+    if (el) el.textContent = t;
+}
+
+window.studyAttachImage = () => {
+    $('#study-image-input').click();
+};
+
+const studyImageInput = document.getElementById('study-image-input');
+if (studyImageInput) {
+    studyImageInput.addEventListener('change', async (e) => {
+        const files = Array.from(e.target.files || []);
+        if (!files.length) return;
+        showToast('手書きを読み取り中...');
+        try {
+            const images = await Promise.all(files.map(f => fileToBase64(f)));
+            const data = await apiFetch('/api/note_from_images', {
+                method: 'POST',
+                body: JSON.stringify({
+                    images: images.map(img => ({ image_base64: img.base64, mime_type: img.mime })),
+                    hint: `学習メモ: ${studyState.subject}`
+                })
+            });
+            const ocrText = data.structured_content || data.transcription || '';
+            const cur = $('#study-memo-input').value;
+            $('#study-memo-input').value = cur ? `${cur}\n\n${ocrText}` : ocrText;
+            showToast('取り込み完了');
+        } catch (err) {
+            console.error(err);
+            showToast('画像の読み取りに失敗', true);
+        }
+        e.target.value = '';
+    });
+}
+
+window.abortStudy = () => {
+    if (!confirm('中断する？メモは破棄されるよ')) return;
+    closeStudyModal();
+};
+
+window.finishStudy = async () => {
+    const memo = $('#study-memo-input').value.trim();
+    const subject = studyState.subject;
+    const elapsedMin = studyState.startedAt
+        ? Math.round((Date.now() - studyState.startedAt) / 60000)
+        : 0;
+
+    if (memo) {
+        try {
+            const memoWithTime = elapsedMin > 0
+                ? `${memo}\n\n（学習時間: ${elapsedMin}分）`
+                : memo;
+            const data = await apiFetch('/api/study/save', {
+                method: 'POST',
+                body: JSON.stringify({ subject, memo: memoWithTime })
+            });
+            showToast(data.message || '保存しました');
+        } catch (e) {
+            showToast('保存に失敗', true);
+            return;
+        }
+    } else {
+        showToast(`お疲れさま！${elapsedMin}分の学習を記録したよ`);
+    }
+    sendActionCommandSilent(`「${subject}」の勉強を終了（${elapsedMin}分）`);
+    closeStudyModal();
+};
+
+// 既存の sendActionCommand のサイレント版（チャット欄に表示せずバックグラウンドで送信）
+async function sendActionCommandSilent(text) {
+    try {
+        await apiFetch('/api/chat', {
+            method: 'POST',
+            body: JSON.stringify({ message: text })
+        });
+    } catch (e) {
+        console.debug('silent action failed:', e);
+    }
+}
 
 window.runHealthCorrelation = async () => {
     showToast('1週間のデータを分析中... (少し時間がかかります)');

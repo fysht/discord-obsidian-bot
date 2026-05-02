@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=35">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=36">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
@@ -95,6 +95,9 @@
                         <button class="chip-btn chip-more" onclick="toggleMoreChips()" id="chip-more-toggle">＋ その他</button>
                     </div>
                     <div class="action-chips-more hidden" id="action-chips-more">
+                        <button class="chip-btn" onclick="openZeroSecModal()">💭 ゼロ秒思考</button>
+                        <button class="chip-btn" onclick="openReadingModal()">📖 読書</button>
+                        <button class="chip-btn" onclick="openStudyModal()">📝 勉強</button>
                         <button class="chip-btn" onclick="openTaskBreakdownModal()">🔨 タスク分解</button>
                         <button class="chip-btn" onclick="runTaskTriage('仕事')">🧹 仕事を整理</button>
                         <button class="chip-btn" onclick="runTaskTriage('プライベート')">🧹 ﾌﾟﾗｲﾍﾞｰﾄ整理</button>
@@ -457,10 +460,29 @@
         <div class="modal-card">
             <h3>🔨 タスク分解</h3>
             <div class="modal-body mt-20">
-                <div class="input-group">
+                <div class="save-mode-toggle" style="margin-bottom:12px;">
+                    <label class="save-mode-option">
+                        <input type="radio" name="breakdown-source" value="manual" checked onchange="onBreakdownSourceChange()">
+                        <span>新しく入力</span>
+                    </label>
+                    <label class="save-mode-option">
+                        <input type="radio" name="breakdown-source" value="existing" onchange="onBreakdownSourceChange()">
+                        <span>既存タスクから選ぶ</span>
+                    </label>
+                </div>
+
+                <div id="breakdown-manual-section" class="input-group">
                     <label>分解したいタスク</label>
                     <input type="text" id="breakdown-task-input" class="modern-input" placeholder="引越しの準備をする、確定申告をする...">
                 </div>
+
+                <div id="breakdown-existing-section" class="input-group" style="display:none;">
+                    <label>既存タスクから選択</label>
+                    <select id="breakdown-existing-select" class="modern-input" style="padding:10px;">
+                        <option value="">読み込み中...</option>
+                    </select>
+                </div>
+
                 <div id="breakdown-result" class="mt-20" style="display:none;">
                     <label style="font-weight:600; margin-bottom:8px; display:block;">サブタスク：</label>
                     <div id="breakdown-list" class="modal-list"></div>
@@ -477,6 +499,158 @@
                 <button class="modal-btn cancel" onclick="closeBreakdownModal()">閉じる</button>
                 <button class="modal-btn submit" id="breakdown-generate-btn" onclick="generateBreakdown()">AIで分解</button>
                 <button class="modal-btn submit" id="breakdown-apply-btn" onclick="applyBreakdown()" style="display:none;">Tasksに追加</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== ZERO SECOND THINKING MODAL ========== -->
+    <div id="zerosec-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <!-- Step 1: テーマ選択 -->
+            <div id="zt-step-theme">
+                <h3>💭 ゼロ秒思考</h3>
+                <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:8px;">
+                    1分間、頭に浮かんだことをひたすら書き出そう。テーマを選んでね。
+                </p>
+                <div id="zt-theme-list" class="modal-list mt-20" style="max-height:50vh;">
+                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中...</div>
+                </div>
+                <div class="input-group mt-10">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">自分でテーマを入力</label>
+                    <input type="text" id="zt-custom-theme" class="modern-input" style="padding:10px;" placeholder="例: 今モヤモヤしていることは何？">
+                </div>
+                <div class="modal-actions mt-20">
+                    <button class="modal-btn cancel" onclick="closeZeroSecModal()">閉じる</button>
+                    <button class="modal-btn submit" onclick="startZeroSec()">▶ 開始</button>
+                </div>
+            </div>
+
+            <!-- Step 2: タイマー -->
+            <div id="zt-step-timer" style="display:none;">
+                <h3 id="zt-current-theme" style="margin-bottom:8px;">テーマ</h3>
+                <div class="zt-timer-display" id="zt-timer">01:00</div>
+                <p style="color:var(--text-secondary); font-size:0.85rem; text-align:center; margin-top:8px;">
+                    手書き or テキストで自由に書き出そう
+                </p>
+                <textarea id="zt-memo-input" class="modern-input" style="padding:10px; height:160px; resize:vertical; margin-top:12px;" placeholder="（メモを書く / 終了後に手書き画像を取り込んでもOK）"></textarea>
+                <div class="modal-actions mt-20">
+                    <button class="modal-btn cancel" onclick="abortZeroSec()">中断</button>
+                    <button class="modal-btn submit" onclick="finishZeroSec()" id="zt-finish-btn">終了して取り込む</button>
+                </div>
+            </div>
+
+            <!-- Step 3: 終了後（メモ確認・深掘り） -->
+            <div id="zt-step-review" style="display:none;">
+                <h3>📝 メモを保存</h3>
+                <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:8px;">
+                    内容を確認・編集してね。手書きメモを取り込むこともできるよ。
+                </p>
+                <div style="display:flex; flex-direction:column; gap:4px; margin-top:12px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">テーマ</label>
+                    <input type="text" id="zt-review-theme" class="modern-input" style="padding:10px;">
+                </div>
+                <div style="display:flex; flex-direction:column; gap:4px; margin-top:10px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">メモ</label>
+                    <textarea id="zt-review-memo" class="modern-input" style="padding:10px; height:140px; resize:vertical;"></textarea>
+                </div>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button class="modal-btn cancel" style="flex:1;" onclick="ztAttachImage()">📷 手書きを取り込む</button>
+                </div>
+                <input type="file" id="zt-image-input" accept="image/*" capture="environment" multiple style="display:none;">
+                <div class="modal-actions mt-20">
+                    <button class="modal-btn cancel" onclick="closeZeroSecModal()">終了</button>
+                    <button class="modal-btn submit" style="background:rgba(0,186,152,0.18); color:var(--accent);" onclick="ztSaveAndDeepDive()">💾 保存して深掘り</button>
+                    <button class="modal-btn submit" onclick="ztSaveAndClose()">💾 保存して終了</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== READING MODAL ========== -->
+    <div id="reading-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <!-- Step 1: 書籍選択 -->
+            <div id="reading-step-select">
+                <h3>📖 読書</h3>
+                <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:8px;">
+                    どの本を読む？情報タブの「書籍」とBookNotesから候補を取得したよ。
+                </p>
+                <div id="reading-book-list" class="modal-list mt-20" style="max-height:45vh;">
+                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中...</div>
+                </div>
+                <div class="input-group mt-10">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">手動入力</label>
+                    <input type="text" id="reading-custom-title" class="modern-input" style="padding:10px;" placeholder="本のタイトルを入力...">
+                </div>
+                <div style="display:flex; align-items:center; gap:6px; margin-top:10px;">
+                    <input type="checkbox" id="reading-prompt-toggle">
+                    <label for="reading-prompt-toggle" style="font-size:0.85rem;">マネージャーから時々問いかけてもらう</label>
+                </div>
+                <div class="modal-actions mt-20">
+                    <button class="modal-btn cancel" onclick="closeReadingModal()">閉じる</button>
+                    <button class="modal-btn submit" onclick="startReading()">▶ 読書開始</button>
+                </div>
+            </div>
+
+            <!-- Step 2: 読書中 -->
+            <div id="reading-step-active" style="display:none;">
+                <h3 id="reading-current-book">書籍タイトル</h3>
+                <div class="reading-timer-display" id="reading-timer">00:00</div>
+                <div id="reading-prompt-area" style="display:none; margin-top:12px; padding:10px; border-radius:8px; background:rgba(0,186,152,0.08); border:1px solid rgba(0,186,152,0.25); font-size:0.88rem;"></div>
+                <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:14px;">
+                    読書中に考えたこと・感じたことをメモしよう
+                </p>
+                <textarea id="reading-memo-input" class="modern-input" style="padding:10px; height:140px; resize:vertical; margin-top:8px;" placeholder="メモを書く..."></textarea>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button class="modal-btn cancel" style="flex:1;" onclick="readingAttachImage()">📷 手書きを取り込む</button>
+                </div>
+                <input type="file" id="reading-image-input" accept="image/*" capture="environment" multiple style="display:none;">
+                <div class="modal-actions mt-20">
+                    <button class="modal-btn cancel" onclick="abortReading()">中断</button>
+                    <button class="modal-btn submit" onclick="finishReading()">📚 終了して保存</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== STUDY MODAL ========== -->
+    <div id="study-modal" class="modal-overlay hidden">
+        <div class="modal-card">
+            <!-- Step 1: 科目選択 -->
+            <div id="study-step-select">
+                <h3>📝 勉強</h3>
+                <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:8px;">
+                    何を勉強する？過去の科目から選ぶか、新しく入力してね。
+                </p>
+                <div id="study-subject-list" class="modal-list mt-20" style="max-height:45vh;">
+                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中...</div>
+                </div>
+                <div class="input-group mt-10">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">新しい科目</label>
+                    <input type="text" id="study-custom-subject" class="modern-input" style="padding:10px;" placeholder="科目名を入力...">
+                </div>
+                <div class="modal-actions mt-20">
+                    <button class="modal-btn cancel" onclick="closeStudyModal()">閉じる</button>
+                    <button class="modal-btn submit" onclick="startStudy()">▶ 勉強開始</button>
+                </div>
+            </div>
+
+            <!-- Step 2: 勉強中 -->
+            <div id="study-step-active" style="display:none;">
+                <h3 id="study-current-subject">科目名</h3>
+                <div class="reading-timer-display" id="study-timer">00:00</div>
+                <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:14px;">
+                    気づき・要点をメモしよう
+                </p>
+                <textarea id="study-memo-input" class="modern-input" style="padding:10px; height:140px; resize:vertical; margin-top:8px;" placeholder="メモを書く..."></textarea>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button class="modal-btn cancel" style="flex:1;" onclick="studyAttachImage()">📷 手書きを取り込む</button>
+                </div>
+                <input type="file" id="study-image-input" accept="image/*" capture="environment" multiple style="display:none;">
+                <div class="modal-actions mt-20">
+                    <button class="modal-btn cancel" onclick="abortStudy()">中断</button>
+                    <button class="modal-btn submit" onclick="finishStudy()">📚 終了して保存</button>
+                </div>
             </div>
         </div>
     </div>
@@ -603,6 +777,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=37"></script>
+    <script src="/static/js/app_v12.js?v=38"></script>
 </body>
 </html>

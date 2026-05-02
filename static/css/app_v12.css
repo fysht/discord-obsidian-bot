@@ -1150,3 +1150,63 @@ mark.search-hl {
     transition: opacity 0.15s;
 }
 .task-due-btn:hover { opacity: 1; }
+
+/* ===== モーダル選択中アイテム ===== */
+.modal-item.selected {
+    background: rgba(0, 186, 152, 0.18);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+/* ===== ゼロ秒思考タイマー ===== */
+.zt-timer-display {
+    font-size: 4rem;
+    font-weight: 700;
+    text-align: center;
+    margin: 24px 0 4px;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent);
+    letter-spacing: 2px;
+}
+.zt-timer-display.countdown-warning {
+    color: #ff6b6b;
+    animation: pulse-warn 1s ease-in-out infinite;
+}
+@keyframes pulse-warn {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%     { opacity: 0.7; transform: scale(1.04); }
+}
+
+/* ===== 読書/勉強の経過時間表示 ===== */
+.reading-timer-display {
+    font-size: 2.4rem;
+    font-weight: 600;
+    text-align: center;
+    margin: 14px 0 6px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-primary, #fff);
+    letter-spacing: 1px;
+}
+
+/* ===== save-mode-toggle 流用（タスク分解モード切替用） ===== */
+.modal-card .save-mode-toggle {
+    display: flex;
+    gap: 8px;
+}
+.modal-card .save-mode-option {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-glass);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    background: rgba(255, 255, 255, 0.03);
+}
+.modal-card .save-mode-option:has(input:checked) {
+    border-color: var(--accent);
+    background: rgba(0, 186, 152, 0.12);
+    color: var(--accent);
+}
