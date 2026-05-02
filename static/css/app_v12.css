@@ -1210,3 +1210,64 @@ mark.search-hl {
     background: rgba(0, 186, 152, 0.12);
     color: var(--accent);
 }
+
+/* ========== MIT Banner ========== */
+.mit-banner {
+    background: linear-gradient(135deg, rgba(0,186,152,0.12) 0%, rgba(0,186,152,0.06) 100%);
+    border-bottom: 1px solid rgba(0,186,152,0.25);
+    padding: 8px 16px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+.mit-banner.hidden { display: none; }
+.mit-banner-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--accent);
+    white-space: nowrap;
+    padding-top: 2px;
+}
+.mit-banner-items {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    flex: 1;
+}
+.mit-banner-item {
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.3;
+}
+.mit-banner-item::before {
+    content: '';
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+    flex-shrink: 0;
+}
+.mit-banner-item.done {
+    text-decoration: line-through;
+    opacity: 0.5;
+}
+
+/* ========== Next Actions card ========== */
+.next-actions-card .list-item {
+    font-size: 0.84rem;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.next-actions-card .list-item:last-child { border-bottom: none; }
+.na-list-badge {
+    font-size: 0.68rem;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(0,186,152,0.15);
+    color: var(--accent);
+    white-space: nowrap;
+}

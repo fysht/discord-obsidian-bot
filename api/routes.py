@@ -331,6 +331,14 @@ async def dashboard():
                     tasks.append({"text": line[2:].strip(), "is_log": True})
 
     alter_log = ""
+    daily_journal = ""
+    next_actions = ""
+    mit_items: list[str] = []
+
+    def extract_section(text, header):
+        m = re.search(rf"{re.escape(header)}\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+        return m.group(1).strip() if m else None
+
     def extract_alter_log(text):
         m = re.search(r"## 💡 Insights & Thoughts\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
         if not m: m = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
@@ -338,18 +346,35 @@ async def dashboard():
         return m.group(1).strip() if m else None
 
     alter_log = extract_alter_log(content)
-    
+    daily_journal = extract_section(content, "## 📔 Daily Journal") or ""
+    next_actions_raw = extract_section(content, "## 🚀 Next Actions") or ""
+    next_actions = next_actions_raw
+    mit_raw = extract_section(content, "## 🎯 MIT") or ""
+    mit_items = [
+        re.sub(r"^- \[[ x]\] ", "", l).strip()
+        for l in mit_raw.splitlines()
+        if l.strip().startswith("- [")
+    ]
+
     # 当日のログがない場合、昨日のノートから取得を試みる
-    if not alter_log and folder_id:
-        yesterday_str = (datetime.datetime.now(JST) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-        y_fid = await chat_service.drive_service.find_file(service, folder_id, f"{yesterday_str}.md")
-        if y_fid:
-            try:
-                y_content = await chat_service.drive_service.read_text_file(service, y_fid)
-                alter_log = extract_alter_log(y_content)
-                if alter_log: alter_log = f"【昨日の分析】\n{alter_log}"
-            except Exception as e:
-                logging.debug(f"yesterday alter log fetch failed: {e}")
+    yesterday_str = (datetime.datetime.now(JST) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+    if folder_id:
+        if not alter_log or not daily_journal:
+            y_fid = await chat_service.drive_service.find_file(service, folder_id, f"{yesterday_str}.md")
+            if y_fid:
+                try:
+                    y_content = await chat_service.drive_service.read_text_file(service, y_fid)
+                    if not alter_log:
+                        alter_log = extract_alter_log(y_content)
+                        if alter_log: alter_log = f"【昨日の分析】\n{alter_log}"
+                    if not daily_journal:
+                        dj = extract_section(y_content, "## 📔 Daily Journal")
+                        if dj: daily_journal = f"【昨日のジャーナル】\n{dj}"
+                    if not next_actions:
+                        na = extract_section(y_content, "## 🚀 Next Actions")
+                        if na: next_actions = na
+                except Exception as e:
+                    logging.debug(f"yesterday content fetch failed: {e}")
 
     if not alter_log:
         alter_log = "本日の観察ログはまだ生成されていません。"
@@ -418,7 +443,10 @@ async def dashboard():
     return {
         "tasks": tasks, "alter_log": alter_log, "date": display_date, "g_calendar": g_calendar,
         "google_tasks_work": google_tasks_work, "google_tasks_private": google_tasks_private,
-        "habits": habits, "weather": weather_data, "news": news, "sleep": sleep_stats
+        "habits": habits, "weather": weather_data, "news": news, "sleep": sleep_stats,
+        "daily_journal": daily_journal,
+        "next_actions": next_actions,
+        "mit": mit_items,
     }
 
 class TaskActionRequest(BaseModel):
@@ -682,6 +710,19 @@ async def get_habits():
         await habit_cog._save_data(data)
 
     today_logs = data.get("logs", {}).get(today_str, [])
+    today_date = datetime.datetime.now(JST).date()
+
+    def _is_due_today(habit_data: dict, h_id: str) -> bool:
+        freq = habit_data.get("frequency_days", 1)
+        if freq <= 1:
+            return True
+        # 直近の完了日を探す
+        for i in range(1, 90):
+            d = (today_date - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            if h_id in data.get("logs", {}).get(d, []):
+                days_since = i
+                return days_since >= freq
+        return True  # 一度も完了していなければ今日が対象
 
     # Google Tasks の順序を維持してレスポンスを組み立てる
     habits_list = []
@@ -690,12 +731,15 @@ async def get_habits():
         matching = next((h for h in data["habits"] if h["name"].lower() == name.lower()), None)
         if matching:
             m = _meta(name)
+            freq = matching.get("frequency_days", 1)
+            due_today = _is_due_today(matching, matching["id"])
             habits_list.append({
                 "id": matching["id"],
                 "name": matching["name"],
-                "frequency_days": matching.get("frequency_days", 1),
+                "frequency_days": freq,
                 "trigger": m["trigger"],
                 "task_id": m["task_id"],
+                "due_today": due_today,
             })
             streaks[matching["id"]] = habit_cog._get_habit_stats(data, matching["id"], today_str)
 

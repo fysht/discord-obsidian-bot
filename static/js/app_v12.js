@@ -528,7 +528,52 @@ async function loadDashboard() {
         
         const diaryEl = $('#dash-alter-log');
         if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
-        
+
+        // Daily Journal
+        const journalEl = $('#dash-daily-journal');
+        if (journalEl) {
+            journalEl.innerHTML = data.daily_journal
+                ? escapeHtml(data.daily_journal).replace(/\n/g, '<br>')
+                : '<div class="loading-placeholder">Daily Journalはまだ生成されていません。</div>';
+        }
+
+        // Next Actions
+        const naEl = $('#dash-next-actions');
+        if (naEl) {
+            if (data.next_actions && data.next_actions.trim()) {
+                const lines = data.next_actions.split('\n').filter(l => l.trim());
+                naEl.innerHTML = lines.map(line => {
+                    const clean = line.replace(/^-\s*/, '').trim();
+                    const listMatch = clean.match(/^\[(.+?)\]\s*(.*)/);
+                    if (listMatch) {
+                        return `<div class="list-item" style="gap:8px;">
+                            <span class="na-list-badge">${escapeHtml(listMatch[1])}</span>
+                            <span>${escapeHtml(listMatch[2])}</span>
+                        </div>`;
+                    }
+                    return `<div class="list-item">${escapeHtml(clean)}</div>`;
+                }).join('');
+            } else {
+                naEl.innerHTML = '<div class="loading-placeholder">Next Actionsはまだ生成されていません。</div>';
+            }
+        }
+
+        // MIT バナー
+        const mitBanner = $('#mit-banner');
+        const mitItemsEl = $('#mit-banner-items');
+        if (mitBanner && mitItemsEl) {
+            if (data.mit && data.mit.length > 0) {
+                mitItemsEl.innerHTML = data.mit.map(item => {
+                    const done = item.startsWith('[x]') || item.startsWith('[X]');
+                    const text = item.replace(/^\[[ xX]\]\s*/, '').trim();
+                    return `<div class="mit-banner-item ${done ? 'done' : ''}">${escapeHtml(text)}</div>`;
+                }).join('');
+                mitBanner.classList.remove('hidden');
+            } else {
+                mitBanner.classList.add('hidden');
+            }
+        }
+
         // 「書籍＆ナレッジ」のテキストを「書籍」に置換
         document.querySelectorAll('.section-title').forEach(el => {
             if(el.textContent.includes('書籍＆ナレッジ')) {
@@ -2162,6 +2207,8 @@ async function loadHabits() {
 
         container.innerHTML = data.habits.map(h => {
             const isDone = data.today_done.includes(h.id);
+            const dueToday = h.due_today !== false; // デフォルトtrue
+            const freq = h.frequency_days || 1;
             const streakText = (data.streaks && data.streaks[h.id]) || '';
             const streakMatch = streakText.match(/(\d+)/);
             const streakNum = streakMatch ? parseInt(streakMatch[1]) : 0;
@@ -2178,11 +2225,19 @@ async function loadHabits() {
                 ? `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '${escapeHtml(trigger)}')">⏰ ${escapeHtml(trigger)}</span>`
                 : `<button class="habit-trigger-add" title="いつやるかを設定" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '')">＋いつ</button>`;
 
+            let freqChip = '';
+            if (freq > 1) {
+                const freqLabel = freq === 7 ? '週1回' : `${freq}日に1回`;
+                const notDueStyle = !dueToday ? 'color:var(--text-muted);' : 'color:var(--accent);';
+                freqChip = `<span style="font-size:0.68rem; padding:1px 5px; border-radius:3px; background:rgba(255,255,255,0.06); ${notDueStyle}">${freqLabel}${!dueToday ? ' (今日はお休み)' : ''}</span>`;
+            }
+
+            const dimmed = !dueToday && !isDone;
             return `
-                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}">
-                    <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone ? 'disabled' : ''}>✔</button>
+                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}" style="${dimmed ? 'opacity:0.45;' : ''}">
+                    <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone || !dueToday ? 'disabled' : ''}>✔</button>
                     <div class="habit-name-wrap" style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0;">
-                        <div class="habit-name">${escapeHtml(h.name)}</div>
+                        <div class="habit-name">${escapeHtml(h.name)}${freqChip ? ' ' + freqChip : ''}</div>
                         <div class="habit-trigger-row">${triggerChip}</div>
                     </div>
                     ${streakBadge}

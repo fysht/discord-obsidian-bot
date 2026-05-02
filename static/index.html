@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=36">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=37">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 </head>
@@ -84,6 +84,11 @@
         <main class="content-area">
             <!-- ========== CHAT TAB ========== -->
             <div id="tab-chat" class="tab-pane active">
+                <!-- MIT バナー（今日のMITが設定されている場合に表示） -->
+                <div id="mit-banner" class="mit-banner hidden">
+                    <div class="mit-banner-label">🎯 Today's MIT</div>
+                    <div id="mit-banner-items" class="mit-banner-items"></div>
+                </div>
                 <div id="chat-messages" class="chat-messages">
                     <div class="chat-welcome">
                         <h2>こんにちは。</h2>
@@ -257,6 +262,20 @@
                             <span class="card-title">観察日記</span>
                         </div>
                         <div id="dash-alter-log" class="card-body diary-content"></div>
+                    </div>
+                    <div class="card journal-card">
+                        <div class="card-header">
+                            <span class="card-icon">📔</span>
+                            <span class="card-title">Daily Journal</span>
+                        </div>
+                        <div id="dash-daily-journal" class="card-body diary-content"></div>
+                    </div>
+                    <div class="card next-actions-card">
+                        <div class="card-header">
+                            <span class="card-icon">🚀</span>
+                            <span class="card-title">Next Actions</span>
+                        </div>
+                        <div id="dash-next-actions" class="card-body list-body"></div>
                     </div>
                     <div class="card maps-card">
                         <div class="card-header">
@@ -820,6 +839,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=38"></script>
+    <script src="/static/js/app_v12.js?v=39"></script>
 </body>
 </html>
