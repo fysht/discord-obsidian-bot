@@ -386,9 +386,12 @@ async def dashboard():
         raw_news = await (bot.info_service.get_news(limit=5) if hasattr(bot, "info_service") else InfoService().get_news(limit=5))
         news = []
         for n in raw_news:
-            parts = n.split('\n')
-            if len(parts) >= 2: news.append({"title": parts[0], "link": parts[1]})
-            else: news.append({"title": n, "link": "#"})
+            if isinstance(n, dict):
+                news.append({"title": n.get("title", ""), "link": n.get("link", "#")})
+            else:
+                parts = str(n).split('\n')
+                if len(parts) >= 2: news.append({"title": parts[0], "link": parts[1]})
+                else: news.append({"title": str(n), "link": "#"})
     except Exception:
         weather_data = {"summary": "取得失敗"}
         news = []
@@ -882,6 +885,7 @@ class LinkUpdateRequest(BaseModel):
     linked_note_url: str = ""
     type: str = ""
     add_to_calendar: bool = False
+    tags: str = ""
 
 @router.put("/links/{link_id}", dependencies=[Depends(verify_api_key)])
 async def update_link(link_id: int, req: LinkUpdateRequest):
@@ -895,7 +899,7 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
     new_type = req.type or link["type"]
     
     # DB更新
-    await update_link_details(link_id, new_title, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, new_type)
+    await update_link_details(link_id, new_title, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, new_type, req.tags)
 
     # Obsidian更新 (Drive)
     chat_service = getattr(app.state, "chat_service", None)
@@ -1834,3 +1838,48 @@ async def zerosec_log_start(req: ZTThemeRequest):
     except Exception as e:
         logging.debug(f"zt start log: {e}")
     return {"status": "success"}
+
+
+# ===== ロケーションログ 手動同期 =====
+
+class LocationSyncRequest(BaseModel):
+    date: str = ""
+
+
+@router.post("/location_log/sync", dependencies=[Depends(verify_api_key)])
+async def location_log_sync(req: LocationSyncRequest):
+    """指定日付のロケーションログをGoogle DriveのTimeline JSONから同期する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    cog = bot.get_cog("LocationLogCog")
+    if not cog:
+        raise HTTPException(status_code=503, detail="LocationLogCogが利用できません。")
+    target_date = (req.date or "").strip()
+    if not target_date:
+        target_date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    result = await cog.perform_manual_sync(target_date)
+    return {"status": "success", "message": result}
+
+
+# ===== 天気場所 =====
+
+@router.get("/weather", dependencies=[Depends(verify_api_key)])
+async def get_weather_data(location: str = ""):
+    """指定場所の天気データを返す。locationはYahoo!天気コード (例: 33/6710)。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    info_svc = getattr(bot, "info_service", None) if bot else None
+    if not info_svc:
+        info_svc = InfoService()
+    loc = location.strip() or None
+    data = await info_svc.get_weather(location=loc)
+    return data
+
+
+@router.get("/weather/locations")
+async def get_weather_locations():
+    """利用可能な天気の場所一覧を返す。"""
+    from services.info_service import YAHOO_WEATHER_LOCATIONS
+    return {"locations": [{"code": k, "name": v} for k, v in YAHOO_WEATHER_LOCATIONS.items()]}

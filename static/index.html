@@ -61,6 +61,9 @@
                         <span class="slider round"></span>
                     </label>
                 </div>
+                <button class="icon-btn" id="starred-btn" title="お気に入りメッセージ" onclick="openStarredOverlay()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                </button>
                 <button class="icon-btn" id="search-btn" title="メッセージ検索" onclick="openSearchOverlay()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 </button>
@@ -131,7 +134,8 @@
                     <div class="card weather-card">
                         <div class="card-header">
                             <span class="card-icon">☁️</span>
-                            <span class="card-title">天気 (岡山南部)</span>
+                            <span class="card-title" id="weather-card-title">天気</span>
+                            <button class="mini-link" onclick="openWeatherLocationPicker()" title="場所を変更">📍</button>
                         </div>
                         <div id="dash-weather" class="card-body"></div>
                     </div>
@@ -260,9 +264,16 @@
                             <span class="card-title">ロケーションログ</span>
                         </div>
                         <div class="card-body">
-                            <p class="mb-10 text-secondary" style="font-size: 0.85rem;">今日の足取りを記録しましたか？</p>
-                            <div style="display:flex; gap:8px;">
-                                <a href="https://www.google.com/maps/timeline" target="_blank" class="modal-btn submit" style="text-decoration: none; text-align: center; flex:1; font-size:0.8rem;">タイムライン確認</a>
+                            <p style="font-size:0.82rem; color:var(--text-secondary); margin-bottom:10px;">
+                                Google DriveのTimelineフォルダにJSONを置いて同期してください。
+                            </p>
+                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+                                <input type="date" id="location-sync-date" class="modern-input" style="flex:1; padding:8px; font-size:0.85rem;">
+                                <button class="modal-btn submit" style="flex:1; font-size:0.8rem;" onclick="triggerLocationSync()">📍 同期する</button>
+                            </div>
+                            <div id="location-sync-result" style="font-size:0.8rem; color:var(--text-secondary); min-height:1.2em;"></div>
+                            <div style="margin-top:8px;">
+                                <a href="https://www.google.com/maps/timeline" target="_blank" class="mini-link">タイムライン確認</a>
                             </div>
                         </div>
                     </div>
@@ -366,30 +377,31 @@
             <div style="font-size:0.8rem; color:var(--accent); margin-bottom:16px;" id="link-modal-type-badge"></div>
             
             <div class="modal-list" style="max-height: 50vh; padding-right: 5px; gap: 12px; margin-top:0;">
-                <div id="field-purpose" style="display:flex; flex-direction:column; gap:4px;">
-                    <label style="font-size:0.8rem; color:var(--text-secondary);">目的/鑑賞ステータス</label>
-                    <input type="text" id="link-purpose-input" class="modern-input" style="padding:10px;" placeholder="目的を入力...">
+                <div style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">タグ（カンマ区切りで複数入力）</label>
+                    <input type="text" id="link-tags-input" class="modern-input" style="padding:10px;" placeholder="後で読む, 重要, 仕事...">
+                    <div id="link-tags-preview" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;"></div>
                 </div>
 
-                <div id="field-date" style="display:none; flex-direction:column; gap:4px;">
-                    <label style="font-size:0.8rem; color:var(--text-secondary);">日付 (カレンダー連動)</label>
+                <div style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">日付（カレンダー連動）</label>
                     <div style="display:flex; gap:8px; align-items:center;">
                         <input type="date" id="link-date-input" class="modern-input" style="padding:10px; flex:1;">
                         <label style="font-size:0.8rem; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="link-calendar-check" checked> 予定に追加</label>
                     </div>
                 </div>
 
-                <div id="field-url" style="display:none; flex-direction:column; gap:4px;">
-                    <label style="font-size:0.8rem; color:var(--text-secondary);">関連ノートURL (NotebookLM等)</label>
+                <div style="display:flex; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">関連ノートURL（NotebookLM等）</label>
                     <input type="text" id="link-note-url-input" class="modern-input" style="padding:10px;" placeholder="https://...">
                 </div>
 
-                <div id="field-summary" style="display:flex; flex-direction:column; gap:4px;">
+                <div style="display:flex; flex-direction:column; gap:4px;">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">要約 / 読書ノート</label>
                     <textarea id="link-summary-input" class="modern-input" style="padding:10px; height:80px; resize:vertical;" placeholder="AIの要約やノートをコピペ..."></textarea>
                 </div>
 
-                <div id="field-memo" style="display:flex; flex-direction:column; gap:4px;">
+                <div style="display:flex; flex-direction:column; gap:4px;">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">メモ</label>
                     <textarea id="link-memo-input" class="modern-input" style="padding:10px; height:60px; resize:vertical;" placeholder="個人的なメモ..."></textarea>
                 </div>
@@ -681,6 +693,37 @@
             <div class="modal-actions">
                 <button class="modal-btn cancel" onclick="closeMsgDeleteConfirm()">キャンセル</button>
                 <button class="modal-btn delete" onclick="confirmMsgDelete()">削除</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== STARRED MESSAGES OVERLAY ========== -->
+    <div id="starred-overlay" class="modal-overlay hidden" onclick="closeStarredOverlay(event)">
+        <div class="search-panel" onclick="event.stopPropagation()">
+            <div class="search-input-row">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                <span style="flex:1; font-size:0.95rem; font-weight:600;">お気に入りメッセージ</span>
+                <button class="icon-btn" onclick="closeStarredOverlay()" title="閉じる">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="search-results" id="starred-results">
+                <p class="search-hint">読み込み中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== WEATHER LOCATION PICKER ========== -->
+    <div id="weather-location-overlay" class="modal-overlay hidden" onclick="closeWeatherLocationPicker(event)">
+        <div class="search-panel" onclick="event.stopPropagation()">
+            <div class="search-input-row">
+                <span style="flex:1; font-size:0.95rem; font-weight:600;">📍 天気の場所を選択</span>
+                <button class="icon-btn" onclick="closeWeatherLocationPicker()" title="閉じる">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div class="search-results" id="weather-location-list">
+                <p class="search-hint">読み込み中...</p>
             </div>
         </div>
     </div>

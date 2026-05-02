@@ -186,6 +186,12 @@ const chatForm = $('#chat-form');
 let _pendingReplyToId = null;
 let _pendingReplyContent = null;
 
+// iOS Safari fix: 送信ボタンをタップするとtextareaがblurしてキーボードが閉じ、
+// その後のsubmitがキャンセルされる問題を防ぐため pointerdown でblurを抑止する
+if (sendBtn) {
+    sendBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); }, { passive: false });
+}
+
 if (chatForm) {
     chatForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -363,47 +369,92 @@ window.executeAction = async function(encodedPayload, btn) {
     }
 };
 
+function renderWeather(w, weatherEl) {
+    if (!weatherEl) return;
+    let html = `<div class="weather-summary">${escapeHtml(w.summary || '')}</div>`;
+    if (w.max_temp || w.min_temp) {
+        html += `<div class="weather-temps">
+            <span class="temp-max">↑${w.max_temp}℃</span>
+            <span class="temp-min">↓${w.min_temp}℃</span>
+        </div>`;
+    }
+    // 3日間サマリー行
+    if (w.daily && w.daily.length > 0) {
+        html += `<div style="display:flex; gap:6px; margin:10px 0 4px; overflow-x:auto; padding-bottom:4px;">`;
+        w.daily.forEach(d => {
+            html += `
+                <div style="flex:1; min-width:60px; display:flex; flex-direction:column; align-items:center; gap:3px; background:rgba(255,255,255,0.05); border-radius:8px; padding:8px 4px; font-size:0.75rem;">
+                    <div style="font-weight:700; color:var(--text-secondary);">${escapeHtml(d.day)}</div>
+                    <div style="font-size:1.4rem;">${d.icon || ''}</div>
+                    <div style="font-size:0.7rem; color:var(--text-secondary);">${escapeHtml(d.weather || '')}</div>
+                    <div style="display:flex; gap:4px;">
+                        <span style="color:#ff6b6b;">↑${d.max_temp !== undefined ? d.max_temp : '--'}</span>
+                        <span style="color:#74c0fc;">↓${d.min_temp !== undefined ? d.min_temp : '--'}</span>
+                    </div>
+                    ${d.pop ? `<div style="color:var(--text-muted);">☂${escapeHtml(d.pop)}</div>` : ''}
+                </div>
+            `;
+        });
+        html += `</div>`;
+    }
+    // 時間別
+    const slots = w.hourly || w.slots || [];
+    if (slots.length > 0) {
+        html += `<div class="weather-slots">`;
+        let lastDay = '';
+        slots.forEach(s => {
+            if (s.day && s.day !== lastDay) {
+                html += `<div class="weather-day-label">${escapeHtml(s.day)}</div>`;
+                lastDay = s.day;
+            }
+            html += `
+                <div class="weather-slot">
+                    <div class="ws-time">${escapeHtml(s.time || '')}</div>
+                    <div class="ws-icon">${s.icon || ''}</div>
+                    <div class="ws-weather">${escapeHtml(s.weather || '')}</div>
+                    <div class="ws-pop">${escapeHtml(s.pop || '')}</div>
+                    <div class="ws-temp">${escapeHtml(String(s.temp ?? ''))}℃</div>
+                </div>
+            `;
+        });
+        html += `</div>`;
+    }
+    weatherEl.innerHTML = html;
+}
+
 async function loadDashboard() {
     if (!apiKey) return;
     try {
         const data = await apiFetch('/api/dashboard');
-        
+
         const dateLabel = $('#dash-date-label');
         if (dateLabel) dateLabel.textContent = data.date || '---';
 
         const weatherEl = $('#dash-weather');
         if (weatherEl) {
             if (data.weather && data.weather.summary !== "取得失敗") {
-                const w = data.weather;
-                let html = `<div class="weather-summary">${escapeHtml(w.summary)}</div>`;
-                if (w.max_temp || w.min_temp) {
-                    html += `<div class="weather-temps">
-                        <span class="temp-max">↑${w.max_temp}℃</span>
-                        <span class="temp-min">↓${w.min_temp}℃</span>
-                    </div>`;
+                renderWeather(data.weather, weatherEl);
+                // ロケーション名を天気カードタイトルに反映
+                if (data.weather.location_name) {
+                    const titleEl = $('#weather-card-title');
+                    if (titleEl) titleEl.textContent = `天気 (${data.weather.location_name})`;
                 }
-                if (w.slots && w.slots.length > 0) {
-                    html += `<div class="weather-slots">`;
-                    let lastDay = '';
-                    w.slots.forEach(s => {
-                        if (s.day !== lastDay) {
-                            html += `<div class="weather-day-label">${escapeHtml(s.day)}</div>`;
-                            lastDay = s.day;
+            } else {
+                weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした</div>`;
+            }
+            // カスタムロケーションが設定されていれば上書き取得
+            const customLoc = localStorage.getItem('mng_weather_location');
+            if (customLoc) {
+                apiFetch(`/api/weather?location=${encodeURIComponent(customLoc)}`).then(wd => {
+                    if (wd && wd.summary !== '取得失敗') {
+                        renderWeather(wd, weatherEl);
+                        if (wd.location_name) {
+                            const titleEl = $('#weather-card-title');
+                            if (titleEl) titleEl.textContent = `天気 (${wd.location_name})`;
                         }
-                        html += `
-                            <div class="weather-slot">
-                                <div class="ws-time">${escapeHtml(s.time)}</div>
-                                <div class="ws-icon">${s.icon}</div>
-                                <div class="ws-weather">${escapeHtml(s.weather)}</div>
-                                <div class="ws-pop">${escapeHtml(s.pop)}</div>
-                                <div class="ws-temp">${escapeHtml(s.temp)}℃</div>
-                            </div>
-                        `;
-                    });
-                    html += `</div>`;
-                }
-                weatherEl.innerHTML = html;
-            } else weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした</div>`;
+                    }
+                }).catch(() => {});
+            }
         }
 
         const newsEl = $('#dash-news');
@@ -1598,8 +1649,8 @@ window.loadStockedLinks = async () => {
         const applyPurpose = (arr, type) => {
             const f = linkPurposeFilters[type];
             if (!f) return arr;
-            if (f === '__none__') return arr.filter(l => !l.purpose || !l.purpose.trim());
-            return arr.filter(l => (l.purpose || '').trim() === f);
+            if (f === '__none__') return arr.filter(l => !l.tags || !l.tags.trim());
+            return arr.filter(l => (l.tags || '').split(',').map(t => t.trim()).includes(f));
         };
 
         const webLinks = applyPurpose(allByType.web, 'web').sort(getSortFn('web'));
@@ -1613,19 +1664,21 @@ window.loadStockedLinks = async () => {
             const counts = new Map();
             let noneCount = 0;
             for (const l of arr) {
-                const p = (l.purpose || '').trim();
-                if (!p) { noneCount++; continue; }
-                counts.set(p, (counts.get(p) || 0) + 1);
+                const tags = (l.tags || '').trim();
+                if (!tags) { noneCount++; continue; }
+                for (const tag of tags.split(',').map(t => t.trim()).filter(Boolean)) {
+                    counts.set(tag, (counts.get(tag) || 0) + 1);
+                }
             }
             const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
             const cur = linkPurposeFilters[type];
-            const opts = [`<option value="" ${cur===''?'selected':''}>🎯 すべての目的 (${arr.length})</option>`];
-            for (const [purpose, cnt] of sorted) {
-                const safe = escapeHtml(purpose);
-                opts.push(`<option value="${safe}" ${cur===purpose?'selected':''}>${safe} (${cnt})</option>`);
+            const opts = [`<option value="" ${cur===''?'selected':''}>🏷️ すべてのタグ (${arr.length})</option>`];
+            for (const [tag, cnt] of sorted) {
+                const safe = escapeHtml(tag);
+                opts.push(`<option value="${safe}" ${cur===tag?'selected':''}>${safe} (${cnt})</option>`);
             }
             if (noneCount > 0) {
-                opts.push(`<option value="__none__" ${cur==='__none__'?'selected':''}>(目的なし) (${noneCount})</option>`);
+                opts.push(`<option value="__none__" ${cur==='__none__'?'selected':''}>(タグなし) (${noneCount})</option>`);
             }
             return opts.join('');
         };
@@ -1646,7 +1699,7 @@ window.loadStockedLinks = async () => {
 
                 const purposeSelect = document.createElement('select');
                 purposeSelect.dataset.role = 'purpose-filter';
-                purposeSelect.title = '目的で絞り込み';
+                purposeSelect.title = 'タグで絞り込み';
                 purposeSelect.onchange = (e) => changeLinkPurposeFilter(type, e.target.value);
 
                 const sortSelect = document.createElement('select');
@@ -1705,7 +1758,11 @@ window.loadStockedLinks = async () => {
                     : `<span class="stocked-link-title">${escapeHtml(titleText)}</span>`;
 
                 const chips = [];
-                if (lk.purpose) chips.push(`<span class="stocked-link-chip purpose">🎯 ${escapeHtml(lk.purpose)}</span>`);
+                if (lk.tags) {
+                    lk.tags.split(',').map(t => t.trim()).filter(Boolean).forEach(tag => {
+                        chips.push(`<span class="stocked-link-chip purpose">🏷️ ${escapeHtml(tag)}</span>`);
+                    });
+                }
                 if (lk.target_date) chips.push(`<span class="stocked-link-chip date">📅 ${escapeHtml(lk.target_date)}</span>`);
                 chips.push(`<span class="stocked-link-chip added">${dateStr}</span>`);
 
@@ -1790,30 +1847,20 @@ window.openLinkDetailsModal = (lk) => {
         </select>
     `;
 
-    // フィールド可視性は LINK_FIELD_VISIBILITY config に集約
-    if (typeof applyLinkFieldVisibility === 'function') {
-        applyLinkFieldVisibility(lk.type);
-    }
-    // type 変更時にも追従
-    const typeSel = $('#link-type-select');
-    if (typeSel) {
-        typeSel.addEventListener('change', () => {
-            if (typeof applyLinkFieldVisibility === 'function') {
-                applyLinkFieldVisibility(typeSel.value);
-            }
-        });
+    // タグ入力欄を設定（既存 purpose は後方互換フォールバック）
+    const tagsInput = $('#link-tags-input');
+    const tagsPreview = $('#link-tags-preview');
+    if (tagsInput) {
+        tagsInput.value = lk.tags || lk.purpose || '';
+        const updatePreview = () => {
+            if (!tagsPreview) return;
+            const tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
+            tagsPreview.innerHTML = tags.map(t => `<span style="background:rgba(0,186,152,0.15); color:var(--accent); border-radius:12px; padding:2px 10px; font-size:0.75rem;">🏷️ ${escapeHtml(t)}</span>`).join('');
+        };
+        updatePreview();
+        tagsInput.oninput = updatePreview;
     }
 
-    if (!$('#purpose-options')) {
-        const dl = document.createElement('datalist');
-        dl.id = 'purpose-options';
-        dl.innerHTML = `<option value="後で読む/見る"><option value="今週中に実行"><option value="鑑賞済み/完了"><option value="参考資料"><option value="作ってみたい">`;
-        document.body.appendChild(dl);
-    }
-    const pInput = $('#link-purpose-input');
-    if (pInput) pInput.setAttribute('list', 'purpose-options');
-
-    $('#link-purpose-input').value = lk.purpose || '';
     $('#link-date-input').value = lk.target_date || '';
     $('#link-note-url-input').value = lk.linked_note_url || '';
     $('#link-summary-input').value = lk.summary || '';
@@ -1837,7 +1884,7 @@ $('#link-save-btn')?.addEventListener('click', async () => {
     const reqData = {
         title: $('#link-title-input').value,
         type: $('#link-type-select').value,
-        purpose: $('#link-purpose-input').value,
+        tags: ($('#link-tags-input')?.value || '').trim(),
         summary: $('#link-summary-input').value,
         memo: $('#link-memo-input').value,
         target_date: $('#link-date-input').value,
@@ -2186,7 +2233,7 @@ async function loadSleepTrend() {
         const barsHtml = data.trend.map(d => {
             const score = d.score || 0;
             const barHeight = score > 0 ? Math.max(4, Math.round((score / 100) * 56)) : 4;
-            const color = score >= 80 ? 'var(--primary)' : score >= 60 ? '#ffaa00' : score > 0 ? '#ff5555' : 'rgba(255,255,255,0.1)';
+            const color = score >= 80 ? 'var(--accent)' : score >= 60 ? '#ffaa00' : score > 0 ? '#ff5555' : 'rgba(255,255,255,0.1)';
             const durationMin = d.duration || 0;
             const dh = Math.floor(durationMin / 60);
             const dm = durationMin % 60;
@@ -2845,6 +2892,103 @@ function closeSearchOverlay(e) {
     if (results) results.innerHTML = '<p class="search-hint">2文字以上で検索開始</p>';
 }
 
+// ----- お気に入りメッセージ オーバーレイ -----
+function openStarredOverlay() {
+    document.getElementById('starred-overlay')?.classList.remove('hidden');
+    loadStarredMessages();
+}
+
+function closeStarredOverlay(e) {
+    if (e && e.target.closest && e.target.closest('.search-panel')) return;
+    document.getElementById('starred-overlay')?.classList.add('hidden');
+}
+
+async function loadStarredMessages() {
+    const results = $('#starred-results');
+    if (!results) return;
+    results.innerHTML = '<p class="search-hint">読み込み中...</p>';
+    try {
+        const data = await apiFetch('/api/messages/starred');
+        const list = data.messages || [];
+        if (!list.length) {
+            results.innerHTML = '<p class="search-empty">お気に入りメッセージがありません</p>';
+            return;
+        }
+        results.innerHTML = list.map(m => {
+            const dt = new Date(m.timestamp);
+            const tStr = `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
+            const roleLabel = m.role === 'assistant' ? 'AI' : 'YOU';
+            const preview = m.content.length > 160 ? m.content.slice(0, 160) + '...' : m.content;
+            return `<div class="search-result-item" onclick="jumpToMessage(${m.id}); closeStarredOverlay();">
+                <div class="search-result-role">${roleLabel}</div>
+                <div class="search-result-snippet">${escapeHtml(preview)}</div>
+                <div class="search-result-time">⭐ ${tStr}</div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        results.innerHTML = '<p class="search-empty">取得に失敗しました</p>';
+    }
+}
+
+// ----- 天気場所選択 -----
+async function openWeatherLocationPicker() {
+    document.getElementById('weather-location-overlay')?.classList.remove('hidden');
+    const list = $('#weather-location-list');
+    if (!list) return;
+    list.innerHTML = '<p class="search-hint">読み込み中...</p>';
+    try {
+        const data = await apiFetch('/api/weather/locations');
+        const current = localStorage.getItem('mng_weather_location') || '';
+        list.innerHTML = (data.locations || []).map(loc => `
+            <div class="search-result-item" style="${current === loc.code ? 'background:rgba(0,186,152,0.12);' : ''}" onclick="selectWeatherLocation('${loc.code}', '${escapeHtml(loc.name)}')">
+                <div class="search-result-role">📍</div>
+                <div class="search-result-snippet">${escapeHtml(loc.name)}</div>
+                ${current === loc.code ? '<div class="search-result-time">✓ 選択中</div>' : ''}
+            </div>
+        `).join('');
+    } catch (e) {
+        list.innerHTML = '<p class="search-empty">場所情報の取得に失敗しました</p>';
+    }
+}
+
+function closeWeatherLocationPicker(e) {
+    if (e && e.target.closest && e.target.closest('.search-panel')) return;
+    document.getElementById('weather-location-overlay')?.classList.add('hidden');
+}
+
+async function selectWeatherLocation(code, name) {
+    localStorage.setItem('mng_weather_location', code);
+    closeWeatherLocationPicker();
+    showToast(`場所を「${name}」に変更しました`);
+    const weatherEl = $('#dash-weather');
+    if (weatherEl) weatherEl.innerHTML = '<div class="loading-placeholder">天気を取得中...</div>';
+    const titleEl = $('#weather-card-title');
+    if (titleEl) titleEl.textContent = `天気 (${name})`;
+    try {
+        const wd = await apiFetch(`/api/weather?location=${encodeURIComponent(code)}`);
+        if (wd && wd.summary !== '取得失敗') renderWeather(wd, weatherEl);
+    } catch (e) {
+        if (weatherEl) weatherEl.innerHTML = '<div class="loading-placeholder">気象データを取得できませんでした</div>';
+    }
+}
+
+// ----- ロケーションログ手動同期 -----
+window.triggerLocationSync = async () => {
+    const dateInput = $('#location-sync-date');
+    const resultEl = $('#location-sync-result');
+    const date = dateInput?.value || '';
+    if (resultEl) resultEl.textContent = '同期中...';
+    try {
+        const res = await apiFetch('/api/location_log/sync', {
+            method: 'POST',
+            body: JSON.stringify({ date })
+        });
+        if (resultEl) resultEl.textContent = res.message || '同期完了';
+    } catch (e) {
+        if (resultEl) resultEl.textContent = '同期に失敗しました';
+    }
+};
+
 let _searchDebounce = null;
 $('#search-input')?.addEventListener('input', (e) => {
     clearTimeout(_searchDebounce);
@@ -2896,22 +3040,9 @@ function jumpToMessage(id) {
     }
 }
 
-// ----- リンク詳細フィールド可視性 (Phase 2-6) -----
-const LINK_FIELD_VISIBILITY = {
-    web:    { purpose: true,  date: false, url: true,  summary: true,  memo: true },
-    youtube:{ purpose: true,  date: false, url: false, summary: true,  memo: true },
-    recipe: { purpose: false, date: false, url: false, summary: false, memo: true },
-    map:    { purpose: true,  date: true,  url: false, summary: false, memo: true },
-    book:   { purpose: true,  date: false, url: true,  summary: true,  memo: true },
-};
-
-function applyLinkFieldVisibility(linkType) {
-    const cfg = LINK_FIELD_VISIBILITY[linkType] || LINK_FIELD_VISIBILITY.web;
-    Object.entries(cfg).forEach(([k, v]) => {
-        const el = document.getElementById(`field-${k}`);
-        if (el) el.style.display = v ? 'flex' : 'none';
-    });
-}
+// ----- リンク詳細フィールド可視性 (全フィールド常時表示に統一済み) -----
+// HTMLモーダルからtype別の表示切り替えを廃止したため no-op を維持
+function applyLinkFieldVisibility(_linkType) { /* no-op */ }
 
 // URL 欄のリアルタイムバリデーション
 $('#link-note-url-input')?.addEventListener('input', (e) => {
