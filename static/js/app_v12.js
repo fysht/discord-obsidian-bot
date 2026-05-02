@@ -922,6 +922,15 @@ window.onBreakdownSourceChange = async () => {
     }
 };
 
+window.onBreakdownExistingChange = (sel) => {
+    if (!sel.value) return;
+    try {
+        const parsed = JSON.parse(sel.value);
+        const listSelect = $('#breakdown-list-name');
+        if (listSelect && parsed.list_name) listSelect.value = parsed.list_name;
+    } catch (e) {}
+};
+
 let currentBreakdownSubtasks = [];
 let currentBreakdownParent = '';
 window.generateBreakdown = async () => {
