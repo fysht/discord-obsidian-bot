@@ -277,6 +277,14 @@
                         </div>
                         <div id="dash-next-actions" class="card-body list-body"></div>
                     </div>
+                    <div class="card phrase-card">
+                        <div class="card-header">
+                            <span class="card-icon">📚</span>
+                            <span class="card-title">英語フレーズ帳</span>
+                            <button class="mini-link" onclick="loadEnglishPhrases()">更新</button>
+                        </div>
+                        <div id="dash-english-phrases" class="card-body"></div>
+                    </div>
                     <div class="card maps-card">
                         <div class="card-header">
                             <span class="card-icon">📍</span>
@@ -705,6 +713,7 @@
             <button class="action-sheet-btn" onclick="msgActionCopy()">📋 コピー</button>
             <button class="action-sheet-btn" onclick="msgActionReply()">↩ 返信</button>
             <button class="action-sheet-btn" id="msg-action-star-btn" onclick="msgActionStar()">⭐ お気に入り</button>
+            <button class="action-sheet-btn" id="msg-action-phrase-btn" onclick="msgActionSavePhrase()">📚 フレーズを保存</button>
             <button class="action-sheet-btn danger" onclick="msgActionDelete()">🗑 削除</button>
             <button class="action-sheet-btn cancel" onclick="closeMsgActionSheet()">キャンセル</button>
         </div>

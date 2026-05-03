@@ -185,6 +185,17 @@ let isChatSending = false;
 const chatForm = $('#chat-form');
 let _pendingReplyToId = null;
 let _pendingReplyContent = null;
+let _isEnglishMode = false;
+
+// ENモードのチェックボックスを監視してフラグと視覚フィードバックを更新
+const _engCheckbox = $('#english-mode-checkbox');
+if (_engCheckbox) {
+    _engCheckbox.addEventListener('change', () => {
+        _isEnglishMode = _engCheckbox.checked;
+        const toggle = _engCheckbox.closest('.eng-mode-toggle');
+        if (toggle) toggle.style.opacity = _isEnglishMode ? '1' : '0.5';
+    });
+}
 
 // iOS Safari fix: 送信ボタンをタップするとtextareaがblurしてキーボードが閉じ、
 // その後のsubmitがキャンセルされる問題を防ぐため pointerdown でblurを抑止する
@@ -214,10 +225,12 @@ if (chatForm) {
         try {
             const data = await apiFetch('/api/chat', {
                 method: 'POST',
-                body: JSON.stringify({ message: msg, reply_to_id: replyTo }),
+                body: JSON.stringify({ message: msg, reply_to_id: replyTo, english_mode: _isEnglishMode }),
             });
             if (userEl && data.user_message_id) userEl.dataset.msgId = String(data.user_message_id);
             appendMsg('assistant', data.reply, null, { id: data.assistant_message_id });
+
+            if (_isEnglishMode) speakEnglishReply(data.reply);
 
             // AI応答後にダッシュボードをリロードして反映させる
             if (typeof loadDashboard === 'function') loadDashboard();
@@ -589,6 +602,7 @@ async function loadDashboard() {
         });
 
         loadStockedLinks();
+        loadEnglishPhrases();
 
     } catch (err) { console.error(err); }
 }
@@ -603,19 +617,8 @@ function renderTaskGroup(container, tasks, listName) {
     if (listName === 'プライベート') _currentPrivateTasks = tasks || [];
     if (listName === '習慣') _currentHabitTasks = tasks || [];
 
-    // 期限順ソート: 期限切れ → 今日 → 明日以降 → 期限なし
-    const sortByDue = (arr) => {
-        return [...arr].sort((a, b) => {
-            const dueA = a.due ? new Date(a.due) : null;
-            const dueB = b.due ? new Date(b.due) : null;
-            if (dueA && dueB) return dueA - dueB;
-            if (dueA && !dueB) return -1;
-            if (!dueA && dueB) return 1;
-            return 0;
-        });
-    };
-
-    const activeTasks = sortByDue((tasks || []).filter(t => !t.completed));
+    // Google Tasks APIの返却順（position順）をそのまま使用する
+    const activeTasks = (tasks || []).filter(t => !t.completed);
     const doneTasks = (tasks || []).filter(t => t.completed);
 
     if (!tasks || tasks.length === 0) {
@@ -906,13 +909,30 @@ window.runBriefing = async () => {
     showToast('ブリーフィングを生成中...');
     try {
         const data = await apiFetch('/api/briefing', { method: 'POST' });
-        appendMsg('assistant', data.reply);
+        const msgEl = appendMsg('assistant', data.reply);
+        if (data.type === 'morning' && msgEl) _injectBriefingTTS(msgEl, data.reply);
         showToast(data.type === 'morning' ? '朝のブリーフィングです' : '夜のレビューです');
     } catch (e) {
         console.error(e);
         showToast('ブリーフィングの生成に失敗しました', true);
     }
 };
+
+function _injectBriefingTTS(msgEl, rawText) {
+    // 「今日のワンフレーズ」セクションから英語フレーズを抽出してTTSボタンを追加
+    const match = rawText.match(/今日のワンフレーズ[^\n]*\n+([^\n]*[A-Za-z][^\n]*)/);
+    if (!match) return;
+    const phrase = match[1].replace(/^[「"「"*\s]+|[」"」"*\s]+$/g, '').trim();
+    if (!phrase || !/[A-Za-z]{3}/.test(phrase)) return;
+    const bubble = msgEl.querySelector('.msg-bubble');
+    if (!bubble) return;
+    const btn = document.createElement('button');
+    btn.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-top:8px;padding:5px 12px;border:1px solid rgba(0,186,152,0.4);border-radius:20px;background:rgba(0,186,152,0.08);color:var(--accent);font-size:0.8rem;cursor:pointer;';
+    btn.innerHTML = '🔊 今日のフレーズを聞く';
+    btn.onclick = () => speakText(phrase);
+    bubble.appendChild(document.createElement('br'));
+    bubble.appendChild(btn);
+}
 
 window.runTaskTriage = async (listName) => {
     showToast(`「${listName}」のタスクを整理中...`);
@@ -2147,6 +2167,39 @@ function notifyManager(content) {
     });
 }
 
+// ENモード：Manager's reply 部分を抽出して Web Speech API で読み上げ
+function speakEnglishReply(replyText) {
+    if (!('speechSynthesis' in window)) return;
+    // "🗣️ **Manager's reply:**\n> ..." の > から始まる行を抽出
+    const match = replyText.match(/Manager(?:'s|s) reply[:\*\s]*\n>(.*?)(?:\n\n|\n💬|$)/si);
+    const text = match ? match[1].replace(/^>?\s*/gm, '').trim() : '';
+    if (!text) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = 'en-US';
+    utter.rate = 0.9;
+    // 英語音声を優先して選択
+    const voices = window.speechSynthesis.getVoices();
+    const enVoice = voices.find(v => v.lang.startsWith('en') && !v.localService === false) ||
+                    voices.find(v => v.lang.startsWith('en'));
+    if (enVoice) utter.voice = enVoice;
+    window.speechSynthesis.speak(utter);
+}
+
+// 汎用TTS関数（フレーズ帳・ブリーフィングで共用）
+function speakText(text, lang = 'en-US') {
+    if (!('speechSynthesis' in window) || !text) return;
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = lang;
+    utter.rate = 0.9;
+    const voices = window.speechSynthesis.getVoices();
+    const voice = voices.find(v => v.lang.startsWith(lang.slice(0, 2)) && !v.localService === false)
+                || voices.find(v => v.lang.startsWith(lang.slice(0, 2)));
+    if (voice) utter.voice = voice;
+    window.speechSynthesis.speak(utter);
+}
+
 function initMain() {
     loadHistory();
     loadDashboard();
@@ -2859,10 +2912,17 @@ function _getLongPressText() {
 function openMsgActionSheet() {
     const sheet = document.getElementById('msg-action-sheet');
     const starBtn = document.getElementById('msg-action-star-btn');
-    if (starBtn && _longPressTarget) {
+    const phraseBtn = document.getElementById('msg-action-phrase-btn');
+    if (_longPressTarget) {
         const isStarred = _longPressTarget.classList.contains('starred');
-        starBtn.textContent = isStarred ? '⭐ お気に入り解除' : '⭐ お気に入り';
-        starBtn.classList.toggle('is-active', isStarred);
+        if (starBtn) {
+            starBtn.textContent = isStarred ? '⭐ お気に入り解除' : '⭐ お気に入り';
+            starBtn.classList.toggle('is-active', isStarred);
+        }
+        // フレーズ保存ボタンはアシスタントメッセージのみ表示
+        if (phraseBtn) {
+            phraseBtn.style.display = _longPressTarget.classList.contains('assistant') ? '' : 'none';
+        }
     }
     sheet?.classList.remove('hidden');
 }
@@ -2929,6 +2989,89 @@ async function msgActionDelete() {
         showToast('削除に失敗しました', true);
     }
     closeMsgActionSheet();
+}
+
+// ----- 英語フレーズ保存 -----
+async function msgActionSavePhrase() {
+    const text = _getLongPressText();
+    if (!text) { closeMsgActionSheet(); return; }
+
+    let phrase = '', translation = '';
+
+    // ENモード: Manager's reply パターン
+    const managerMatch = text.match(/Manager(?:'s|s) reply[^>]*>\s*([^\n]+)/i);
+    if (managerMatch) phrase = managerMatch[1].replace(/\*\*/g, '').trim();
+
+    // ブリーフィング: 今日のワンフレーズ パターン
+    if (!phrase) {
+        const bfMatch = text.match(/今日のワンフレーズ[^\n]*\n+([^\n]*[A-Za-z][^\n]*)/);
+        if (bfMatch) phrase = bfMatch[1].replace(/^[「"「"*\s]+|[」"」"*\s]+$/g, '').trim();
+    }
+    // 引用符内の英語
+    if (!phrase) {
+        const qMatch = text.match(/[「"「"]([A-Za-z][^「"「"」"」"]{4,})[」"」"]/);
+        if (qMatch) phrase = qMatch[1].trim();
+    }
+    // 最初の英語行
+    if (!phrase) {
+        const engLine = text.split('\n').find(l => /[A-Za-z]{3}/.test(l) && l.trim().length > 5);
+        if (engLine) phrase = engLine.trim();
+    }
+    if (!phrase) phrase = text.slice(0, 150);
+
+    // 💬 日本語訳
+    const transMatch = text.match(/💬\s*(.+)/);
+    if (transMatch) translation = transMatch[1].trim();
+
+    try {
+        await apiFetch('/api/english_phrases', {
+            method: 'POST',
+            body: JSON.stringify({ phrase, translation, context: text.slice(0, 500) }),
+        });
+        showToast('📚 フレーズを保存しました');
+        loadEnglishPhrases();
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
+    closeMsgActionSheet();
+}
+
+async function loadEnglishPhrases() {
+    const el = $('#dash-english-phrases');
+    if (!el) return;
+    try {
+        const data = await apiFetch('/api/english_phrases');
+        if (!data.phrases || data.phrases.length === 0) {
+            el.innerHTML = '<div class="loading-placeholder" style="font-size:0.8rem;">フレーズはまだありません。<br>メッセージを長押し → 📚 で保存できます。</div>';
+            return;
+        }
+        el.innerHTML = data.phrases.map(p => {
+            const date = new Date(p.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
+            const safePhraseAttr = escapeHtml(p.phrase).replace(/'/g, "&#39;");
+            return `
+            <div class="phrase-item" style="display:flex;align-items:flex-start;gap:8px;padding:10px 18px;border-bottom:1px solid rgba(255,255,255,0.04);">
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:0.9rem;font-weight:600;color:var(--text-primary);line-height:1.4;">${escapeHtml(p.phrase)}</div>
+                    ${p.translation ? `<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:2px;">${escapeHtml(p.translation)}</div>` : ''}
+                    <div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px;">${date}</div>
+                </div>
+                <button onclick="speakText('${safePhraseAttr}')" style="background:none;border:none;cursor:pointer;font-size:1rem;opacity:0.75;padding:4px;flex-shrink:0;" title="読み上げ">🔊</button>
+                <button onclick="deleteEnglishPhrase(${p.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;opacity:0.45;padding:4px;flex-shrink:0;" title="削除">🗑</button>
+            </div>`;
+        }).join('');
+    } catch {
+        el.innerHTML = '<div class="loading-placeholder">フレーズ帳の読み込みに失敗しました</div>';
+    }
+}
+
+async function deleteEnglishPhrase(id) {
+    try {
+        await apiFetch(`/api/english_phrases/${id}`, { method: 'DELETE' });
+        showToast('削除しました');
+        loadEnglishPhrases();
+    } catch {
+        showToast('削除に失敗しました', true);
+    }
 }
 
 // ----- アクションチップス展開トグル -----
@@ -3017,7 +3160,9 @@ async function loadStarredMessages() {
     }
 }
 
-// ----- 天気場所選択 -----
+// ----- 天気場所選択（都道府県→地域の2段階） -----
+let _weatherPrefData = null;
+
 async function openWeatherLocationPicker() {
     document.getElementById('weather-location-overlay')?.classList.remove('hidden');
     const list = $('#weather-location-list');
@@ -3025,18 +3170,46 @@ async function openWeatherLocationPicker() {
     list.innerHTML = '<p class="search-hint">読み込み中...</p>';
     try {
         const data = await apiFetch('/api/weather/locations');
-        const current = localStorage.getItem('mng_weather_location') || '';
-        list.innerHTML = (data.locations || []).map(loc => `
-            <div class="search-result-item" style="${current === loc.code ? 'background:rgba(0,186,152,0.12);' : ''}" onclick="selectWeatherLocation('${loc.code}', '${escapeHtml(loc.name)}')">
-                <div class="search-result-role">📍</div>
-                <div class="search-result-snippet">${escapeHtml(loc.name)}</div>
-                ${current === loc.code ? '<div class="search-result-time">✓ 選択中</div>' : ''}
-            </div>
-        `).join('');
+        _weatherPrefData = data.prefectures || [];
+        _showPrefectureList(list);
     } catch (e) {
         list.innerHTML = '<p class="search-empty">場所情報の取得に失敗しました</p>';
     }
 }
+
+function _showPrefectureList(list) {
+    if (!list || !_weatherPrefData) return;
+    list.innerHTML = '<p class="search-hint" style="font-size:0.82rem; color:var(--text-secondary); margin-bottom:8px;">都道府県を選択</p>' +
+        _weatherPrefData.map(p => `
+            <div class="search-result-item" onclick="_showRegionList('${escapeHtml(p.name)}')">
+                <div class="search-result-role">📍</div>
+                <div class="search-result-snippet">${escapeHtml(p.name)}</div>
+                <div class="search-result-time" style="color:var(--text-muted);">${p.regions.length}地域 ▸</div>
+            </div>
+        `).join('');
+}
+
+window._showRegionList = function(prefName) {
+    const list = $('#weather-location-list');
+    if (!list || !_weatherPrefData) return;
+    const pref = _weatherPrefData.find(p => p.name === prefName);
+    if (!pref) return;
+    const current = localStorage.getItem('mng_weather_location') || '';
+    list.innerHTML = `<div class="search-result-item" onclick="_showPrefectureList($('#weather-location-list'))" style="opacity:0.7;">
+            <div class="search-result-role">◂</div>
+            <div class="search-result-snippet" style="font-weight:700;">都道府県に戻る</div>
+        </div>
+        <p class="search-hint" style="font-size:0.82rem; color:var(--accent); margin:8px 0 4px; font-weight:700;">${escapeHtml(prefName)}</p>` +
+        pref.regions.map(r => `
+            <div class="search-result-item" style="${current === r.code ? 'background:rgba(0,186,152,0.12);' : ''}" onclick="selectWeatherLocation('${r.code}', '${escapeHtml(r.name)}')">
+                <div class="search-result-role">🌤️</div>
+                <div class="search-result-snippet">${escapeHtml(r.name)}</div>
+                ${current === r.code ? '<div class="search-result-time">✓ 選択中</div>' : ''}
+            </div>
+        `).join('');
+};
+
+window._showPrefectureList = _showPrefectureList;
 
 function closeWeatherLocationPicker(e) {
     if (e && e.target.closest && e.target.closest('.search-panel')) return;

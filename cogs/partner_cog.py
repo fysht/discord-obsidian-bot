@@ -787,7 +787,7 @@ class PartnerCog(commands.Cog):
             return f"ツールエラー: {e}"
         return "不明なツールです。"
 
-    async def generate_response_for_app(self, text: str, history_messages: list):
+    async def generate_response_for_app(self, text: str, history_messages: list, english_mode: bool = False):
         """PWAアプリから呼び出されるAI応答生成"""
         self.last_interaction = datetime.datetime.now(JST)
 
@@ -795,6 +795,9 @@ class PartnerCog(commands.Cog):
         system_prompt = get_system_prompt(
             self.user_name, now_str, await self._get_user_manual()
         )
+        if english_mode:
+            from prompts import PROMPT_ENGLISH_CONVERSATION
+            system_prompt = system_prompt + "\n\n" + PROMPT_ENGLISH_CONVERSATION
 
         contents = history_messages.copy()
         contents.append(
@@ -832,11 +835,14 @@ class PartnerCog(commands.Cog):
                         system_instruction=system_prompt
                     ),
                 )
-                reply_text = (
-                    final_res.text.strip()
-                    if final_res.text
-                    else "了解、手配しておく。"
-                )
+                # Gemini最終応答が空の場合、ツール実行結果から返答を組み立てる
+                if final_res.text and final_res.text.strip():
+                    reply_text = final_res.text.strip()
+                else:
+                    # ツール結果をまとめてフォールバック返答にする
+                    tool_results = [str(r.function_response.response.get("result", "")) for r in f_responses if hasattr(r, "function_response")]
+                    fallback = " / ".join(r for r in tool_results if r and r != "None")
+                    reply_text = fallback if fallback else "処理したよ！"
             else:
                 reply_text = response.text.strip() if response.text else "了解！"
 

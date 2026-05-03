@@ -13,6 +13,7 @@ from api.database import (
     delete_stocked_link, get_todays_log, clear_history,
     delete_message_by_id, toggle_message_star, get_starred_messages,
     search_messages, add_push_subscription, remove_push_subscription,
+    add_english_phrase, get_english_phrases, delete_english_phrase,
 )
 from api import notification_service
 from services.info_service import InfoService
@@ -47,6 +48,7 @@ async def verify_api_key(x_api_key: str = Header(None)):
 class ChatRequest(BaseModel):
     message: str
     reply_to_id: Optional[int] = None
+    english_mode: bool = False
 
 class ChatResponse(BaseModel):
     reply: str
@@ -271,7 +273,7 @@ async def chat(req: ChatRequest):
         except Exception as e:
             logging.debug(f"reply context attach failed: {e}")
 
-    reply = await partner_cog.generate_response_for_app(user_message, history_messages)
+    reply = await partner_cog.generate_response_for_app(user_message, history_messages, english_mode=req.english_mode)
     asst_id = await notification_service.save_message_and_notify("assistant", reply)
 
     if bot.drive_service:
@@ -2028,9 +2030,40 @@ async def get_weather_data(location: str = ""):
 
 @router.get("/weather/locations")
 async def get_weather_locations():
-    """利用可能な天気の場所一覧を返す。"""
-    from services.info_service import YAHOO_WEATHER_LOCATIONS
-    return {"locations": [{"code": k, "name": v} for k, v in YAHOO_WEATHER_LOCATIONS.items()]}
+    """利用可能な天気の場所一覧を都道府県別の階層構造で返す。"""
+    from services.info_service import YAHOO_WEATHER_BY_PREFECTURE
+    prefectures = []
+    for pref_name, regions in YAHOO_WEATHER_BY_PREFECTURE.items():
+        prefectures.append({
+            "name": pref_name,
+            "regions": regions,
+        })
+    return {"prefectures": prefectures}
+
+
+# ===== 英語フレーズ帳 =====
+
+class PhraseSaveRequest(BaseModel):
+    phrase: str
+    translation: str = ""
+    context: str = ""
+
+@router.get("/english_phrases", dependencies=[Depends(verify_api_key)])
+async def list_english_phrases():
+    phrases = await get_english_phrases()
+    return {"phrases": phrases}
+
+@router.post("/english_phrases", dependencies=[Depends(verify_api_key)])
+async def save_english_phrase(req: PhraseSaveRequest):
+    phrase_id = await add_english_phrase(req.phrase.strip(), req.translation.strip(), req.context.strip())
+    return {"id": phrase_id}
+
+@router.delete("/english_phrases/{phrase_id}", dependencies=[Depends(verify_api_key)])
+async def remove_english_phrase(phrase_id: int):
+    deleted = await delete_english_phrase(phrase_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="フレーズが見つかりません")
+    return {"deleted": True}
 
 
 # ===== ブリーフィング =====

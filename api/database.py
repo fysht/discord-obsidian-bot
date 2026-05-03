@@ -80,6 +80,15 @@ async def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS english_phrases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phrase TEXT NOT NULL,
+                translation TEXT DEFAULT '',
+                context TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
 
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
@@ -340,3 +349,34 @@ async def cleanup_alert_keys(older_than_hours: int = 48) -> None:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute("DELETE FROM proactive_alerts_sent WHERE created_at < ?", (cutoff,))
         await db.commit()
+
+
+# --- English Phrases ---
+
+async def add_english_phrase(phrase: str, translation: str = "", context: str = "") -> int:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT INTO english_phrases (phrase, translation, context, created_at) VALUES (?, ?, ?, ?)",
+            (phrase, translation, context, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_english_phrases(limit: int = 200) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, phrase, translation, context, created_at FROM english_phrases ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def delete_english_phrase(phrase_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("DELETE FROM english_phrases WHERE id = ?", (phrase_id,))
+        await db.commit()
+        return cursor.rowcount > 0
