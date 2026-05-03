@@ -266,14 +266,14 @@
                     <div class="card journal-card">
                         <div class="card-header">
                             <span class="card-icon">📔</span>
-                            <span class="card-title">Daily Journal</span>
+                            <span class="card-title">今日の日記</span>
                         </div>
                         <div id="dash-daily-journal" class="card-body diary-content"></div>
                     </div>
                     <div class="card next-actions-card">
                         <div class="card-header">
                             <span class="card-icon">🚀</span>
-                            <span class="card-title">Next Actions</span>
+                            <span class="card-title">次のアクション</span>
                         </div>
                         <div id="dash-next-actions" class="card-body list-body"></div>
                     </div>
@@ -286,11 +286,16 @@
                             <p style="font-size:0.82rem; color:var(--text-secondary); margin-bottom:10px;">
                                 Google DriveのTimelineフォルダにJSONを置いて同期してください。
                             </p>
-                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
-                                <input type="date" id="location-sync-date" class="modern-input" style="flex:1; padding:8px; font-size:0.85rem;">
-                                <button class="modal-btn submit" style="flex:1; font-size:0.8rem;" onclick="triggerLocationSync()">📍 同期する</button>
+                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
+                                <label style="font-size:0.78rem; color:var(--text-muted); white-space:nowrap;">開始日</label>
+                                <input type="date" id="location-sync-date-from" class="modern-input" style="flex:1; padding:8px; font-size:0.85rem;">
                             </div>
-                            <div id="location-sync-result" style="font-size:0.8rem; color:var(--text-secondary); min-height:1.2em;"></div>
+                            <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+                                <label style="font-size:0.78rem; color:var(--text-muted); white-space:nowrap;">終了日</label>
+                                <input type="date" id="location-sync-date-to" class="modern-input" style="flex:1; padding:8px; font-size:0.85rem;">
+                            </div>
+                            <button class="modal-btn submit" style="width:100%; font-size:0.8rem;" onclick="triggerLocationSync()">📍 同期する</button>
+                            <div id="location-sync-result" style="font-size:0.8rem; color:var(--text-secondary); min-height:1.2em; margin-top:8px; white-space:pre-wrap;"></div>
                             <div style="margin-top:8px;">
                                 <a href="https://www.google.com/maps/timeline" target="_blank" class="mini-link">タイムライン確認</a>
                             </div>

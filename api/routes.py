@@ -453,11 +453,13 @@ class TaskActionRequest(BaseModel):
     action: str
     old_text: str = ""
     new_text: str = ""
+    line_index: int = -1  # ライフログ行インデックス（編集/削除用）
 
 @router.post("/task_action", dependencies=[Depends(verify_api_key)])
 async def task_action(req: TaskActionRequest):
     from api import app
     import datetime
+    import re
     from utils.obsidian_utils import update_section
 
     chat_service = getattr(app.state, "chat_service", None)
@@ -476,10 +478,26 @@ async def task_action(req: TaskActionRequest):
 
     if req.action == "create":
         content = update_section(content, f"- [/] {req.new_text}", "## 🪟 Lifelog")
+    elif req.action in ("edit_log", "delete_log"):
+        # ライフログ行の編集/削除（line_index で特定）
+        lifelog_match = re.search(r"## 🪟 Lifelog\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+        if lifelog_match:
+            section_start_pos = content.index("## 🪟 Lifelog\n") + len("## 🪟 Lifelog\n")
+            section_text = lifelog_match.group(1)
+            section_lines = section_text.split("\n")
+            log_lines = [(idx, line) for idx, line in enumerate(section_lines) if line.strip().startswith("- ")]
+            if 0 <= req.line_index < len(log_lines):
+                target_idx, _old_line = log_lines[req.line_index]
+                if req.action == "delete_log":
+                    section_lines.pop(target_idx)
+                elif req.action == "edit_log" and req.new_text:
+                    section_lines[target_idx] = f"- {req.new_text}"
+                new_section = "\n".join(section_lines)
+                content = content[:section_start_pos] + new_section + content[section_start_pos + len(section_text):]
     else:
         lines = content.split('\n')
         for i, line in enumerate(lines):
-            if line.strip().startswith("- [") and req.old_text in line:
+            if line.strip().startswith("- ") and req.old_text and req.old_text in line:
                 if req.action == "delete": lines.pop(i)
                 elif req.action == "update":
                     prefix = line[:6]
@@ -841,44 +859,50 @@ async def get_habit_history(days: int = 28):
 
 @router.get("/task_candidates", dependencies=[Depends(verify_api_key)])
 async def task_candidates():
-    """タスク開始用の履歴（直近10件）と、終了用の現在実行中タスクを取得"""
+    """タスク開始用はGoogle Tasksの「タスク候補」リストから、終了用はLifelogの実行中タスクを取得"""
     from api import app
     import datetime
     from config import JST
     import re
 
     chat_service = getattr(app.state, "chat_service", None)
-    if not chat_service or not chat_service.drive_service: return {"start": [], "end": []}
+    if not chat_service: return {"start": [], "end": []}
 
-    service = chat_service.drive_service.get_service()
-    folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
-    
-    # 履歴（過去7日分からユニークなタスクを抽出）
+    # --- 開始候補: Google Tasks「タスク候補」リスト ---
     start_candidates = []
+    tasks_service = getattr(chat_service, "tasks_service", None)
+    if tasks_service:
+        try:
+            raw_tasks = await tasks_service.get_raw_tasks("タスク候補")
+            start_candidates = [t["title"] for t in raw_tasks if t.get("title")]
+        except Exception as e:
+            logging.debug(f"タスク候補リスト取得失敗: {e}")
+
+    # --- 終了候補: 今日のLifelogから実行中（▶）のタスクを抽出 ---
     end_candidates = []
-    seen = set()
-    
-    for i in range(7):
-        d = (datetime.datetime.now(JST) - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
-        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{d}.md")
-        if f_id:
-            content = await chat_service.drive_service.read_text_file(service, f_id)
-            if "## 🎯 Tasks" in content:
-                section = content.split("## 🎯 Tasks")[1].split("##")[0]
-                for line in section.split("\n"):
-                    match = re.search(r"- \[(.*?)\] (.*)", line)
-                    if match:
-                        state = match.group(1)
-                        # 時刻部分を削除
-                        task_name = re.sub(r"\(.*?\)", "", match.group(2)).strip()
-                        if task_name and task_name not in seen:
-                            start_candidates.append(task_name)
-                            seen.add(task_name)
-                        if state == "/" and i == 0: # 今日の実行中
-                             end_candidates.append(task_name)
-    
+    if chat_service.drive_service:
+        try:
+            service = chat_service.drive_service.get_service()
+            folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+            if folder_id:
+                today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+                f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
+                if f_id:
+                    content = await chat_service.drive_service.read_text_file(service, f_id)
+                    lifelog_match = re.search(r"## 🪟 Lifelog\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+                    if lifelog_match:
+                        for line in lifelog_match.group(1).split("\n"):
+                            line = line.strip()
+                            if "▶" in line:
+                                # "- HH:MM ▶ タスク名" からタスク名を抽出
+                                m = re.search(r"▶\s*(.+)$", line)
+                                if m:
+                                    end_candidates.append(m.group(1).strip())
+        except Exception as e:
+            logging.debug(f"終了候補取得失敗: {e}")
+
     return {
-        "start": start_candidates[:10],
+        "start": start_candidates,
         "end": end_candidates
     }
 
@@ -1884,15 +1908,68 @@ async def zerosec_log_start(req: ZTThemeRequest):
     return {"status": "success"}
 
 
+# ===== タスク整理 =====
+
+class TaskTriageRequest(BaseModel):
+    list_name: str = "仕事"
+
+@router.post("/task_triage", dependencies=[Depends(verify_api_key)])
+async def task_triage(req: TaskTriageRequest):
+    """指定リストのタスクをAIに整理提案させる。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not getattr(chat_service, "tasks_service", None):
+        raise HTTPException(status_code=503, detail="Tasks サービス未接続")
+
+    tasks = await chat_service.tasks_service.get_raw_tasks(req.list_name)
+    if not tasks:
+        return {"reply": f"「{req.list_name}」リストに未完了タスクがないよ。"}
+
+    task_list_str = "\n".join(
+        f"- {t['title']}" + (f" (締切: {t['due'][:10]})" if t.get('due') else "")
+        for t in tasks
+    )
+
+    gemini_client = getattr(bot, "gemini_client", None) if bot else None
+    if not gemini_client:
+        return {"reply": f"「{req.list_name}」のタスク一覧:\n{task_list_str}\n\n（AI分析は現在利用できません）"}
+
+    prompt = (
+        f"あなたはタスク管理のプロフェッショナルです。\n"
+        f"以下の「{req.list_name}」リストのタスクを分析し、整理提案をしてください。\n\n"
+        f"タスク一覧:\n{task_list_str}\n\n"
+        f"以下の観点で提案してください:\n"
+        f"1. 優先度（高/中/低）の分類\n"
+        f"2. 完了・削除を推奨するタスク\n"
+        f"3. グループ化・統合できるタスク\n"
+        f"4. 今日取り組むべきタスクのおすすめ\n\n"
+        f"簡潔かつ実用的に日本語で回答してください。"
+    )
+
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
+        reply = response.text.strip() if response.text else "分析に失敗しました。"
+    except Exception as e:
+        logging.error(f"Task triage AI error: {e}")
+        reply = f"AI分析でエラーが発生しました。\n\nタスク一覧:\n{task_list_str}"
+
+    return {"reply": reply}
+
+
 # ===== ロケーションログ 手動同期 =====
 
 class LocationSyncRequest(BaseModel):
     date: str = ""
+    date_from: str = ""
+    date_to: str = ""
 
 
 @router.post("/location_log/sync", dependencies=[Depends(verify_api_key)])
 async def location_log_sync(req: LocationSyncRequest):
-    """指定日付のロケーションログをGoogle DriveのTimeline JSONから同期する。"""
+    """指定日付（または日付範囲）のロケーションログをGoogle DriveのTimeline JSONから同期する。"""
     from api import app
     bot = getattr(app.state, "bot", None)
     if not bot:
@@ -1900,11 +1977,38 @@ async def location_log_sync(req: LocationSyncRequest):
     cog = bot.get_cog("LocationLogCog")
     if not cog:
         raise HTTPException(status_code=503, detail="LocationLogCogが利用できません。")
-    target_date = (req.date or "").strip()
-    if not target_date:
-        target_date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
-    result = await cog.perform_manual_sync(target_date)
-    return {"status": "success", "message": result}
+
+    # 日付範囲が指定された場合は各日をループ同期
+    date_from = (req.date_from or "").strip()
+    date_to = (req.date_to or "").strip()
+    single_date = (req.date or "").strip()
+
+    if date_from and date_to:
+        try:
+            start = datetime.datetime.strptime(date_from, "%Y-%m-%d")
+            end = datetime.datetime.strptime(date_to, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="日付形式が不正です (YYYY-MM-DD)")
+        if (end - start).days > 14:
+            raise HTTPException(status_code=400, detail="最大14日間まで同期できます")
+        if end < start:
+            start, end = end, start
+
+        results = []
+        current = start
+        while current <= end:
+            d_str = current.strftime("%Y-%m-%d")
+            try:
+                r = await cog.perform_manual_sync(d_str)
+                results.append(f"{d_str}: {r}")
+            except Exception as e:
+                results.append(f"{d_str}: エラー - {e}")
+            current += datetime.timedelta(days=1)
+        return {"status": "success", "message": "\n".join(results)}
+    else:
+        target_date = single_date or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        result = await cog.perform_manual_sync(target_date)
+        return {"status": "success", "message": result}
 
 
 # ===== 天気場所 =====
@@ -1927,3 +2031,112 @@ async def get_weather_locations():
     """利用可能な天気の場所一覧を返す。"""
     from services.info_service import YAHOO_WEATHER_LOCATIONS
     return {"locations": [{"code": k, "name": v} for k, v in YAHOO_WEATHER_LOCATIONS.items()]}
+
+
+# ===== ブリーフィング =====
+
+@router.post("/briefing", dependencies=[Depends(verify_api_key)])
+async def briefing():
+    """朝（12時前）はモーニングブリーフィング、午後以降はイブニングレビューを生成する。"""
+    from api import app
+    import datetime
+
+    bot = getattr(app.state, "bot", None)
+    chat_service = getattr(app.state, "chat_service", None)
+    now = datetime.datetime.now(JST)
+    is_morning = now.hour < 12
+    briefing_type = "morning" if is_morning else "evening"
+
+    # コンテキスト収集
+    context_parts = []
+
+    # 今日の予定
+    if hasattr(chat_service, "calendar_service") and chat_service.calendar_service:
+        try:
+            events = await chat_service.calendar_service.get_raw_events_for_date(now.strftime("%Y-%m-%d"))
+            if events:
+                ev_str = "\n".join(f"- {e.get('summary', '?')} ({e.get('start_time', '?')}〜{e.get('end_time', '?')})" for e in events[:10])
+                context_parts.append(f"今日の予定:\n{ev_str}")
+        except Exception:
+            pass
+
+    # タスク
+    if hasattr(chat_service, "tasks_service") and chat_service.tasks_service:
+        try:
+            for ln in ["仕事", "プライベート"]:
+                tasks = await chat_service.tasks_service.get_raw_tasks(ln)
+                if tasks:
+                    t_str = "\n".join(
+                        f"- {t['title']}" + (f" (締切: {t['due'][:10]})" if t.get('due') else "")
+                        for t in tasks[:8]
+                    )
+                    context_parts.append(f"{ln}タスク:\n{t_str}")
+        except Exception:
+            pass
+
+    # 天気
+    try:
+        info_svc = getattr(bot, "info_service", None)
+        if info_svc:
+            w = await info_svc.get_weather()
+            if w and w.get("summary") not in ("取得失敗", None):
+                context_parts.append(f"天気: {w.get('summary', '不明')} (最高{w.get('max_temp','--')}℃ / 最低{w.get('min_temp','--')}℃)")
+    except Exception:
+        pass
+
+    # ライフログ（夕方レビュー用）
+    if not is_morning and chat_service and chat_service.drive_service:
+        try:
+            service = chat_service.drive_service.get_service()
+            folder_id = await chat_service.drive_service.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+            if folder_id:
+                f_id = await chat_service.drive_service.find_file(service, folder_id, f"{now.strftime('%Y-%m-%d')}.md")
+                if f_id:
+                    content = await chat_service.drive_service.read_text_file(service, f_id)
+                    import re
+                    m = re.search(r"## 🪟 Lifelog\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+                    if m:
+                        context_parts.append(f"今日のライフログ:\n{m.group(1).strip()[:500]}")
+        except Exception:
+            pass
+
+    context = "\n\n".join(context_parts) if context_parts else "情報が取得できませんでした。"
+
+    gemini_client = getattr(bot, "gemini_client", None) if bot else None
+    if not gemini_client:
+        return {"reply": f"現在の情報:\n{context}", "type": briefing_type}
+
+    if is_morning:
+        prompt = (
+            f"あなたはユーザーの秘書AIです。今は{now.strftime('%Y年%m月%d日 %H:%M')}です。\n"
+            f"以下の情報を元に、朝のブリーフィングを簡潔に作成してください。\n\n"
+            f"{context}\n\n"
+            f"ブリーフィング内容:\n"
+            f"1. 今日の天気のひとこと\n"
+            f"2. 今日の予定サマリー\n"
+            f"3. 優先タスクの提案（上位3つ）\n"
+            f"4. 今日のひとことアドバイス\n\n"
+            f"親しみやすく、簡潔に日本語で回答してください。"
+        )
+    else:
+        prompt = (
+            f"あなたはユーザーの秘書AIです。今は{now.strftime('%Y年%m月%d日 %H:%M')}です。\n"
+            f"以下の情報を元に、今日の振り返りレビューを作成してください。\n\n"
+            f"{context}\n\n"
+            f"レビュー内容:\n"
+            f"1. 今日の活動サマリー\n"
+            f"2. 良かった点\n"
+            f"3. 明日に向けての提案\n\n"
+            f"親しみやすく、簡潔に日本語で回答してください。"
+        )
+
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash", contents=prompt
+        )
+        reply = response.text.strip() if response.text else "ブリーフィング生成に失敗しました。"
+    except Exception as e:
+        logging.error(f"Briefing AI error: {e}")
+        reply = f"AI生成でエラーが発生しました。\n\n{context}"
+
+    return {"reply": reply, "type": briefing_type}

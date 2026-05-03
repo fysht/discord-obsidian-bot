@@ -486,23 +486,20 @@ async function loadDashboard() {
 
         const obTaskEl = $('#dash-tasks');
         if (obTaskEl && data.tasks) {
-            obTaskEl.innerHTML = data.tasks.length ? data.tasks.map(t => {
+            obTaskEl.innerHTML = data.tasks.length ? data.tasks.map((t, idx) => {
                 const isLog = t.is_log || false;
                 const isRunning = isLog && t.text.includes('▶');
-                
-                if (isLog) {
-                    return `
-                        <div class="list-item" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; padding-left: 12px; margin-bottom: 6px; align-items: flex-start; flex-direction: column;">
-                            <div class="li-text" style="font-family:'Courier New', Courier, monospace; font-size:0.85rem; line-height:1.5;">${escapeHtml(t.text)}</div>
-                        </div>
-                    `;
-                } else {
-                    return `
-                        <div class="list-item">
-                            <div class="li-text" style="text-decoration: ${t.done ? 'line-through' : 'none'}">${escapeHtml(t.text)}</div>
-                        </div>
-                    `;
-                }
+                const safeText = escapeHtml(t.text);
+                const editBtns = `<div style="display:flex;gap:4px;flex-shrink:0;margin-left:auto;">
+                    <button onclick="editLifeLog(${idx}, '${safeText.replace(/'/g, "\\'")}')" style="background:none;border:none;cursor:pointer;font-size:0.8rem;opacity:0.5;padding:2px;" title="編集">✏️</button>
+                    <button onclick="deleteLifeLog(${idx})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;opacity:0.5;padding:2px;" title="削除">🗑</button>
+                </div>`;
+                return `
+                    <div class="list-item" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; padding: 10px 18px; gap: 8px;">
+                        <div class="li-text" style="flex:1; font-size:0.85rem; line-height:1.5; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}">${safeText}</div>
+                        ${editBtns}
+                    </div>
+                `;
             }).join('') : '<div class="loading-placeholder">ログはありません</div>';
         }
 
@@ -529,15 +526,25 @@ async function loadDashboard() {
         const diaryEl = $('#dash-alter-log');
         if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
 
-        // Daily Journal
+        // 今日の日記
         const journalEl = $('#dash-daily-journal');
         if (journalEl) {
-            journalEl.innerHTML = data.daily_journal
-                ? escapeHtml(data.daily_journal).replace(/\n/g, '<br>')
-                : '<div class="loading-placeholder">Daily Journalはまだ生成されていません。</div>';
+            if (data.daily_journal) {
+                // 軽量Markdownレンダリング
+                const jLines = data.daily_journal.split('\n');
+                journalEl.innerHTML = jLines.map(line => {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('- ')) {
+                        return `<div style="padding:2px 0 2px 12px; border-left:2px solid rgba(0,186,152,0.3); margin:2px 0; font-size:0.88rem;">${escapeHtml(trimmed.slice(2))}</div>`;
+                    }
+                    return escapeHtml(line) + '<br>';
+                }).join('');
+            } else {
+                journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません。</div>';
+            }
         }
 
-        // Next Actions
+        // 次のアクション
         const naEl = $('#dash-next-actions');
         if (naEl) {
             if (data.next_actions && data.next_actions.trim()) {
@@ -554,7 +561,7 @@ async function loadDashboard() {
                     return `<div class="list-item">${escapeHtml(clean)}</div>`;
                 }).join('');
             } else {
-                naEl.innerHTML = '<div class="loading-placeholder">Next Actionsはまだ生成されていません。</div>';
+                naEl.innerHTML = '<div class="loading-placeholder">次のアクションはまだ生成されていません。</div>';
             }
         }
 
@@ -596,7 +603,19 @@ function renderTaskGroup(container, tasks, listName) {
     if (listName === 'プライベート') _currentPrivateTasks = tasks || [];
     if (listName === '習慣') _currentHabitTasks = tasks || [];
 
-    const activeTasks = (tasks || []).filter(t => !t.completed);
+    // 期限順ソート: 期限切れ → 今日 → 明日以降 → 期限なし
+    const sortByDue = (arr) => {
+        return [...arr].sort((a, b) => {
+            const dueA = a.due ? new Date(a.due) : null;
+            const dueB = b.due ? new Date(b.due) : null;
+            if (dueA && dueB) return dueA - dueB;
+            if (dueA && !dueB) return -1;
+            if (!dueA && dueB) return 1;
+            return 0;
+        });
+    };
+
+    const activeTasks = sortByDue((tasks || []).filter(t => !t.completed));
     const doneTasks = (tasks || []).filter(t => t.completed);
 
     if (!tasks || tasks.length === 0) {
@@ -1239,7 +1258,11 @@ async function ztSaveCommon() {
 
 window.ztSaveAndClose = async () => {
     const res = await ztSaveCommon();
-    if (res) closeZeroSecModal();
+    if (res) {
+        // ゼロ秒思考のライフログ終了を記録
+        sendActionCommandSilent(`ゼロ秒思考終了（テーマ：${res.theme}）`);
+        closeZeroSecModal();
+    }
 };
 
 window.ztSaveAndDeepDive = async () => {
@@ -1364,12 +1387,8 @@ window.startReading = async () => {
     $('#reading-step-select').style.display = 'none';
     $('#reading-step-active').style.display = '';
 
-    // ライフログ start
-    sendActionCommandSilent(`「${title}」を読み始める`);
-    apiFetch('/api/zerosec/log_start', {
-        method: 'POST',
-        body: JSON.stringify({ context: `読書: ${title}` })
-    }).catch(() => {});
+    // ライフログ start（チャット経由でAIにログを記録させる）
+    sendActionCommandSilent(`「${title}」読書開始`);
 
     // 経過時間タイマー
     updateReadingTimer();
@@ -1473,8 +1492,12 @@ window.finishReading = async () => {
     } else {
         showToast(`お疲れさま！${elapsedMin}分の読書を記録したよ`);
     }
-    // ライフログ end
-    sendActionCommandSilent(`「${title}」読書終了（${elapsedMin}分）`);
+    // ライフログ end（時刻レンジ形式でログ記録）
+    const startDate = new Date(readingState.startedAt);
+    const endDate = new Date();
+    const startTimeStr = startDate.getHours().toString().padStart(2,'0') + ':' + startDate.getMinutes().toString().padStart(2,'0');
+    const endTimeStr = endDate.getHours().toString().padStart(2,'0') + ':' + endDate.getMinutes().toString().padStart(2,'0');
+    sendActionCommandSilent(`${startTimeStr}-${endTimeStr} 「${title}」読書終了`);
     closeReadingModal();
 };
 
@@ -3038,18 +3061,52 @@ async function selectWeatherLocation(code, name) {
 
 // ----- ロケーションログ手動同期 -----
 window.triggerLocationSync = async () => {
-    const dateInput = $('#location-sync-date');
+    const dateFrom = $('#location-sync-date-from')?.value || '';
+    const dateTo = $('#location-sync-date-to')?.value || '';
     const resultEl = $('#location-sync-result');
-    const date = dateInput?.value || '';
     if (resultEl) resultEl.textContent = '同期中...';
     try {
+        const body = dateFrom && dateTo
+            ? { date_from: dateFrom, date_to: dateTo }
+            : { date: dateFrom || new Date().toISOString().slice(0, 10) };
         const res = await apiFetch('/api/location_log/sync', {
             method: 'POST',
-            body: JSON.stringify({ date })
+            body: JSON.stringify(body)
         });
         if (resultEl) resultEl.textContent = res.message || '同期完了';
     } catch (e) {
         if (resultEl) resultEl.textContent = '同期に失敗しました';
+    }
+};
+
+// ライフログ行の編集
+window.editLifeLog = async (lineIndex, currentText) => {
+    const newText = prompt('ログを編集:', currentText);
+    if (newText === null || newText.trim() === '') return;
+    try {
+        await apiFetch('/api/task_action', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'edit_log', line_index: lineIndex, new_text: newText.trim() })
+        });
+        showToast('ログを更新しました');
+        loadDashboard();
+    } catch (e) {
+        showToast('更新に失敗しました', true);
+    }
+};
+
+// ライフログ行の削除
+window.deleteLifeLog = async (lineIndex) => {
+    if (!confirm('このログ行を削除しますか？')) return;
+    try {
+        await apiFetch('/api/task_action', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'delete_log', line_index: lineIndex })
+        });
+        showToast('ログを削除しました');
+        loadDashboard();
+    } catch (e) {
+        showToast('削除に失敗しました', true);
     }
 };
 
