@@ -98,7 +98,7 @@ class InfoService:
         return {"summary": "取得失敗", "daily": [], "hourly": [], "slots": [], "max_temp": "--", "min_temp": "--"}
 
     async def _fetch_yahoo_weather(self, location: str):
-        url = f"https://weather.yahoo.co.jp/weather/jp/{location}.html"
+        url = f"https://weather.yahoo.co.jp/weather/jp/{location}/"
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Linux; Android 10; Pixel 3) "
