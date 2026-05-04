@@ -1,4 +1,4 @@
-const CACHE_NAME = 'secretary-ai-v9';
+const CACHE_NAME = 'secretary-ai-v10';
 const ASSETS = [
   '/',
   '/static/css/app_v12.css',
