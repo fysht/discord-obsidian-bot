@@ -61,8 +61,11 @@
                         <span class="slider round"></span>
                     </label>
                 </div>
-                <button class="icon-btn" id="starred-btn" title="お気に入りメッセージ" onclick="openStarredOverlay()">
+                <button class="icon-btn" id="starred-btn" title="お気に入り・コレクション" onclick="openStarredOverlay()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                </button>
+                <button class="icon-btn" title="コレクション" onclick="openCollectionOverlay()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
                 </button>
                 <button class="icon-btn" id="search-btn" title="メッセージ検索" onclick="openSearchOverlay()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -109,9 +112,7 @@
                         <button class="chip-btn" onclick="openTaskBreakdownModal()">🔨 タスク分解</button>
                         <button class="chip-btn" onclick="runTaskTriage('仕事')">🧹 仕事を整理</button>
                         <button class="chip-btn" onclick="runTaskTriage('プライベート')">🧹 ﾌﾟﾗｲﾍﾞｰﾄ整理</button>
-                        <button class="chip-btn" onclick="runHealthCorrelation()">📊 健康分析</button>
-                        <button class="chip-btn" onclick="sendActionCommand('今日の予定を教えて')">今日の予定</button>
-                        <button class="chip-btn" onclick="sendActionCommand('振り返りをしよう')">振り返り</button>
+                        <button class="chip-btn" onclick="openMeditationModal()">🧘 瞑想</button>
                     </div>
                 </div>
                 <div class="chat-input-area">
@@ -256,6 +257,16 @@
                         </div>
                         <div id="dash-sleep" class="card-body"></div>
                     </div>
+                    <details class="card fitbit-all-card">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">📊</span>
+                                <span class="card-title">Fitbitデータ（14日間）</span>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadFitbitAllData()">更新</button>
+                            </div>
+                        </summary>
+                        <div id="dash-fitbit-all" class="card-body" style="overflow-x:auto;"></div>
+                    </details>
                     <div class="card diary-card">
                         <div class="card-header">
                             <span class="card-icon">📒</span>
@@ -315,6 +326,15 @@
             <!-- ========== SCHEDULE TAB (CALENDAR/TASKS) ========== -->
             <div id="tab-schedule" class="tab-pane">
                 <div class="scroll-container">
+
+                    <div class="card" id="mit-schedule-card">
+                        <div class="card-header">
+                            <span class="card-icon">🎯</span>
+                            <span class="card-title">今日のMIT</span>
+                            <button class="mini-link" onclick="openMitModal()">設定</button>
+                        </div>
+                        <div id="mit-schedule-items" class="card-body"></div>
+                    </div>
 
                     <div class="card calendar-card">
                         <div class="card-header">
@@ -713,7 +733,9 @@
             <button class="action-sheet-btn" onclick="msgActionCopy()">📋 コピー</button>
             <button class="action-sheet-btn" onclick="msgActionReply()">↩ 返信</button>
             <button class="action-sheet-btn" id="msg-action-star-btn" onclick="msgActionStar()">⭐ お気に入り</button>
+            <button class="action-sheet-btn" onclick="msgActionSaveToCollection()">🏷 コレクションに保存</button>
             <button class="action-sheet-btn" id="msg-action-phrase-btn" onclick="msgActionSavePhrase()">📚 フレーズを保存</button>
+            <button class="action-sheet-btn" id="msg-action-translate-btn" onclick="msgActionTranslateAndSave()">🌐 英訳して保存</button>
             <button class="action-sheet-btn danger" onclick="msgActionDelete()">🗑 削除</button>
             <button class="action-sheet-btn cancel" onclick="closeMsgActionSheet()">キャンセル</button>
         </div>
@@ -742,6 +764,77 @@
             </div>
             <div class="search-results" id="starred-results">
                 <p class="search-hint">読み込み中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== COLLECTION OVERLAY ========== -->
+    <div id="collection-overlay" class="modal-overlay hidden" onclick="closeCollectionOverlay(event)">
+        <div class="search-panel" onclick="event.stopPropagation()">
+            <div class="search-input-row">
+                <span style="font-size:1.1rem;">🏷</span>
+                <span style="flex:1; font-size:0.95rem; font-weight:600;">コレクション</span>
+                <button class="icon-btn" onclick="closeCollectionOverlay()" title="閉じる">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+            <div id="collection-tabs" style="display:flex; gap:6px; padding:8px 16px; overflow-x:auto; border-bottom:1px solid rgba(255,255,255,0.08);"></div>
+            <div class="search-results" id="collection-results">
+                <p class="search-hint">コレクションを選択してください</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== MIT MODAL ========== -->
+    <div id="mit-modal" class="modal-overlay hidden" onclick="closeMitModal(event)">
+        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:380px;">
+            <h3 style="margin-bottom:14px;">🎯 今日のMITを設定</h3>
+            <p style="font-size:0.8rem; color:var(--text-secondary); margin-bottom:12px;">最も重要なタスクを最大3つ入力してください。</p>
+            <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:16px;">
+                <input type="text" id="mit-input-1" class="modern-input" placeholder="MIT 1" style="padding:10px;">
+                <input type="text" id="mit-input-2" class="modern-input" placeholder="MIT 2（任意）" style="padding:10px;">
+                <input type="text" id="mit-input-3" class="modern-input" placeholder="MIT 3（任意）" style="padding:10px;">
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn cancel" onclick="closeMitModal()">キャンセル</button>
+                <button class="modal-btn submit" id="mit-save-btn" onclick="saveMitFromModal()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== MEDITATION MODAL ========== -->
+    <div id="meditation-modal" class="modal-overlay hidden" onclick="closeMeditationModal(event)">
+        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:320px; text-align:center;">
+            <div id="med-step-setup">
+                <div style="font-size:2.5rem; margin-bottom:12px;">🧘</div>
+                <h3 style="margin-bottom:16px;">瞑想タイマー</h3>
+                <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:16px;">瞑想する時間を選んでください</p>
+                <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:20px;">
+                    <button class="modal-btn" onclick="setMedDuration(5)" style="min-width:60px;">5分</button>
+                    <button class="modal-btn" onclick="setMedDuration(10)" style="min-width:60px;">10分</button>
+                    <button class="modal-btn" onclick="setMedDuration(15)" style="min-width:60px;">15分</button>
+                    <button class="modal-btn" onclick="setMedDuration(20)" style="min-width:60px;">20分</button>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:20px; justify-content:center;">
+                    <input type="number" id="med-custom-min" class="modern-input" style="width:80px; padding:8px; text-align:center;" min="1" max="120" placeholder="分">
+                    <span style="color:var(--text-secondary); font-size:0.85rem;">分（カスタム）</span>
+                </div>
+                <div class="modal-actions" style="justify-content:center;">
+                    <button class="modal-btn cancel" onclick="closeMeditationModal()">キャンセル</button>
+                    <button class="modal-btn submit" onclick="startMeditation()">開始</button>
+                </div>
+            </div>
+            <div id="med-step-timer" style="display:none;">
+                <div style="font-size:2rem; margin-bottom:8px;">🧘</div>
+                <div id="med-timer-display" style="font-size:3rem; font-weight:800; font-variant-numeric:tabular-nums; margin:16px 0; color:var(--accent);">00:00</div>
+                <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:20px;">目を閉じて、呼吸に集中してください</p>
+                <button class="modal-btn cancel" onclick="stopMeditation()">終了</button>
+            </div>
+            <div id="med-step-done" style="display:none;">
+                <div style="font-size:2.5rem; margin-bottom:12px;">✨</div>
+                <h3 style="margin-bottom:8px;">瞑想完了！</h3>
+                <p id="med-done-msg" style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:20px;"></p>
+                <button class="modal-btn submit" onclick="closeMeditationModal()">閉じる</button>
             </div>
         </div>
     </div>

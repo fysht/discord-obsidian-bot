@@ -229,9 +229,36 @@ class PartnerRoutineCog(commands.Cog):
             logging.debug(f"MIT section fetch error: {e}")
         mit_block = f"\n\n【今日のMIT】\n{mit_section}" if mit_section else ""
 
+        # 翌日の天気とカレンダーを取得
+        tomorrow_str = (datetime.datetime.now(JST) + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        tomorrow_weather = "（取得失敗）"
+        tomorrow_schedule = "（取得失敗）"
+        try:
+            if self.info_service:
+                wd = await self.info_service.get_weather()
+                tomorrow_daily = next((d for d in (wd.get("daily") or []) if d.get("day") == "明日"), None)
+                if tomorrow_daily:
+                    tomorrow_weather = f"{tomorrow_daily.get('weather', '不明')} 最高{tomorrow_daily.get('max_temp','?')}℃ 最低{tomorrow_daily.get('min_temp','?')}℃"
+                else:
+                    tomorrow_weather = wd.get("summary", "取得失敗")
+        except Exception as e:
+            logging.debug(f"tomorrow weather fetch error: {e}")
+        try:
+            if self.calendar_service:
+                tomorrow_schedule = await self.calendar_service.list_events_for_date(tomorrow_str)
+        except Exception as e:
+            logging.debug(f"tomorrow calendar fetch error: {e}")
+
+        tomorrow_block = (
+            f"\n\n【明日の天気】{tomorrow_weather}"
+            f"\n【明日の予定】\n{tomorrow_schedule}"
+            f"\n\n⚡ 明日のMIT（最重要タスク）を今夜のうちに3つ考えて、チャットで「明日のMIT: 1. xxx 2. xxx 3. xxx」と教えてほしい。set_mitツールで登録するよ！"
+        )
+
         prompt = (
             f"{PROMPT_ROUTINE_NIGHTLY}{mit_block}\n\n【今日の会話ログ】\n"
             f"{today_log if today_log.strip() else '今日は特に会話がありませんでした。'}"
+            f"{tomorrow_block}"
         )
 
         try:

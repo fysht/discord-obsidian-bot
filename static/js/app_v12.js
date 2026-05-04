@@ -228,9 +228,17 @@ if (chatForm) {
                 body: JSON.stringify({ message: msg, reply_to_id: replyTo, english_mode: _isEnglishMode }),
             });
             if (userEl && data.user_message_id) userEl.dataset.msgId = String(data.user_message_id);
-            appendMsg('assistant', data.reply, null, { id: data.assistant_message_id });
 
-            if (_isEnglishMode) speakEnglishReply(data.reply);
+            // ENモード: 翻訳テキストを表示
+            if (_isEnglishMode && data.translation) {
+                const transEl = document.createElement('div');
+                transEl.className = 'msg-translation-hint';
+                transEl.textContent = `🔤 ${data.translation}`;
+                transEl.style.cssText = 'font-size:0.78rem;color:var(--text-muted);padding:2px 12px 6px;font-style:italic;';
+                if (userEl) userEl.appendChild(transEl);
+            }
+
+            appendMsg('assistant', data.reply, null, { id: data.assistant_message_id, showTts: _isEnglishMode });
 
             // AI応答後にダッシュボードをリロードして反映させる
             if (typeof loadDashboard === 'function') loadDashboard();
@@ -303,10 +311,17 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         }).join('') + '</div>';
     }
 
+    // ENモード時、assistant メッセージに🔊ボタンを追加
+    let ttsHtml = '';
+    if (role === 'assistant' && opts.showTts) {
+        const safeText = escapeHtml(visibleText).replace(/'/g, "&#39;");
+        ttsHtml = `<button onclick="speakText('${safeText}')" style="background:none;border:none;cursor:pointer;font-size:0.9rem;opacity:0.6;padding:2px 4px;margin-left:4px;" title="読み上げ">🔊</button>`;
+    }
+
     html += `
         <div class="msg-content">
             <div class="msg-bubble" style="word-break: break-all;" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}${actionHtml}</div>
-            <div class="msg-time">${tStr}</div>
+            <div class="msg-time">${tStr}${ttsHtml}</div>
         </div>
     `;
     div.innerHTML = html;
@@ -578,20 +593,30 @@ async function loadDashboard() {
             }
         }
 
-        // MIT バナー
+        // MIT バナー + スケジュールタブMITカード
         const mitBanner = $('#mit-banner');
         const mitItemsEl = $('#mit-banner-items');
-        if (mitBanner && mitItemsEl) {
-            if (data.mit && data.mit.length > 0) {
-                mitItemsEl.innerHTML = data.mit.map(item => {
+        const mitScheduleEl = $('#mit-schedule-items');
+        if (data.mit && data.mit.length > 0) {
+            const mitHtml = data.mit.map(item => {
+                const done = item.startsWith('[x]') || item.startsWith('[X]');
+                const text = item.replace(/^\[[ xX]\]\s*/, '').trim();
+                return `<div class="mit-banner-item ${done ? 'done' : ''}">${escapeHtml(text)}</div>`;
+            }).join('');
+            if (mitBanner && mitItemsEl) { mitItemsEl.innerHTML = mitHtml; mitBanner.classList.remove('hidden'); }
+            if (mitScheduleEl) {
+                mitScheduleEl.innerHTML = data.mit.map(item => {
                     const done = item.startsWith('[x]') || item.startsWith('[X]');
                     const text = item.replace(/^\[[ xX]\]\s*/, '').trim();
-                    return `<div class="mit-banner-item ${done ? 'done' : ''}">${escapeHtml(text)}</div>`;
+                    return `<div class="list-item" style="gap:8px;">
+                        <div class="checkbox-custom" style="${done ? 'background:var(--primary);border-color:var(--primary);color:#fff;font-size:0.7rem;display:flex;align-items:center;justify-content:center;' : ''}">${done ? '✓' : ''}</div>
+                        <span style="${done ? 'text-decoration:line-through;color:var(--text-muted);' : ''}">${escapeHtml(text)}</span>
+                    </div>`;
                 }).join('');
-                mitBanner.classList.remove('hidden');
-            } else {
-                mitBanner.classList.add('hidden');
             }
+        } else {
+            if (mitBanner) mitBanner.classList.add('hidden');
+            if (mitScheduleEl) mitScheduleEl.innerHTML = '<div class="loading-placeholder">MITはまだ設定されていません。「設定」ボタンから登録できます。</div>';
         }
 
         // 「書籍＆ナレッジ」のテキストを「書籍」に置換
@@ -627,11 +652,12 @@ function renderTaskGroup(container, tasks, listName) {
     }
 
     container.innerHTML = [
-        ...activeTasks.map(t => {
+        ...activeTasks.map((t, idx) => {
             const dueLabel = t.due ? _formatDueLabel(t.due) : '';
             const dueAttr = t.due ? t.due.slice(0, 10) : '';
             return `
-            <div class="list-item" style="gap:6px;" id="gtask-item-${t.id}">
+            <div class="list-item" style="gap:6px;" id="gtask-item-${t.id}" draggable="true" data-task-id="${t.id}" data-list="${listName}">
+                <span style="cursor:grab;color:var(--text-muted);font-size:0.85rem;padding:0 2px;user-select:none;" title="ドラッグして並び替え">⠿</span>
                 <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')" style="cursor:pointer;"></div>
                 <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
                 <button class="task-due-btn" onclick="openTaskDueEditor('${t.id}', '${listName}', '${escapeHtml(t.title)}', '${dueAttr}')" title="締切を編集">📅</button>
@@ -644,6 +670,44 @@ function renderTaskGroup(container, tasks, listName) {
             </div>
         `)
     ].join('');
+
+    // ドラッグ&ドロップ イベント設定
+    let _dragSrcId = null;
+    container.querySelectorAll('[draggable="true"]').forEach(el => {
+        el.addEventListener('dragstart', e => {
+            _dragSrcId = el.dataset.taskId;
+            el.style.opacity = '0.5';
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        el.addEventListener('dragend', () => { el.style.opacity = ''; });
+        el.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            container.querySelectorAll('[draggable]').forEach(x => x.style.background = '');
+            el.style.background = 'rgba(0,186,152,0.1)';
+        });
+        el.addEventListener('dragleave', () => { el.style.background = ''; });
+        el.addEventListener('drop', async e => {
+            e.preventDefault();
+            el.style.background = '';
+            const targetId = el.dataset.taskId;
+            if (!_dragSrcId || _dragSrcId === targetId) return;
+            const ln = el.dataset.list;
+            const tasks = ln === '仕事' ? _currentWorkTasks : ln === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
+            const srcIdx = tasks.findIndex(t => t.id === _dragSrcId);
+            const tgtIdx = tasks.findIndex(t => t.id === targetId);
+            if (srcIdx === -1 || tgtIdx === -1) return;
+            // ドロップ先の前のタスクIDを渡す（Google Tasks API仕様）
+            const previousId = tgtIdx > 0 ? tasks[tgtIdx - 1].id : null;
+            try {
+                await apiFetch('/api/google_tasks_move', {
+                    method: 'POST',
+                    body: JSON.stringify({ task_id: _dragSrcId, previous_task_id: previousId, list_name: ln })
+                });
+                loadDashboard();
+            } catch { showToast('移動に失敗しました', true); }
+        });
+    });
 }
 
 function _formatDueLabel(due) {
@@ -2188,16 +2252,25 @@ function speakEnglishReply(replyText) {
 
 // 汎用TTS関数（フレーズ帳・ブリーフィングで共用）
 function speakText(text, lang = 'en-US') {
-    if (!('speechSynthesis' in window) || !text) return;
+    if (!('speechSynthesis' in window)) { showToast('このブラウザは音声再生に対応していません', true); return; }
+    if (!text) return;
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = lang;
     utter.rate = 0.9;
-    const voices = window.speechSynthesis.getVoices();
-    const voice = voices.find(v => v.lang.startsWith(lang.slice(0, 2)) && !v.localService === false)
-                || voices.find(v => v.lang.startsWith(lang.slice(0, 2)));
-    if (voice) utter.voice = voice;
-    window.speechSynthesis.speak(utter);
+    const trySpeak = () => {
+        const voices = window.speechSynthesis.getVoices();
+        const voice = voices.find(v => v.lang.startsWith(lang.slice(0, 2)) && !v.localService === false)
+                    || voices.find(v => v.lang.startsWith(lang.slice(0, 2)));
+        if (voice) utter.voice = voice;
+        utter.onerror = () => showToast('音声の再生に失敗しました', true);
+        window.speechSynthesis.speak(utter);
+    };
+    if (window.speechSynthesis.getVoices().length > 0) {
+        trySpeak();
+    } else {
+        window.speechSynthesis.onvoiceschanged = () => { window.speechSynthesis.onvoiceschanged = null; trySpeak(); };
+    }
 }
 
 function initMain() {
@@ -2913,16 +2986,18 @@ function openMsgActionSheet() {
     const sheet = document.getElementById('msg-action-sheet');
     const starBtn = document.getElementById('msg-action-star-btn');
     const phraseBtn = document.getElementById('msg-action-phrase-btn');
+    const transBtn = document.getElementById('msg-action-translate-btn');
     if (_longPressTarget) {
+        sheet._targetEl = _longPressTarget;
         const isStarred = _longPressTarget.classList.contains('starred');
         if (starBtn) {
             starBtn.textContent = isStarred ? '⭐ お気に入り解除' : '⭐ お気に入り';
             starBtn.classList.toggle('is-active', isStarred);
         }
-        // フレーズ保存ボタンはアシスタントメッセージのみ表示
-        if (phraseBtn) {
-            phraseBtn.style.display = _longPressTarget.classList.contains('assistant') ? '' : 'none';
-        }
+        const isAssistant = _longPressTarget.classList.contains('assistant');
+        if (phraseBtn) phraseBtn.style.display = isAssistant ? '' : 'none';
+        // 英訳保存はユーザーメッセージのみ
+        if (transBtn) transBtn.style.display = !isAssistant ? '' : 'none';
     }
     sheet?.classList.remove('hidden');
 }
@@ -3065,6 +3140,7 @@ async function loadEnglishPhrases() {
 }
 
 async function deleteEnglishPhrase(id) {
+    if (!confirm('このフレーズを削除しますか？')) return;
     try {
         await apiFetch(`/api/english_phrases/${id}`, { method: 'DELETE' });
         showToast('削除しました');
@@ -3073,6 +3149,276 @@ async function deleteEnglishPhrase(id) {
         showToast('削除に失敗しました', true);
     }
 }
+
+// ----- コレクション機能 -----
+let _collectionCurrentLabel = '';
+
+window.openCollectionOverlay = async () => {
+    document.getElementById('collection-overlay')?.classList.remove('hidden');
+    const tabsEl = $('#collection-tabs');
+    if (!tabsEl) return;
+    tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--text-muted);">読み込み中...</span>';
+    try {
+        const data = await apiFetch('/api/messages/collections');
+        const labels = data.collections || [];
+        if (!labels.length) {
+            tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--text-muted);">コレクションはまだありません</span>';
+            $('#collection-results').innerHTML = '<p class="search-hint">メッセージを長押し → 🏷 で保存できます</p>';
+            return;
+        }
+        tabsEl.innerHTML = labels.map(l => `
+            <button class="modal-btn" style="font-size:0.78rem;padding:4px 12px;white-space:nowrap;" onclick="loadCollectionMessages('${escapeHtml(l)}')">${escapeHtml(l)}</button>
+        `).join('');
+        loadCollectionMessages(labels[0]);
+    } catch (e) {
+        tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--text-muted);">取得失敗</span>';
+    }
+};
+
+window.closeCollectionOverlay = (e) => {
+    if (e && e.target.closest && e.target.closest('.search-panel')) return;
+    document.getElementById('collection-overlay')?.classList.add('hidden');
+};
+
+window.loadCollectionMessages = async (label) => {
+    _collectionCurrentLabel = label;
+    const results = $('#collection-results');
+    if (!results) return;
+    results.innerHTML = '<p class="search-hint">読み込み中...</p>';
+    try {
+        const data = await apiFetch(`/api/messages/labeled?label=${encodeURIComponent(label)}`);
+        const list = data.messages || [];
+        if (!list.length) {
+            results.innerHTML = `<p class="search-empty">「${escapeHtml(label)}」のメッセージはありません</p>`;
+            return;
+        }
+        results.innerHTML = list.map(m => {
+            const dt = new Date(m.timestamp);
+            const tStr = `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
+            const preview = m.content.length > 160 ? m.content.slice(0, 160) + '...' : m.content;
+            return `<div class="search-result-item" style="position:relative;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                    <div onclick="jumpToMessage(${m.id}); closeCollectionOverlay();" style="flex:1;cursor:pointer;">
+                        <div class="search-result-role">${m.role === 'assistant' ? 'AI' : 'YOU'}</div>
+                        <div class="search-result-snippet">${escapeHtml(preview)}</div>
+                        <div class="search-result-time">🏷 ${escapeHtml(label)} · ${tStr}</div>
+                    </div>
+                    <button onclick="removeMessageFromCollection(${m.id}, '${escapeHtml(label)}')" style="background:none;border:none;cursor:pointer;font-size:0.75rem;color:var(--text-muted);padding:4px 6px;white-space:nowrap;flex-shrink:0;" title="コレクションから解除">解除</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        results.innerHTML = '<p class="search-empty">取得に失敗しました</p>';
+    }
+};
+
+window.removeMessageFromCollection = async (msgId, label) => {
+    try {
+        await apiFetch(`/api/messages/${msgId}/label`, { method: 'POST', body: JSON.stringify({ label: '' }) });
+        showToast('コレクションから解除しました');
+        loadCollectionMessages(label);
+    } catch {
+        showToast('解除に失敗しました', true);
+    }
+};
+
+let _actionSheetMsgRole = 'assistant';
+
+window.msgActionSaveToCollection = async () => {
+    const msgEl = document.getElementById('msg-action-sheet')?._targetEl;
+    if (!msgEl) { closeMsgActionSheet(); return; }
+    const msgId = msgEl.dataset.msgId;
+    if (!msgId) { showToast('メッセージIDが取得できません', true); closeMsgActionSheet(); return; }
+
+    let collections = [];
+    try {
+        const d = await apiFetch('/api/messages/collections');
+        collections = d.collections || [];
+    } catch {}
+
+    let labelName = '';
+    if (collections.length > 0) {
+        const hint = collections.slice(0, 5).join(' / ');
+        labelName = prompt(`コレクション名を入力してください\n（既存: ${hint}）`);
+    } else {
+        labelName = prompt('コレクション名を入力してください（例: 仕事メモ、英語、アイデア）');
+    }
+    if (!labelName || !labelName.trim()) { closeMsgActionSheet(); return; }
+
+    try {
+        await apiFetch(`/api/messages/${msgId}/label`, { method: 'POST', body: JSON.stringify({ label: labelName.trim() }) });
+        showToast(`「${labelName.trim()}」に保存しました`);
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
+    closeMsgActionSheet();
+};
+
+window.msgActionTranslateAndSave = async () => {
+    const raw = _getLongPressText();
+    if (!raw) { closeMsgActionSheet(); return; }
+    closeMsgActionSheet();
+    showToast('英訳中...');
+    try {
+        const data = await apiFetch('/api/english_phrases/translate_and_save', {
+            method: 'POST',
+            body: JSON.stringify({ text: raw }),
+        });
+        showToast(`📚 英訳して保存: ${data.phrase}`);
+        loadEnglishPhrases();
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
+};
+
+// ----- MIT設定モーダル -----
+window.openMitModal = async () => {
+    const modal = $('#mit-modal');
+    if (!modal) return;
+    // 既存のMITを取得してフィールドに表示
+    try {
+        const data = await apiFetch('/api/dashboard');
+        const items = (data.mit || []).map(s => s.replace(/^\[[ xX]\]\s*/, ''));
+        $('#mit-input-1').value = items[0] || '';
+        $('#mit-input-2').value = items[1] || '';
+        $('#mit-input-3').value = items[2] || '';
+    } catch {}
+    modal.classList.remove('hidden');
+    setTimeout(() => $('#mit-input-1').focus(), 100);
+};
+
+window.closeMitModal = (e) => {
+    if (e && e.target.closest && e.target.closest('.modal-card')) return;
+    $('#mit-modal')?.classList.add('hidden');
+};
+
+window.saveMitFromModal = async () => {
+    const items = [
+        $('#mit-input-1').value.trim(),
+        $('#mit-input-2').value.trim(),
+        $('#mit-input-3').value.trim(),
+    ].filter(Boolean);
+    if (!items.length) { showToast('MITを1つ以上入力してください', true); return; }
+
+    const btn = $('#mit-save-btn');
+    btn.textContent = '保存中...';
+    btn.disabled = true;
+    try {
+        await apiFetch('/api/mit_set', { method: 'POST', body: JSON.stringify({ items }) });
+        showToast('🎯 MITを保存しました');
+        $('#mit-modal').classList.add('hidden');
+        loadDashboard();
+    } catch {
+        showToast('保存に失敗しました', true);
+    } finally {
+        btn.textContent = '保存';
+        btn.disabled = false;
+    }
+};
+
+// ----- 瞑想タイマー -----
+let _medState = { interval: null, remaining: 0, total: 0 };
+
+window.openMeditationModal = () => {
+    const modal = $('#meditation-modal');
+    if (!modal) return;
+    const lastMin = parseInt(localStorage.getItem('med_last_minutes') || '10', 10);
+    const customInput = $('#med-custom-min');
+    if (customInput) customInput.value = lastMin;
+    $('#med-step-setup').style.display = '';
+    $('#med-step-timer').style.display = 'none';
+    $('#med-step-done').style.display = 'none';
+    modal.classList.remove('hidden');
+};
+
+window.setMedDuration = (min) => {
+    const input = $('#med-custom-min');
+    if (input) input.value = min;
+};
+
+window.startMeditation = () => {
+    const min = parseInt($('#med-custom-min').value || '10', 10);
+    if (isNaN(min) || min < 1) { showToast('時間を入力してください', true); return; }
+    localStorage.setItem('med_last_minutes', String(min));
+    _medState.total = min * 60;
+    _medState.remaining = min * 60;
+    $('#med-step-setup').style.display = 'none';
+    $('#med-step-timer').style.display = '';
+    _updateMedDisplay();
+    _medState.interval = setInterval(() => {
+        _medState.remaining--;
+        _updateMedDisplay();
+        if (_medState.remaining <= 0) _finishMeditation(min);
+    }, 1000);
+    // ライフログに開始記録
+    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想開始（${min}分）` }) }).catch(() => {});
+};
+
+function _updateMedDisplay() {
+    const m = Math.floor(_medState.remaining / 60);
+    const s = _medState.remaining % 60;
+    const el = $('#med-timer-display');
+    if (el) el.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function _finishMeditation(min) {
+    clearInterval(_medState.interval);
+    _medState.interval = null;
+    $('#med-step-timer').style.display = 'none';
+    $('#med-step-done').style.display = '';
+    const msg = `${ min }分間の瞑想を完了しました。`;
+    const doneEl = $('#med-done-msg');
+    if (doneEl) doneEl.textContent = msg;
+    // ライフログに完了記録
+    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想完了（${min}分）` }) }).catch(() => {});
+    showToast(`🧘 ${msg}`);
+}
+
+window.stopMeditation = () => {
+    if (_medState.interval) { clearInterval(_medState.interval); _medState.interval = null; }
+    const elapsed = Math.max(0, _medState.total - _medState.remaining);
+    const min = Math.round(elapsed / 60);
+    if (min > 0) {
+        apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想終了（${min}分）` }) }).catch(() => {});
+    }
+    $('#meditation-modal')?.classList.add('hidden');
+};
+
+window.closeMeditationModal = (e) => {
+    if (e && e.target.closest && e.target.closest('.modal-card')) return;
+    if (_medState.interval) stopMeditation();
+    else $('#meditation-modal')?.classList.add('hidden');
+};
+
+// ----- Fitbit全データ -----
+window.loadFitbitAllData = async () => {
+    const el = $('#dash-fitbit-all');
+    if (!el) return;
+    el.innerHTML = '<div class="loading-placeholder">データを取得中...</div>';
+    try {
+        const data = await apiFetch('/api/fitbit_all_data?days=14');
+        const rows = data.data || [];
+        if (!rows.length) { el.innerHTML = '<div class="loading-placeholder">Fitbitデータがありません</div>'; return; }
+        el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:0.78rem;">
+            <thead><tr style="color:var(--text-muted);">
+                <th style="padding:6px 8px;text-align:left;">日付</th>
+                <th style="padding:6px 4px;text-align:center;">睡眠スコア</th>
+                <th style="padding:6px 4px;text-align:center;">睡眠時間</th>
+                <th style="padding:6px 4px;text-align:center;">歩数</th>
+                <th style="padding:6px 4px;text-align:center;">カロリー</th>
+            </tr></thead>
+            <tbody>${rows.map(r => `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
+                <td style="padding:6px 8px;color:var(--text-secondary);">${r.date}</td>
+                <td style="padding:6px 4px;text-align:center;color:${r.sleep_score >= 80 ? 'var(--accent)' : r.sleep_score >= 60 ? '#ffd43b' : 'var(--text-primary)'};">${r.sleep_score ?? '—'}</td>
+                <td style="padding:6px 4px;text-align:center;">${r.sleep_duration ?? '—'}</td>
+                <td style="padding:6px 4px;text-align:center;">${r.steps ? r.steps.toLocaleString() : '—'}</td>
+                <td style="padding:6px 4px;text-align:center;">${r.calories ? r.calories.toLocaleString() : '—'}</td>
+            </tr>`).join('')}</tbody>
+        </table>`;
+    } catch {
+        el.innerHTML = '<div class="loading-placeholder">データの取得に失敗しました</div>';
+    }
+};
 
 // ----- アクションチップス展開トグル -----
 function toggleMoreChips() {

@@ -14,6 +14,7 @@ from api.database import (
     delete_message_by_id, toggle_message_star, get_starred_messages,
     search_messages, add_push_subscription, remove_push_subscription,
     add_english_phrase, get_english_phrases, delete_english_phrase,
+    set_message_label, get_labeled_messages, get_all_labels,
 )
 from api import notification_service
 from services.info_service import InfoService
@@ -54,6 +55,7 @@ class ChatResponse(BaseModel):
     reply: str
     user_message_id: Optional[int] = None
     assistant_message_id: Optional[int] = None
+    translation: Optional[str] = None
 
 class AuthRequest(BaseModel):
     password: str
@@ -107,9 +109,21 @@ async def _fetch_link_meta(url: str) -> dict:
         try:
             pw_title, _ = await asyncio.wait_for(parse_url_with_readability(url), timeout=TIMEOUT_PLAYWRIGHT)
             if pw_title and pw_title not in ("No Title Found", "Untitled", ""):
-                title = pw_title.replace("Amazon.co.jp:", "").replace("Amazon.com:", "").replace("Amazon |", "").strip()
-                title = _re.sub(r"\s*:\s*Amazon\.co\.jp.*$", "", title).strip()
-                title = _re.sub(r"\s*:\s*Amazon\.com.*$", "", title).strip()
+                t = pw_title
+                # Amazon固有のゴミを除去
+                t = _re.sub(r"Amazon\.co\.jp\s*[:：]\s*", "", t)
+                t = _re.sub(r"Amazon\.com\s*[:：]\s*", "", t)
+                t = _re.sub(r"\s*\|\s*Amazon.*$", "", t)
+                t = _re.sub(r"\s*:\s*Amazon.*$", "", t)
+                # 「 | 著者名」以降を削除
+                t = _re.sub(r"\s*[|｜]\s*.+$", "", t)
+                # 【...】【...】などの補足を削除
+                t = _re.sub(r"\s*【[^】]*】\s*$", "", t)
+                # 「：副題」など長すぎる副題を削除（40文字超の場合メインタイトルのみ）
+                colon_match = _re.match(r"^(.{3,40})[：:].+$", t)
+                if colon_match:
+                    t = colon_match.group(1)
+                title = t.strip() or title
         except Exception as e:
             logging.error(f"Amazon Playwright fetch failed for {url}: {e}")
         return {"title": title if title else "Untitled", "type": link_type}
@@ -141,9 +155,9 @@ async def _fetch_link_meta(url: str) -> dict:
 
 
 # --- Obsidian同期用共通関数 (英語表記統一) ---
-async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: str, 
+async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: str,
                                 purpose: str="", target_date: str="", memo: str="", summary: str="",
-                                is_update: bool = False):
+                                is_update: bool = False, old_title: str = ""):
     """リンク情報をObsidianに作成・更新する"""
     if not chat_service or not chat_service.drive_service: return
     service = chat_service.drive_service.get_service()
@@ -161,21 +175,30 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
     # 既存ファイルの検索ロジック (タイムスタンプの有無に関わらずタイトルで判定)
     existing_id = None
     target_filename = f"{safe_title}.md"
-    
+
+    # old_titleが指定されている場合はそちらでも検索（タイトル変更時の対応）
+    search_titles = [safe_title]
+    if old_title and old_title != title:
+        safe_old = re.sub(r'[\\/*?:"<>|]', "", old_title)[:80]
+        if safe_old:
+            search_titles.append(safe_old)
+
     try:
         drive_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         f_id = await chat_service.drive_service.find_file(service, drive_root, folder_name)
         if not f_id: f_id = await chat_service.drive_service.create_folder(service, drive_root, folder_name)
 
-        # ドライブ内をタイトルで検索
-        q_title = safe_title.replace("'", "\\'")
-        query = f"'{f_id}' in parents and name contains '{q_title}' and trashed = false"
-        results = await asyncio.to_thread(lambda: service.files().list(q=query, fields="files(id, name)").execute())
-        for f in results.get("files", []):
-            fname = f["name"]
-            if fname == f"{safe_title}.md" or fname.endswith(f"-{safe_title}.md"):
-                existing_id = f["id"]
-                target_filename = fname # 既存のファイル名を維持
+        for search_title in search_titles:
+            q_title = search_title.replace("'", "\\'")
+            query = f"'{f_id}' in parents and name contains '{q_title}' and trashed = false"
+            results = await asyncio.to_thread(lambda: service.files().list(q=query, fields="files(id, name)").execute())
+            for f in results.get("files", []):
+                fname = f["name"]
+                if fname == f"{search_title}.md" or fname.endswith(f"-{search_title}.md"):
+                    existing_id = f["id"]
+                    target_filename = fname
+                    break
+            if existing_id:
                 break
     except Exception as e:
         logging.error(f"Obsidian Search Error: {e}")
@@ -264,6 +287,7 @@ async def chat(req: ChatRequest):
 
     # 返信先のコンテキストをプロンプト前置で添付
     user_message = req.message
+    translation = None
     if req.reply_to_id:
         try:
             quoted = next((m for m in db_history if m.get("id") == req.reply_to_id), None)
@@ -273,7 +297,34 @@ async def chat(req: ChatRequest):
         except Exception as e:
             logging.debug(f"reply context attach failed: {e}")
 
-    reply = await partner_cog.generate_response_for_app(user_message, history_messages, english_mode=req.english_mode)
+    # ENモード: 日本語入力を英訳してからAIに送る
+    import re as _re
+    is_japanese = bool(_re.search(r'[ぁ-ん゠-ヿ一-鿿]', req.message))
+    if req.english_mode and is_japanese:
+        try:
+            from google.genai import types as _types
+            gemini_client = getattr(bot, "gemini_client", None)
+            if gemini_client:
+                trans_resp = await gemini_client.aio.models.generate_content(
+                    model="gemini-2.5-flash-preview-04-17",
+                    contents=f"Translate the following Japanese text to natural English. Output only the English translation, nothing else.\n\n{req.message}"
+                )
+                translation = trans_resp.text.strip()
+                if req.reply_to_id:
+                    user_message = f"[Replying to: 「{snippet}」]\n\n{translation}" if 'snippet' in dir() else translation
+                else:
+                    user_message = translation
+        except Exception as e:
+            logging.debug(f"EN mode translation failed: {e}")
+
+    # 英語メッセージのフィードバック（ENモードOFF、英語入力時）
+    english_feedback_hint = ""
+    if not req.english_mode and not is_japanese and _re.search(r'[a-zA-Z]', req.message) and len(req.message) > 5:
+        english_feedback_hint = "\n\n[SYSTEM HINT: The user has written in English. Naturally include brief, encouraging feedback on their English (grammar, naturalness, word choice) within your response. Keep feedback short and positive.]"
+
+    reply = await partner_cog.generate_response_for_app(
+        user_message + english_feedback_hint, history_messages, english_mode=req.english_mode
+    )
     asst_id = await notification_service.save_message_and_notify("assistant", reply)
 
     if bot.drive_service:
@@ -283,7 +334,7 @@ async def chat(req: ChatRequest):
             name="db-backup-chat",
         )
 
-    return ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
+    return ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id, translation=translation)
 
 @router.get("/history", dependencies=[Depends(verify_api_key)])
 async def history(limit: int = 100):
@@ -965,29 +1016,39 @@ async def update_link(link_id: int, req: LinkUpdateRequest):
     link = await get_link_by_id(link_id)
     if not link: raise HTTPException(status_code=404, detail="リンク未検出")
 
-    new_title = req.title or link["title"]
+    old_title = link["title"] or ""
+    new_title = req.title or old_title
     new_type = req.type or link["type"]
-    
-    # DB更新
-    await update_link_details(link_id, new_title, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, new_type, req.tags)
+    existing_cal_event_id = link.get("calendar_event_id", "")
 
-    # Obsidian更新 (Drive)
-    chat_service = getattr(app.state, "chat_service", None)
-    await sync_link_to_obsidian(chat_service, new_title, new_type, link["url"], req.purpose, req.target_date, req.memo, req.summary, is_update=True)
-
-    # カレンダー追加
+    # カレンダー処理（重複防止）
+    new_cal_event_id = existing_cal_event_id
     if req.add_to_calendar and req.target_date:
         bot = getattr(app.state, "bot", None)
         if bot and bot.calendar_service:
             prefix = {"map": "🗺️[行]", "recipe": "🍳[食]", "book": "📚[本]"}.get(new_type, "📎[記]")
+            cal_body = {
+                "summary": f"{prefix} {new_title}",
+                "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
+                "start": {"date": req.target_date},
+                "end": {"date": (datetime.datetime.strptime(req.target_date, "%Y-%m-%d") + datetime.timedelta(days=1)).strftime("%Y-%m-%d")},
+            }
             try:
-                dt = datetime.datetime.strptime(req.target_date, "%Y-%m-%d")
-                bot.calendar_service.get_service().events().insert(calendarId="primary", body={
-                    "summary": f"{prefix} {new_title}", "description": f"目的: {req.purpose}\nメモ: {req.memo}\nURL: {link['url']}",
-                    "start": {"date": dt.strftime("%Y-%m-%d")}, "end": {"date": (dt + datetime.timedelta(days=1)).strftime("%Y-%m-%d")}
-                }).execute()
+                cal_svc = bot.calendar_service.get_service()
+                if existing_cal_event_id:
+                    cal_svc.events().update(calendarId="primary", eventId=existing_cal_event_id, body=cal_body).execute()
+                else:
+                    result = cal_svc.events().insert(calendarId="primary", body=cal_body).execute()
+                    new_cal_event_id = result.get("id", "")
             except Exception as e:
-                logging.warning(f"link calendar add failed: {e}")
+                logging.warning(f"link calendar add/update failed: {e}")
+
+    # DB更新
+    await update_link_details(link_id, new_title, req.purpose, req.summary, req.memo, req.target_date, req.linked_note_url, new_type, req.tags, new_cal_event_id)
+
+    # Obsidian更新 (Drive) — old_titleを渡してUntitled→新タイトルの更新に対応
+    chat_service = getattr(app.state, "chat_service", None)
+    await sync_link_to_obsidian(chat_service, new_title, new_type, link["url"], req.purpose, req.target_date, req.memo, req.summary, is_update=True, old_title=old_title)
 
     # クラウドバックアップ
     bot = getattr(app.state, "bot", None)
@@ -2064,6 +2125,91 @@ async def remove_english_phrase(phrase_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="フレーズが見つかりません")
     return {"deleted": True}
+
+
+class TranslateSaveRequest(BaseModel):
+    text: str
+
+@router.post("/english_phrases/translate_and_save", dependencies=[Depends(verify_api_key)])
+async def translate_and_save_phrase(req: TranslateSaveRequest):
+    """ユーザーのテキスト（日本語）を英訳してフレーズ帳に保存する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not bot.gemini_client:
+        raise HTTPException(status_code=503, detail="AIサービス未接続")
+    try:
+        resp = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash-preview-04-17",
+            contents=f"Translate the following Japanese text to natural, everyday English. Output only the English translation.\n\n{req.text}"
+        )
+        translation = resp.text.strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"翻訳に失敗しました: {e}")
+
+    phrase_id = await add_english_phrase(translation, req.text, req.text[:300])
+    return {"id": phrase_id, "phrase": translation, "translation": req.text}
+
+
+# ===== メッセージコレクション =====
+
+class LabelRequest(BaseModel):
+    label: str
+
+@router.post("/messages/{message_id}/label", dependencies=[Depends(verify_api_key)])
+async def set_label(message_id: int, req: LabelRequest):
+    ok = await set_message_label(message_id, req.label.strip())
+    if not ok:
+        raise HTTPException(status_code=404, detail="メッセージが見つかりません")
+    return {"ok": True, "label": req.label.strip()}
+
+@router.get("/messages/collections", dependencies=[Depends(verify_api_key)])
+async def list_collections():
+    labels = await get_all_labels()
+    return {"collections": labels}
+
+@router.get("/messages/labeled", dependencies=[Depends(verify_api_key)])
+async def labeled_messages(label: str = ""):
+    if not label:
+        raise HTTPException(status_code=400, detail="labelを指定してください")
+    msgs = await get_labeled_messages(label)
+    return {"messages": msgs, "label": label}
+
+
+# ===== Fitbit全データ =====
+
+@router.get("/fitbit_all_data", dependencies=[Depends(verify_api_key)])
+async def fitbit_all_data(days: int = 14):
+    """過去N日分のFitbitデータを返す（最大30日）。"""
+    from api import app
+    days = max(1, min(days, 30))
+    bot = getattr(app.state, "bot", None)
+    fitbit_cog = bot.get_cog("FitbitCog") if bot else None
+    if not fitbit_cog or not fitbit_cog.is_ready:
+        return {"data": []}
+
+    now_dt = datetime.datetime.now(JST)
+    results = []
+    for i in range(days - 1, -1, -1):
+        date = now_dt.date() - datetime.timedelta(days=i)
+        try:
+            async with _get_fitbit_semaphore():
+                stats = await fitbit_cog.fitbit_service.get_stats(date)
+            if stats:
+                raw_dur = stats.get("total_sleep_minutes")
+                results.append({
+                    "date": date.strftime("%m/%d"),
+                    "date_full": date.strftime("%Y-%m-%d"),
+                    "sleep_score": stats.get("sleep_score"),
+                    "sleep_duration": fitbit_cog._format_minutes(raw_dur) if raw_dur else None,
+                    "steps": stats.get("steps"),
+                    "calories": stats.get("calories"),
+                })
+            else:
+                results.append({"date": date.strftime("%m/%d"), "date_full": date.strftime("%Y-%m-%d")})
+        except Exception:
+            results.append({"date": date.strftime("%m/%d"), "date_full": date.strftime("%Y-%m-%d")})
+
+    return {"data": results}
 
 
 # ===== ブリーフィング =====

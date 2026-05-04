@@ -98,8 +98,10 @@ async def init_db():
             "ALTER TABLE stocked_links ADD COLUMN target_date TEXT DEFAULT ''",
             "ALTER TABLE stocked_links ADD COLUMN linked_note_url TEXT DEFAULT ''",
             "ALTER TABLE stocked_links ADD COLUMN tags TEXT DEFAULT ''",
+            "ALTER TABLE stocked_links ADD COLUMN calendar_event_id TEXT DEFAULT ''",
             "ALTER TABLE messages ADD COLUMN starred INTEGER DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN reply_to INTEGER DEFAULT NULL",
+            "ALTER TABLE messages ADD COLUMN label TEXT DEFAULT ''",
         ):
             try:
                 await db.execute(ddl)
@@ -162,6 +164,40 @@ async def get_starred_messages(limit: int = 100):
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+
+async def set_message_label(message_id: int, label: str) -> bool:
+    """メッセージにラベルを設定（空文字で解除）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE messages SET label = ? WHERE id = ?", (label, message_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_labeled_messages(label: str, limit: int = 100):
+    """指定ラベルのメッセージ一覧。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, role, content, timestamp, label FROM messages "
+            "WHERE label = ? ORDER BY id DESC LIMIT ?",
+            (label, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def get_all_labels():
+    """使用中のラベル一覧（重複なし）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT DISTINCT label FROM messages WHERE label != '' ORDER BY label"
+        )
+        rows = await cursor.fetchall()
+        return [row["label"] for row in rows]
 
 
 async def search_messages(q: str, limit: int = 50):
@@ -254,23 +290,22 @@ async def get_link_by_id(link_id: int):
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags FROM stocked_links WHERE id = ?",
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, calendar_event_id FROM stocked_links WHERE id = ?",
             (link_id,)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
 
-# ★ 修正ポイント： title 引数を追加し、SQLの SET 句にも title を追加
-async def update_link_details(link_id: int, title: str, purpose: str, summary: str, memo: str, target_date: str, linked_note_url: str, link_type: str, tags: str = ""):
+async def update_link_details(link_id: int, title: str, purpose: str, summary: str, memo: str, target_date: str, linked_note_url: str, link_type: str, tags: str = "", calendar_event_id: str = ""):
     """リンクの詳細情報を更新する"""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         await db.execute(
             """
             UPDATE stocked_links
-            SET title = ?, purpose = ?, summary = ?, memo = ?, target_date = ?, linked_note_url = ?, type = ?, tags = ?
+            SET title = ?, purpose = ?, summary = ?, memo = ?, target_date = ?, linked_note_url = ?, type = ?, tags = ?, calendar_event_id = ?
             WHERE id = ?
             """,
-            (title, purpose, summary, memo, target_date, linked_note_url, link_type, tags, link_id)
+            (title, purpose, summary, memo, target_date, linked_note_url, link_type, tags, calendar_event_id, link_id)
         )
         await db.commit()
 

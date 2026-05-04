@@ -91,7 +91,11 @@ class InfoService:
         except Exception as e:
             logging.warning(f"Yahoo Weather fetch failed: {e}")
 
-        return await self._fetch_jma_weather()
+        # JMAフォールバックは岡山専用（33/6710 or 33/6720）
+        if location and location.startswith("33/"):
+            return await self._fetch_jma_weather()
+
+        return {"summary": "取得失敗", "daily": [], "hourly": [], "slots": [], "max_temp": "--", "min_temp": "--"}
 
     async def _fetch_yahoo_weather(self, location: str):
         url = f"https://weather.yahoo.co.jp/weather/jp/{location}.html"
@@ -165,6 +169,12 @@ class InfoService:
             weather_text = self._extract_weather_text_from_node(node) or "不明"
             max_t, min_t = self._extract_temps_from_node(node, text)
 
+            # 降水確率を抽出（ページ内 N% パターンから）
+            pop = "--"
+            pop_match = re.search(r'(\d+)\s*%', text)
+            if pop_match:
+                pop = f"{pop_match.group(1)}%"
+
             if i == 0:
                 day_label = "今日"
             elif i == 1:
@@ -180,6 +190,7 @@ class InfoService:
                 "icon": self._get_weather_icon_by_text(weather_text),
                 "max_temp": max_t,
                 "min_temp": min_t,
+                "pop": pop,
             })
 
         return daily if daily else None
