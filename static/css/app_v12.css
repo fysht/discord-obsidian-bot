@@ -1295,9 +1295,38 @@ mark.search-hl {
 }
 
 /* ========== ライフログ行（タップ可能） ========== */
-.lifelog-row { transition: background 0.12s; }
+.lifelog-row {
+    display: grid;
+    grid-template-columns: 92px 22px 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    transition: background 0.12s;
+}
 .lifelog-row:hover, .lifelog-row:active {
     background: rgba(255,255,255,0.03);
+}
+.lifelog-time {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    letter-spacing: -0.02em;
+    text-align: right;
+    white-space: nowrap;
+}
+.lifelog-mark {
+    font-family: "Apple Color Emoji", "Segoe UI Emoji", Helvetica, sans-serif;
+    text-align: center;
+    width: 22px;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+.lifelog-body {
+    font-size: 0.88rem;
+    color: var(--text-primary);
+    word-break: break-word;
 }
 
 /* ========== 期限ピッカーの簡易ボタン ========== */
@@ -1339,11 +1368,28 @@ mark.search-hl {
 
 /* ========== チュートリアル ========== */
 #tutorial-modal .modal-card {
-    width: 90vw;
+    width: 92vw;
+    max-width: 480px;
+    box-sizing: border-box;
 }
 #tutorial-content {
     line-height: 1.6;
     font-size: 0.92rem;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+#tutorial-content * {
+    max-width: 100%;
+    box-sizing: border-box;
+}
+#tutorial-content p,
+#tutorial-content li {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+#tutorial-content ul {
+    padding-left: 20px;
+    margin: 6px 0;
 }
 #tutorial-content h4 {
     margin: 14px 0 6px;
@@ -1355,6 +1401,25 @@ mark.search-hl {
     padding: 2px 6px;
     border-radius: 4px;
     font-size: 0.85em;
+}
+#tutorial-content .tut-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    margin-top: 10px;
+}
+#tutorial-content .tut-card {
+    padding: 10px;
+    background: rgba(255,255,255,0.04);
+    border-radius: 8px;
+    overflow: hidden;
+}
+#tutorial-content .tut-callout {
+    background: rgba(0,186,152,0.08);
+    padding: 10px;
+    border-radius: 8px;
+    margin-top: 10px;
+    font-size: 0.85rem;
 }
 #tutorial-prev:disabled {
     opacity: 0.4;

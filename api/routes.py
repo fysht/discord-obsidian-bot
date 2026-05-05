@@ -16,6 +16,8 @@ from api.database import (
     add_english_phrase, get_english_phrases, delete_english_phrase,
     set_message_label, get_labeled_messages, get_all_labels,
     get_quiz_phrase_pool, record_quiz_attempt,
+    add_daily_question, get_pending_questions, get_questions_by_date,
+    answer_daily_question, resolve_questions, delete_daily_question,
 )
 from api import notification_service
 from services.info_service import InfoService
@@ -2639,3 +2641,344 @@ async def briefing():
         reply = f"AI生成でエラーが発生しました。\n\n{context}"
 
     return {"reply": reply, "type": briefing_type}
+
+
+# ===========================================================
+# デイリーサマリー（1日の統合ログ）と質問キュー
+# ===========================================================
+
+async def _collect_daily_context(date_str: str) -> dict:
+    """指定日の各種データを集約してデイリーサマリー生成用コンテキストを返す。"""
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    bot = getattr(app.state, "bot", None)
+    ctx = {
+        "date": date_str,
+        "calendar": "",
+        "weather": "",
+        "lifelog": "",
+        "location": "",
+        "fitbit": "",
+        "chat_log": "",
+    }
+
+    # カレンダー予定
+    if chat_service and getattr(chat_service, "calendar_service", None):
+        try:
+            events = await chat_service.calendar_service.get_raw_events_for_date(date_str)
+            if events:
+                ctx["calendar"] = "\n".join(
+                    f"- {e.get('summary', '?')}（{e.get('start_time', '?')}〜{e.get('end_time', '?')}）"
+                    for e in events[:30]
+                )
+        except Exception as e:
+            logging.debug(f"summary calendar error: {e}")
+
+    # 天気
+    if bot and getattr(bot, "info_service", None):
+        try:
+            w = await bot.info_service.get_weather()
+            if w and w.get("summary") not in ("取得失敗", None):
+                ctx["weather"] = (
+                    f"{w.get('summary', '?')} / 最高 {w.get('max_temp', '--')}℃ "
+                    f"最低 {w.get('min_temp', '--')}℃"
+                )
+        except Exception as e:
+            logging.debug(f"summary weather error: {e}")
+
+    # ライフログ・位置情報（DailyNoteから）
+    if chat_service and chat_service.drive_service:
+        try:
+            service = chat_service.drive_service.get_service()
+            folder_id = await chat_service.drive_service.find_file(
+                service, chat_service.drive_folder_id, "DailyNotes"
+            )
+            if folder_id:
+                f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date_str}.md")
+                if f_id:
+                    note_content = await chat_service.drive_service.read_text_file(service, f_id)
+                    import re as _re
+                    m = _re.search(r"## 🪟 Lifelog\n(.*?)(?=\n## |\Z)", note_content, _re.DOTALL)
+                    if m:
+                        ctx["lifelog"] = m.group(1).strip()
+                    m = _re.search(r"## 📍 Location History\n(.*?)(?=\n## |\Z)", note_content, _re.DOTALL)
+                    if m:
+                        ctx["location"] = m.group(1).strip()
+        except Exception as e:
+            logging.debug(f"summary lifelog/location error: {e}")
+
+    # Fitbit
+    fitbit_cog = bot.get_cog("FitbitCog") if bot else None
+    if fitbit_cog and getattr(fitbit_cog, "is_ready", False):
+        try:
+            target_date = datetime.datetime.strptime(date_str, "%Y-%m-%d").date()
+            stats = await _fitbit_get_or_fetch(fitbit_cog.fitbit_service, target_date)
+            if stats:
+                lines = []
+                if stats.get("steps") is not None:
+                    lines.append(f"歩数: {stats['steps']}")
+                if stats.get("calories_out") is not None:
+                    lines.append(f"消費カロリー: {stats['calories_out']}")
+                if stats.get("total_sleep_minutes") is not None:
+                    lines.append(f"総睡眠時間: {stats['total_sleep_minutes']}分")
+                if stats.get("sleep_score") is not None:
+                    lines.append(f"睡眠スコア: {stats['sleep_score']}")
+                if stats.get("resting_heart_rate") is not None:
+                    lines.append(f"安静時心拍: {stats['resting_heart_rate']}")
+                ctx["fitbit"] = " / ".join(lines)
+        except Exception as e:
+            logging.debug(f"summary fitbit error: {e}")
+
+    # チャットログ
+    try:
+        log = await get_todays_log()
+        # 長すぎる場合は末尾 6000 文字程度に切り詰め
+        if log and len(log) > 6000:
+            log = log[-6000:]
+        ctx["chat_log"] = log or ""
+    except Exception:
+        pass
+
+    return ctx
+
+
+def _format_daily_summary_context(ctx: dict) -> str:
+    """コンテキスト dict を Gemini に渡す Markdown 文字列に整形。"""
+    parts = [f"# 対象日: {ctx['date']}"]
+    if ctx.get("weather"):
+        parts.append(f"## 天気\n{ctx['weather']}")
+    if ctx.get("calendar"):
+        parts.append(f"## カレンダー予定\n{ctx['calendar']}")
+    if ctx.get("lifelog"):
+        parts.append(f"## ライフログ\n{ctx['lifelog']}")
+    if ctx.get("location"):
+        parts.append(f"## 移動履歴\n{ctx['location']}")
+    if ctx.get("fitbit"):
+        parts.append(f"## Fitbit\n{ctx['fitbit']}")
+    if ctx.get("chat_log"):
+        parts.append(f"## マネージャーとの会話（要約してOK）\n{ctx['chat_log']}")
+    return "\n\n".join(parts)
+
+
+async def _generate_daily_summary(date_str: str, answers: dict | None = None) -> dict:
+    """Gemini を使ってサマリーを生成し、必要なら質問を返す。
+    answers: {qid: text} の形で既存質問への回答を渡せる。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not bot.gemini_client:
+        return {"summary": "", "questions": [], "error": "AI が接続されていません"}
+
+    ctx = await _collect_daily_context(date_str)
+    ctx_text = _format_daily_summary_context(ctx)
+
+    answer_text = ""
+    if answers:
+        answer_lines = []
+        existing_qs = await get_questions_by_date(date_str, scope='summary')
+        q_by_id = {q['id']: q for q in existing_qs}
+        for qid_str, ans in answers.items():
+            try:
+                qid = int(qid_str)
+            except (TypeError, ValueError):
+                continue
+            q = q_by_id.get(qid)
+            if q and ans:
+                answer_lines.append(f"Q: {q['question']}\nA: {ans}")
+        if answer_lines:
+            answer_text = "\n\n## 既知の補足回答\n" + "\n\n".join(answer_lines)
+
+    prompt = (
+        "あなたはユーザーのマネージャーです。1日の統合ログ（デイリーサマリー）を Markdown で書きます。\n"
+        "以下の情報をもとに、その日の出来事を時系列に整理した簡潔なサマリーを作ってください。\n"
+        "会話部分は重要なやりとりのみ要約し、雑談は省略して構いません。\n"
+        "推測ではなく、事実に基づいて記述してください。\n"
+        "判断に迷う点（例: 出来事の意図、感情の解釈、欠けている情報）があれば JSON の `questions` フィールドに\n"
+        "ユーザーへの具体的な質問として列挙してください（質問数は最大 5 件）。\n"
+        "**質問が必要な場合は推測で穴埋めせず、必ず質問してください。**\n\n"
+        "## 出力フォーマット (JSON)\n"
+        "```json\n"
+        "{\n"
+        "  \"summary\": \"# 1日の振り返り\\n\\n## 朝\\n...\\n\\n## 昼\\n...\\n\\n## 夜\\n...\",\n"
+        "  \"questions\": [\"質問1\", \"質問2\"]\n"
+        "}\n"
+        "```\n\n"
+        "## 入力データ\n" + ctx_text + answer_text
+    )
+
+    try:
+        from google.genai import types as _gt
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-pro",
+            contents=prompt,
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        data = json.loads(response.text or "{}")
+    except Exception as e:
+        logging.error(f"daily summary generation error: {e}")
+        return {"summary": "", "questions": [], "error": str(e)}
+
+    summary = (data.get("summary") or "").strip()
+    questions = data.get("questions") or []
+    if not isinstance(questions, list):
+        questions = []
+    questions = [q for q in (str(x).strip() for x in questions) if q][:5]
+
+    return {"summary": summary, "questions": questions}
+
+
+async def _save_daily_summary_to_obsidian(date_str: str, summary_md: str) -> bool:
+    """サマリーを DailyNote の `## 📅 Daily Summary` セクションへ書き込む。"""
+    import re as _re
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return False
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        if not folder_id:
+            folder_id = await chat_service.drive_service.create_folder(
+                service, chat_service.drive_folder_id, "DailyNotes"
+            )
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date_str}.md")
+        if f_id:
+            content = await chat_service.drive_service.read_text_file(service, f_id)
+        else:
+            content = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n"
+
+        section_header = "## 📅 Daily Summary"
+        clean = (summary_md or "").strip()
+        replacement = f"{section_header}\n{clean}" if clean else section_header
+        pattern = _re.compile(rf"{_re.escape(section_header)}\n.*?(?=\n## |\Z)", _re.DOTALL)
+        if pattern.search(content):
+            new_content = pattern.sub(replacement, content, count=1)
+        else:
+            from utils.obsidian_utils import update_section
+            new_content = update_section(content, clean, section_header)
+
+        if f_id:
+            await chat_service.drive_service.update_text(service, f_id, new_content)
+        else:
+            await chat_service.drive_service.upload_text(
+                service, folder_id, f"{date_str}.md", new_content
+            )
+        return True
+    except Exception as e:
+        logging.error(f"_save_daily_summary_to_obsidian error: {e}")
+        return False
+
+
+@router.get("/daily_summary", dependencies=[Depends(verify_api_key)])
+async def daily_summary_get(date: str = ""):
+    """指定日（既定: 今日）のデイリーサマリーを Obsidian から読んで返す。"""
+    import re as _re
+    from api import app
+    if not date:
+        date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"text": "", "questions": []}
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        text = ""
+        if folder_id:
+            f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date}.md")
+            if f_id:
+                content = await chat_service.drive_service.read_text_file(service, f_id)
+                m = _re.search(r"## 📅 Daily Summary\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+                if m:
+                    text = m.group(1).strip()
+        questions = await get_questions_by_date(date, scope='summary')
+        return {"date": date, "text": text, "questions": questions}
+    except Exception as e:
+        logging.debug(f"daily_summary_get error: {e}")
+        return {"text": "", "questions": []}
+
+
+class DailySummaryGenerateRequest(BaseModel):
+    date: Optional[str] = None
+    answers: Optional[dict] = None
+    finalize: bool = False  # True なら質問が無くてもそのまま Obsidian に保存
+
+
+@router.post("/daily_summary/generate", dependencies=[Depends(verify_api_key)])
+async def daily_summary_generate(req: DailySummaryGenerateRequest):
+    """サマリーを生成。質問がある場合は DB に登録して返す。
+    finalize=True または質問が空の場合は Obsidian に保存して質問を resolved にする。"""
+    date_str = req.date or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+
+    # 既存の未確定質問に回答が来ていれば反映
+    if req.answers:
+        for qid_str, ans in req.answers.items():
+            if not ans:
+                continue
+            try:
+                qid = int(qid_str)
+            except (TypeError, ValueError):
+                continue
+            await answer_daily_question(qid, str(ans))
+
+    result = await _generate_daily_summary(date_str, answers=req.answers)
+    summary = result.get("summary", "")
+    new_questions = result.get("questions", [])
+
+    # 既存の pending/answered と重複しない新規質問だけ DB に追加
+    existing = await get_questions_by_date(date_str, scope='summary')
+    existing_texts = {q["question"].strip() for q in existing}
+    added_question_ids = []
+    for q in new_questions:
+        if q.strip() in existing_texts:
+            continue
+        qid = await add_daily_question(date_str, q.strip(), scope='summary')
+        added_question_ids.append(qid)
+
+    # 質問が一つもない、または finalize 指定時は確定保存
+    pending = await get_questions_by_date(date_str, scope='summary')
+    unanswered = [q for q in pending if q["status"] in ("pending",)]
+    will_finalize = req.finalize or (not new_questions and not unanswered)
+
+    saved = False
+    if summary and will_finalize:
+        saved = await _save_daily_summary_to_obsidian(date_str, summary)
+        if saved:
+            await resolve_questions(date_str, scope='summary')
+
+    return {
+        "date": date_str,
+        "summary": summary,
+        "questions": await get_questions_by_date(date_str, scope='summary'),
+        "saved": saved,
+        "error": result.get("error"),
+    }
+
+
+@router.get("/daily_questions/pending", dependencies=[Depends(verify_api_key)])
+async def daily_questions_pending():
+    """未回答の質問一覧。"""
+    qs = await get_pending_questions()
+    return {"questions": qs}
+
+
+class DailyAnswerRequest(BaseModel):
+    answer: str
+
+
+@router.post("/daily_questions/{qid}/answer", dependencies=[Depends(verify_api_key)])
+async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
+    ok = await answer_daily_question(qid, req.answer)
+    if not ok:
+        raise HTTPException(status_code=404, detail="質問が見つかりません")
+    return {"status": "success"}
+
+
+@router.delete("/daily_questions/{qid}", dependencies=[Depends(verify_api_key)])
+async def daily_questions_delete(qid: int):
+    ok = await delete_daily_question(qid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="質問が見つかりません")
+    return {"status": "success"}

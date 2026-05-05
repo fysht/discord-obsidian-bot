@@ -89,6 +89,19 @@ async def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS daily_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                scope TEXT DEFAULT 'summary',
+                question TEXT NOT NULL,
+                answer TEXT DEFAULT '',
+                status TEXT DEFAULT 'pending',
+                context TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                answered_at TEXT DEFAULT NULL
+            )
+        """)
 
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
@@ -449,5 +462,88 @@ async def record_quiz_attempt(phrase_id: int, correct: bool) -> bool:
             "last_attempted_at = ? WHERE id = ?",
             (1 if correct else 0, now, phrase_id),
         )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# --- Daily Questions (デイリーサマリー / 日記の質問キュー) ---
+
+async def add_daily_question(date: str, question: str, scope: str = 'summary', context: str = '') -> int:
+    """デイリーサマリー生成時に AI が判断に迷った点を質問として保存。"""
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT INTO daily_questions (date, scope, question, context, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (date, scope, question, context, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_pending_questions() -> list[dict]:
+    """未回答 + 回答済みだが未確定（status='answered'）の質問一覧を返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, date, scope, question, answer, status, context, created_at, answered_at "
+            "FROM daily_questions WHERE status IN ('pending', 'answered') ORDER BY date DESC, id DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_questions_by_date(date: str, scope: str = None) -> list[dict]:
+    """指定日（・スコープ）の質問を返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if scope:
+            cursor = await db.execute(
+                "SELECT id, date, scope, question, answer, status, context, created_at, answered_at "
+                "FROM daily_questions WHERE date = ? AND scope = ? ORDER BY id ASC",
+                (date, scope),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT id, date, scope, question, answer, status, context, created_at, answered_at "
+                "FROM daily_questions WHERE date = ? ORDER BY id ASC",
+                (date,),
+            )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def answer_daily_question(qid: int, answer: str) -> bool:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE daily_questions SET answer = ?, status = 'answered', answered_at = ? "
+            "WHERE id = ? AND status IN ('pending', 'answered')",
+            (answer, now, qid),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def resolve_questions(date: str, scope: str = None) -> int:
+    """指定日の質問をすべて確定（status='resolved'）にする。サマリー保存完了時に呼ぶ。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        if scope:
+            cursor = await db.execute(
+                "UPDATE daily_questions SET status = 'resolved' WHERE date = ? AND scope = ? AND status != 'resolved'",
+                (date, scope),
+            )
+        else:
+            cursor = await db.execute(
+                "UPDATE daily_questions SET status = 'resolved' WHERE date = ? AND status != 'resolved'",
+                (date,),
+            )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def delete_daily_question(qid: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("DELETE FROM daily_questions WHERE id = ?", (qid,))
         await db.commit()
         return cursor.rowcount > 0

@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=39">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=40">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -314,6 +314,16 @@
                             <button class="mini-link" onclick="openDailyJournalEditor()">編集</button>
                         </div>
                         <div id="dash-daily-journal" class="card-body diary-content"></div>
+                    </div>
+                    <div class="card summary-card">
+                        <div class="card-header">
+                            <span class="card-icon">📅</span>
+                            <span class="card-title">1日のログ（デイリーサマリー）</span>
+                            <button class="mini-link" onclick="generateDailySummary(false)">生成</button>
+                            <button class="mini-link" onclick="generateDailySummary(true)" title="質問を保留して即保存">そのまま保存</button>
+                        </div>
+                        <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
+                        <div id="dash-daily-summary" class="card-body diary-content"></div>
                     </div>
                     <div class="card next-actions-card">
                         <div class="card-header">
@@ -1072,6 +1082,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=41"></script>
+    <script src="/static/js/app_v12.js?v=42"></script>
 </body>
 </html>

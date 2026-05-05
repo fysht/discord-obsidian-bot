@@ -176,9 +176,10 @@ function switchTab(tab) {
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
     if (tab !== 'chat') loadDashboard();
-    // ログタブを開いたときに Fitbit データを自動ロード（既存データがあれば再取得は最小限）
+    // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
+        loadDailySummary();
     }
 }
 
@@ -544,12 +545,28 @@ async function loadDashboard() {
             obTaskEl.innerHTML = data.tasks.length ? data.tasks.map((t, idx) => {
                 const isLog = t.is_log || false;
                 const isRunning = isLog && t.text.includes('▶');
-                const safeText = escapeHtml(t.text);
-                const rawAttr = t.text.replace(/"/g, '&quot;');
+                const rawAttr = t.text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                // 時刻 / マーク / 本文 に構造化して列幅を固定
+                const m = t.text.match(/^\s*(\d{1,2}:\d{2})(?:\s*[-–~〜]\s*(\d{1,2}:\d{2}))?\s*([▶■])?\s*(.*)$/);
+                let inner;
+                if (m) {
+                    const start = m[1];
+                    const end = m[2] || '';
+                    const mark = m[3] || '';
+                    const body = m[4] || '';
+                    const timeText = end ? `${start} – ${end}` : start;
+                    inner = `
+                        <span class="lifelog-time">${escapeHtml(timeText)}</span>
+                        <span class="lifelog-mark">${escapeHtml(mark)}</span>
+                        <span class="lifelog-body">${escapeHtml(body)}</span>
+                    `;
+                } else {
+                    inner = `<span class="lifelog-body" style="grid-column: 1 / -1;">${escapeHtml(t.text)}</span>`;
+                }
                 return `
-                    <div class="list-item lifelog-row" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; padding: 10px 18px; gap: 8px; cursor: pointer;"
-                         onclick="editLifeLog(${idx}, '${rawAttr.replace(/'/g, '&#39;')}')">
-                        <div class="li-text" style="flex:1; font-size:0.85rem; line-height:1.5; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}">${safeText}</div>
+                    <div class="list-item lifelog-row" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; cursor: pointer; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}"
+                         onclick="editLifeLog(${idx}, '${rawAttr}')">
+                        ${inner}
                     </div>
                 `;
             }).join('') : '<div class="loading-placeholder">ログはありません</div>';
@@ -2477,6 +2494,7 @@ async function loadHistory() {
 
 window.addEventListener('DOMContentLoaded', () => { if (apiKey) { showScreen('main-screen'); initMain(); } else { showScreen('login-screen'); } });
 
+let _activeHabitsForGantt = [];
 async function loadHabits() {
     try {
         const data = await apiFetch('/api/habits');
@@ -2486,8 +2504,11 @@ async function loadHabits() {
             container.innerHTML = '<div class="p-20 text-center text-secondary">登録された習慣はありません</div>';
             const wrap = $('#habit-progress-wrap');
             if (wrap) wrap.style.display = 'none';
+            _activeHabitsForGantt = [];
             return;
         }
+        // ガントチャート用に「現在の習慣」リストを順序付きで保持
+        _activeHabitsForGantt = data.habits.map(h => ({ id: h.id, name: h.name }));
 
         const doneCount = data.habits.filter(h => data.today_done.includes(h.id)).length;
         const total = data.habits.length;
@@ -4045,6 +4066,158 @@ window.initMain = function patchedInitMain() {
 
 
 // ===========================================================
+// デイリーサマリー（1日の統合ログ）
+// ===========================================================
+
+let _dailySummaryGenerating = false;
+
+window.loadDailySummary = async () => {
+    const tEl = $('#dash-daily-summary');
+    const qEl = $('#dash-daily-summary-questions');
+    if (!tEl || !qEl) return;
+    try {
+        const data = await apiFetch('/api/daily_summary');
+        renderDailySummaryCard(data);
+    } catch {
+        tEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました</div>';
+    }
+};
+
+function renderDailySummaryCard(data) {
+    const tEl = $('#dash-daily-summary');
+    const qEl = $('#dash-daily-summary-questions');
+    if (!tEl || !qEl) return;
+    const text = (data && data.text) || '';
+    const questions = ((data && data.questions) || []).filter(q => q.status !== 'resolved');
+
+    if (text) {
+        // 軽量 Markdown レンダリング: 改行、見出し、箇条書き
+        const html = text
+            .split('\n')
+            .map(line => {
+                if (/^## /.test(line)) return `<div style="margin:10px 0 4px;font-weight:700;color:var(--accent);font-size:0.9rem;">${escapeHtml(line.replace(/^## /, ''))}</div>`;
+                if (/^# /.test(line)) return `<div style="margin:6px 0;font-weight:700;font-size:1rem;">${escapeHtml(line.replace(/^# /, ''))}</div>`;
+                if (/^[\-*] /.test(line)) return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;">${escapeHtml(line.replace(/^[\-*]\s+/, ''))}</div>`;
+                return `<div style="font-size:0.88rem;line-height:1.6;">${escapeHtml(line)}</div>`;
+            })
+            .join('');
+        tEl.innerHTML = html;
+    } else {
+        tEl.innerHTML = '<div class="loading-placeholder">「生成」を押してデイリーサマリーを作成します</div>';
+    }
+
+    if (!questions.length) {
+        qEl.innerHTML = '';
+        qEl.style.display = 'none';
+        return;
+    }
+    qEl.style.display = '';
+    const date = (data && data.date) || (new Date()).toISOString().slice(0, 10);
+    qEl.innerHTML = `
+        <div style="font-size:0.78rem;color:#ffd454;margin-bottom:8px;">
+            ❓ マネージャーから ${questions.length} 件の質問があります（回答すると正確なサマリーが生成されます）
+        </div>
+        ${questions.map(q => `
+            <div class="summary-question" data-qid="${q.id}" style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;margin-bottom:8px;">
+                <div style="font-size:0.84rem;color:var(--text-primary);margin-bottom:6px;">${escapeHtml(q.question)}</div>
+                <textarea class="modern-input summary-question-answer" rows="2" placeholder="回答を入力（後でも構いません）" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(q.answer || '')}</textarea>
+                <div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end;">
+                    <button class="modal-btn cancel" style="padding:4px 10px;font-size:0.78rem;" onclick="dismissSummaryQuestion(${q.id})">削除</button>
+                    <button class="modal-btn submit" style="padding:4px 10px;font-size:0.78rem;" onclick="saveSummaryAnswer(${q.id})">保存</button>
+                </div>
+            </div>
+        `).join('')}
+        <button class="modal-btn submit" style="width:100%;font-size:0.85rem;margin-top:6px;" onclick="regenerateSummaryWithAnswers('${date}')">回答を反映して再生成</button>
+    `;
+}
+
+window.generateDailySummary = async (finalize) => {
+    if (_dailySummaryGenerating) return;
+    _dailySummaryGenerating = true;
+    const tEl = $('#dash-daily-summary');
+    if (tEl) tEl.innerHTML = '<div class="loading-placeholder">サマリーを生成中…（少し時間がかかります）</div>';
+    try {
+        const result = await apiFetch('/api/daily_summary/generate', {
+            method: 'POST',
+            body: JSON.stringify({ finalize: !!finalize }),
+        });
+        renderDailySummaryCard({ date: result.date, text: result.summary, questions: result.questions });
+        if (result.saved) {
+            showToast('Obsidianに保存しました');
+        } else if (result.questions && result.questions.length) {
+            showToast('未確定の質問があります。回答すると確定保存されます。');
+        }
+    } catch (e) {
+        if (tEl) tEl.innerHTML = '<div class="loading-placeholder">生成に失敗しました</div>';
+        showToast('生成に失敗しました', true);
+    } finally {
+        _dailySummaryGenerating = false;
+    }
+};
+
+window.saveSummaryAnswer = async (qid) => {
+    const row = document.querySelector(`.summary-question[data-qid="${qid}"]`);
+    if (!row) return;
+    const ta = row.querySelector('.summary-question-answer');
+    const answer = (ta && ta.value || '').trim();
+    if (!answer) {
+        showToast('回答を入力してください', true);
+        return;
+    }
+    try {
+        await apiFetch(`/api/daily_questions/${qid}/answer`, {
+            method: 'POST',
+            body: JSON.stringify({ answer }),
+        });
+        showToast('回答を保存しました');
+        loadDailySummary();
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
+};
+
+window.dismissSummaryQuestion = async (qid) => {
+    if (!confirm('この質問を削除しますか？')) return;
+    try {
+        await apiFetch(`/api/daily_questions/${qid}`, { method: 'DELETE' });
+        loadDailySummary();
+    } catch {
+        showToast('削除に失敗しました', true);
+    }
+};
+
+window.regenerateSummaryWithAnswers = async (date) => {
+    const answers = {};
+    document.querySelectorAll('.summary-question').forEach(row => {
+        const qid = row.dataset.qid;
+        const ta = row.querySelector('.summary-question-answer');
+        const v = (ta && ta.value || '').trim();
+        if (qid && v) answers[qid] = v;
+    });
+    if (_dailySummaryGenerating) return;
+    _dailySummaryGenerating = true;
+    const tEl = $('#dash-daily-summary');
+    if (tEl) tEl.innerHTML = '<div class="loading-placeholder">回答を反映してサマリーを再生成中…</div>';
+    try {
+        const result = await apiFetch('/api/daily_summary/generate', {
+            method: 'POST',
+            body: JSON.stringify({ date, answers, finalize: false }),
+        });
+        renderDailySummaryCard({ date: result.date, text: result.summary, questions: result.questions });
+        if (result.saved) {
+            showToast('Obsidianに保存しました');
+        } else if (result.questions && result.questions.length) {
+            showToast('まだ確認が必要な点があります。');
+        }
+    } catch (e) {
+        showToast('生成に失敗しました', true);
+    } finally {
+        _dailySummaryGenerating = false;
+    }
+};
+
+
+// ===========================================================
 // 今日の日記 編集
 // ===========================================================
 
@@ -4207,28 +4380,57 @@ async function renderHabitGantt() {
     wrap.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/habits/gantt?days=90');
-        const habits = data.habits || [];
+        const allHabits = data.habits || [];
         const dates = data.dates || [];
-        if (!habits.length) {
-            wrap.innerHTML = '<div class="loading-placeholder">習慣がありません</div>';
+
+        // 現在の習慣（Google Tasks にあるもの）のみ・習慣トラッカー順
+        let activeOrder = _activeHabitsForGantt;
+        if (!activeOrder || !activeOrder.length) {
+            try {
+                const hd = await apiFetch('/api/habits');
+                activeOrder = (hd.habits || []).map(h => ({ id: h.id, name: h.name }));
+                _activeHabitsForGantt = activeOrder;
+            } catch {
+                activeOrder = [];
+            }
+        }
+        const orderMap = new Map(activeOrder.map((h, i) => [h.id, i]));
+        const filtered = allHabits
+            .filter(h => orderMap.has(h.id))
+            .sort((a, b) => orderMap.get(a.id) - orderMap.get(b.id));
+
+        if (!filtered.length) {
+            wrap.innerHTML = '<div class="loading-placeholder">表示できる習慣がありません</div>';
             return;
         }
-        // 連続達成区間を太く強調するため、各セルに「連続グループ ID」を付与
+
         const cellWidth = 8;
         const cellHeight = 14;
         const labelWidth = 110;
         const totalWidth = labelWidth + dates.length * (cellWidth + 1);
-        const rowHtml = habits.map(h => {
+
+        // 各習慣に色を割り当て（HSL 色相を均等配分）
+        const colorFor = (i, total) => {
+            const hue = Math.round((360 / Math.max(total, 1)) * i);
+            return {
+                strong: `hsl(${hue}, 70%, 55%)`,
+                mid:    `hsl(${hue}, 65%, 48%)`,
+                weak:   `hsl(${hue}, 50%, 38%)`,
+                empty:  'rgba(255,255,255,0.04)',
+            };
+        };
+
+        const rowHtml = filtered.map((h, i) => {
+            const palette = colorFor(i, filtered.length);
             const cellsHtml = h.cells.map((v, idx) => {
-                // 連続達成判定（前後に達成があるか）
                 const prev = idx > 0 ? h.cells[idx - 1] : 0;
                 const next = idx < h.cells.length - 1 ? h.cells[idx + 1] : 0;
-                let bg = 'rgba(255,255,255,0.04)';
+                let bg = palette.empty;
                 let h2 = cellHeight;
                 if (v) {
-                    if (prev && next) { bg = 'rgba(0,186,152,0.95)'; h2 = cellHeight; }
-                    else if (prev || next) { bg = 'rgba(0,186,152,0.85)'; h2 = cellHeight; }
-                    else { bg = 'rgba(0,186,152,0.55)'; h2 = cellHeight - 2; }
+                    if (prev && next) { bg = palette.strong; }
+                    else if (prev || next) { bg = palette.mid; }
+                    else { bg = palette.weak; h2 = cellHeight - 2; }
                 }
                 const isToday = idx === h.cells.length - 1;
                 const border = isToday ? 'box-shadow:0 0 0 1px var(--accent);' : '';
@@ -4236,14 +4438,18 @@ async function renderHabitGantt() {
             }).join('');
             return `
                 <div style="display:flex;align-items:center;margin-bottom:4px;font-size:0.72rem;">
-                    <div style="width:${labelWidth}px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:6px;" title="${escapeHtml(h.name)}">${escapeHtml(h.name)}</div>
+                    <div style="width:${labelWidth}px;display:flex;align-items:center;gap:5px;padding-right:6px;">
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${palette.strong};flex-shrink:0;"></span>
+                        <span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(h.name)}">${escapeHtml(h.name)}</span>
+                    </div>
                     <div style="white-space:nowrap;">${cellsHtml}</div>
                 </div>
             `;
         }).join('');
+
         wrap.innerHTML = `
             <div style="min-width:${totalWidth}px;">
-                <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;">過去 ${dates.length} 日（緑が濃いほど連続達成）</div>
+                <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;">過去 ${dates.length} 日 ・ 習慣ごとに色分け（連続達成は濃く表示）</div>
                 ${rowHtml}
             </div>
         `;
@@ -4278,39 +4484,41 @@ const TUTORIAL_SLIDES = [
         title: 'はじめに',
         target: null,
         body: `<p>このアプリは <b>4つのタブ</b>でできています。</p>
-        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px;">
-            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>💬 チャット</b><br><small>AIに何でも頼める</small></div>
-            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>📰 情報</b><br><small>天気・ニュース・ストック</small></div>
-            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>📒 ログ</b><br><small>習慣・ライフログ・Fitbit</small></div>
-            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>📅 予定</b><br><small>MIT・カレンダー・タスク</small></div>
-        </div>`
+        <div class="tut-grid">
+            <div class="tut-card"><b>💬 チャット</b><br><small>AI に何でも頼める</small></div>
+            <div class="tut-card"><b>📰 情報</b><br><small>天気・ニュース・ストック</small></div>
+            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・ライフログ・Fitbit</small></div>
+            <div class="tut-card"><b>📅 予定</b><br><small>MIT・カレンダー・タスク</small></div>
+        </div>
+        <p style="margin-top:10px;font-size:0.85rem;color:var(--text-muted);">下のナビ（チャット・情報・ログ・予定）でタブを切り替えます。</p>`
     },
     {
         title: 'チャット',
         target: 'chat',
-        body: `<p>マネージャーAIに自然言語で話しかけてください。</p>
-        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
+        body: `<p>マネージャー AI に自然言語で話しかけてください。</p>
+        <ul>
             <li>📨 メッセージ入力欄に書いて送信</li>
-            <li>⭐ メッセージ長押しでお気に入り・コレクション追加</li>
-            <li>🌐 ENモードで英会話モードに切替</li>
+            <li>👆 メッセージ長押しでお気に入り・コレクション・翻訳保存などのアクション</li>
+            <li>🌐 ヘッダーの EN トグルで英会話モード</li>
+            <li>🔍 ヘッダーの検索アイコンで全メッセージ検索</li>
         </ul>`
     },
     {
         title: 'タスク開始 / タスク終了',
         target: 'chat',
-        body: `<p>「タスク開始」を押すと候補リストから選択 → ライフログに記録されます。</p>
-        <p style="margin-top:10px;">「タスク終了」も<b>同じ候補リストから選択可能</b>になりました。タスク開始を押し忘れた場合でも、終了だけで記録できます。</p>
-        <div style="background:rgba(0,186,152,0.08);padding:10px;border-radius:8px;margin-top:10px;font-size:0.85rem;">
-            ▶ タスク開始 → 候補選択 → 内容を入力 → 「○○開始」と送信<br>
-            ■ タスク終了 → 候補選択 → 「○○終了」と送信
-        </div>`
+        body: `<p>チャット下の <b>▶ タスク開始</b> / <b>■ タスク終了</b> でその場の作業を記録します。</p>
+        <ul>
+            <li>開始 → 候補から選んで「◯◯開始」と送信</li>
+            <li>終了 → 開始忘れでも候補リストから選べます</li>
+            <li>記録は <b>ライフログ</b> セクションに自動で残ります</li>
+        </ul>`
     },
     {
         title: '+ その他メニュー',
         target: 'chat',
-        body: `<p>「+その他」を開くと、以下のクイックアクションが使えます：</p>
-        <ul style="margin-top:8px;line-height:1.8;font-size:0.9rem;">
-            <li>☀️ ブリーフィング（朝/夜の自動レビュー）</li>
+        body: `<p>「+ その他」に折りたたまれたクイックアクション：</p>
+        <ul>
+            <li>☀️ ブリーフィング（朝/夜の振り返り）</li>
             <li>💭 ゼロ秒思考</li>
             <li>📖 読書 / 📝 勉強</li>
             <li>🔨 タスク分解</li>
@@ -4322,69 +4530,103 @@ const TUTORIAL_SLIDES = [
         title: '天気・ニュース',
         target: 'info',
         body: `<p>情報タブには日々の情報がまとまっています。</p>
-        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
-            <li>🌤️ 天気（岡山北部/南部などを選択可能）</li>
-            <li>🔗 Yahoo!天気で詳細を確認できるリンク付き</li>
+        <ul>
+            <li>🌤️ 天気（岡山 北部 / 南部 を切替）</li>
+            <li>🔗 Yahoo!天気の詳細ページへリンク</li>
             <li>📰 Yahoo!ニュース 主要トピック</li>
         </ul>`
     },
     {
         title: 'ストックリンク',
         target: 'info',
-        body: `<p>気になったページ・YouTube・レシピ・地図・本を、チャットに貼って自動分類で保存。</p>
-        <p style="margin-top:8px;">⭐ お気に入りや、長押しで詳細編集できます。</p>`
+        body: `<p>気になった URL（記事・YouTube・レシピ・地図・本）をチャットに貼ると自動分類で保存。</p>
+        <p style="margin-top:8px;">⭐ お気に入り設定や、長押しで詳細編集できます。</p>`
     },
     {
         title: '習慣トラッカー',
         target: 'log',
-        body: `<p>習慣を毎日チェックして継続状況を可視化。</p>
-        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
-            <li>⭕ チェックボックスで完了記録</li>
-            <li>⏰ 「いつ」（時刻トリガー）を設定するとマネージャーが声をかけます</li>
-            <li>📊 ヒートマップ＆<b>ガントチャート</b>で過去90日の継続を一覧</li>
+        body: `<p>毎日の習慣をワンタップでチェック。継続状況を 2 種類の図で可視化します。</p>
+        <ul>
+            <li>⭕ チェックで完了記録（Google Tasks「習慣」リストと同期）</li>
+            <li>⏰「+いつ」を設定すると指定時刻にマネージャーが声をかけます</li>
+            <li>⠿ 長押しで並び替え可能</li>
+            <li>📊 過去 28 日のヒートマップ ＋ 過去 90 日のガントチャート（習慣ごとに色分け）</li>
         </ul>`
     },
     {
         title: 'ライフログ',
         target: 'log',
-        body: `<p>1日の活動記録。<b>行をタップ</b>すると編集モーダルが開きます。</p>
-        <div style="background:rgba(255,255,255,0.04);padding:10px;border-radius:8px;margin-top:10px;font-size:0.85rem;">
+        body: `<p>1 日の活動記録。<b>行をタップ</b>で編集モーダルが開きます。</p>
+        <div class="tut-callout">
             開始時刻: <code>09:00</code><br>
-            終了時刻: <code>10:30</code>（空欄 = 実行中▶）<br>
+            終了時刻: <code>10:30</code>（空欄なら ▶ 実行中扱い）<br>
             内容: 自由記入
-        </div>`
+        </div>
+        <p style="margin-top:8px;font-size:0.85rem;color:var(--text-muted);">時刻・マーク・内容は列が揃って表示されます。</p>`
     },
     {
         title: 'Fitbit データ',
         target: 'log',
-        body: `<p>14日分の心拍・睡眠・歩数などを<b>自動取得</b>。</p>
-        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
-            <li>📈 グラフで指標を選択して推移を確認</li>
-            <li>🔄 23時に自動で前日分をキャッシュ</li>
-            <li>「更新」ボタンで強制再取得も可能</li>
+        body: `<p>14 日分のヘルスデータを<b>自動取得・キャッシュ</b>。</p>
+        <ul>
+            <li>📈 指標を選んで折れ線グラフ＋ 7 日移動平均で推移を確認</li>
+            <li>🔄 23 時に当日データを事前取得</li>
+            <li>「更新」で強制再取得も可能</li>
         </ul>`
     },
     {
         title: '英語フレーズ帳 + クイズ',
         target: 'log',
         body: `<p>気になった英語表現をワンタップで保存し、<b>クイズで定着</b>。</p>
-        <p style="margin-top:8px;">「クイズ」ボタンを押すと、<b>正解率の低い問題から優先</b>して出題されます。</p>`
+        <ul>
+            <li>📚 メッセージ長押し → 翻訳して保存</li>
+            <li>🎯「クイズ」ボタンで出題（<b>正解率の低い問題から優先</b>）</li>
+            <li>📊 解答実績は次回出題に反映</li>
+        </ul>`
+    },
+    {
+        title: '今日の日記 / デイリーサマリー',
+        target: 'log',
+        body: `<p>1 日の記録を統合した日報を表示・編集できます。</p>
+        <ul>
+            <li>📔 <b>今日の日記</b>: AI が振り返り → 「編集」ボタンで自分で書き換え可能（Obsidian 反映）</li>
+            <li>📅 <b>デイリーサマリー</b>: 予定・天気・会話・ライフログ・位置・Fitbit を一画面に集約</li>
+            <li>❓ AI が判断に迷う点は<b>質問キュー</b>に保存され、後で答えると確定します</li>
+        </ul>`
     },
     {
         title: '今日の MIT',
         target: 'schedule',
-        body: `<p>その日に必ず終わらせたい <b>3つのタスク</b>を設定。</p>
-        <p style="margin-top:8px;">「設定」ボタンですぐ画面が開くようになりました。</p>`
+        body: `<p>その日に必ず終わらせたい <b>3 つのタスク</b>を設定。</p>
+        <ul>
+            <li>「設定」ボタンですぐ入力画面が開きます</li>
+            <li>チャット上部にバナーで常時表示</li>
+            <li>達成チェックは Obsidian に反映</li>
+        </ul>`
     },
     {
         title: 'タスク管理（仕事・プライベート）',
         target: 'schedule',
         body: `<p>Google Tasks と連携。</p>
-        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
-            <li>📋 古い順に並ぶ（作成順）</li>
-            <li>⠿ ハンドルをドラッグして並び替え</li>
+        <ul>
+            <li>📋 古い順（作成順）に並びます</li>
+            <li>⠿ 長押し → ドラッグで並び替え</li>
             <li>👉 横にドラッグするとサブタスク化</li>
-            <li>📅 期限はカレンダーピッカーから簡単指定</li>
+            <li>📅 期限はカレンダーピッカー＆「今日 / 明日 / 1週間後」のクイック設定</li>
+        </ul>`
+    },
+    {
+        title: 'ヘッダーのアイコン',
+        target: null,
+        body: `<p>ヘッダー右側のアイコンの意味：</p>
+        <ul>
+            <li>⭐ お気に入り一覧（一覧から直接解除可）</li>
+            <li>🏷 コレクション（ラベル別の閲覧）</li>
+            <li>🔍 メッセージ検索</li>
+            <li>🔄 アプリ更新（PWA キャッシュ更新）</li>
+            <li>❓ このヘルプを再表示</li>
+            <li>🗑 チャット履歴リセット</li>
+            <li>⚙ 通知などの設定</li>
         </ul>`
     },
 ];
