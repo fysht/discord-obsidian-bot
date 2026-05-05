@@ -1574,6 +1574,85 @@ async def mit_set(req: MitSetRequest):
     return {"status": "success", "message": msg}
 
 
+class DailyJournalUpdate(BaseModel):
+    text: str
+
+
+@router.get("/daily_journal", dependencies=[Depends(verify_api_key)])
+async def daily_journal_get():
+    """今日の日記（## 📔 Daily Journal セクション）の本文を返す。"""
+    import re as _re
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"text": ""}
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        if not folder_id:
+            return {"text": ""}
+        today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
+        if not f_id:
+            return {"text": ""}
+        content = await chat_service.drive_service.read_text_file(service, f_id)
+        m = _re.search(r"## 📔 Daily Journal\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+        return {"text": m.group(1).strip() if m else ""}
+    except Exception as e:
+        logging.debug(f"daily_journal_get error: {e}")
+        return {"text": ""}
+
+
+@router.post("/daily_journal", dependencies=[Depends(verify_api_key)])
+async def daily_journal_set(req: DailyJournalUpdate):
+    """今日の日記（## 📔 Daily Journal セクション）を上書き保存する（Obsidian反映）。"""
+    import re as _re
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="Drive サービス未設定")
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        if not folder_id:
+            folder_id = await chat_service.drive_service.create_folder(
+                service, chat_service.drive_folder_id, "DailyNotes"
+            )
+        today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
+        if f_id:
+            content = await chat_service.drive_service.read_text_file(service, f_id)
+        else:
+            content = f"---\ndate: {today_str}\n---\n\n# Daily Note {today_str}\n"
+
+        new_text = (req.text or "").strip()
+        section_header = "## 📔 Daily Journal"
+        # 既存セクションを置き換え or 新規追加
+        pattern = _re.compile(rf"{_re.escape(section_header)}\n.*?(?=\n## |\Z)", _re.DOTALL)
+        replacement = f"{section_header}\n{new_text}" if new_text else section_header
+        if pattern.search(content):
+            new_content = pattern.sub(replacement, content, count=1)
+        else:
+            # 既存になければ utils.update_section で正しい位置に追加
+            from utils.obsidian_utils import update_section
+            new_content = update_section(content, new_text, section_header)
+
+        if f_id:
+            await chat_service.drive_service.update_text(service, f_id, new_content)
+        else:
+            await chat_service.drive_service.upload_text(
+                service, folder_id, f"{today_str}.md", new_content
+            )
+        return {"status": "success"}
+    except Exception as e:
+        logging.error(f"daily_journal_set error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/mit_get", dependencies=[Depends(verify_api_key)])
 async def mit_get():
     """今日の MIT のみを軽量に取得する。設定モーダルの初期値表示に使う。"""
@@ -2274,15 +2353,9 @@ async def get_weather_data(location: str = ""):
 
 @router.get("/weather/locations")
 async def get_weather_locations():
-    """利用可能な天気の場所一覧を都道府県別の階層構造で返す。"""
-    from services.info_service import YAHOO_WEATHER_BY_PREFECTURE
-    prefectures = []
-    for pref_name, regions in YAHOO_WEATHER_BY_PREFECTURE.items():
-        prefectures.append({
-            "name": pref_name,
-            "regions": regions,
-        })
-    return {"prefectures": prefectures}
+    """利用可能な天気の場所一覧を返す（岡山 北部/南部のみ）。"""
+    from services.info_service import YAHOO_WEATHER_REGIONS
+    return {"regions": YAHOO_WEATHER_REGIONS}
 
 
 # ===== 英語フレーズ帳 =====

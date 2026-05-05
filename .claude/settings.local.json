@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\('api/routes.py', encoding='utf-8'\\).read\\(\\)\\); print\\('routes.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('services/info_service.py', encoding='utf-8'\\).read\\(\\)\\); print\\('info_service.py OK'\\)\")",
+      "Bash(node -c static/js/app_v12.js)"
+    ]
+  }
+}

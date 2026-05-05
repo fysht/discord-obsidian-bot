@@ -7,82 +7,35 @@ import datetime
 from config import JST
 
 YAHOO_WEATHER_LOCATIONS = {
-    "33/6710": "岡山（南部）",
-    "33/6720": "岡山（北部）",
-    "27/6200": "大阪",
-    "13/4410": "東京",
-    "14/4610": "横浜",
-    "23/5110": "名古屋",
-    "26/6100": "京都",
-    "34/6710": "広島",
-    "28/6500": "神戸",
-    "40/6100": "福岡",
+    "33/6610": "岡山（南部）",
+    "33/6620": "岡山（北部）",
 }
 
-# 都道府県→地域の階層構造
-YAHOO_WEATHER_BY_PREFECTURE = {
-    "北海道": [
-        {"code": "1/1400", "name": "札幌"},
-        {"code": "1/1700", "name": "旭川"},
-        {"code": "1/2400", "name": "函館"},
-    ],
-    "宮城県": [
-        {"code": "4/3410", "name": "仙台"},
-    ],
-    "東京都": [
-        {"code": "13/4410", "name": "東京"},
-        {"code": "13/4420", "name": "伊豆諸島"},
-    ],
-    "神奈川県": [
-        {"code": "14/4610", "name": "横浜"},
-        {"code": "14/4620", "name": "小田原"},
-    ],
-    "千葉県": [
-        {"code": "12/4510", "name": "千葉"},
-    ],
-    "埼玉県": [
-        {"code": "11/4310", "name": "さいたま"},
-    ],
-    "愛知県": [
-        {"code": "23/5110", "name": "名古屋"},
-        {"code": "23/5120", "name": "豊橋"},
-    ],
-    "大阪府": [
-        {"code": "27/6200", "name": "大阪"},
-    ],
-    "京都府": [
-        {"code": "26/6100", "name": "京都（南部）"},
-        {"code": "26/6120", "name": "京都（北部）"},
-    ],
-    "兵庫県": [
-        {"code": "28/6300", "name": "神戸"},
-        {"code": "28/6320", "name": "豊岡"},
-    ],
-    "岡山県": [
-        {"code": "33/6710", "name": "岡山（南部）"},
-        {"code": "33/6720", "name": "岡山（北部）"},
-    ],
-    "広島県": [
-        {"code": "34/6710", "name": "広島（南部）"},
-        {"code": "34/6720", "name": "広島（北部）"},
-    ],
-    "福岡県": [
-        {"code": "40/6100", "name": "福岡"},
-        {"code": "40/6110", "name": "北九州"},
-    ],
-    "沖縄県": [
-        {"code": "47/9110", "name": "那覇"},
-    ],
-}
+# 利用可能な天気地点の一覧（岡山 北部/南部のみ）
+YAHOO_WEATHER_REGIONS = [
+    {"code": "33/6610", "name": "岡山（南部）"},
+    {"code": "33/6620", "name": "岡山（北部）"},
+]
 
 class InfoService:
     def __init__(self):
-        self.weather_location = os.getenv("WEATHER_LOCATION", "33/6710")
+        env_loc = os.getenv("WEATHER_LOCATION", "33/6610")
+        # 旧コード（6710/6720）が環境変数に残っていた場合は新コードへ自動置換
+        if env_loc == "33/6710":
+            env_loc = "33/6610"
+        elif env_loc == "33/6720":
+            env_loc = "33/6620"
+        self.weather_location = env_loc
 
     async def get_weather(self, location=None):
         """Yahoo!天気から天気予報を取得（日別+時間別分離）"""
         if location is None:
             location = self.weather_location
+        # 旧コードを新コードへ自動置換
+        if location == "33/6710":
+            location = "33/6610"
+        elif location == "33/6720":
+            location = "33/6620"
 
         try:
             result = await self._fetch_yahoo_weather(location)
@@ -91,19 +44,21 @@ class InfoService:
         except Exception as e:
             logging.warning(f"Yahoo Weather fetch failed: {e}")
 
-        # JMAフォールバックは岡山専用（33/6710 or 33/6720）
+        # JMAフォールバックは岡山専用
         if location and location.startswith("33/"):
             return await self._fetch_jma_weather()
 
         return {"summary": "取得失敗", "daily": [], "hourly": [], "slots": [], "max_temp": "--", "min_temp": "--"}
 
     async def _fetch_yahoo_weather(self, location: str):
-        url = f"https://weather.yahoo.co.jp/weather/jp/{location}/"
+        # Yahoo!天気の正しい URL は .html 付き形式
+        # Desktop User-Agent で .forecastCity と #yjw_week が両方取れる
+        url = f"https://weather.yahoo.co.jp/weather/jp/{location}.html"
         headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Linux; Android 10; Pixel 3) "
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Mobile Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "ja-JP,ja;q=0.9,en;q=0.5",
@@ -151,49 +106,84 @@ class InfoService:
         }
 
     def _extract_yahoo_daily(self, doc, today_date):
-        """Yahoo!天気ページから日別予報を抽出"""
+        """Yahoo!天気ページから日別予報を抽出。
+        今日・明日は .forecastCity から、3日目以降は #yjw_week テーブルから取得。"""
         daily = []
 
-        # アプローチ1: yjSt / forecastWrap 系のセレクタ
-        day_nodes = doc.cssselect('.forecastWrap > div, .forecastCity_forecastItems > li, ul.forecast > li, .days > li, .yjSt_forecast > li')
-        if not day_nodes:
-            # アプローチ2: table ベース
-            day_nodes = doc.cssselect('table.yjw_table2 tr')
+        # アプローチ1: forecastCity の table の各 td が 1 日分（今日・明日）
+        day_nodes = doc.cssselect('.forecastCity > table > tr > td')
 
-        # アプローチ3: 天気テキストとtemperatureを別途抽出（フォールバック）
-        if not day_nodes:
-            return self._extract_yahoo_daily_fallback(doc, today_date)
+        if day_nodes:
+            for i, node in enumerate(day_nodes[:2]):
+                text = node.text_content()
+                weather_text = self._extract_weather_text_from_node(node) or "不明"
+                max_t, min_t = self._extract_temps_from_node(node, text)
+                # 降水確率（precip 要素から抽出）
+                pop = "--"
+                precip_el = node.cssselect('.precip')
+                if precip_el:
+                    pop_match = re.search(r'(\d+)', precip_el[0].text_content())
+                    if pop_match:
+                        pop = f"{pop_match.group(1)}%"
+                day_label = "今日" if i == 0 else "明日"
+                daily.append({
+                    "day": day_label,
+                    "date": (today_date + datetime.timedelta(days=i)).strftime("%Y-%m-%d"),
+                    "weather": self._shorten_weather(weather_text),
+                    "icon": self._get_weather_icon_by_text(weather_text),
+                    "max_temp": max_t,
+                    "min_temp": min_t,
+                    "pop": pop,
+                })
 
-        for i, node in enumerate(day_nodes[:3]):
-            text = node.text_content()
-            weather_text = self._extract_weather_text_from_node(node) or "不明"
-            max_t, min_t = self._extract_temps_from_node(node, text)
+        # 週間予報テーブル #yjw_week から 3日目以降を補完
+        week_table = doc.cssselect('#yjw_week')
+        if week_table:
+            week_rows = week_table[0].cssselect('tr')
+            # 4行構造: [日付, 天気, 気温, 降水確率]
+            if len(week_rows) >= 4:
+                date_cells = week_rows[0].cssselect('td')[1:]      # ヘッダ td を除く
+                weather_cells = week_rows[1].cssselect('td')[1:]
+                temp_cells = week_rows[2].cssselect('td')[1:]
+                pop_cells = week_rows[3].cssselect('td')[1:]
+                # 既に取れている日数分を skip。最大 5 日分まで。
+                start_offset = len(daily)
+                for j, dcell in enumerate(date_cells[: 5 - start_offset]):
+                    i = start_offset + j
+                    d = today_date + datetime.timedelta(days=i)
+                    weather = weather_cells[j].text_content().strip() if j < len(weather_cells) else "不明"
+                    # 気温セル: "26 13" のように max min が空白区切り
+                    temp_txt = temp_cells[j].text_content().strip() if j < len(temp_cells) else ""
+                    nums = re.findall(r'-?\d+', temp_txt)
+                    if len(nums) >= 2:
+                        a, b = nums[0], nums[1]
+                        try:
+                            max_t = a if int(a) >= int(b) else b
+                            min_t = b if int(a) >= int(b) else a
+                        except ValueError:
+                            max_t, min_t = a, b
+                    elif len(nums) == 1:
+                        max_t, min_t = nums[0], "--"
+                    else:
+                        max_t, min_t = "--", "--"
+                    pop_txt = pop_cells[j].text_content().strip() if j < len(pop_cells) else ""
+                    pop_match = re.search(r'\d+', pop_txt)
+                    pop = f"{pop_match.group()}%" if pop_match else "--"
+                    daily.append({
+                        "day": f"{d.month}/{d.day}",
+                        "date": d.strftime("%Y-%m-%d"),
+                        "weather": self._shorten_weather(weather),
+                        "icon": self._get_weather_icon_by_text(weather),
+                        "max_temp": max_t,
+                        "min_temp": min_t,
+                        "pop": pop,
+                    })
 
-            # 降水確率を抽出（ページ内 N% パターンから）
-            pop = "--"
-            pop_match = re.search(r'(\d+)\s*%', text)
-            if pop_match:
-                pop = f"{pop_match.group(1)}%"
+        if daily:
+            return daily
 
-            if i == 0:
-                day_label = "今日"
-            elif i == 1:
-                day_label = "明日"
-            else:
-                d = today_date + datetime.timedelta(days=i)
-                day_label = f"{d.month}/{d.day}"
-
-            daily.append({
-                "day": day_label,
-                "date": (today_date + datetime.timedelta(days=i)).strftime("%Y-%m-%d"),
-                "weather": weather_text,
-                "icon": self._get_weather_icon_by_text(weather_text),
-                "max_temp": max_t,
-                "min_temp": min_t,
-                "pop": pop,
-            })
-
-        return daily if daily else None
+        # 全アプローチ失敗時のフォールバック
+        return self._extract_yahoo_daily_fallback(doc, today_date)
 
     def _extract_yahoo_daily_fallback(self, doc, today_date):
         """フォールバック: 全ページテキストから日別予報を正規表現で抽出"""
@@ -324,38 +314,54 @@ class InfoService:
         return None
 
     def _extract_temps_from_node(self, node, full_text):
-        max_t, min_t = "--", "--"
-        # パターン1: "X℃ / Y℃" などの区切りパターン
-        # 区切り文字: / ／ ・ ~ 〜 - ー
-        m = re.search(r'(-?\d+)\s*[℃°][^\d]{0,8}[\/／・~〜\-ー][^\d]{0,8}(-?\d+)\s*[℃°]', full_text)
-        if not m:
-            # フォールバック: より緩い区切り
-            m = re.search(r'(-?\d+)\s*[℃°][^\d]{1,10}?(-?\d+)\s*[℃°]', full_text)
+        """Yahoo!天気 HTML から最高/最低気温を抽出する。
+        実 HTML 構造は <li class="high"><em>23</em>℃[+2] と <li class="low"><em>9</em>℃[+1]。
+        各クラスの em 内の最初の数値を取るのが最も信頼できる。"""
+
+        def _read_em_value(elements):
+            for el in elements:
+                em_list = el.cssselect("em")
+                if em_list:
+                    txt = em_list[0].text_content().strip()
+                    m = re.search(r"-?\d+", txt)
+                    if m:
+                        return m.group()
+                # フォールバック: 要素全体のテキストから最初の数値
+                txt = el.text_content().strip()
+                m = re.search(r"-?\d+", txt)
+                if m:
+                    return m.group()
+            return None
+
+        max_t = _read_em_value(node.cssselect(".high")) \
+            or _read_em_value(node.cssselect(".temp-max")) \
+            or _read_em_value(node.cssselect(".yjw_temp_max")) \
+            or _read_em_value(node.cssselect(".hightemp"))
+        min_t = _read_em_value(node.cssselect(".low")) \
+            or _read_em_value(node.cssselect(".temp-min")) \
+            or _read_em_value(node.cssselect(".yjw_temp_min")) \
+            or _read_em_value(node.cssselect(".lowtemp"))
+
+        if max_t and min_t:
+            try:
+                if int(max_t) < int(min_t):
+                    max_t, min_t = min_t, max_t
+            except ValueError:
+                pass
+            return max_t, min_t
+
+        # CSS で取れなかった場合のテキスト解析フォールバック
+        m = re.search(r"(-?\d+)\s*[℃°][^\d]{0,12}[\/／・~〜\-ー][^\d]{0,12}(-?\d+)\s*[℃°]", full_text)
         if m:
             a, b = m.group(1), m.group(2)
-            # max/min 判定: 大きい方が max、小さい方が min
-            if int(a) >= int(b):
+            try:
+                if int(a) >= int(b):
+                    return a, b
+                return b, a
+            except ValueError:
                 return a, b
-            return b, a
-        # パターン2: class名ベース
-        for cls in ['.temp-max', '.yjw_temp_max', '.high', '.hightemp']:
-            el = node.cssselect(cls)
-            if el:
-                t = re.search(r'-?\d+', el[0].text_content())
-                if t:
-                    max_t = t.group()
-                    break
-        for cls in ['.temp-min', '.yjw_temp_min', '.low', '.lowtemp']:
-            el = node.cssselect(cls)
-            if el:
-                t = re.search(r'-?\d+', el[0].text_content())
-                if t:
-                    min_t = t.group()
-                    break
-        # パターン2 でも片方しか取れない場合は両方 "--" にする（誤った同値表示を避ける）
-        if max_t == "--" or min_t == "--":
-            return "--", "--"
-        return max_t, min_t
+
+        return "--", "--"
 
     async def _fetch_jma_weather(self):
         """気象庁API（フォールバック）から天気予報を取得"""
@@ -457,7 +463,7 @@ class InfoService:
                 "slots": hourly,
                 "max_temp": get_temp(1),
                 "min_temp": get_temp(0),
-                "location": "33/6710",
+                "location": "33/6610",
                 "location_name": "岡山（南部）",
             }
         except Exception as e:

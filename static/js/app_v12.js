@@ -452,7 +452,7 @@ function renderWeather(w, weatherEl) {
         html += `</div>`;
     }
     // Yahoo!天気へのリンク（location が "33/6710" 形式の場合のみ）
-    const loc = w.location || localStorage.getItem('mng_weather_location') || '33/6710';
+    const loc = w.location || localStorage.getItem('mng_weather_location') || '33/6610';
     if (/^\d+\/\d+$/.test(loc)) {
         html += `<div style="margin-top:8px;text-align:right;">
             <a href="https://weather.yahoo.co.jp/weather/jp/${encodeURI(loc)}/" target="_blank" rel="noopener"
@@ -485,7 +485,20 @@ async function loadDashboard() {
                 weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした</div>`;
             }
             // カスタムロケーションが設定されていれば上書き取得
-            const customLoc = localStorage.getItem('mng_weather_location');
+            // 旧コード（札幌など岡山以外）が残っていた場合は岡山南部に上書き
+            let customLoc = localStorage.getItem('mng_weather_location');
+            if (customLoc && !customLoc.startsWith('33/')) {
+                customLoc = '33/6610';
+                localStorage.setItem('mng_weather_location', customLoc);
+            }
+            // 旧地域コードからの自動マイグレーション
+            if (customLoc === '33/6710') {
+                customLoc = '33/6610';
+                localStorage.setItem('mng_weather_location', customLoc);
+            } else if (customLoc === '33/6720') {
+                customLoc = '33/6620';
+                localStorage.setItem('mng_weather_location', customLoc);
+            }
             if (customLoc) {
                 apiFetch(`/api/weather?location=${encodeURIComponent(customLoc)}`).then(wd => {
                     if (wd && wd.summary !== '取得失敗') {
@@ -695,8 +708,8 @@ function renderTaskGroup(container, tasks, listName) {
             const indent = t._depth ? 'margin-left:24px;' : '';
             const childMark = t._depth ? '<span style="color:var(--text-muted);margin-right:2px;">└</span>' : '';
             return `
-            <div class="list-item gtask-item" style="gap:6px;${indent}" id="gtask-item-${t.id}" draggable="true" data-task-id="${t.id}" data-list="${listName}" data-parent="${t.parent || ''}">
-                <span class="gtask-handle" style="cursor:grab;color:var(--text-muted);font-size:0.85rem;padding:0 2px;user-select:none;" title="ドラッグして並び替え（右にドラッグでサブタスク化）">⠿</span>
+            <div class="list-item gtask-item" style="gap:6px;${indent}" id="gtask-item-${t.id}" data-task-id="${t.id}" data-list="${listName}" data-parent="${t.parent || ''}">
+                <span class="gtask-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:0.85rem;padding:0 6px;user-select:none;" title="長押しして並び替え">⠿</span>
                 ${childMark}
                 <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')" style="cursor:pointer;"></div>
                 <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
@@ -711,68 +724,106 @@ function renderTaskGroup(container, tasks, listName) {
         `)
     ].join('');
 
-    // ドラッグ&ドロップ：縦移動 + 横ドラッグでサブタスク化
-    let _dragSrcId = null;
-    let _dragSrcStartX = 0;
-    container.querySelectorAll('[draggable="true"]').forEach(el => {
-        el.addEventListener('dragstart', e => {
-            _dragSrcId = el.dataset.taskId;
-            _dragSrcStartX = e.clientX;
-            el.style.opacity = '0.5';
-            e.dataTransfer.effectAllowed = 'move';
-        });
-        el.addEventListener('dragend', () => {
-            el.style.opacity = '';
-            container.querySelectorAll('[draggable]').forEach(x => x.classList.remove('drag-over', 'drag-over-sub'));
-        });
-        el.addEventListener('dragover', e => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-            container.querySelectorAll('[draggable]').forEach(x => x.classList.remove('drag-over', 'drag-over-sub'));
-            // 30px 以上右にドラッグでサブタスク化
-            const horizontalOffset = e.clientX - _dragSrcStartX;
-            if (horizontalOffset > 30) {
-                el.classList.add('drag-over-sub');
-            } else {
-                el.classList.add('drag-over');
-            }
-        });
-        el.addEventListener('dragleave', () => {
-            el.classList.remove('drag-over', 'drag-over-sub');
-        });
-        el.addEventListener('drop', async e => {
-            e.preventDefault();
-            const wasSubMode = el.classList.contains('drag-over-sub');
-            el.classList.remove('drag-over', 'drag-over-sub');
-            const targetId = el.dataset.taskId;
-            if (!_dragSrcId || _dragSrcId === targetId) return;
-            const ln = el.dataset.list;
-            const tasksRef = ln === '仕事' ? _currentWorkTasks : ln === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
-            const targetTask = tasksRef.find(t => t.id === targetId);
-            if (!targetTask) return;
-            const body = { task_id: _dragSrcId, list_name: ln };
-            if (wasSubMode) {
-                // サブタスク化: target を親に
-                if (targetTask.parent) {
-                    showToast('既にサブタスクのタスクの下には入れられません', true);
-                    return;
-                }
-                body.parent = targetId;
-            } else {
-                // 通常並び替え: target の前に移動
-                body.previous_task_id = targetId;
-                if (targetTask.parent) {
-                    body.parent = targetTask.parent;
-                }
-            }
+    // SortableJS でモバイル対応の並び替えを設定
+    initTaskSortable(container, listName);
+}
+
+function initHabitSortable(container) {
+    if (!window.Sortable) {
+        setTimeout(() => initHabitSortable(container), 200);
+        return;
+    }
+    if (container._sortable) {
+        try { container._sortable.destroy(); } catch {}
+    }
+    container._sortable = window.Sortable.create(container, {
+        handle: '.habit-handle',
+        animation: 150,
+        delay: 200,
+        delayOnTouchOnly: true,
+        touchStartThreshold: 5,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        dragClass: 'sortable-drag',
+        onEnd: async (evt) => {
+            const item = evt.item;
+            const taskId = item && item.dataset && item.dataset.taskId;
+            if (!taskId) return;
+            const items = Array.from(container.querySelectorAll('.habit-item'));
+            const idx = items.findIndex(el => el === item);
+            if (idx === -1) return;
+            const previous = idx > 0 ? items[idx - 1] : null;
+            const previousId = previous ? (previous.dataset.taskId || null) : null;
             try {
                 await apiFetch('/api/google_tasks_move', {
                     method: 'POST',
-                    body: JSON.stringify(body)
+                    body: JSON.stringify({
+                        task_id: taskId,
+                        list_name: '習慣',
+                        previous_task_id: previousId,
+                    }),
                 });
+                showToast('並び替えました');
+                setTimeout(() => loadHabits(), 100);
+            } catch (e) {
+                showToast('並び替えに失敗しました', true);
+                loadHabits();
+            }
+        },
+    });
+}
+
+function initTaskSortable(container, listName) {
+    if (!window.Sortable) {
+        // ライブラリがまだロードされていなければ少し待ってから再試行
+        setTimeout(() => initTaskSortable(container, listName), 200);
+        return;
+    }
+    // 古い Sortable インスタンスを破棄
+    if (container._sortable) {
+        try { container._sortable.destroy(); } catch {}
+    }
+    container._sortable = window.Sortable.create(container, {
+        handle: '.gtask-handle',
+        animation: 150,
+        delay: 200,
+        delayOnTouchOnly: true,
+        touchStartThreshold: 5,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        dragClass: 'sortable-drag',
+        // 完了済みは並び替え不可
+        filter: '.list-item:not(.gtask-item)',
+        onEnd: async (evt) => {
+            const item = evt.item;
+            const taskId = item && item.dataset && item.dataset.taskId;
+            if (!taskId) return;
+            const ln = item.dataset.list || listName;
+            // 移動先の前のアクティブタスクを取得
+            const items = Array.from(container.querySelectorAll('.gtask-item'));
+            const idx = items.findIndex(el => el === item);
+            if (idx === -1) return;
+            const previous = idx > 0 ? items[idx - 1] : null;
+            const previousId = previous ? previous.dataset.taskId : null;
+            // 親が同じ階層に来た場合は parent を引き継ぐ
+            const tasksRef = ln === '仕事' ? _currentWorkTasks : ln === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
+            const previousTask = previousId ? tasksRef.find(t => t.id === previousId) : null;
+            const body = { task_id: taskId, list_name: ln };
+            if (previousId) body.previous_task_id = previousId;
+            if (previousTask && previousTask.parent) body.parent = previousTask.parent;
+            try {
+                await apiFetch('/api/google_tasks_move', {
+                    method: 'POST',
+                    body: JSON.stringify(body),
+                });
+                showToast('並び替えました');
+                // 軽量な再描画のため少し待ってから再ロード
+                setTimeout(() => loadDashboard(), 100);
+            } catch (e) {
+                showToast('並び替えに失敗しました', true);
                 loadDashboard();
-            } catch { showToast('移動に失敗しました', true); }
-        });
+            }
+        },
     });
 }
 
@@ -2483,7 +2534,8 @@ async function loadHabits() {
 
             const dimmed = !dueToday && !isDone;
             return `
-                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}" style="${dimmed ? 'opacity:0.45;' : ''}">
+                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}" data-task-id="${h.task_id || ''}" data-name="${escapeHtml(h.name)}" style="${dimmed ? 'opacity:0.45;' : ''}">
+                    <span class="habit-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:0.85rem;padding:0 4px;user-select:none;" title="長押しして並び替え">⠿</span>
                     <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone || !dueToday ? 'disabled' : ''}>✔</button>
                     <div class="habit-name-wrap" style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0;">
                         <div class="habit-name">${escapeHtml(h.name)}${freqChip ? ' ' + freqChip : ''}</div>
@@ -2493,6 +2545,8 @@ async function loadHabits() {
                 </div>
             `;
         }).join('');
+
+        initHabitSortable(container);
 
         // 全完了チェック（初期ロード時は発火しない）
         const isInitialLoad = (window._prevHabitDoneCount === undefined);
@@ -3705,10 +3759,15 @@ async function loadStarredMessages() {
             const tStr = `${dt.getMonth()+1}/${dt.getDate()} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
             const roleLabel = m.role === 'assistant' ? 'AI' : 'YOU';
             const preview = m.content.length > 160 ? m.content.slice(0, 160) + '...' : m.content;
-            return `<div class="search-result-item" onclick="jumpToMessage(${m.id}); closeStarredOverlay();">
-                <div class="search-result-role">${roleLabel}</div>
-                <div class="search-result-snippet">${escapeHtml(preview)}</div>
-                <div class="search-result-time">⭐ ${tStr}</div>
+            return `<div class="search-result-item" style="position:relative;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px;">
+                    <div onclick="jumpToMessage(${m.id}); closeStarredOverlay();" style="flex:1;cursor:pointer;">
+                        <div class="search-result-role">${roleLabel}</div>
+                        <div class="search-result-snippet">${escapeHtml(preview)}</div>
+                        <div class="search-result-time">⭐ ${tStr}</div>
+                    </div>
+                    <button onclick="event.stopPropagation(); unstarMessageInList(${m.id})" style="background:none;border:none;cursor:pointer;font-size:0.75rem;color:var(--text-muted);padding:4px 6px;white-space:nowrap;flex-shrink:0;" title="お気に入りから解除">解除</button>
+                </div>
             </div>`;
         }).join('');
     } catch (e) {
@@ -3716,8 +3775,28 @@ async function loadStarredMessages() {
     }
 }
 
-// ----- 天気場所選択（都道府県→地域の2段階） -----
-let _weatherPrefData = null;
+window.unstarMessageInList = async (msgId) => {
+    try {
+        await apiFetch(`/api/messages/${msgId}/star`, { method: 'POST' });
+        showToast('お気に入りから解除しました');
+        loadStarredMessages();
+        // 画面に該当メッセージが表示されていれば UI も更新
+        const el = document.querySelector(`.message[data-msg-id="${msgId}"]`);
+        if (el) {
+            el.classList.remove('starred');
+            const btn = el.querySelector('.star-btn');
+            if (btn) btn.textContent = '☆';
+        }
+    } catch {
+        showToast('解除に失敗しました', true);
+    }
+};
+
+// ----- 天気場所選択（岡山 北部/南部のみ） -----
+let _weatherRegions = [
+    { code: '33/6610', name: '岡山（南部）' },
+    { code: '33/6620', name: '岡山（北部）' },
+];
 
 async function openWeatherLocationPicker() {
     document.getElementById('weather-location-overlay')?.classList.remove('hidden');
@@ -3726,46 +3805,28 @@ async function openWeatherLocationPicker() {
     list.innerHTML = '<p class="search-hint">読み込み中...</p>';
     try {
         const data = await apiFetch('/api/weather/locations');
-        _weatherPrefData = data.prefectures || [];
-        _showPrefectureList(list);
+        if (Array.isArray(data.regions) && data.regions.length) {
+            _weatherRegions = data.regions;
+        }
     } catch (e) {
-        list.innerHTML = '<p class="search-empty">場所情報の取得に失敗しました</p>';
+        // 失敗してもデフォルト 2 地域を使う
     }
+    _renderWeatherRegions();
 }
 
-function _showPrefectureList(list) {
-    if (!list || !_weatherPrefData) return;
-    list.innerHTML = '<p class="search-hint" style="font-size:0.82rem; color:var(--text-secondary); margin-bottom:8px;">都道府県を選択</p>' +
-        _weatherPrefData.map(p => `
-            <div class="search-result-item" onclick="_showRegionList('${escapeHtml(p.name)}')">
-                <div class="search-result-role">📍</div>
-                <div class="search-result-snippet">${escapeHtml(p.name)}</div>
-                <div class="search-result-time" style="color:var(--text-muted);">${p.regions.length}地域 ▸</div>
-            </div>
-        `).join('');
-}
-
-window._showRegionList = function(prefName) {
+function _renderWeatherRegions() {
     const list = $('#weather-location-list');
-    if (!list || !_weatherPrefData) return;
-    const pref = _weatherPrefData.find(p => p.name === prefName);
-    if (!pref) return;
-    const current = localStorage.getItem('mng_weather_location') || '';
-    list.innerHTML = `<div class="search-result-item" onclick="_showPrefectureList($('#weather-location-list'))" style="opacity:0.7;">
-            <div class="search-result-role">◂</div>
-            <div class="search-result-snippet" style="font-weight:700;">都道府県に戻る</div>
-        </div>
-        <p class="search-hint" style="font-size:0.82rem; color:var(--accent); margin:8px 0 4px; font-weight:700;">${escapeHtml(prefName)}</p>` +
-        pref.regions.map(r => `
+    if (!list) return;
+    const current = localStorage.getItem('mng_weather_location') || '33/6610';
+    list.innerHTML = '<p class="search-hint" style="font-size:0.82rem;color:var(--text-secondary);margin-bottom:8px;">地域を選択</p>' +
+        _weatherRegions.map(r => `
             <div class="search-result-item" style="${current === r.code ? 'background:rgba(0,186,152,0.12);' : ''}" onclick="selectWeatherLocation('${r.code}', '${escapeHtml(r.name)}')">
                 <div class="search-result-role">🌤️</div>
                 <div class="search-result-snippet">${escapeHtml(r.name)}</div>
                 ${current === r.code ? '<div class="search-result-time">✓ 選択中</div>' : ''}
             </div>
         `).join('');
-};
-
-window._showPrefectureList = _showPrefectureList;
+}
 
 function closeWeatherLocationPicker(e) {
     if (e && e.target.closest && e.target.closest('.search-panel')) return;
@@ -3980,6 +4041,50 @@ window.initMain = function patchedInitMain() {
     const savedMetric = localStorage.getItem('mng_fitbit_metric');
     const sel = $('#fitbit-metric-select');
     if (sel && savedMetric) sel.value = savedMetric;
+};
+
+
+// ===========================================================
+// 今日の日記 編集
+// ===========================================================
+
+window.openDailyJournalEditor = async () => {
+    const modal = $('#daily-journal-edit-modal');
+    const ta = $('#daily-journal-edit-text');
+    if (!modal || !ta) return;
+    ta.value = '';
+    ta.disabled = true;
+    modal.classList.remove('hidden');
+    setTimeout(() => ta.focus(), 100);
+    try {
+        const data = await apiFetch('/api/daily_journal');
+        ta.value = data.text || '';
+    } catch (e) {
+        showToast('読み込みに失敗しました', true);
+    } finally {
+        ta.disabled = false;
+    }
+};
+
+window.closeDailyJournalEditor = () => {
+    $('#daily-journal-edit-modal')?.classList.add('hidden');
+};
+
+window.submitDailyJournalEdit = async () => {
+    const ta = $('#daily-journal-edit-text');
+    if (!ta) return;
+    const text = ta.value;
+    try {
+        await apiFetch('/api/daily_journal', {
+            method: 'POST',
+            body: JSON.stringify({ text }),
+        });
+        showToast('日記を保存しました（Obsidian反映済み）');
+        closeDailyJournalEditor();
+        loadDashboard();
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    }
 };
 
 
