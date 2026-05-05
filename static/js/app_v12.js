@@ -564,7 +564,7 @@ async function loadDashboard() {
                     inner = `<span class="lifelog-body" style="grid-column: 1 / -1;">${escapeHtml(t.text)}</span>`;
                 }
                 return `
-                    <div class="list-item lifelog-row" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; cursor: pointer; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}"
+                    <div class="list-item lifelog-row" style="border-left: 3px solid ${isRunning ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}; cursor: pointer; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}"
                          onclick="editLifeLog(${idx}, '${rawAttr}')">
                         ${inner}
                     </div>
@@ -650,7 +650,7 @@ async function loadDashboard() {
                     const done = item.startsWith('[x]') || item.startsWith('[X]');
                     const text = item.replace(/^\[[ xX]\]\s*/, '').trim();
                     return `<div class="list-item" style="gap:8px;">
-                        <div class="checkbox-custom" style="${done ? 'background:var(--primary);border-color:var(--primary);color:#fff;font-size:0.7rem;display:flex;align-items:center;justify-content:center;' : ''}">${done ? '✓' : ''}</div>
+                        <div class="checkbox-custom" style="${done ? 'background:var(--accent);border-color:var(--accent);color:#fff;font-size:0.7rem;display:flex;align-items:center;justify-content:center;' : ''}">${done ? '✓' : ''}</div>
                         <span style="${done ? 'text-decoration:line-through;color:var(--text-muted);' : ''}">${escapeHtml(text)}</span>
                     </div>`;
                 }).join('');
@@ -735,7 +735,7 @@ function renderTaskGroup(container, tasks, listName) {
         }),
         ...doneTasks.map(t => `
             <div class="list-item" style="gap:6px; opacity:0.5;" id="gtask-item-${t.id}">
-                <div class="checkbox-custom" style="background:var(--primary); border-color:var(--primary); pointer-events:none; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;">✓</div>
+                <div class="checkbox-custom" style="background:var(--accent); border-color:var(--accent); pointer-events:none; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;">✓</div>
                 <div class="li-text" style="flex:1; text-decoration:line-through; color:var(--text-muted);">${escapeHtml(t.title)}</div>
             </div>
         `)
@@ -915,8 +915,8 @@ window.toggleGoogleTask = async (taskId, listName) => {
         item.style.opacity = '0.5';
         const cb = item.querySelector('.checkbox-custom');
         if (cb) {
-            cb.style.background = 'var(--primary)';
-            cb.style.borderColor = 'var(--primary)';
+            cb.style.background = 'var(--accent)';
+            cb.style.borderColor = 'var(--accent)';
             cb.style.color = '#fff';
             cb.style.fontSize = '0.7rem';
             cb.textContent = '✓';
@@ -2536,7 +2536,7 @@ async function loadHabits() {
 
             let streakBadge = '';
             if (streakNum > 0) {
-                const color = streakNum >= 30 ? '#ff6600' : streakNum >= 14 ? '#ff9900' : streakNum >= 7 ? '#ffcc00' : streakNum >= 3 ? 'var(--primary)' : 'var(--text-muted)';
+                const color = streakNum >= 30 ? '#ff6600' : streakNum >= 14 ? '#ff9900' : streakNum >= 7 ? '#ffcc00' : streakNum >= 3 ? 'var(--accent)' : 'var(--text-muted)';
                 const icon = streakNum >= 30 ? '🔥' : streakNum >= 7 ? '⚡' : '✨';
                 streakBadge = `<span style="font-size:0.72rem; color:${color}; font-weight:700; white-space:nowrap; min-width:30px; text-align:right;">${icon}${streakNum}</span>`;
             }
