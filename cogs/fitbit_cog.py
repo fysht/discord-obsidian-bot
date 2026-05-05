@@ -35,10 +35,12 @@ class FitbitCog(commands.Cog):
 
         self.sleep_report_loop.start()
         self.full_health_report_loop.start()
+        self.prefetch_cache_loop.start()
 
     def cog_unload(self):
         self.sleep_report_loop.cancel()
         self.full_health_report_loop.cancel()
+        self.prefetch_cache_loop.cancel()
 
     def _format_minutes(self, total_minutes: int) -> str:
         if not total_minutes:
@@ -186,8 +188,22 @@ class FitbitCog(commands.Cog):
         await asyncio.sleep(random.randint(0, 600))
         await self.send_full_health_report()
 
+    @tasks.loop(time=datetime.time(hour=23, minute=0, tzinfo=JST))
+    async def prefetch_cache_loop(self):
+        """23:00 に当日分の Fitbit データを事前取得し、キャッシュへ保存する。
+        Web UI が翌日に開かれた際に即座にグラフが描画できるようにする。"""
+        if not self.is_ready:
+            return
+        try:
+            from api.routes import fitbit_cache_prefetch
+            await fitbit_cache_prefetch(self.fitbit_service, days=14)
+            logging.info("Fitbit キャッシュの事前取得が完了しました。")
+        except Exception as e:
+            logging.error(f"Fitbit キャッシュ事前取得に失敗: {e}")
+
     @sleep_report_loop.before_loop
     @full_health_report_loop.before_loop
+    @prefetch_cache_loop.before_loop
     async def before_tasks(self):
         await self.bot.wait_until_ready()
 

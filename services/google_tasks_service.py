@@ -261,7 +261,7 @@ class GoogleTasksService:
             return f"タスクの更新に失敗しました: {e}"
 
     async def get_raw_tasks(self, list_name: str = None):
-        """未完了タスクのパッチ用データをリストで取得する。due を含む。"""
+        """未完了タスクのパッチ用データをリストで取得する。due/parent/position を含む。"""
         service = self.get_service()
         if not service: return []
         try:
@@ -278,6 +278,8 @@ class GoogleTasksService:
                     "title": t["title"],
                     "notes": t.get("notes", ""),
                     "due": t.get("due", ""),
+                    "parent": t.get("parent", ""),
+                    "position": t.get("position", ""),
                 }
                 for t in items
             ]
@@ -312,8 +314,9 @@ class GoogleTasksService:
         except Exception as e:
             logging.error(f"reset_completed_tasks error: {e}")
 
-    async def move_task(self, task_id: str, previous_task_id: str = None, list_name: str = None):
-        """タスクの順序を変更する。previous_task_idの後に移動。Noneなら先頭に移動"""
+    async def move_task(self, task_id: str, previous_task_id: str = None, list_name: str = None, parent: str = None):
+        """タスクの順序を変更する。previous_task_idの後に移動。Noneなら先頭に移動。
+        parent を指定するとサブタスク化（その親タスクの子になる）。"""
         service = self.get_service()
         if not service:
             return "Tasks APIに接続できませんでした。"
@@ -323,6 +326,8 @@ class GoogleTasksService:
             kwargs = {"tasklist": list_id, "task": task_id}
             if previous_task_id:
                 kwargs["previous"] = previous_task_id
+            if parent:
+                kwargs["parent"] = parent
             await loop.run_in_executor(
                 None,
                 lambda: service.tasks().move(**kwargs).execute(),

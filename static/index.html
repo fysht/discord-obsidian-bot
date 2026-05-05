@@ -11,9 +11,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=37">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=38">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 </head>
 <body>
     <!-- ========== LOGIN SCREEN ========== -->
@@ -73,6 +74,9 @@
                 <button class="icon-btn" id="reload-btn" title="アプリを更新" onclick="forceReload()">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
                 </button>
+                <button class="icon-btn" id="tutorial-btn" title="使い方ガイド" onclick="openTutorial()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                </button>
                 <div class="version-tag">v2.0</div>
                 <button class="icon-btn" id="reset-chat-btn" title="チャット履歴リセット">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
@@ -102,10 +106,10 @@
                     <div class="action-chips">
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('start')">▶ タスク開始</button>
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">■ タスク終了</button>
-                        <button class="chip-btn" onclick="runBriefing()">☀️ ブリーフィング</button>
                         <button class="chip-btn chip-more" onclick="toggleMoreChips()" id="chip-more-toggle">＋ その他</button>
                     </div>
                     <div class="action-chips-more hidden" id="action-chips-more">
+                        <button class="chip-btn" onclick="runBriefing()">☀️ ブリーフィング</button>
                         <button class="chip-btn" onclick="openZeroSecModal()">💭 ゼロ秒思考</button>
                         <button class="chip-btn" onclick="openReadingModal()">📖 読書</button>
                         <button class="chip-btn" onclick="openStudyModal()">📝 勉強</button>
@@ -242,6 +246,13 @@
                                 </div>
                             </div>
                         </div>
+                        <div id="habit-gantt-section" style="display:none; border-top:1px solid var(--border-glass);">
+                            <button onclick="toggleHabitGantt()" id="habit-gantt-toggle-btn"
+                                style="width:100%;padding:8px 18px;background:none;border:none;color:var(--text-secondary);font-size:0.78rem;text-align:left;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                                <span id="habit-gantt-chevron">▶</span> 習慣ガントチャート（過去90日）
+                            </button>
+                            <div id="habit-gantt" style="display:none;padding:10px 18px 14px;overflow-x:auto;"></div>
+                        </div>
                     </div>
                     <div class="card obsidian-card">
                         <div class="card-header">
@@ -257,15 +268,38 @@
                         </div>
                         <div id="dash-sleep" class="card-body"></div>
                     </div>
-                    <details class="card fitbit-all-card">
+                    <details class="card fitbit-all-card" id="fitbit-card" open>
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">📊</span>
                                 <span class="card-title">Fitbitデータ（14日間）</span>
-                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadFitbitAllData()">更新</button>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadFitbitAllData(true)">更新</button>
                             </div>
                         </summary>
-                        <div id="dash-fitbit-all" class="card-body" style="overflow-x:auto;"></div>
+                        <div class="card-body" style="overflow-x:auto;">
+                            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+                                <label style="font-size:0.78rem;color:var(--text-muted);">指標:</label>
+                                <select id="fitbit-metric-select" class="modern-input" style="flex:1;padding:6px 8px;font-size:0.85rem;" onchange="renderFitbitChart()">
+                                    <option value="sleep_score">睡眠スコア</option>
+                                    <option value="total_sleep_minutes">総睡眠時間（分）</option>
+                                    <option value="deep_sleep_minutes">深い睡眠（分）</option>
+                                    <option value="rem_sleep_minutes">REM睡眠（分）</option>
+                                    <option value="steps">歩数</option>
+                                    <option value="calories_out">消費カロリー</option>
+                                    <option value="resting_heart_rate">安静時心拍数</option>
+                                    <option value="distance_km">距離（km）</option>
+                                    <option value="active_minutes_very">高強度活動分</option>
+                                    <option value="hr_zone_fat_burn_minutes">脂肪燃焼ゾーン分</option>
+                                </select>
+                            </div>
+                            <div style="position:relative;height:220px;">
+                                <canvas id="fitbit-chart"></canvas>
+                            </div>
+                            <details style="margin-top:10px;">
+                                <summary style="font-size:0.78rem;color:var(--text-muted);cursor:pointer;">テーブル表示</summary>
+                                <div id="dash-fitbit-all" style="overflow-x:auto;margin-top:6px;"></div>
+                            </details>
+                        </div>
                     </details>
                     <div class="card diary-card">
                         <div class="card-header">
@@ -292,6 +326,7 @@
                         <div class="card-header">
                             <span class="card-icon">📚</span>
                             <span class="card-title">英語フレーズ帳</span>
+                            <button class="mini-link" onclick="openEnglishQuiz()">クイズ</button>
                             <button class="mini-link" onclick="loadEnglishPhrases()">更新</button>
                         </div>
                         <div id="dash-english-phrases" class="card-body"></div>
@@ -946,6 +981,84 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=39"></script>
+    <!-- ライフログ編集モーダル: 開始時刻・終了時刻・内容を分離して編集 -->
+    <div id="lifelog-edit-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:380px;">
+            <h3 class="modal-title">ライフログを編集</h3>
+            <div style="display:flex;gap:8px;margin-bottom:10px;">
+                <div style="flex:1;">
+                    <label style="font-size:0.75rem;color:var(--text-muted);">開始時刻</label>
+                    <input type="time" id="lifelog-edit-start" class="modern-input" style="width:100%;padding:8px;font-size:0.9rem;">
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:0.75rem;color:var(--text-muted);">終了時刻（空欄=実行中）</label>
+                    <input type="time" id="lifelog-edit-end" class="modern-input" style="width:100%;padding:8px;font-size:0.9rem;">
+                </div>
+            </div>
+            <label style="font-size:0.75rem;color:var(--text-muted);">内容</label>
+            <textarea id="lifelog-edit-text" class="modern-input" rows="3" style="width:100%;padding:8px;font-size:0.9rem;resize:vertical;"></textarea>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+                <button class="modal-btn cancel" onclick="closeLifeLogEdit()">キャンセル</button>
+                <button class="modal-btn delete" onclick="confirmLifeLogDelete()" style="background:rgba(255,80,80,0.18);color:#ff8080;">削除</button>
+                <button class="modal-btn submit" onclick="submitLifeLogEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 期限ピッカーモーダル（タスク用） -->
+    <div id="task-due-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:340px;">
+            <h3 class="modal-title" id="task-due-title">期限を設定</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
+                <button class="due-quick-btn" onclick="setDueQuick(0)">今日</button>
+                <button class="due-quick-btn" onclick="setDueQuick(1)">明日</button>
+                <button class="due-quick-btn" onclick="setDueQuick(3)">3日後</button>
+                <button class="due-quick-btn" onclick="setDueQuick(7)">1週間後</button>
+                <button class="due-quick-btn" onclick="setDueQuick(14)">2週間後</button>
+                <button class="due-quick-btn" onclick="setDueQuick(30)">1ヶ月後</button>
+            </div>
+            <label style="font-size:0.75rem;color:var(--text-muted);">直接指定</label>
+            <input type="date" id="task-due-input" class="modern-input" style="width:100%;padding:8px;font-size:0.9rem;">
+            <div style="display:flex;gap:8px;margin-top:14px;">
+                <button class="modal-btn cancel" onclick="closeTaskDueModal()">キャンセル</button>
+                <button class="modal-btn delete" onclick="clearTaskDue()" style="background:rgba(255,80,80,0.18);color:#ff8080;">クリア</button>
+                <button class="modal-btn submit" onclick="submitTaskDue()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 英語フレーズ クイズモーダル -->
+    <div id="english-quiz-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:420px;">
+            <h3 class="modal-title">📚 英語クイズ</h3>
+            <div id="quiz-progress" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px;"></div>
+            <div id="quiz-question" style="font-size:1rem;font-weight:600;line-height:1.5;margin-bottom:14px;min-height:48px;"></div>
+            <div id="quiz-context" style="font-size:0.78rem;color:var(--text-muted);margin-bottom:14px;font-style:italic;"></div>
+            <div id="quiz-options" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px;"></div>
+            <div id="quiz-feedback" class="hidden" style="padding:10px;border-radius:8px;margin-bottom:12px;font-size:0.88rem;"></div>
+            <div style="display:flex;gap:8px;">
+                <button class="modal-btn cancel" onclick="closeEnglishQuiz()">閉じる</button>
+                <button class="modal-btn submit" id="quiz-next-btn" onclick="loadNextQuiz()">次の問題へ</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- チュートリアルモーダル -->
+    <div id="tutorial-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:480px;max-height:85vh;display:flex;flex-direction:column;">
+            <div id="tutorial-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <h3 class="modal-title" style="margin:0;" id="tutorial-title">使い方ガイド</h3>
+                <button onclick="closeTutorial()" style="background:none;border:none;color:var(--text-muted);font-size:1.4rem;cursor:pointer;">✕</button>
+            </div>
+            <div id="tutorial-content" style="flex:1;overflow-y:auto;padding:10px 4px;"></div>
+            <div class="tutorial-nav" style="display:flex;align-items:center;gap:8px;margin-top:12px;border-top:1px solid var(--border-glass);padding-top:12px;">
+                <button class="modal-btn cancel" id="tutorial-prev" onclick="tutorialPrev()">← 戻る</button>
+                <span id="tutorial-progress" style="flex:1;text-align:center;font-size:0.78rem;color:var(--text-muted);">1 / 12</span>
+                <button class="modal-btn submit" id="tutorial-next" onclick="tutorialNext()">次へ →</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app_v12.js?v=40"></script>
 </body>
 </html>

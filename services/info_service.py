@@ -325,10 +325,18 @@ class InfoService:
 
     def _extract_temps_from_node(self, node, full_text):
         max_t, min_t = "--", "--"
-        # パターン1: "最高 X℃ / 最低 Y℃"
-        m = re.search(r'(\d+)℃\D{0,5}/\D{0,5}(\d+)℃', full_text)
+        # パターン1: "X℃ / Y℃" などの区切りパターン
+        # 区切り文字: / ／ ・ ~ 〜 - ー
+        m = re.search(r'(-?\d+)\s*[℃°][^\d]{0,8}[\/／・~〜\-ー][^\d]{0,8}(-?\d+)\s*[℃°]', full_text)
+        if not m:
+            # フォールバック: より緩い区切り
+            m = re.search(r'(-?\d+)\s*[℃°][^\d]{1,10}?(-?\d+)\s*[℃°]', full_text)
         if m:
-            return m.group(1), m.group(2)
+            a, b = m.group(1), m.group(2)
+            # max/min 判定: 大きい方が max、小さい方が min
+            if int(a) >= int(b):
+                return a, b
+            return b, a
         # パターン2: class名ベース
         for cls in ['.temp-max', '.yjw_temp_max', '.high', '.hightemp']:
             el = node.cssselect(cls)
@@ -344,13 +352,9 @@ class InfoService:
                 if t:
                     min_t = t.group()
                     break
-        # パターン3: 全テキストから数値2つ取り出す
+        # パターン2 でも片方しか取れない場合は両方 "--" にする（誤った同値表示を避ける）
         if max_t == "--" or min_t == "--":
-            nums = re.findall(r'-?\d+', re.sub(r'\d+%', '', full_text))
-            temp_nums = [n for n in nums if -30 <= int(n) <= 50]
-            if len(temp_nums) >= 2:
-                max_t = temp_nums[0]
-                min_t = temp_nums[1]
+            return "--", "--"
         return max_t, min_t
 
     async def _fetch_jma_weather(self):
@@ -454,7 +458,7 @@ class InfoService:
                 "max_temp": get_temp(1),
                 "min_temp": get_temp(0),
                 "location": "33/6710",
-                "location_name": "岡山（南部）※気象庁",
+                "location_name": "岡山（南部）",
             }
         except Exception as e:
             logging.error(f"JMA Weather Error: {e}")

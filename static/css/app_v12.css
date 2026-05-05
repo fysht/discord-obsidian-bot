@@ -1271,3 +1271,97 @@ mark.search-hl {
     color: var(--accent);
     white-space: nowrap;
 }
+
+/* ========== タスクのドラッグ視覚効果 / サブタスク ========== */
+.gtask-item {
+    transition: background 0.15s, transform 0.1s;
+}
+.gtask-item.drag-over {
+    background: rgba(0,186,152,0.1) !important;
+    border-left: 2px solid var(--accent);
+}
+.gtask-item.drag-over-sub {
+    background: rgba(255,212,84,0.18) !important;
+    border-left: 4px solid #ffd454;
+    transform: translateX(8px);
+}
+.gtask-item.drag-over-sub::after {
+    content: ' → サブタスク化';
+    color: #ffd454;
+    font-size: 0.7rem;
+    margin-left: auto;
+    padding-right: 8px;
+    flex-shrink: 0;
+}
+
+/* ========== ライフログ行（タップ可能） ========== */
+.lifelog-row { transition: background 0.12s; }
+.lifelog-row:hover, .lifelog-row:active {
+    background: rgba(255,255,255,0.03);
+}
+
+/* ========== 期限ピッカーの簡易ボタン ========== */
+.due-quick-btn {
+    background: rgba(0,186,152,0.12);
+    color: var(--accent);
+    border: 1px solid rgba(0,186,152,0.3);
+    padding: 6px 12px;
+    border-radius: 16px;
+    font-size: 0.82rem;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.due-quick-btn:hover, .due-quick-btn:active {
+    background: rgba(0,186,152,0.25);
+}
+
+/* ========== 英語クイズの選択肢ボタン ========== */
+.quiz-option-btn {
+    width: 100%;
+    text-align: left;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    cursor: pointer;
+    transition: all 0.12s;
+}
+.quiz-option-btn:hover:not(:disabled) {
+    background: rgba(0,186,152,0.1);
+    border-color: rgba(0,186,152,0.4);
+}
+.quiz-option-btn:disabled {
+    cursor: default;
+    opacity: 0.85;
+}
+
+/* ========== チュートリアル ========== */
+#tutorial-modal .modal-card {
+    width: 90vw;
+}
+#tutorial-content {
+    line-height: 1.6;
+    font-size: 0.92rem;
+}
+#tutorial-content h4 {
+    margin: 14px 0 6px;
+    color: var(--accent);
+}
+#tutorial-content code {
+    background: rgba(0,186,152,0.12);
+    color: var(--accent);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.85em;
+}
+#tutorial-prev:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+/* ========== ガントチャート（必要であれば追加調整） ========== */
+#habit-gantt {
+    font-feature-settings: "tnum";
+}

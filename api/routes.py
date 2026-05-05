@@ -15,6 +15,7 @@ from api.database import (
     search_messages, add_push_subscription, remove_push_subscription,
     add_english_phrase, get_english_phrases, delete_english_phrase,
     set_message_label, get_labeled_messages, get_all_labels,
+    get_quiz_phrase_pool, record_quiz_attempt,
 )
 from api import notification_service
 from services.info_service import InfoService
@@ -35,6 +36,95 @@ API_KEY = require_env("PWA_API_KEY")
 _sleep_trend_cache: dict = {"data": None, "expires_at": None}
 _dashboard_sleep_cache: dict = {"data": None, "expires_at": None}
 _fitbit_semaphore: asyncio.Semaphore | None = None
+
+# Fitbit データ用の永続キャッシュ（過去日のレコードをディスクに保存）
+from pathlib import Path as _Path
+_FITBIT_CACHE_PATH = _Path(__file__).parent.parent / "fitbit_cache.json"
+_fitbit_cache_lock = asyncio.Lock()
+_FITBIT_TODAY_TTL_SECONDS = 30 * 60  # 当日分は 30 分有効
+
+_FITBIT_METRICS = (
+    "sleep_score", "total_sleep_minutes", "time_in_bed_minutes",
+    "deep_sleep_minutes", "rem_sleep_minutes", "light_sleep_minutes",
+    "wake_sleep_minutes", "steps", "calories_out", "resting_heart_rate",
+    "distance_km", "active_minutes_very", "active_minutes_fairly",
+    "active_minutes_lightly", "sedentary_minutes",
+    "hr_zone_fat_burn_minutes", "hr_zone_cardio_minutes", "hr_zone_peak_minutes",
+)
+
+
+def _fitbit_cache_load() -> dict:
+    if not _FITBIT_CACHE_PATH.exists():
+        return {}
+    try:
+        with open(_FITBIT_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _fitbit_cache_save(cache: dict) -> None:
+    try:
+        with open(_FITBIT_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+    except Exception as e:
+        logging.warning(f"fitbit_cache save error: {e}")
+
+
+def _fitbit_record(stats: dict) -> dict:
+    """get_stats() の結果から、キャッシュ・API レスポンス用の最小レコードを抽出。"""
+    if not stats:
+        return {}
+    return {k: stats.get(k) for k in _FITBIT_METRICS if stats.get(k) is not None}
+
+
+async def _fitbit_get_or_fetch(fitbit_service, target_date) -> dict:
+    """指定日の stats をキャッシュ経由で取得。当日は短い TTL、過去日は無期限。"""
+    import time as _time
+    date_str = target_date.strftime("%Y-%m-%d")
+    today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    is_today = date_str == today_str
+
+    async with _fitbit_cache_lock:
+        cache = _fitbit_cache_load()
+        entry = cache.get(date_str)
+        if entry:
+            if not is_today:
+                return entry.get("stats", {})
+            # 当日: TTL チェック
+            fetched_at = entry.get("fetched_at", 0)
+            if (_time.time() - fetched_at) < _FITBIT_TODAY_TTL_SECONDS:
+                return entry.get("stats", {})
+
+    # キャッシュ未ヒット: API から取得
+    async with _get_fitbit_semaphore():
+        stats = await fitbit_service.get_stats(target_date)
+    record = _fitbit_record(stats) if stats else {}
+
+    async with _fitbit_cache_lock:
+        cache = _fitbit_cache_load()
+        cache[date_str] = {"stats": record, "fetched_at": _time.time()}
+        # 古いエントリの掃除（180 日以上前）
+        cutoff = (datetime.datetime.now(JST).date() - datetime.timedelta(days=180)).strftime("%Y-%m-%d")
+        cache = {k: v for k, v in cache.items() if k >= cutoff}
+        _fitbit_cache_save(cache)
+    return record
+
+
+async def fitbit_cache_prefetch(fitbit_service, days: int = 14) -> int:
+    """Bot 側のスケジューラから呼ばれる事前取得関数。N 日分をキャッシュへ書き込み、件数を返す。"""
+    days = max(1, min(days, 30))
+    now_dt = datetime.datetime.now(JST)
+    count = 0
+    for i in range(days - 1, -1, -1):
+        date = now_dt.date() - datetime.timedelta(days=i)
+        try:
+            await _fitbit_get_or_fetch(fitbit_service, date)
+            count += 1
+        except Exception as e:
+            logging.debug(f"fitbit_cache_prefetch error for {date}: {e}")
+    return count
+
 
 def _get_fitbit_semaphore() -> asyncio.Semaphore:
     global _fitbit_semaphore
@@ -637,13 +727,16 @@ class GTaskMoveRequest(BaseModel):
     task_id: str
     previous_task_id: Optional[str] = None
     list_name: str = None
+    parent: Optional[str] = None  # 親タスクIDを指定するとサブタスク化
 
 @router.post("/google_tasks_move", dependencies=[Depends(verify_api_key)])
 async def google_tasks_move(req: GTaskMoveRequest):
     from api import app
     bot = getattr(app.state, "bot", None)
     if not bot or not bot.tasks_service: raise HTTPException(status_code=503, detail="タスクサービス未設定")
-    res = await bot.tasks_service.move_task(req.task_id, req.previous_task_id, req.list_name)
+    res = await bot.tasks_service.move_task(
+        req.task_id, req.previous_task_id, req.list_name, parent=req.parent or None
+    )
     return {"status": "success", "message": res}
 
 @router.get("/sleep_trend", dependencies=[Depends(verify_api_key)])
@@ -732,11 +825,12 @@ async def get_habits():
     raw_uncompleted = await tasks_service.get_raw_tasks("習慣")
     completed_today_titles = await tasks_service.get_completed_tasks_today("習慣")
 
-    # name -> (task_id, trigger) のマップ（未完了タスクのみ。完了タスクは notes 取得対象外）
+    # name -> (task_id, trigger_from_notes) のマップ（未完了タスクのみ）
+    # trigger は habit_data 側を優先するが、移行のため notes も後方互換で読む
     task_meta_by_name = {}
     for t in raw_uncompleted:
-        trig, _ = _parse_habit_trigger(t.get("notes", ""))
-        task_meta_by_name[t["title"]] = {"task_id": t["id"], "trigger": trig}
+        trig_notes, _ = _parse_habit_trigger(t.get("notes", ""))
+        task_meta_by_name[t["title"]] = {"task_id": t["id"], "trigger_notes": trig_notes}
 
     # 未完了 + 今日完了済み = 今日表示すべき全習慣
     all_names = [t["title"] for t in raw_uncompleted] + completed_today_titles
@@ -744,7 +838,7 @@ async def get_habits():
         return {"habits": [], "today_done": [], "streaks": {}}
 
     def _meta(name):
-        return task_meta_by_name.get(name, {"task_id": "", "trigger": ""})
+        return task_meta_by_name.get(name, {"task_id": "", "trigger_notes": ""})
 
     if not habit_cog:
         habits_list = []
@@ -752,7 +846,7 @@ async def get_habits():
             m = _meta(n)
             habits_list.append({
                 "id": str(i), "name": n, "frequency_days": 1,
-                "trigger": m["trigger"], "task_id": m["task_id"],
+                "trigger": m["trigger_notes"], "task_id": m["task_id"],
             })
         today_done = [str(i) for i, n in enumerate(all_names) if n in completed_today_titles]
         return {"habits": habits_list, "today_done": today_done, "streaks": {}}
@@ -765,8 +859,16 @@ async def get_habits():
         if not existing:
             existing_ids = [int(h["id"]) for h in data["habits"]] if data["habits"] else [0]
             new_id = str(max(existing_ids) + 1)
-            data["habits"].append({"id": new_id, "name": name, "frequency_days": 1})
+            data["habits"].append({"id": new_id, "name": name, "frequency_days": 1, "trigger": ""})
             changed = True
+
+    # 後方互換: habit_data の trigger が空で、Google Tasks notes に trigger があれば移行
+    for h in data["habits"]:
+        if not h.get("trigger"):
+            m = _meta(h["name"])
+            if m.get("trigger_notes"):
+                h["trigger"] = m["trigger_notes"]
+                changed = True
 
     # 今日の完了ログに Google Tasks 完了済みを反映
     if today_str not in data["logs"]:
@@ -804,11 +906,13 @@ async def get_habits():
             m = _meta(name)
             freq = matching.get("frequency_days", 1)
             due_today = _is_due_today(matching, matching["id"])
+            # trigger は habit_data 側を優先（永続化）
+            trigger_val = matching.get("trigger", "") or m.get("trigger_notes", "")
             habits_list.append({
                 "id": matching["id"],
                 "name": matching["name"],
                 "frequency_days": freq,
-                "trigger": m["trigger"],
+                "trigger": trigger_val,
                 "task_id": m["task_id"],
                 "due_today": due_today,
             })
@@ -864,27 +968,34 @@ class HabitTriggerRequest(BaseModel):
 
 @router.post("/habits/trigger", dependencies=[Depends(verify_api_key)])
 async def set_habit_trigger(req: HabitTriggerRequest):
-    """習慣の trigger（いつやるか）を Google Tasks の notes に保存する"""
+    """習慣の trigger（いつやるか）を habit_data.json に永続化する。
+    Bot 再起動や Google Tasks の翌日リセットでも残るよう、保存先は HabitCog のデータ。"""
     from api import app
     bot = getattr(app.state, "bot", None)
-    tasks_service = getattr(bot, "tasks_service", None) if bot else None
-    if not tasks_service:
-        raise HTTPException(status_code=503, detail="タスクサービス未設定")
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        raise HTTPException(status_code=503, detail="HabitCog 未起動")
 
-    raw = await tasks_service.get_raw_tasks("習慣")
-    target = next((t for t in raw if t["title"] == req.habit_name), None)
-    if not target:
-        target = next((t for t in raw if req.habit_name.lower() in t["title"].lower()), None)
-    if not target:
-        raise HTTPException(status_code=404, detail=f"習慣「{req.habit_name}」が見つかりません")
-
-    _, rest = _parse_habit_trigger(target.get("notes", ""))
-    new_notes = _serialize_habit_notes(req.trigger, rest)
-
-    res = await tasks_service.update_task(
-        target["id"], notes=new_notes, list_name="習慣"
+    data = await habit_cog._load_data()
+    target = next(
+        (h for h in data["habits"] if h["name"] == req.habit_name),
+        None,
     )
-    return {"status": "success", "message": res, "trigger": req.trigger.strip()}
+    if not target:
+        target = next(
+            (h for h in data["habits"] if req.habit_name.lower() in h["name"].lower()),
+            None,
+        )
+    if not target:
+        # 未登録の習慣にトリガーが設定されたケース → 新規エントリを作成
+        existing_ids = [int(h["id"]) for h in data["habits"]] if data["habits"] else [0]
+        new_id = str(max(existing_ids) + 1)
+        target = {"id": new_id, "name": req.habit_name, "frequency_days": 1, "trigger": ""}
+        data["habits"].append(target)
+
+    target["trigger"] = req.trigger.strip()
+    await habit_cog._save_data(data)
+    return {"status": "success", "trigger": target["trigger"]}
 
 @router.post("/habits/delete", dependencies=[Depends(verify_api_key)])
 async def delete_habit_endpoint(req: BaseModel):
@@ -898,6 +1009,7 @@ async def get_habit_history(days: int = 28):
     habit_cog = bot.get_cog("HabitCog") if bot else None
     if not habit_cog:
         return {"history": []}
+    days = max(1, min(days, 180))
     data = await habit_cog._load_data()
     today = dt.datetime.now(JST).date()
     total_habits = len(data.get("habits", []))
@@ -910,9 +1022,42 @@ async def get_habit_history(days: int = 28):
         history.append({"date": d.strftime("%m/%d"), "rate": round(rate, 2), "done": done, "total": total_habits})
     return {"history": history}
 
+
+@router.get("/habits/gantt", dependencies=[Depends(verify_api_key)])
+async def get_habit_gantt(days: int = 90):
+    """各習慣ごとの達成履歴をガントチャート用に返す。"""
+    import datetime as dt
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        return {"habits": [], "dates": []}
+    days = max(7, min(days, 180))
+    data = await habit_cog._load_data()
+    today = dt.datetime.now(JST).date()
+    dates = [(today - dt.timedelta(days=i)) for i in range(days - 1, -1, -1)]
+    date_strs = [d.strftime("%Y-%m-%d") for d in dates]
+    logs = data.get("logs", {})
+    habits = []
+    for h in data.get("habits", []):
+        h_id = h["id"]
+        cells = [1 if h_id in logs.get(ds, []) else 0 for ds in date_strs]
+        habits.append({
+            "id": h_id,
+            "name": h["name"],
+            "cells": cells,
+        })
+    return {
+        "habits": habits,
+        "dates": [d.strftime("%m/%d") for d in dates],
+        "date_strs": date_strs,
+    }
+
+
 @router.get("/task_candidates", dependencies=[Depends(verify_api_key)])
 async def task_candidates():
-    """タスク開始用はGoogle Tasksの「タスク候補」リストから、終了用はLifelogの実行中タスクを取得"""
+    """タスク開始用はGoogle Tasksの「タスク候補」リストから取得。
+    終了用は実行中ライフログタスク + タスク候補リスト（開始忘れ対応）。"""
     from api import app
     import datetime
     from config import JST
@@ -931,8 +1076,8 @@ async def task_candidates():
         except Exception as e:
             logging.debug(f"タスク候補リスト取得失敗: {e}")
 
-    # --- 終了候補: 今日のLifelogから実行中（▶）のタスクを抽出 ---
-    end_candidates = []
+    # --- 終了候補: 実行中タスクを優先表示し、その後にタスク候補リストを連結 ---
+    running = []
     if chat_service.drive_service:
         try:
             service = chat_service.drive_service.get_service()
@@ -947,16 +1092,19 @@ async def task_candidates():
                         for line in lifelog_match.group(1).split("\n"):
                             line = line.strip()
                             if "▶" in line:
-                                # "- HH:MM ▶ タスク名" からタスク名を抽出
                                 m = re.search(r"▶\s*(.+)$", line)
                                 if m:
-                                    end_candidates.append(m.group(1).strip())
+                                    running.append(m.group(1).strip())
         except Exception as e:
-            logging.debug(f"終了候補取得失敗: {e}")
+            logging.debug(f"終了候補（実行中）取得失敗: {e}")
+
+    # 実行中 + タスク候補（重複除去・順序保持）
+    end_candidates = list(dict.fromkeys(running + start_candidates))
 
     return {
         "start": start_candidates,
-        "end": end_candidates
+        "end": end_candidates,
+        "running": running,
     }
 
 @router.get("/book_notes", dependencies=[Depends(verify_api_key)])
@@ -1424,6 +1572,41 @@ async def mit_set(req: MitSetRequest):
         raise HTTPException(status_code=503, detail="PartnerCog 不在")
     msg = await partner_cog._set_mit_to_obsidian(req.items)
     return {"status": "success", "message": msg}
+
+
+@router.get("/mit_get", dependencies=[Depends(verify_api_key)])
+async def mit_get():
+    """今日の MIT のみを軽量に取得する。設定モーダルの初期値表示に使う。"""
+    import re as _re
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"items": []}
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        if not folder_id:
+            return {"items": []}
+        today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{today_str}.md")
+        if not f_id:
+            return {"items": []}
+        content = await chat_service.drive_service.read_text_file(service, f_id)
+        m = _re.search(r"## 🎯 MIT\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+        if not m:
+            return {"items": []}
+        items = []
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            mm = _re.match(r"-\s*\[([ xX])\]\s*(.+)$", line)
+            if mm:
+                items.append({"text": mm.group(2).strip(), "done": mm.group(1).lower() == "x"})
+        return {"items": items}
+    except Exception as e:
+        logging.debug(f"mit_get error: {e}")
+        return {"items": []}
 
 
 @router.post("/mit_rollover", dependencies=[Depends(verify_api_key)])
@@ -2127,6 +2310,69 @@ async def remove_english_phrase(phrase_id: int):
     return {"deleted": True}
 
 
+@router.get("/english_phrases/quiz", dependencies=[Depends(verify_api_key)])
+async def english_phrases_quiz():
+    """正解率の低いフレーズを優先して 1 問返す。"""
+    import random
+    pool = await get_quiz_phrase_pool()
+    if not pool:
+        raise HTTPException(status_code=404, detail="フレーズが登録されていません")
+
+    now = datetime.datetime.now(JST)
+
+    def priority(p: dict) -> float:
+        attempts = p.get("attempt_count") or 0
+        correct = p.get("correct_count") or 0
+        # 未試行は最優先
+        if attempts == 0:
+            return 999.0
+        rate = correct / attempts
+        # 経過日数ボーナス（最終試行から離れるほど優先）
+        days_since = 0.0
+        last = p.get("last_attempted_at")
+        if last:
+            try:
+                last_dt = datetime.datetime.fromisoformat(last)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=JST)
+                days_since = (now - last_dt).total_seconds() / 86400.0
+            except Exception:
+                pass
+        return (1.0 - rate) * 0.7 + min(days_since, 30.0) / 30.0 * 0.3
+
+    pool_sorted = sorted(pool, key=priority, reverse=True)
+    top = pool_sorted[: min(8, len(pool_sorted))]
+    chosen = random.choice(top)
+    # 4 択用の誤答候補
+    distractors = [p["phrase"] for p in pool if p["id"] != chosen["id"] and p.get("phrase")]
+    random.shuffle(distractors)
+    options = [chosen["phrase"]] + distractors[:3]
+    random.shuffle(options)
+    return {
+        "id": chosen["id"],
+        "phrase": chosen["phrase"],
+        "translation": chosen.get("translation", ""),
+        "context": chosen.get("context", ""),
+        "options": options,
+        "attempt_count": chosen.get("attempt_count", 0),
+        "correct_count": chosen.get("correct_count", 0),
+    }
+
+
+class QuizAnswerRequest(BaseModel):
+    phrase_id: int
+    correct: bool
+
+
+@router.post("/english_phrases/answer", dependencies=[Depends(verify_api_key)])
+async def english_phrases_answer(req: QuizAnswerRequest):
+    """クイズの正解/不正解を記録する。"""
+    ok = await record_quiz_attempt(req.phrase_id, req.correct)
+    if not ok:
+        raise HTTPException(status_code=404, detail="フレーズが見つかりません")
+    return {"status": "success"}
+
+
 class TranslateSaveRequest(BaseModel):
     text: str
 
@@ -2179,7 +2425,9 @@ async def labeled_messages(label: str = ""):
 
 @router.get("/fitbit_all_data", dependencies=[Depends(verify_api_key)])
 async def fitbit_all_data(days: int = 14):
-    """過去N日分のFitbitデータを返す（最大30日）。"""
+    """過去N日分のFitbitデータを返す（最大30日）。
+    過去日はディスクキャッシュから即時応答、当日は 30 分 TTL でキャッシュする。
+    全主要メトリクスを返却するためグラフ表示にも使える。"""
     from api import app
     days = max(1, min(days, 30))
     bot = getattr(app.state, "bot", None)
@@ -2191,23 +2439,22 @@ async def fitbit_all_data(days: int = 14):
     results = []
     for i in range(days - 1, -1, -1):
         date = now_dt.date() - datetime.timedelta(days=i)
+        record = {}
         try:
-            async with _get_fitbit_semaphore():
-                stats = await fitbit_cog.fitbit_service.get_stats(date)
-            if stats:
-                raw_dur = stats.get("total_sleep_minutes")
-                results.append({
-                    "date": date.strftime("%m/%d"),
-                    "date_full": date.strftime("%Y-%m-%d"),
-                    "sleep_score": stats.get("sleep_score"),
-                    "sleep_duration": fitbit_cog._format_minutes(raw_dur) if raw_dur else None,
-                    "steps": stats.get("steps"),
-                    "calories": stats.get("calories"),
-                })
-            else:
-                results.append({"date": date.strftime("%m/%d"), "date_full": date.strftime("%Y-%m-%d")})
-        except Exception:
-            results.append({"date": date.strftime("%m/%d"), "date_full": date.strftime("%Y-%m-%d")})
+            record = await _fitbit_get_or_fetch(fitbit_cog.fitbit_service, date)
+        except Exception as e:
+            logging.debug(f"fitbit fetch fail {date}: {e}")
+        raw_dur = record.get("total_sleep_minutes")
+        row = {
+            "date": date.strftime("%m/%d"),
+            "date_full": date.strftime("%Y-%m-%d"),
+            "sleep_duration": fitbit_cog._format_minutes(raw_dur) if raw_dur else None,
+        }
+        for k in _FITBIT_METRICS:
+            row[k] = record.get(k)
+        # 後方互換用エイリアス
+        row["calories"] = record.get("calories_out")
+        results.append(row)
 
     return {"data": results}
 

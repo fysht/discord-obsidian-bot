@@ -234,27 +234,12 @@ class ProactiveAlertCog(commands.Cog):
         today_str = now.strftime("%Y-%m-%d")
         today_logs = data.get("logs", {}).get(today_str, [])
 
-        # トリガーはGoogle Tasksのnotesから取得（routes.pyの_parse_habit_trigger相当）
-        tasks_service = getattr(self.bot, "tasks_service", None)
-        trigger_map: dict[str, str] = {}
-        if tasks_service:
-            try:
-                raw = await tasks_service.get_raw_tasks("習慣")
-                for t in raw:
-                    notes = t.get("notes", "")
-                    lines = notes.splitlines()
-                    first = lines[0].strip() if lines else ""
-                    if first.startswith("⏰"):
-                        trig = first[1:].lstrip(" ：:").strip()
-                        trigger_map[t["title"]] = trig
-            except Exception as e:
-                logging.error(f"habit trigger: tasks fetch error: {e}")
-
+        # トリガーは habit_data 側（永続化）を優先。Bot 再起動でも消えない。
         for habit in data.get("habits", []):
             h_id = habit["id"]
             h_name = habit["name"]
             freq = habit.get("frequency_days", 1)
-            trigger = trigger_map.get(h_name, "")
+            trigger = (habit.get("trigger") or "").strip()
             if not trigger:
                 continue
 

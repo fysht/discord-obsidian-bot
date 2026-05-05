@@ -102,6 +102,9 @@ async def init_db():
             "ALTER TABLE messages ADD COLUMN starred INTEGER DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN reply_to INTEGER DEFAULT NULL",
             "ALTER TABLE messages ADD COLUMN label TEXT DEFAULT ''",
+            "ALTER TABLE english_phrases ADD COLUMN attempt_count INTEGER DEFAULT 0",
+            "ALTER TABLE english_phrases ADD COLUMN correct_count INTEGER DEFAULT 0",
+            "ALTER TABLE english_phrases ADD COLUMN last_attempted_at TEXT DEFAULT NULL",
         ):
             try:
                 await db.execute(ddl)
@@ -403,7 +406,11 @@ async def get_english_phrases(limit: int = 200) -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, phrase, translation, context, created_at FROM english_phrases ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, phrase, translation, context, created_at, "
+            "COALESCE(attempt_count, 0) AS attempt_count, "
+            "COALESCE(correct_count, 0) AS correct_count, "
+            "last_attempted_at "
+            "FROM english_phrases ORDER BY created_at DESC LIMIT ?",
             (limit,),
         )
         rows = await cursor.fetchall()
@@ -413,5 +420,34 @@ async def get_english_phrases(limit: int = 200) -> list[dict]:
 async def delete_english_phrase(phrase_id: int) -> bool:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute("DELETE FROM english_phrases WHERE id = ?", (phrase_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_quiz_phrase_pool() -> list[dict]:
+    """クイズ出題用に全フレーズの統計を返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, phrase, translation, context, created_at, "
+            "COALESCE(attempt_count, 0) AS attempt_count, "
+            "COALESCE(correct_count, 0) AS correct_count, "
+            "last_attempted_at FROM english_phrases"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def record_quiz_attempt(phrase_id: int, correct: bool) -> bool:
+    """クイズ回答を記録。試行/正解カウントと最終試行日時を更新。"""
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE english_phrases SET "
+            "attempt_count = COALESCE(attempt_count, 0) + 1, "
+            "correct_count = COALESCE(correct_count, 0) + ?, "
+            "last_attempted_at = ? WHERE id = ?",
+            (1 if correct else 0, now, phrase_id),
+        )
         await db.commit()
         return cursor.rowcount > 0

@@ -167,15 +167,19 @@ window.resubscribePush = async () => {
 function switchTab(tab) {
     $$('.nav-item').forEach(i => i.classList.remove('active'));
     document.querySelector(`.nav-item[data-tab="${tab}"]`)?.classList.add('active');
-    
+
     $$('.tab-pane').forEach(p => p.classList.remove('active'));
     $(`#tab-${tab}`)?.classList.add('active');
-    
+
     const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定' };
     const titleEl = $('#current-tab-title');
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
     if (tab !== 'chat') loadDashboard();
+    // ログタブを開いたときに Fitbit データを自動ロード（既存データがあれば再取得は最小限）
+    if (tab === 'log') {
+        if (!_fitbitRows.length) loadFitbitAllData(false);
+    }
 }
 
 const chatMessages = $('#chat-messages');
@@ -447,6 +451,16 @@ function renderWeather(w, weatherEl) {
         });
         html += `</div>`;
     }
+    // Yahoo!天気へのリンク（location が "33/6710" 形式の場合のみ）
+    const loc = w.location || localStorage.getItem('mng_weather_location') || '33/6710';
+    if (/^\d+\/\d+$/.test(loc)) {
+        html += `<div style="margin-top:8px;text-align:right;">
+            <a href="https://weather.yahoo.co.jp/weather/jp/${encodeURI(loc)}/" target="_blank" rel="noopener"
+               style="font-size:0.78rem;color:var(--text-muted);text-decoration:none;">
+               Yahoo!天気で詳細を見る ↗
+            </a>
+        </div>`;
+    }
     weatherEl.innerHTML = html;
 }
 
@@ -518,14 +532,11 @@ async function loadDashboard() {
                 const isLog = t.is_log || false;
                 const isRunning = isLog && t.text.includes('▶');
                 const safeText = escapeHtml(t.text);
-                const editBtns = `<div style="display:flex;gap:4px;flex-shrink:0;margin-left:auto;">
-                    <button onclick="editLifeLog(${idx}, '${safeText.replace(/'/g, "\\'")}')" style="background:none;border:none;cursor:pointer;font-size:0.8rem;opacity:0.5;padding:2px;" title="編集">✏️</button>
-                    <button onclick="deleteLifeLog(${idx})" style="background:none;border:none;cursor:pointer;font-size:0.8rem;opacity:0.5;padding:2px;" title="削除">🗑</button>
-                </div>`;
+                const rawAttr = t.text.replace(/"/g, '&quot;');
                 return `
-                    <div class="list-item" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; padding: 10px 18px; gap: 8px;">
+                    <div class="list-item lifelog-row" style="border-left: 3px solid ${isRunning ? 'var(--primary)' : 'rgba(255,255,255,0.1)'}; padding: 10px 18px; gap: 8px; cursor: pointer;"
+                         onclick="editLifeLog(${idx}, '${rawAttr.replace(/'/g, '&#39;')}')">
                         <div class="li-text" style="flex:1; font-size:0.85rem; line-height:1.5; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}">${safeText}</div>
-                        ${editBtns}
                     </div>
                 `;
             }).join('') : '<div class="loading-placeholder">ログはありません</div>';
@@ -642,25 +653,54 @@ function renderTaskGroup(container, tasks, listName) {
     if (listName === 'プライベート') _currentPrivateTasks = tasks || [];
     if (listName === '習慣') _currentHabitTasks = tasks || [];
 
-    // Google Tasks APIの返却順（position順）をそのまま使用する
-    const activeTasks = (tasks || []).filter(t => !t.completed);
-    const doneTasks = (tasks || []).filter(t => t.completed);
-
     if (!tasks || tasks.length === 0) {
         container.innerHTML = '<div class="loading-placeholder">未完了のタスクはありません</div>';
         return;
     }
 
+    // 古い順に並び替え（Google Tasks の id は時系列で生成されるため id 昇順で近似）
+    // 完了タスクは末尾に
+    const sortedActive = (tasks || []).filter(t => !t.completed)
+        .slice()
+        .sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+    const doneTasks = (tasks || []).filter(t => t.completed);
+
+    // 親→子の階層構造を作る（parent フィールドあり）
+    const byParent = new Map();
+    for (const t of sortedActive) {
+        const p = t.parent || '';
+        if (!byParent.has(p)) byParent.set(p, []);
+        byParent.get(p).push(t);
+    }
+    const orderedActive = [];
+    const visit = (parentId, depth) => {
+        const children = byParent.get(parentId) || [];
+        for (const c of children) {
+            orderedActive.push({ ...c, _depth: depth });
+            if (depth === 0) visit(c.id, 1); // 1段だけネスト
+        }
+    };
+    visit('', 0);
+    // parent が存在しないが orderedActive に未登場のもの（孤児）を末尾に
+    for (const t of sortedActive) {
+        if (!orderedActive.find(x => x.id === t.id)) {
+            orderedActive.push({ ...t, _depth: 0 });
+        }
+    }
+
     container.innerHTML = [
-        ...activeTasks.map((t, idx) => {
+        ...orderedActive.map(t => {
             const dueLabel = t.due ? _formatDueLabel(t.due) : '';
             const dueAttr = t.due ? t.due.slice(0, 10) : '';
+            const indent = t._depth ? 'margin-left:24px;' : '';
+            const childMark = t._depth ? '<span style="color:var(--text-muted);margin-right:2px;">└</span>' : '';
             return `
-            <div class="list-item" style="gap:6px;" id="gtask-item-${t.id}" draggable="true" data-task-id="${t.id}" data-list="${listName}">
-                <span style="cursor:grab;color:var(--text-muted);font-size:0.85rem;padding:0 2px;user-select:none;" title="ドラッグして並び替え">⠿</span>
+            <div class="list-item gtask-item" style="gap:6px;${indent}" id="gtask-item-${t.id}" draggable="true" data-task-id="${t.id}" data-list="${listName}" data-parent="${t.parent || ''}">
+                <span class="gtask-handle" style="cursor:grab;color:var(--text-muted);font-size:0.85rem;padding:0 2px;user-select:none;" title="ドラッグして並び替え（右にドラッグでサブタスク化）">⠿</span>
+                ${childMark}
                 <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')" style="cursor:pointer;"></div>
                 <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
-                <button class="task-due-btn" onclick="openTaskDueEditor('${t.id}', '${listName}', '${escapeHtml(t.title)}', '${dueAttr}')" title="締切を編集">📅</button>
+                <button class="task-due-btn" onclick="openTaskDueEditor('${t.id}', '${listName}', '${escapeHtml(t.title).replace(/'/g, '&#39;')}', '${dueAttr}')" title="締切を編集">📅</button>
             </div>`;
         }),
         ...doneTasks.map(t => `
@@ -671,38 +711,64 @@ function renderTaskGroup(container, tasks, listName) {
         `)
     ].join('');
 
-    // ドラッグ&ドロップ イベント設定
+    // ドラッグ&ドロップ：縦移動 + 横ドラッグでサブタスク化
     let _dragSrcId = null;
+    let _dragSrcStartX = 0;
     container.querySelectorAll('[draggable="true"]').forEach(el => {
         el.addEventListener('dragstart', e => {
             _dragSrcId = el.dataset.taskId;
+            _dragSrcStartX = e.clientX;
             el.style.opacity = '0.5';
             e.dataTransfer.effectAllowed = 'move';
         });
-        el.addEventListener('dragend', () => { el.style.opacity = ''; });
+        el.addEventListener('dragend', () => {
+            el.style.opacity = '';
+            container.querySelectorAll('[draggable]').forEach(x => x.classList.remove('drag-over', 'drag-over-sub'));
+        });
         el.addEventListener('dragover', e => {
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
-            container.querySelectorAll('[draggable]').forEach(x => x.style.background = '');
-            el.style.background = 'rgba(0,186,152,0.1)';
+            container.querySelectorAll('[draggable]').forEach(x => x.classList.remove('drag-over', 'drag-over-sub'));
+            // 30px 以上右にドラッグでサブタスク化
+            const horizontalOffset = e.clientX - _dragSrcStartX;
+            if (horizontalOffset > 30) {
+                el.classList.add('drag-over-sub');
+            } else {
+                el.classList.add('drag-over');
+            }
         });
-        el.addEventListener('dragleave', () => { el.style.background = ''; });
+        el.addEventListener('dragleave', () => {
+            el.classList.remove('drag-over', 'drag-over-sub');
+        });
         el.addEventListener('drop', async e => {
             e.preventDefault();
-            el.style.background = '';
+            const wasSubMode = el.classList.contains('drag-over-sub');
+            el.classList.remove('drag-over', 'drag-over-sub');
             const targetId = el.dataset.taskId;
             if (!_dragSrcId || _dragSrcId === targetId) return;
             const ln = el.dataset.list;
-            const tasks = ln === '仕事' ? _currentWorkTasks : ln === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
-            const srcIdx = tasks.findIndex(t => t.id === _dragSrcId);
-            const tgtIdx = tasks.findIndex(t => t.id === targetId);
-            if (srcIdx === -1 || tgtIdx === -1) return;
-            // ドロップ先の前のタスクIDを渡す（Google Tasks API仕様）
-            const previousId = tgtIdx > 0 ? tasks[tgtIdx - 1].id : null;
+            const tasksRef = ln === '仕事' ? _currentWorkTasks : ln === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
+            const targetTask = tasksRef.find(t => t.id === targetId);
+            if (!targetTask) return;
+            const body = { task_id: _dragSrcId, list_name: ln };
+            if (wasSubMode) {
+                // サブタスク化: target を親に
+                if (targetTask.parent) {
+                    showToast('既にサブタスクのタスクの下には入れられません', true);
+                    return;
+                }
+                body.parent = targetId;
+            } else {
+                // 通常並び替え: target の前に移動
+                body.previous_task_id = targetId;
+                if (targetTask.parent) {
+                    body.parent = targetTask.parent;
+                }
+            }
             try {
                 await apiFetch('/api/google_tasks_move', {
                     method: 'POST',
-                    body: JSON.stringify({ task_id: _dragSrcId, previous_task_id: previousId, list_name: ln })
+                    body: JSON.stringify(body)
                 });
                 loadDashboard();
             } catch { showToast('移動に失敗しました', true); }
@@ -723,19 +789,53 @@ function _formatDueLabel(due) {
     } catch (e) { return ''; }
 }
 
+let _taskDueCtx = null;
 window.openTaskDueEditor = (taskId, listName, title, currentDue) => {
-    const newDue = prompt(`「${title}」の締切日を入力 (YYYY-MM-DD、空欄でクリア):`, currentDue || '');
-    if (newDue === null) return; // cancel
-    const trimmed = newDue.trim();
-    if (trimmed && !/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-        showToast('YYYY-MM-DD 形式で入力してください', true);
+    _taskDueCtx = { taskId, listName, title };
+    const modal = $('#task-due-modal');
+    const input = $('#task-due-input');
+    const titleEl = $('#task-due-title');
+    if (titleEl) titleEl.textContent = `「${title}」の期限`;
+    if (input) input.value = currentDue || '';
+    if (modal) modal.classList.remove('hidden');
+};
+window.closeTaskDueModal = () => {
+    const modal = $('#task-due-modal');
+    if (modal) modal.classList.add('hidden');
+    _taskDueCtx = null;
+};
+window.setDueQuick = (daysAhead) => {
+    const input = $('#task-due-input');
+    if (!input) return;
+    const d = new Date();
+    d.setDate(d.getDate() + daysAhead);
+    input.value = d.toISOString().slice(0, 10);
+};
+window.clearTaskDue = () => {
+    if (!_taskDueCtx) return;
+    apiFetch('/api/google_tasks_action', {
+        method: 'POST',
+        body: JSON.stringify({ action: 'update', task_id: _taskDueCtx.taskId, list_name: _taskDueCtx.listName, due: '' })
+    }).then(() => {
+        showToast('締切をクリアしました');
+        closeTaskDueModal();
+        loadDashboard();
+    }).catch(() => showToast('締切の更新に失敗しました', true));
+};
+window.submitTaskDue = () => {
+    if (!_taskDueCtx) return;
+    const input = $('#task-due-input');
+    const value = input ? input.value.trim() : '';
+    if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        showToast('日付形式が不正です', true);
         return;
     }
     apiFetch('/api/google_tasks_action', {
         method: 'POST',
-        body: JSON.stringify({ action: 'update', task_id: taskId, list_name: listName, due: trimmed })
+        body: JSON.stringify({ action: 'update', task_id: _taskDueCtx.taskId, list_name: _taskDueCtx.listName, due: value })
     }).then(() => {
-        showToast(trimmed ? `締切を ${trimmed} に設定しました` : '締切をクリアしました');
+        showToast(value ? `締切を ${value} に設定しました` : '締切をクリアしました');
+        closeTaskDueModal();
         loadDashboard();
     }).catch(() => showToast('締切の更新に失敗しました', true));
 };
@@ -3272,19 +3372,38 @@ window.msgActionTranslateAndSave = async () => {
 };
 
 // ----- MIT設定モーダル -----
+// 重い /api/dashboard ではなく専用 /api/mit_get を使う。先にモーダルを表示し、
+// 取得は非同期で行う（体感的な遅延を排除）。
 window.openMitModal = async () => {
     const modal = $('#mit-modal');
     if (!modal) return;
-    // 既存のMITを取得してフィールドに表示
+    // 即時にモーダルを表示し、入力欄を「読み込み中…」プレースホルダに
+    ['#mit-input-1', '#mit-input-2', '#mit-input-3'].forEach(sel => {
+        const el = $(sel);
+        if (el) {
+            el.value = '';
+            el.placeholder = '読み込み中…';
+            el.disabled = true;
+        }
+    });
+    modal.classList.remove('hidden');
+    setTimeout(() => $('#mit-input-1')?.focus(), 100);
+
+    // バックグラウンドで MIT を取得して反映
     try {
-        const data = await apiFetch('/api/dashboard');
-        const items = (data.mit || []).map(s => s.replace(/^\[[ xX]\]\s*/, ''));
+        const data = await apiFetch('/api/mit_get');
+        const items = (data.items || []).map(it => it.text || '');
         $('#mit-input-1').value = items[0] || '';
         $('#mit-input-2').value = items[1] || '';
         $('#mit-input-3').value = items[2] || '';
     } catch {}
-    modal.classList.remove('hidden');
-    setTimeout(() => $('#mit-input-1').focus(), 100);
+    ['#mit-input-1', '#mit-input-2', '#mit-input-3'].forEach((sel, i) => {
+        const el = $(sel);
+        if (el) {
+            el.placeholder = `MIT ${i + 1}`;
+            el.disabled = false;
+        }
+    });
 };
 
 window.closeMitModal = (e) => {
@@ -3391,33 +3510,124 @@ window.closeMeditationModal = (e) => {
 };
 
 // ----- Fitbit全データ -----
-window.loadFitbitAllData = async () => {
+let _fitbitRows = [];
+let _fitbitChart = null;
+const FITBIT_METRIC_LABELS = {
+    sleep_score: '睡眠スコア',
+    total_sleep_minutes: '総睡眠時間（分）',
+    deep_sleep_minutes: '深い睡眠（分）',
+    rem_sleep_minutes: 'REM睡眠（分）',
+    steps: '歩数',
+    calories_out: '消費カロリー',
+    resting_heart_rate: '安静時心拍数',
+    distance_km: '距離（km）',
+    active_minutes_very: '高強度活動分',
+    hr_zone_fat_burn_minutes: '脂肪燃焼ゾーン分',
+};
+
+window.loadFitbitAllData = async (forceRefresh = false) => {
+    const el = $('#dash-fitbit-all');
+    const tableTarget = el;
+    if (tableTarget) tableTarget.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    try {
+        const url = '/api/fitbit_all_data?days=14' + (forceRefresh ? '&_=' + Date.now() : '');
+        const data = await apiFetch(url);
+        _fitbitRows = data.data || [];
+        if (!_fitbitRows.length) {
+            if (tableTarget) tableTarget.innerHTML = '<div class="loading-placeholder">Fitbitデータがありません</div>';
+            return;
+        }
+        renderFitbitTable();
+        renderFitbitChart();
+    } catch {
+        if (tableTarget) tableTarget.innerHTML = '<div class="loading-placeholder">取得に失敗しました</div>';
+    }
+};
+
+function renderFitbitTable() {
     const el = $('#dash-fitbit-all');
     if (!el) return;
-    el.innerHTML = '<div class="loading-placeholder">データを取得中...</div>';
-    try {
-        const data = await apiFetch('/api/fitbit_all_data?days=14');
-        const rows = data.data || [];
-        if (!rows.length) { el.innerHTML = '<div class="loading-placeholder">Fitbitデータがありません</div>'; return; }
-        el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:0.78rem;">
-            <thead><tr style="color:var(--text-muted);">
-                <th style="padding:6px 8px;text-align:left;">日付</th>
-                <th style="padding:6px 4px;text-align:center;">睡眠スコア</th>
-                <th style="padding:6px 4px;text-align:center;">睡眠時間</th>
-                <th style="padding:6px 4px;text-align:center;">歩数</th>
-                <th style="padding:6px 4px;text-align:center;">カロリー</th>
-            </tr></thead>
-            <tbody>${rows.map(r => `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
-                <td style="padding:6px 8px;color:var(--text-secondary);">${r.date}</td>
-                <td style="padding:6px 4px;text-align:center;color:${r.sleep_score >= 80 ? 'var(--accent)' : r.sleep_score >= 60 ? '#ffd43b' : 'var(--text-primary)'};">${r.sleep_score ?? '—'}</td>
-                <td style="padding:6px 4px;text-align:center;">${r.sleep_duration ?? '—'}</td>
-                <td style="padding:6px 4px;text-align:center;">${r.steps ? r.steps.toLocaleString() : '—'}</td>
-                <td style="padding:6px 4px;text-align:center;">${r.calories ? r.calories.toLocaleString() : '—'}</td>
-            </tr>`).join('')}</tbody>
-        </table>`;
-    } catch {
-        el.innerHTML = '<div class="loading-placeholder">データの取得に失敗しました</div>';
+    if (!_fitbitRows.length) { el.innerHTML = '<div class="loading-placeholder">データがありません</div>'; return; }
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:0.78rem;">
+        <thead><tr style="color:var(--text-muted);">
+            <th style="padding:6px 8px;text-align:left;">日付</th>
+            <th style="padding:6px 4px;text-align:center;">睡眠スコア</th>
+            <th style="padding:6px 4px;text-align:center;">睡眠時間</th>
+            <th style="padding:6px 4px;text-align:center;">歩数</th>
+            <th style="padding:6px 4px;text-align:center;">カロリー</th>
+        </tr></thead>
+        <tbody>${_fitbitRows.map(r => `<tr style="border-top:1px solid rgba(255,255,255,0.05);">
+            <td style="padding:6px 8px;color:var(--text-secondary);">${r.date}</td>
+            <td style="padding:6px 4px;text-align:center;color:${r.sleep_score >= 80 ? 'var(--accent)' : r.sleep_score >= 60 ? '#ffd43b' : 'var(--text-primary)'};">${r.sleep_score ?? '—'}</td>
+            <td style="padding:6px 4px;text-align:center;">${r.sleep_duration ?? '—'}</td>
+            <td style="padding:6px 4px;text-align:center;">${r.steps ? r.steps.toLocaleString() : '—'}</td>
+            <td style="padding:6px 4px;text-align:center;">${(r.calories_out ?? r.calories) ? (r.calories_out ?? r.calories).toLocaleString() : '—'}</td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+window.renderFitbitChart = () => {
+    const canvas = $('#fitbit-chart');
+    if (!canvas || !window.Chart) return;
+    if (!_fitbitRows.length) return;
+    const sel = $('#fitbit-metric-select');
+    const metric = sel ? sel.value : 'sleep_score';
+    if (sel) localStorage.setItem('mng_fitbit_metric', metric);
+
+    const labels = _fitbitRows.map(r => r.date);
+    const values = _fitbitRows.map(r => {
+        const v = r[metric];
+        return (v === null || v === undefined) ? null : Number(v);
+    });
+    // 7日移動平均
+    const ma = values.map((_, i) => {
+        const slice = values.slice(Math.max(0, i - 6), i + 1).filter(x => x !== null);
+        if (slice.length === 0) return null;
+        return slice.reduce((a, b) => a + b, 0) / slice.length;
+    });
+
+    if (_fitbitChart) {
+        _fitbitChart.destroy();
+        _fitbitChart = null;
     }
+    _fitbitChart = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels,
+            datasets: [
+                {
+                    label: FITBIT_METRIC_LABELS[metric] || metric,
+                    data: values,
+                    borderColor: 'rgb(0,186,152)',
+                    backgroundColor: 'rgba(0,186,152,0.15)',
+                    tension: 0.2,
+                    spanGaps: true,
+                    fill: true,
+                },
+                {
+                    label: '7日移動平均',
+                    data: ma,
+                    borderColor: 'rgba(255,212,84,0.85)',
+                    borderDash: [4, 3],
+                    pointRadius: 0,
+                    tension: 0.2,
+                    spanGaps: true,
+                    fill: false,
+                },
+            ],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: '#cfd6df', font: { size: 11 } } },
+            },
+            scales: {
+                x: { ticks: { color: '#7a8390', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+                y: { ticks: { color: '#7a8390', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
+            },
+        },
+    });
 };
 
 // ----- アクションチップス展開トグル -----
@@ -3598,31 +3808,78 @@ window.triggerLocationSync = async () => {
     }
 };
 
-// ライフログ行の編集
-window.editLifeLog = async (lineIndex, currentText) => {
-    const newText = prompt('ログを編集:', currentText);
-    if (newText === null || newText.trim() === '') return;
+// ライフログ行の編集（モーダル: 開始時刻・終了時刻・内容に分離）
+let _lifelogEditCtx = null;
+window.editLifeLog = (lineIndex, currentTextEncoded) => {
+    // currentText は HTML エンコード済みで来る（'は &#39;）。デコード
+    const tmp = document.createElement('textarea');
+    tmp.innerHTML = currentTextEncoded;
+    const currentText = tmp.value;
+    _lifelogEditCtx = { lineIndex, original: currentText };
+    // パース: "HH:MM - HH:MM 内容" / "HH:MM ▶ 内容" / "HH:MM 内容" などに対応
+    const m = currentText.match(/^\s*-?\s*(\d{1,2}:\d{2})(?:\s*[-–~〜]\s*(\d{1,2}:\d{2}))?\s*▶?\s*(.*)$/);
+    let start = '', end = '', body = currentText;
+    if (m) {
+        start = m[1] || '';
+        end = m[2] || '';
+        body = (m[3] || '').trim();
+    }
+    const startEl = $('#lifelog-edit-start');
+    const endEl = $('#lifelog-edit-end');
+    const textEl = $('#lifelog-edit-text');
+    if (startEl) startEl.value = start.length === 4 ? '0' + start : start;
+    if (endEl) endEl.value = end.length === 4 ? '0' + end : end;
+    if (textEl) textEl.value = body;
+    const modal = $('#lifelog-edit-modal');
+    if (modal) modal.classList.remove('hidden');
+};
+
+window.closeLifeLogEdit = () => {
+    const modal = $('#lifelog-edit-modal');
+    if (modal) modal.classList.add('hidden');
+    _lifelogEditCtx = null;
+};
+
+window.submitLifeLogEdit = async () => {
+    if (!_lifelogEditCtx) return;
+    const start = ($('#lifelog-edit-start')?.value || '').trim();
+    const end = ($('#lifelog-edit-end')?.value || '').trim();
+    const body = ($('#lifelog-edit-text')?.value || '').trim();
+    if (!body) {
+        showToast('内容を入力してください', true);
+        return;
+    }
+    let line;
+    if (start && end) {
+        line = `${start} - ${end} ${body}`;
+    } else if (start) {
+        line = `${start} ▶ ${body}`;
+    } else {
+        line = body;
+    }
     try {
         await apiFetch('/api/task_action', {
             method: 'POST',
-            body: JSON.stringify({ action: 'edit_log', line_index: lineIndex, new_text: newText.trim() })
+            body: JSON.stringify({ action: 'edit_log', line_index: _lifelogEditCtx.lineIndex, new_text: line })
         });
         showToast('ログを更新しました');
+        closeLifeLogEdit();
         loadDashboard();
     } catch (e) {
         showToast('更新に失敗しました', true);
     }
 };
 
-// ライフログ行の削除
-window.deleteLifeLog = async (lineIndex) => {
+window.confirmLifeLogDelete = async () => {
+    if (!_lifelogEditCtx) return;
     if (!confirm('このログ行を削除しますか？')) return;
     try {
         await apiFetch('/api/task_action', {
             method: 'POST',
-            body: JSON.stringify({ action: 'delete_log', line_index: lineIndex })
+            body: JSON.stringify({ action: 'delete_log', line_index: _lifelogEditCtx.lineIndex })
         });
         showToast('ログを削除しました');
+        closeLifeLogEdit();
         loadDashboard();
     } catch (e) {
         showToast('削除に失敗しました', true);
@@ -3719,4 +3976,362 @@ const _origInitMain = typeof initMain === 'function' ? initMain : null;
 window.initMain = function patchedInitMain() {
     if (_origInitMain) _origInitMain();
     initLongPressDelegation();
+    // Fitbit 指標選択状態の復元
+    const savedMetric = localStorage.getItem('mng_fitbit_metric');
+    const sel = $('#fitbit-metric-select');
+    if (sel && savedMetric) sel.value = savedMetric;
 };
+
+
+// ===========================================================
+// 英語フレーズ クイズ
+// ===========================================================
+
+let _quizCurrent = null;
+let _quizSession = { correct: 0, total: 0 };
+
+window.openEnglishQuiz = async () => {
+    const modal = $('#english-quiz-modal');
+    if (!modal) return;
+    _quizSession = { correct: 0, total: 0 };
+    modal.classList.remove('hidden');
+    await loadNextQuiz();
+};
+
+window.closeEnglishQuiz = () => {
+    $('#english-quiz-modal')?.classList.add('hidden');
+    _quizCurrent = null;
+};
+
+window.loadNextQuiz = async () => {
+    const qEl = $('#quiz-question');
+    const cEl = $('#quiz-context');
+    const oEl = $('#quiz-options');
+    const fEl = $('#quiz-feedback');
+    const progEl = $('#quiz-progress');
+    if (!qEl || !oEl) return;
+    qEl.textContent = '読み込み中…';
+    cEl.textContent = '';
+    oEl.innerHTML = '';
+    fEl.classList.add('hidden');
+    fEl.textContent = '';
+    try {
+        const data = await apiFetch('/api/english_phrases/quiz');
+        _quizCurrent = data;
+        // 出題: 日本語訳または context を提示し、英語を当てさせる
+        const cue = data.translation || data.context || '（訳語未設定）';
+        qEl.textContent = cue;
+        if (data.context && data.context !== data.translation) {
+            cEl.textContent = '文脈: ' + data.context;
+        }
+        const options = data.options || [data.phrase];
+        oEl.innerHTML = options.map(opt => `
+            <button class="quiz-option-btn" onclick="answerEnglishQuiz('${escapeHtml(opt).replace(/'/g, '&#39;')}')">${escapeHtml(opt)}</button>
+        `).join('');
+        if (progEl) {
+            const acc = data.attempt_count > 0 ? Math.round((data.correct_count / data.attempt_count) * 100) : null;
+            progEl.textContent = `セッション正解 ${_quizSession.correct}/${_quizSession.total}` +
+                (acc !== null ? ` ・ この問題の正解率 ${acc}% (${data.correct_count}/${data.attempt_count})` : ' ・ 初出題');
+        }
+    } catch (e) {
+        qEl.textContent = 'フレーズが登録されていません';
+        oEl.innerHTML = '';
+    }
+};
+
+window.answerEnglishQuiz = async (chosenEncoded) => {
+    if (!_quizCurrent) return;
+    const tmp = document.createElement('textarea');
+    tmp.innerHTML = chosenEncoded;
+    const chosen = tmp.value;
+    const correct = chosen === _quizCurrent.phrase;
+    _quizSession.total++;
+    if (correct) _quizSession.correct++;
+    const fEl = $('#quiz-feedback');
+    if (fEl) {
+        fEl.classList.remove('hidden');
+        if (correct) {
+            fEl.style.background = 'rgba(0,186,152,0.15)';
+            fEl.style.color = 'var(--accent)';
+            fEl.textContent = '✅ 正解！';
+        } else {
+            fEl.style.background = 'rgba(255,107,107,0.15)';
+            fEl.style.color = '#ff8080';
+            fEl.textContent = `❌ 不正解 — 正解: ${_quizCurrent.phrase}`;
+        }
+    }
+    // ボタンを無効化
+    document.querySelectorAll('.quiz-option-btn').forEach(b => {
+        b.disabled = true;
+        if (b.textContent === _quizCurrent.phrase) {
+            b.style.borderColor = 'var(--accent)';
+            b.style.color = 'var(--accent)';
+        } else if (b.textContent === chosen && !correct) {
+            b.style.borderColor = '#ff8080';
+            b.style.color = '#ff8080';
+        }
+    });
+    try {
+        await apiFetch('/api/english_phrases/answer', {
+            method: 'POST',
+            body: JSON.stringify({ phrase_id: _quizCurrent.id, correct }),
+        });
+    } catch {}
+};
+
+
+// ===========================================================
+// 習慣ガントチャート
+// ===========================================================
+
+window.toggleHabitGantt = async () => {
+    const wrap = $('#habit-gantt');
+    const chev = $('#habit-gantt-chevron');
+    if (!wrap) return;
+    const opening = wrap.style.display === 'none' || !wrap.style.display;
+    wrap.style.display = opening ? 'block' : 'none';
+    if (chev) chev.textContent = opening ? '▼' : '▶';
+    if (opening) {
+        await renderHabitGantt();
+    }
+};
+
+async function renderHabitGantt() {
+    const wrap = $('#habit-gantt');
+    if (!wrap) return;
+    wrap.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
+    try {
+        const data = await apiFetch('/api/habits/gantt?days=90');
+        const habits = data.habits || [];
+        const dates = data.dates || [];
+        if (!habits.length) {
+            wrap.innerHTML = '<div class="loading-placeholder">習慣がありません</div>';
+            return;
+        }
+        // 連続達成区間を太く強調するため、各セルに「連続グループ ID」を付与
+        const cellWidth = 8;
+        const cellHeight = 14;
+        const labelWidth = 110;
+        const totalWidth = labelWidth + dates.length * (cellWidth + 1);
+        const rowHtml = habits.map(h => {
+            const cellsHtml = h.cells.map((v, idx) => {
+                // 連続達成判定（前後に達成があるか）
+                const prev = idx > 0 ? h.cells[idx - 1] : 0;
+                const next = idx < h.cells.length - 1 ? h.cells[idx + 1] : 0;
+                let bg = 'rgba(255,255,255,0.04)';
+                let h2 = cellHeight;
+                if (v) {
+                    if (prev && next) { bg = 'rgba(0,186,152,0.95)'; h2 = cellHeight; }
+                    else if (prev || next) { bg = 'rgba(0,186,152,0.85)'; h2 = cellHeight; }
+                    else { bg = 'rgba(0,186,152,0.55)'; h2 = cellHeight - 2; }
+                }
+                const isToday = idx === h.cells.length - 1;
+                const border = isToday ? 'box-shadow:0 0 0 1px var(--accent);' : '';
+                return `<span style="display:inline-block;width:${cellWidth}px;height:${h2}px;margin-right:1px;border-radius:2px;background:${bg};${border}vertical-align:middle;" title="${dates[idx] || ''}"></span>`;
+            }).join('');
+            return `
+                <div style="display:flex;align-items:center;margin-bottom:4px;font-size:0.72rem;">
+                    <div style="width:${labelWidth}px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:6px;" title="${escapeHtml(h.name)}">${escapeHtml(h.name)}</div>
+                    <div style="white-space:nowrap;">${cellsHtml}</div>
+                </div>
+            `;
+        }).join('');
+        wrap.innerHTML = `
+            <div style="min-width:${totalWidth}px;">
+                <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;">過去 ${dates.length} 日（緑が濃いほど連続達成）</div>
+                ${rowHtml}
+            </div>
+        `;
+    } catch (e) {
+        wrap.innerHTML = '<div class="loading-placeholder">取得に失敗しました</div>';
+    }
+}
+
+// 習慣カードに既存のヒートマップが描画されたら、ガントセクションも表示
+const _origLoadHabits = typeof window.loadHabits === 'function' ? window.loadHabits : null;
+// loadHabits は app 内で定義済み。表示制御は heatmap セクションと同じパターン。
+function _ensureGanttSectionVisible() {
+    const sec = $('#habit-gantt-section');
+    if (sec) sec.style.display = 'block';
+}
+// ヒートマップセクションが表示状態になったら、ガントもセットで表示する
+const _heatmapSection = $('#habit-heatmap-section');
+if (_heatmapSection) {
+    const observer = new MutationObserver(() => {
+        if (_heatmapSection.style.display !== 'none') _ensureGanttSectionVisible();
+    });
+    observer.observe(_heatmapSection, { attributes: true, attributeFilter: ['style'] });
+}
+
+
+// ===========================================================
+// チュートリアル（ヘルプボタン）
+// ===========================================================
+
+const TUTORIAL_SLIDES = [
+    {
+        title: 'はじめに',
+        target: null,
+        body: `<p>このアプリは <b>4つのタブ</b>でできています。</p>
+        <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px;">
+            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>💬 チャット</b><br><small>AIに何でも頼める</small></div>
+            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>📰 情報</b><br><small>天気・ニュース・ストック</small></div>
+            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>📒 ログ</b><br><small>習慣・ライフログ・Fitbit</small></div>
+            <div style="padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;"><b>📅 予定</b><br><small>MIT・カレンダー・タスク</small></div>
+        </div>`
+    },
+    {
+        title: 'チャット',
+        target: 'chat',
+        body: `<p>マネージャーAIに自然言語で話しかけてください。</p>
+        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
+            <li>📨 メッセージ入力欄に書いて送信</li>
+            <li>⭐ メッセージ長押しでお気に入り・コレクション追加</li>
+            <li>🌐 ENモードで英会話モードに切替</li>
+        </ul>`
+    },
+    {
+        title: 'タスク開始 / タスク終了',
+        target: 'chat',
+        body: `<p>「タスク開始」を押すと候補リストから選択 → ライフログに記録されます。</p>
+        <p style="margin-top:10px;">「タスク終了」も<b>同じ候補リストから選択可能</b>になりました。タスク開始を押し忘れた場合でも、終了だけで記録できます。</p>
+        <div style="background:rgba(0,186,152,0.08);padding:10px;border-radius:8px;margin-top:10px;font-size:0.85rem;">
+            ▶ タスク開始 → 候補選択 → 内容を入力 → 「○○開始」と送信<br>
+            ■ タスク終了 → 候補選択 → 「○○終了」と送信
+        </div>`
+    },
+    {
+        title: '+ その他メニュー',
+        target: 'chat',
+        body: `<p>「+その他」を開くと、以下のクイックアクションが使えます：</p>
+        <ul style="margin-top:8px;line-height:1.8;font-size:0.9rem;">
+            <li>☀️ ブリーフィング（朝/夜の自動レビュー）</li>
+            <li>💭 ゼロ秒思考</li>
+            <li>📖 読書 / 📝 勉強</li>
+            <li>🔨 タスク分解</li>
+            <li>🧹 仕事・プライベート整理</li>
+            <li>🧘 瞑想タイマー</li>
+        </ul>`
+    },
+    {
+        title: '天気・ニュース',
+        target: 'info',
+        body: `<p>情報タブには日々の情報がまとまっています。</p>
+        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
+            <li>🌤️ 天気（岡山北部/南部などを選択可能）</li>
+            <li>🔗 Yahoo!天気で詳細を確認できるリンク付き</li>
+            <li>📰 Yahoo!ニュース 主要トピック</li>
+        </ul>`
+    },
+    {
+        title: 'ストックリンク',
+        target: 'info',
+        body: `<p>気になったページ・YouTube・レシピ・地図・本を、チャットに貼って自動分類で保存。</p>
+        <p style="margin-top:8px;">⭐ お気に入りや、長押しで詳細編集できます。</p>`
+    },
+    {
+        title: '習慣トラッカー',
+        target: 'log',
+        body: `<p>習慣を毎日チェックして継続状況を可視化。</p>
+        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
+            <li>⭕ チェックボックスで完了記録</li>
+            <li>⏰ 「いつ」（時刻トリガー）を設定するとマネージャーが声をかけます</li>
+            <li>📊 ヒートマップ＆<b>ガントチャート</b>で過去90日の継続を一覧</li>
+        </ul>`
+    },
+    {
+        title: 'ライフログ',
+        target: 'log',
+        body: `<p>1日の活動記録。<b>行をタップ</b>すると編集モーダルが開きます。</p>
+        <div style="background:rgba(255,255,255,0.04);padding:10px;border-radius:8px;margin-top:10px;font-size:0.85rem;">
+            開始時刻: <code>09:00</code><br>
+            終了時刻: <code>10:30</code>（空欄 = 実行中▶）<br>
+            内容: 自由記入
+        </div>`
+    },
+    {
+        title: 'Fitbit データ',
+        target: 'log',
+        body: `<p>14日分の心拍・睡眠・歩数などを<b>自動取得</b>。</p>
+        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
+            <li>📈 グラフで指標を選択して推移を確認</li>
+            <li>🔄 23時に自動で前日分をキャッシュ</li>
+            <li>「更新」ボタンで強制再取得も可能</li>
+        </ul>`
+    },
+    {
+        title: '英語フレーズ帳 + クイズ',
+        target: 'log',
+        body: `<p>気になった英語表現をワンタップで保存し、<b>クイズで定着</b>。</p>
+        <p style="margin-top:8px;">「クイズ」ボタンを押すと、<b>正解率の低い問題から優先</b>して出題されます。</p>`
+    },
+    {
+        title: '今日の MIT',
+        target: 'schedule',
+        body: `<p>その日に必ず終わらせたい <b>3つのタスク</b>を設定。</p>
+        <p style="margin-top:8px;">「設定」ボタンですぐ画面が開くようになりました。</p>`
+    },
+    {
+        title: 'タスク管理（仕事・プライベート）',
+        target: 'schedule',
+        body: `<p>Google Tasks と連携。</p>
+        <ul style="margin-top:8px;line-height:1.7;font-size:0.9rem;">
+            <li>📋 古い順に並ぶ（作成順）</li>
+            <li>⠿ ハンドルをドラッグして並び替え</li>
+            <li>👉 横にドラッグするとサブタスク化</li>
+            <li>📅 期限はカレンダーピッカーから簡単指定</li>
+        </ul>`
+    },
+];
+
+let _tutorialIdx = 0;
+
+window.openTutorial = () => {
+    const modal = $('#tutorial-modal');
+    if (!modal) return;
+    const saved = parseInt(localStorage.getItem('mng_tutorial_last_slide') || '0', 10);
+    _tutorialIdx = isNaN(saved) ? 0 : Math.max(0, Math.min(saved, TUTORIAL_SLIDES.length - 1));
+    modal.classList.remove('hidden');
+    renderTutorialSlide();
+};
+
+window.closeTutorial = () => {
+    $('#tutorial-modal')?.classList.add('hidden');
+    localStorage.setItem('mng_tutorial_last_slide', String(_tutorialIdx));
+};
+
+window.tutorialPrev = () => {
+    if (_tutorialIdx > 0) {
+        _tutorialIdx--;
+        renderTutorialSlide();
+    }
+};
+
+window.tutorialNext = () => {
+    if (_tutorialIdx < TUTORIAL_SLIDES.length - 1) {
+        _tutorialIdx++;
+        renderTutorialSlide();
+    } else {
+        closeTutorial();
+    }
+};
+
+function renderTutorialSlide() {
+    const slide = TUTORIAL_SLIDES[_tutorialIdx];
+    if (!slide) return;
+    const titleEl = $('#tutorial-title');
+    const contentEl = $('#tutorial-content');
+    const progressEl = $('#tutorial-progress');
+    const prevBtn = $('#tutorial-prev');
+    const nextBtn = $('#tutorial-next');
+    if (titleEl) titleEl.textContent = slide.title;
+    if (contentEl) contentEl.innerHTML = slide.body;
+    if (progressEl) progressEl.textContent = `${_tutorialIdx + 1} / ${TUTORIAL_SLIDES.length}`;
+    if (prevBtn) prevBtn.disabled = _tutorialIdx === 0;
+    if (nextBtn) nextBtn.textContent = (_tutorialIdx === TUTORIAL_SLIDES.length - 1) ? '完了' : '次へ →';
+    // 対象タブを自動切替（チャット中はそのまま）
+    if (slide.target) {
+        try { switchTab(slide.target); } catch {}
+    }
+    localStorage.setItem('mng_tutorial_last_slide', String(_tutorialIdx));
+}
