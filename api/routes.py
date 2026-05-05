@@ -2880,6 +2880,28 @@ async def _save_daily_summary_to_obsidian(date_str: str, summary_md: str) -> boo
         return False
 
 
+class DailySummaryUpdate(BaseModel):
+    text: str
+    date: Optional[str] = None
+
+
+@router.post("/daily_summary", dependencies=[Depends(verify_api_key)])
+async def daily_summary_set(req: DailySummaryUpdate):
+    """ユーザーが手動で編集したデイリーサマリーを Obsidian へ保存する。"""
+    date_str = req.date or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    try:
+        saved = await _save_daily_summary_to_obsidian(date_str, req.text or "")
+        if saved:
+            await resolve_questions(date_str, scope='summary')
+            return {"ok": True, "saved": True, "date": date_str}
+        raise HTTPException(status_code=500, detail="保存に失敗しました")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"daily_summary_set error: {e}")
+        raise HTTPException(status_code=500, detail=f"保存に失敗しました: {e}")
+
+
 @router.get("/daily_summary", dependencies=[Depends(verify_api_key)])
 async def daily_summary_get(date: str = ""):
     """指定日（既定: 今日）のデイリーサマリーを Obsidian から読んで返す。"""

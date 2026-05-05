@@ -261,7 +261,8 @@ class GoogleTasksService:
             return f"タスクの更新に失敗しました: {e}"
 
     async def get_raw_tasks(self, list_name: str = None):
-        """未完了タスクのパッチ用データをリストで取得する。due/parent/position を含む。"""
+        """未完了タスクのパッチ用データをリストで取得する。due/parent/position を含む。
+        Google Tasks の position（ユーザーが並び替えたユーザー指定順）でソートする。"""
         service = self.get_service()
         if not service: return []
         try:
@@ -272,6 +273,8 @@ class GoogleTasksService:
                 lambda: service.tasks().list(tasklist=list_id, showCompleted=False).execute(),
             )
             items = res.get("items", [])
+            # position は文字列ソート可能な形式で並び順を保持する。
+            items = sorted(items, key=lambda t: (t.get("parent", ""), t.get("position", "")))
             return [
                 {
                     "id": t["id"],

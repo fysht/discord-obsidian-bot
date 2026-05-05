@@ -318,9 +318,9 @@
                     <div class="card summary-card">
                         <div class="card-header">
                             <span class="card-icon">📅</span>
-                            <span class="card-title">1日のログ（デイリーサマリー）</span>
+                            <span class="card-title">デイリーサマリー</span>
                             <button class="mini-link" onclick="generateDailySummary(false)">生成</button>
-                            <button class="mini-link" onclick="generateDailySummary(true)" title="質問を保留して即保存">そのまま保存</button>
+                            <button class="mini-link" onclick="openDailySummaryEditor()">編集</button>
                         </div>
                         <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
                         <div id="dash-daily-summary" class="card-body diary-content"></div>
@@ -1062,6 +1062,19 @@
             <div style="display:flex;gap:8px;margin-top:14px;">
                 <button class="modal-btn cancel" onclick="closeDailyJournalEditor()">キャンセル</button>
                 <button class="modal-btn submit" onclick="submitDailyJournalEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- デイリーサマリー 編集モーダル -->
+    <div id="daily-summary-edit-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:520px;">
+            <h3 class="modal-title">📅 デイリーサマリーを編集</h3>
+            <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">生成されたサマリーをそのまま編集できます。保存内容は Obsidian (DailyNotes) に反映されます。</p>
+            <textarea id="daily-summary-edit-text" class="modern-input" rows="14" style="width:100%;padding:10px;font-size:0.9rem;line-height:1.6;resize:vertical;"></textarea>
+            <div style="display:flex;gap:8px;margin-top:14px;">
+                <button class="modal-btn cancel" onclick="closeDailySummaryEditor()">キャンセル</button>
+                <button class="modal-btn submit" onclick="submitDailySummaryEdit()">保存</button>
             </div>
         </div>
     </div>

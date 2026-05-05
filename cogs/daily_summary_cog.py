@@ -66,11 +66,11 @@ class DailySummaryCog(commands.Cog):
         if unresolved:
             # 質問が残っている → Obsidian には未保存。マネージャーから声をかける。
             if partner_cog and new_q_texts:
-                msg_lines = ["1日のログをまとめようとしたんだけど、いくつか確認したい点があるよ📝"]
+                msg_lines = ["デイリーサマリーをまとめようとしたんだけど、いくつか確認したい点があるよ📝"]
                 for i, q in enumerate(new_q_texts, 1):
                     msg_lines.append(f"{i}. {q}")
                 msg_lines.append("")
-                msg_lines.append("時間あるときアプリの『ログ → 1日のログ』から答えてくれたら、続きを書くね🌙")
+                msg_lines.append("時間あるときアプリの『ログ → デイリーサマリー』から答えてくれたら、続きを書くね🌙")
                 instruction = (
                     "以下の内容をユーザーに優しいタメ口で送信してください。改変せずほぼそのまま送ってください。\n\n"
                     + "\n".join(msg_lines)
@@ -89,7 +89,7 @@ class DailySummaryCog(commands.Cog):
                 if partner_cog:
                     instruction = (
                         "次の文章をユーザーに優しいタメ口で送信してください。改変せずそのまま送ってください。\n\n"
-                        "今日の1日のログをまとめてObsidianに保存したよ📅 アプリの『ログ → 1日のログ』から見れるよ🌙"
+                        "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 アプリの『ログ → デイリーサマリー』から見れるよ🌙"
                     )
                     try:
                         await partner_cog.generate_and_send_routine_message("", instruction)

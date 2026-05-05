@@ -547,16 +547,20 @@ async function loadDashboard() {
                 const isRunning = isLog && t.text.includes('▶');
                 const rawAttr = t.text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
                 // 時刻 / マーク / 本文 に構造化して列幅を固定
-                const m = t.text.match(/^\s*(\d{1,2}:\d{2})(?:\s*[-–~〜]\s*(\d{1,2}:\d{2}))?\s*([▶■])?\s*(.*)$/);
+                const m = t.text.match(/^\s*(\d{1,2}:\d{2}|\?\?:\?\?)(?:\s*[-–~〜]\s*(\d{1,2}:\d{2}))?\s*([▶■])?\s*(.*)$/);
                 let inner;
                 if (m) {
-                    const start = m[1];
-                    const end = m[2] || '';
+                    const startStr = m[1] === '??:??' ? '' : m[1];
+                    const endStr = m[2] || '';
                     const mark = m[3] || '';
                     const body = m[4] || '';
-                    const timeText = end ? `${start} – ${end}` : start;
+                    const sep = (startStr || endStr) ? '–' : '';
                     inner = `
-                        <span class="lifelog-time">${escapeHtml(timeText)}</span>
+                        <div style="display:grid; grid-template-columns:38px 12px 38px; align-items:center; font-family:ui-monospace, 'SF Mono', Consolas, monospace; font-size:0.78rem; color:var(--text-muted);">
+                            <span style="text-align:right;">${escapeHtml(startStr)}</span>
+                            <span style="text-align:center;">${sep}</span>
+                            <span style="text-align:left;">${escapeHtml(endStr)}</span>
+                        </div>
                         <span class="lifelog-mark">${escapeHtml(mark)}</span>
                         <span class="lifelog-body">${escapeHtml(body)}</span>
                     `;
@@ -688,11 +692,11 @@ function renderTaskGroup(container, tasks, listName) {
         return;
     }
 
-    // 古い順に並び替え（Google Tasks の id は時系列で生成されるため id 昇順で近似）
+    // 並び順は Google Tasks 側の position をマスターとし、API レスポンスの順序をそのまま尊重する。
+    // （ユーザーが UI で並び替えた結果は /api/google_tasks_move で Google 側に書き込まれ、
+    //   次回 fetch 時に position 順で返されてくる）
     // 完了タスクは末尾に
-    const sortedActive = (tasks || []).filter(t => !t.completed)
-        .slice()
-        .sort((a, b) => (a.id || '').localeCompare(b.id || ''));
+    const sortedActive = (tasks || []).filter(t => !t.completed).slice();
     const doneTasks = (tasks || []).filter(t => t.completed);
 
     // 親→子の階層構造を作る（parent フィールドあり）
@@ -3910,11 +3914,11 @@ window.editLifeLog = (lineIndex, currentTextEncoded) => {
     tmp.innerHTML = currentTextEncoded;
     const currentText = tmp.value;
     _lifelogEditCtx = { lineIndex, original: currentText };
-    // パース: "HH:MM - HH:MM 内容" / "HH:MM ▶ 内容" / "HH:MM 内容" などに対応
-    const m = currentText.match(/^\s*-?\s*(\d{1,2}:\d{2})(?:\s*[-–~〜]\s*(\d{1,2}:\d{2}))?\s*▶?\s*(.*)$/);
+    // パース: "HH:MM - HH:MM 内容" / "HH:MM ▶ 内容" / "HH:MM 内容" / "??:?? - HH:MM 内容" などに対応
+    const m = currentText.match(/^\s*-?\s*(\d{1,2}:\d{2}|\?\?:\?\?)(?:\s*[-–~〜]\s*(\d{1,2}:\d{2}))?\s*▶?\s*(.*)$/);
     let start = '', end = '', body = currentText;
     if (m) {
-        start = m[1] || '';
+        start = m[1] === '??:??' ? '' : (m[1] || '');
         end = m[2] || '';
         body = (m[3] || '').trim();
     }
@@ -3948,6 +3952,8 @@ window.submitLifeLogEdit = async () => {
         line = `${start} - ${end} ${body}`;
     } else if (start) {
         line = `${start} ▶ ${body}`;
+    } else if (end) {
+        line = `??:?? - ${end} ${body}`;
     } else {
         line = body;
     }
@@ -4123,11 +4129,22 @@ function renderDailySummaryCard(data) {
         qEl.style.display = 'none';
         return;
     }
+    if (_summaryQuestionsHidden) {
+        qEl.style.display = '';
+        qEl.innerHTML = `
+            <div style="display:flex;align-items:center;justify-content:space-between;font-size:0.78rem;color:var(--text-muted);">
+                <span>❓ ${questions.length} 件の質問があります（折りたたみ中）</span>
+                <button class="mini-link" onclick="toggleSummaryQuestions()">開く</button>
+            </div>
+        `;
+        return;
+    }
     qEl.style.display = '';
     const date = (data && data.date) || (new Date()).toISOString().slice(0, 10);
     qEl.innerHTML = `
-        <div style="font-size:0.78rem;color:#ffd454;margin-bottom:8px;">
-            ❓ マネージャーから ${questions.length} 件の質問があります（回答すると正確なサマリーが生成されます）
+        <div style="display:flex;align-items:center;justify-content:space-between;font-size:0.78rem;color:#ffd454;margin-bottom:8px;gap:6px;">
+            <span style="flex:1;">❓ マネージャーから ${questions.length} 件の質問があります（回答すると正確なサマリーが生成されます）</span>
+            <button onclick="toggleSummaryQuestions()" title="質問を閉じる" style="background:none;border:none;color:var(--text-muted);font-size:1.1rem;cursor:pointer;padding:0 4px;line-height:1;">✕</button>
         </div>
         ${questions.map(q => `
             <div class="summary-question" data-qid="${q.id}" style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px;margin-bottom:8px;">
@@ -4135,13 +4152,18 @@ function renderDailySummaryCard(data) {
                 <textarea class="modern-input summary-question-answer" rows="2" placeholder="回答を入力（後でも構いません）" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(q.answer || '')}</textarea>
                 <div style="display:flex;gap:6px;margin-top:6px;justify-content:flex-end;">
                     <button class="modal-btn cancel" style="padding:4px 10px;font-size:0.78rem;" onclick="dismissSummaryQuestion(${q.id})">削除</button>
-                    <button class="modal-btn submit" style="padding:4px 10px;font-size:0.78rem;" onclick="saveSummaryAnswer(${q.id})">保存</button>
                 </div>
             </div>
         `).join('')}
         <button class="modal-btn submit" style="width:100%;font-size:0.85rem;margin-top:6px;" onclick="regenerateSummaryWithAnswers('${date}')">回答を反映して再生成</button>
     `;
 }
+
+let _summaryQuestionsHidden = false;
+window.toggleSummaryQuestions = () => {
+    _summaryQuestionsHidden = !_summaryQuestionsHidden;
+    loadDailySummary();
+};
 
 window.generateDailySummary = async (finalize) => {
     if (_dailySummaryGenerating) return;
@@ -4237,13 +4259,18 @@ window.openDailyJournalEditor = async () => {
     const modal = $('#daily-journal-edit-modal');
     const ta = $('#daily-journal-edit-text');
     if (!modal || !ta) return;
-    ta.value = '';
+    // 既存内容（生成済みの今日の日記）をデフォルトで表示
+    const journalEl = $('#dash-daily-journal');
+    const fallback = journalEl ? (journalEl.textContent || '').trim() : '';
+    ta.value = fallback;
     ta.disabled = true;
     modal.classList.remove('hidden');
     setTimeout(() => ta.focus(), 100);
     try {
         const data = await apiFetch('/api/daily_journal');
-        ta.value = data.text || '';
+        if (data && typeof data.text === 'string') {
+            ta.value = data.text;
+        }
     } catch (e) {
         showToast('読み込みに失敗しました', true);
     } finally {
@@ -4267,6 +4294,50 @@ window.submitDailyJournalEdit = async () => {
         showToast('日記を保存しました（Obsidian反映済み）');
         closeDailyJournalEditor();
         loadDashboard();
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    }
+};
+
+// ===========================================================
+// デイリーサマリー 編集
+// ===========================================================
+
+window.openDailySummaryEditor = async () => {
+    const modal = $('#daily-summary-edit-modal');
+    const ta = $('#daily-summary-edit-text');
+    if (!modal || !ta) return;
+    // 生成済みのサマリー本文をデフォルトで表示
+    ta.value = '';
+    ta.disabled = true;
+    modal.classList.remove('hidden');
+    setTimeout(() => ta.focus(), 100);
+    try {
+        const data = await apiFetch('/api/daily_summary');
+        ta.value = (data && data.text) || '';
+    } catch (e) {
+        showToast('読み込みに失敗しました', true);
+    } finally {
+        ta.disabled = false;
+    }
+};
+
+window.closeDailySummaryEditor = () => {
+    $('#daily-summary-edit-modal')?.classList.add('hidden');
+};
+
+window.submitDailySummaryEdit = async () => {
+    const ta = $('#daily-summary-edit-text');
+    if (!ta) return;
+    const text = ta.value;
+    try {
+        await apiFetch('/api/daily_summary', {
+            method: 'POST',
+            body: JSON.stringify({ text }),
+        });
+        showToast('サマリーを保存しました（Obsidian反映済み）');
+        closeDailySummaryEditor();
+        loadDailySummary();
     } catch (e) {
         showToast('保存に失敗しました', true);
     }
@@ -4432,7 +4503,17 @@ async function renderHabitGantt() {
             };
         };
 
-        const rowHtml = filtered.map((h, i) => {
+        const leftHtml = filtered.map((h, i) => {
+            const palette = colorFor(i, filtered.length);
+            return `
+                <div style="height:18px;display:flex;align-items:center;gap:5px;padding-right:6px;margin-bottom:4px;font-size:0.72rem;">
+                    <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${palette.strong};flex-shrink:0;"></span>
+                    <span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(h.name)}">${escapeHtml(h.name)}</span>
+                </div>
+            `;
+        }).join('');
+
+        const rightHtml = filtered.map((h, i) => {
             const palette = colorFor(i, filtered.length);
             const cellsHtml = h.cells.map((v, idx) => {
                 const prev = idx > 0 ? h.cells[idx - 1] : 0;
@@ -4449,21 +4530,25 @@ async function renderHabitGantt() {
                 return `<span style="display:inline-block;width:${cellWidth}px;height:${h2}px;margin-right:1px;border-radius:2px;background:${bg};${border}vertical-align:middle;" title="${dates[idx] || ''}"></span>`;
             }).join('');
             return `
-                <div style="display:flex;align-items:center;margin-bottom:4px;font-size:0.72rem;">
-                    <div style="width:${labelWidth}px;display:flex;align-items:center;gap:5px;padding-right:6px;position:sticky;left:0;background:var(--bg-elevated);z-index:1;">
-                        <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${palette.strong};flex-shrink:0;"></span>
-                        <span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(h.name)}">${escapeHtml(h.name)}</span>
-                    </div>
-                    <div style="white-space:nowrap;">${cellsHtml}</div>
+                <div style="height:18px;display:flex;align-items:center;margin-bottom:4px;white-space:nowrap;">
+                    ${cellsHtml}
                 </div>
             `;
         }).join('');
 
-        wrap.style.overflowX = 'auto';
+        wrap.style.overflowX = 'hidden';
         wrap.innerHTML = `
-            <div style="min-width:${totalWidth}px; padding-bottom:8px;">
-                <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;position:sticky;left:0;background:var(--bg-elevated);z-index:2;display:inline-block;">過去 ${dates.length} 日 ・ 習慣ごとに色分け（連続達成は濃く表示）</div>
-                ${rowHtml}
+            <div style="display:flex; padding-bottom:8px; max-width:100%;">
+                <div style="width:${labelWidth}px; flex-shrink:0;">
+                    <div style="height:14px; margin-bottom:6px;"></div>
+                    ${leftHtml}
+                </div>
+                <div style="flex:1 1 0; min-width:0; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:thin;" class="hide-scroll">
+                    <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;white-space:nowrap;">過去 ${dates.length} 日 ・ 習慣ごとに色分け（連続達成は濃く表示）</div>
+                    <div style="min-width:${dates.length * (cellWidth + 1)}px;">
+                        ${rightHtml}
+                    </div>
+                </div>
             </div>
         `;
     } catch (e) {

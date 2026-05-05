@@ -1093,15 +1093,17 @@ mark.search-hl {
 /* 引用表示 (返信) */
 .msg-quote {
     border-left: 3px solid var(--accent);
-    padding: 4px 8px;
-    margin-bottom: 6px;
-    background: rgba(0,186,152,0.06);
-    color: var(--text-secondary);
-    font-size: 0.78rem;
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    background: rgba(0,186,152,0.14);
+    color: var(--text-primary);
+    font-size: 0.86rem;
+    font-weight: 500;
+    line-height: 1.5;
     border-radius: 4px;
     word-break: break-word;
     display: -webkit-box;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
