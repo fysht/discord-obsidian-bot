@@ -564,7 +564,7 @@ async function loadDashboard() {
                     inner = `<span class="lifelog-body" style="grid-column: 1 / -1;">${escapeHtml(t.text)}</span>`;
                 }
                 return `
-                    <div class="list-item lifelog-row" style="border-left: 3px solid ${isRunning ? 'var(--accent)' : 'rgba(255,255,255,0.1)'}; cursor: pointer; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}"
+                    <div class="list-item lifelog-row" style="border-left: 3px solid rgba(255,255,255,0.1); cursor: pointer; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}"
                          onclick="editLifeLog(${idx}, '${rawAttr}')">
                         ${inner}
                     </div>
@@ -726,7 +726,7 @@ function renderTaskGroup(container, tasks, listName) {
             const childMark = t._depth ? '<span style="color:var(--text-muted);margin-right:2px;">└</span>' : '';
             return `
             <div class="list-item gtask-item" style="gap:6px;${indent}" id="gtask-item-${t.id}" data-task-id="${t.id}" data-list="${listName}" data-parent="${t.parent || ''}">
-                <span class="gtask-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:0.85rem;padding:0 6px;user-select:none;" title="長押しして並び替え">⠿</span>
+                <span class="gtask-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:12px 10px;margin-left:-8px;user-select:none;" title="長押しして並び替え">⠿</span>
                 ${childMark}
                 <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')" style="cursor:pointer;"></div>
                 <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
@@ -759,6 +759,7 @@ function initHabitSortable(container) {
         delay: 200,
         delayOnTouchOnly: true,
         touchStartThreshold: 5,
+        fallbackTolerance: 3,
         ghostClass: 'sortable-ghost',
         chosenClass: 'sortable-chosen',
         dragClass: 'sortable-drag',
@@ -806,6 +807,7 @@ function initTaskSortable(container, listName) {
         delay: 200,
         delayOnTouchOnly: true,
         touchStartThreshold: 5,
+        fallbackTolerance: 3,
         ghostClass: 'sortable-ghost',
         chosenClass: 'sortable-chosen',
         dragClass: 'sortable-drag',
@@ -2556,8 +2558,8 @@ async function loadHabits() {
             const dimmed = !dueToday && !isDone;
             return `
                 <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}" data-task-id="${h.task_id || ''}" data-name="${escapeHtml(h.name)}" style="${dimmed ? 'opacity:0.45;' : ''}">
-                    <span class="habit-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:0.85rem;padding:0 4px;user-select:none;" title="長押しして並び替え">⠿</span>
-                    <button class="habit-check-btn" onclick="completeHabit('${h.name}', '${h.id}')" ${isDone || !dueToday ? 'disabled' : ''}>✔</button>
+                    <span class="habit-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:12px 10px;margin-left:-8px;user-select:none;" title="長押しして並び替え">⠿</span>
+                    <button class="habit-check-btn" onclick="${isDone ? `uncompleteHabit('${h.name}', '${h.id}')` : `completeHabit('${h.name}', '${h.id}')`}" ${!isDone && !dueToday ? 'disabled' : ''} style="${isDone ? 'opacity:0.8;' : ''}">✔</button>
                     <div class="habit-name-wrap" style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0;">
                         <div class="habit-name">${escapeHtml(h.name)}${freqChip ? ' ' + freqChip : ''}</div>
                         <div class="habit-trigger-row">${triggerChip}</div>
@@ -2587,6 +2589,16 @@ window.completeHabit = async (habitName, hId) => {
         showToast(`「${habitName}」を完了しました！🎉`);
         const result = await apiFetch('/api/habits/complete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
         checkMilestone(result.message || '');
+        loadHabits();
+    } catch { showToast('失敗しました', true); }
+};
+
+window.uncompleteHabit = async (habitName, hId) => {
+    try {
+        const item = $(`#habit-item-${hId}`);
+        if (item) item.classList.remove('done');
+        showToast(`「${habitName}」を未完了に戻しました`);
+        await apiFetch('/api/habits/uncomplete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
         loadHabits();
     } catch { showToast('失敗しました', true); }
 };
@@ -4438,7 +4450,7 @@ async function renderHabitGantt() {
             }).join('');
             return `
                 <div style="display:flex;align-items:center;margin-bottom:4px;font-size:0.72rem;">
-                    <div style="width:${labelWidth}px;display:flex;align-items:center;gap:5px;padding-right:6px;">
+                    <div style="width:${labelWidth}px;display:flex;align-items:center;gap:5px;padding-right:6px;position:sticky;left:0;background:var(--bg-elevated);z-index:1;">
                         <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${palette.strong};flex-shrink:0;"></span>
                         <span style="color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(h.name)}">${escapeHtml(h.name)}</span>
                     </div>
@@ -4447,9 +4459,10 @@ async function renderHabitGantt() {
             `;
         }).join('');
 
+        wrap.style.overflowX = 'auto';
         wrap.innerHTML = `
-            <div style="min-width:${totalWidth}px;">
-                <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;">過去 ${dates.length} 日 ・ 習慣ごとに色分け（連続達成は濃く表示）</div>
+            <div style="min-width:${totalWidth}px; padding-bottom:8px;">
+                <div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:6px;position:sticky;left:0;background:var(--bg-elevated);z-index:2;display:inline-block;">過去 ${dates.length} 日 ・ 習慣ごとに色分け（連続達成は濃く表示）</div>
                 ${rowHtml}
             </div>
         `;

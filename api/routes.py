@@ -933,6 +933,16 @@ async def complete_habit(req: HabitCompleteRequest):
     result_msg = await habit_cog.complete_habit(req.habit_name)
     return {"status": "success", "message": result_msg}
 
+@router.post("/habits/uncomplete", dependencies=[Depends(verify_api_key)])
+async def uncomplete_habit(req: HabitCompleteRequest):
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        return {"status": "error", "message": "HabitCog not available"}
+    result_msg = await habit_cog.uncomplete_habit(req.habit_name)
+    return {"status": "success", "message": result_msg}
+
 class HabitAddRequest(BaseModel):
     name: str
     frequency_days: int = 1

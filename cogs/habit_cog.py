@@ -110,6 +110,41 @@ class HabitCog(commands.Cog):
             stats_msg = self._get_habit_stats(data, h_id, today_str)
             return f"【システム通知】習慣「{target_habit['name']}」はすでに今日の分が記録済みです。（{stats_msg}）\nこのことを踏まえて、ユーザーの継続をLINE風のタメ口で優しく褒めてあげてください。定型文は避けてください。"
 
+    async def uncomplete_habit(self, habit_name_or_keyword: str):
+        data = await self._load_data()
+        today_str = datetime.now(JST).strftime("%Y-%m-%d")
+
+        target_habit = next(
+            (h for h in data["habits"] if habit_name_or_keyword.lower() in h["name"].lower()),
+            None,
+        )
+        if not target_habit:
+            return "習慣が見つかりませんでした"
+
+        h_id = target_habit["id"]
+        if today_str in data["logs"] and h_id in data["logs"][today_str]:
+            data["logs"][today_str].remove(h_id)
+            await self._save_data(data)
+
+        if hasattr(self.bot, "tasks_service") and self.bot.tasks_service:
+            try:
+                # Get completed tasks to find the task_id
+                list_id = await self.bot.tasks_service._get_tasklist_id(self.bot.tasks_service.get_service(), "習慣")
+                res = await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: self.bot.tasks_service.get_service().tasks().list(
+                        tasklist=list_id, showCompleted=True, showHidden=True
+                    ).execute()
+                )
+                for t in res.get("items", []):
+                    if t.get("status") == "completed" and habit_name_or_keyword.lower() in t["title"].lower():
+                        await self.bot.tasks_service.update_task(t["id"], completed=False, list_name="習慣")
+                        break
+            except Exception as e:
+                logging.error(f"Failed to uncomplete habit in Tasks: {e}")
+
+        return f"習慣「{target_habit['name']}」の完了を取り消しました"
+
     async def get_incomplete_habits(self) -> list[str]:
         """今日まだ完了していない習慣の名前リストを返す"""
         data = await self._load_data()
