@@ -317,6 +317,17 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
 
     try:
         if existing_id:
+            # 書籍ノートの場合、読書メモ機能で蓄積された `## 📖 Reading Log` セクションが
+            # is_update=True の上書きで消えるのを防ぐため、既存セクションを保持する。
+            if link_type == "book":
+                try:
+                    old_content = await chat_service.drive_service.read_text_file(service, existing_id)
+                    rm = re.search(r"## 📖 Reading Log\n(.*?)(?=\n## |\Z)", old_content, re.DOTALL)
+                    reading_log = rm.group(1).strip() if rm else ""
+                    if reading_log and "## 📖 Reading Log" not in note_content:
+                        note_content += f"\n\n## 📖 Reading Log\n{reading_log}\n"
+                except Exception as e:
+                    logging.error(f"Reading Log preservation error: {e}")
             await chat_service.drive_service.update_text(service, existing_id, note_content)
             return # 更新時はデイリーノートへの追記をスキップ
         else:
@@ -810,6 +821,29 @@ def _serialize_habit_notes(trigger: str, rest: str) -> str:
             return f"⏰ {trigger}\n\n{rest}"
         return f"⏰ {trigger}"
     return rest
+
+
+@router.get("/google_tasks", dependencies=[Depends(verify_api_key)])
+async def get_google_tasks(list_name: str = "仕事"):
+    """指定リストのタスク（未完了 + 本日完了分）を軽量に返す。
+    並び替え後の再描画など、ダッシュボード全体を再取得せずに該当リストだけを更新したいときに使う。
+    """
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    tasks_service = getattr(bot, "tasks_service", None) if bot else None
+    if not tasks_service:
+        return {"tasks": []}
+    try:
+        uncompleted = await tasks_service.get_raw_tasks(list_name)
+        done_today = await tasks_service.get_completed_tasks_today(list_name)
+        tasks = uncompleted + [
+            {"id": f"done_{list_name}_{i}", "title": t, "notes": "", "completed": True}
+            for i, t in enumerate(done_today)
+        ]
+        return {"tasks": tasks}
+    except Exception as e:
+        logging.debug(f"get_google_tasks({list_name}) error: {e}")
+        return {"tasks": []}
 
 
 @router.get("/habits", dependencies=[Depends(verify_api_key)])

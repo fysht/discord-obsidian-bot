@@ -495,12 +495,12 @@
 
                 <div style="display:flex; flex-direction:column; gap:4px;">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">要約 / 読書ノート</label>
-                    <textarea id="link-summary-input" class="modern-input" style="padding:10px; height:80px; resize:vertical;" placeholder="AIの要約やノートをコピペ..."></textarea>
+                    <textarea id="link-summary-input" class="modern-input auto-grow-textarea" style="padding:10px; min-height:80px; resize:vertical;" placeholder="AIの要約やノートをコピペ..."></textarea>
                 </div>
 
                 <div style="display:flex; flex-direction:column; gap:4px;">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">メモ</label>
-                    <textarea id="link-memo-input" class="modern-input" style="padding:10px; height:60px; resize:vertical;" placeholder="個人的なメモ..."></textarea>
+                    <textarea id="link-memo-input" class="modern-input auto-grow-textarea" style="padding:10px; min-height:60px; resize:vertical;" placeholder="個人的なメモ..."></textarea>
                 </div>
             </div>
 
@@ -1096,6 +1096,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=45"></script>
+    <script src="/static/js/app_v12.js?v=46"></script>
 </body>
 </html>

@@ -879,7 +879,6 @@ function initTaskSortable(container, listName) {
             const taskId = item && item.dataset && item.dataset.taskId;
             if (!taskId) return;
             const ln = item.dataset.list || listName;
-            // 移動先の前のアクティブタスクを取得
             const items = Array.from(container.querySelectorAll('.gtask-item'));
             const idx = items.findIndex(el => el === item);
             if (idx === -1) return;
@@ -892,33 +891,33 @@ function initTaskSortable(container, listName) {
             if (previousId) body.previous_task_id = previousId;
             if (previousTask && previousTask.parent) body.parent = previousTask.parent;
 
-            // 楽観更新: ローカル配列を新しい DOM 順に並び替え
-            const newOrderIds = items.map(el => el.dataset.taskId).filter(Boolean);
-            const reordered = newOrderIds.map(id => tasksRef.find(t => t.id === id)).filter(Boolean);
-            const orphans = tasksRef.filter(t => !newOrderIds.includes(t.id));
-            const newTasks = [...reordered, ...orphans];
-            if (ln === '仕事') _currentWorkTasks = newTasks;
-            else if (ln === '習慣') _currentHabitTasks = newTasks;
-            else _currentPrivateTasks = newTasks;
-
             try {
                 await apiFetch('/api/google_tasks_move', {
                     method: 'POST',
                     body: JSON.stringify(body),
                 });
                 showToast('並び替えました');
-                // 習慣と同じく軽量再描画でリストだけ再構築（loadDashboard を呼ばない）
-                setTimeout(() => {
-                    const ref = ln === '仕事' ? _currentWorkTasks : ln === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
-                    renderTaskGroup(container, ref, ln);
-                }, 100);
+                // 習慣と完全に同じパターン: 軽量エンドポイントで該当リストだけ再取得して再描画
+                setTimeout(() => loadTaskList(ln, container), 100);
             } catch (e) {
                 showToast('並び替えに失敗しました', true);
-                // 失敗時のみフル再ロードして元の順序に戻す
-                loadDashboard();
+                loadTaskList(ln, container);
             }
         },
     });
+}
+
+// 指定リスト（仕事/プライベート/習慣）のタスクだけを軽量に再取得して再描画する。
+// initTaskSortable の onEnd と完了トグル後の再描画で使用。loadDashboard を回避してスムーズ化。
+async function loadTaskList(listName, container) {
+    if (!container) return;
+    try {
+        const data = await apiFetch(`/api/google_tasks?list_name=${encodeURIComponent(listName)}`);
+        const tasks = data.tasks || [];
+        renderTaskGroup(container, tasks, listName);
+    } catch (e) {
+        console.error('loadTaskList error', e);
+    }
 }
 
 function _formatDueLabel(due) {
@@ -2274,7 +2273,25 @@ window.openLinkDetailsModal = (lk) => {
     $('#link-calendar-check').checked = true;
 
     $('#link-details-modal').classList.remove('hidden');
+    // モーダル表示後に textarea を内容量に合わせて自動リサイズ
+    requestAnimationFrame(() => {
+        document.querySelectorAll('#link-details-modal .auto-grow-textarea').forEach(autoResizeTextarea);
+    });
 };
+
+// textarea の高さを内容に応じて自動調整するユーティリティ
+function autoResizeTextarea(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    const max = 600;
+    el.style.height = Math.min(el.scrollHeight + 2, max) + 'px';
+}
+// auto-grow-textarea クラスを持つ全 textarea に input イベントで自動拡張を仕込む
+document.addEventListener('input', (e) => {
+    if (e.target && e.target.classList && e.target.classList.contains('auto-grow-textarea')) {
+        autoResizeTextarea(e.target);
+    }
+});
 
 window.closeLinkDetailsModal = () => {
     $('#link-details-modal').classList.add('hidden');
@@ -3230,6 +3247,13 @@ function initLongPressDelegation() {
     chatMessages.addEventListener('contextmenu', (e) => {
         if (e.target.closest('.message')) e.preventDefault();
     });
+    // 保険: 文書全体での pointerup/touchend で残留 long-press-active を全消去（黒塗り表示の防止）
+    const clearAllLongPress = () => {
+        document.querySelectorAll('.message.long-press-active').forEach(el => el.classList.remove('long-press-active'));
+    };
+    document.addEventListener('pointerup', clearAllLongPress);
+    document.addEventListener('touchend', clearAllLongPress);
+    document.addEventListener('touchcancel', clearAllLongPress);
 }
 
 // 既存の `attachLongPress(div)` 呼び出しは互換性のためノーオプ化。

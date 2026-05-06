@@ -382,8 +382,9 @@ details.card > summary > .card-header { border-bottom: none; }
 .send-btn { width: 36px; height: 36px; border-radius: 50%; background: var(--accent-gradient); color: #fff; border: none; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 
 /* ========== MODALS ========== */
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; transition: 0.3s; }
-.modal-overlay.hidden { opacity: 0; pointer-events: none; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.85); backdrop-filter: blur(5px); z-index: 1000; display: flex; align-items: center; justify-content: center; padding: 20px; transition: opacity 0.2s ease; }
+/* hidden 時は visibility と backdrop-filter を確実に無効化して、半透明な黒オーバーレイが残るのを防ぐ */
+.modal-overlay.hidden { opacity: 0; pointer-events: none; visibility: hidden; backdrop-filter: none; -webkit-backdrop-filter: none; }
 .modal-card { background: var(--bg-elevated); border-radius: var(--radius-xl); padding: 32px; width: 100%; max-width: 440px; box-shadow: var(--shadow-deep); }
 .modal-list { max-height: 300px; overflow-y: auto; margin: 20px 0; display: flex; flex-direction: column; gap: 8px; }
 .modal-item { padding: 14px 20px; background: rgba(255,255,255,0.05); border-radius: var(--radius-md); border: 1px solid var(--border-glass); cursor: pointer; transition: 0.2s; }
