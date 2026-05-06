@@ -3138,3 +3138,110 @@ async def daily_questions_delete(qid: int):
     if not ok:
         raise HTTPException(status_code=404, detail="質問が見つかりません")
     return {"status": "success"}
+
+
+# ============================================================
+# Investment (投資サポート) エンドポイント群
+# ============================================================
+
+def _get_investment_cog():
+    """InvestmentCogをbotから取得する。ロード前なら503で返す。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    cog = bot.get_cog("InvestmentCog")
+    if not cog:
+        raise HTTPException(status_code=503, detail="InvestmentCogがロードされていません。")
+    return cog
+
+
+class InvestmentTickerRequest(BaseModel):
+    ticker: str
+
+
+class InvestmentEarningsRequest(BaseModel):
+    ticker: str
+    register_calendar: bool = True
+
+
+class InvestmentCEORequest(BaseModel):
+    ticker: str
+    video_url: str
+    video_title: Optional[str] = ""
+
+
+class InvestmentConstitutionUpdateRequest(BaseModel):
+    content: str
+
+
+class InvestmentConstitutionInitRequest(BaseModel):
+    force: bool = False
+
+
+@router.post("/investment/sentiment", dependencies=[Depends(verify_api_key)])
+async def investment_sentiment():
+    cog = _get_investment_cog()
+    return await cog.run_market_sentiment()
+
+
+@router.post("/investment/snapshot", dependencies=[Depends(verify_api_key)])
+async def investment_snapshot(req: InvestmentTickerRequest):
+    cog = _get_investment_cog()
+    return await cog.run_stock_snapshot(req.ticker)
+
+
+@router.post("/investment/audit", dependencies=[Depends(verify_api_key)])
+async def investment_audit(req: InvestmentTickerRequest):
+    cog = _get_investment_cog()
+    return await cog.run_stock_audit(req.ticker)
+
+
+@router.post("/investment/earnings_schedule", dependencies=[Depends(verify_api_key)])
+async def investment_earnings_schedule(req: InvestmentEarningsRequest):
+    cog = _get_investment_cog()
+    return await cog.run_earnings_schedule(req.ticker, register_calendar=req.register_calendar)
+
+
+@router.post("/investment/earnings_documents", dependencies=[Depends(verify_api_key)])
+async def investment_earnings_documents(req: InvestmentTickerRequest):
+    cog = _get_investment_cog()
+    return await cog.run_earnings_documents(req.ticker)
+
+
+@router.post("/investment/ceo_check", dependencies=[Depends(verify_api_key)])
+async def investment_ceo_check(req: InvestmentCEORequest):
+    cog = _get_investment_cog()
+    return await cog.run_ceo_crosscheck(
+        req.ticker, req.video_url, video_title=req.video_title or ""
+    )
+
+
+@router.get("/investment/constitution", dependencies=[Depends(verify_api_key)])
+async def investment_constitution_get():
+    cog = _get_investment_cog()
+    return await cog.run_get_constitution()
+
+
+@router.post("/investment/constitution", dependencies=[Depends(verify_api_key)])
+async def investment_constitution_update(req: InvestmentConstitutionUpdateRequest):
+    cog = _get_investment_cog()
+    return await cog.run_update_constitution(req.content)
+
+
+@router.post("/investment/constitution/init", dependencies=[Depends(verify_api_key)])
+async def investment_constitution_init(req: InvestmentConstitutionInitRequest):
+    cog = _get_investment_cog()
+    return await cog.run_init_constitution(force=req.force)
+
+
+@router.get("/investment/history/{category}", dependencies=[Depends(verify_api_key)])
+async def investment_history(category: str, limit: int = 20):
+    cog = _get_investment_cog()
+    return await cog.list_history(category, limit=limit)
+
+
+@router.get("/investment/history/{category}/{file_id}", dependencies=[Depends(verify_api_key)])
+async def investment_history_item(category: str, file_id: str):
+    cog = _get_investment_cog()
+    return await cog.read_history_item(category, file_id)

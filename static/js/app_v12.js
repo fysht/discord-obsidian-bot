@@ -173,15 +173,18 @@ function switchTab(tab) {
     $$('.tab-pane').forEach(p => p.classList.remove('active'));
     $(`#tab-${tab}`)?.classList.add('active');
 
-    const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定' };
+    const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定', invest: '投資' };
     const titleEl = $('#current-tab-title');
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
-    if (tab !== 'chat') loadDashboard();
+    if (tab !== 'chat' && tab !== 'invest') loadDashboard();
     // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
         loadDailySummary();
+    }
+    if (tab === 'invest') {
+        loadInvestmentHistory();
     }
 }
 
@@ -5001,3 +5004,382 @@ function renderTutorialSlide() {
     }
     localStorage.setItem('mng_tutorial_last_slide', String(_tutorialIdx));
 }
+
+// =================================================================
+// Investment Tab — 投資サポート機能
+// =================================================================
+
+let _investHistoryCategory = 'audit';
+let _investBusy = false;
+
+// シンプルなMarkdown→HTMLレンダラ（見出し・太字・斜体・リスト・テーブル・コード・リンク・水平線）
+function renderInvestmentMarkdown(md) {
+    if (!md) return '';
+    const esc = (t) => escapeHtml(t);
+    // テーブルを先に処理して、後段の処理で壊さないようにプレースホルダ化
+    const tables = [];
+    md = md.replace(/((?:^\|.*\|\s*$\n?)+)/gm, (block) => {
+        const lines = block.trim().split('\n');
+        if (lines.length < 2) return block;
+        const headerCells = lines[0].split('|').slice(1, -1).map(s => s.trim());
+        const sepOk = /^\|?\s*:?-{2,}/.test(lines[1]);
+        if (!sepOk) return block;
+        const rows = lines.slice(2).map(l => l.split('|').slice(1, -1).map(s => s.trim()));
+        let html = '<table><thead><tr>';
+        headerCells.forEach(h => { html += `<th>${esc(h)}</th>`; });
+        html += '</tr></thead><tbody>';
+        rows.forEach(r => {
+            html += '<tr>';
+            r.forEach(c => { html += `<td>${esc(c)}</td>`; });
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        const placeholder = `\n@@TBL${tables.length}@@\n`;
+        tables.push(html);
+        return placeholder;
+    });
+
+    // コードブロック
+    const codeBlocks = [];
+    md = md.replace(/```([a-z]*)\n([\s\S]*?)```/g, (_, lang, code) => {
+        const ph = `@@CODE${codeBlocks.length}@@`;
+        codeBlocks.push(`<pre style="background:rgba(0,0,0,0.3);padding:10px;border-radius:6px;overflow-x:auto;font-size:0.78rem;"><code>${esc(code)}</code></pre>`);
+        return ph;
+    });
+
+    function inlineFormat(t) {
+        let s = esc(t);
+        // インラインコード
+        s = s.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+        // リンク [label](url)
+        s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => `<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+        // 自動URLリンク
+        s = s.replace(/(^|[\s(])((?:https?:\/\/)[^\s)]+)/g, (_, lead, url) => `${lead}<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
+        // 太字
+        s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+        // 斜体
+        s = s.replace(/(^|[^*])\*([^*]+)\*([^*]|$)/g, '$1<em>$2</em>$3');
+        return s;
+    }
+
+    // 行ごとに処理
+    const lines = md.split('\n');
+    const out = [];
+    let inUl = false, inOl = false;
+    const closeLists = () => {
+        if (inUl) { out.push('</ul>'); inUl = false; }
+        if (inOl) { out.push('</ol>'); inOl = false; }
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+
+        if (/^@@TBL\d+@@$/.test(line.trim())) { closeLists(); out.push(line); continue; }
+        if (/^@@CODE\d+@@$/.test(line.trim())) { closeLists(); out.push(line); continue; }
+
+        // 区切り線
+        if (/^\s*---\s*$/.test(line)) { closeLists(); out.push('<hr>'); continue; }
+        // 見出し
+        const h = line.match(/^(#{1,4})\s+(.+)$/);
+        if (h) {
+            closeLists();
+            const lvl = h[1].length;
+            out.push(`<h${lvl}>${inlineFormat(h[2])}</h${lvl}>`);
+            continue;
+        }
+        // ブロッククォート
+        const bq = line.match(/^>\s?(.*)$/);
+        if (bq) {
+            closeLists();
+            out.push(`<blockquote>${inlineFormat(bq[1])}</blockquote>`);
+            continue;
+        }
+        // 番号付きリスト
+        const ol = line.match(/^\s*\d+\.\s+(.*)$/);
+        if (ol) {
+            if (!inOl) { closeLists(); out.push('<ol>'); inOl = true; }
+            out.push(`<li>${inlineFormat(ol[1])}</li>`);
+            continue;
+        }
+        // 箇条書き
+        const ul = line.match(/^\s*[-*]\s+(.*)$/);
+        if (ul) {
+            if (!inUl) { closeLists(); out.push('<ul>'); inUl = true; }
+            out.push(`<li>${inlineFormat(ul[1])}</li>`);
+            continue;
+        }
+        // 空行
+        if (!line.trim()) {
+            closeLists();
+            continue;
+        }
+        // 通常段落
+        closeLists();
+        out.push(`<p style="margin:6px 0;">${inlineFormat(line)}</p>`);
+    }
+    closeLists();
+    let html = out.join('\n');
+
+    // テーブル/コードブロックのプレースホルダを戻す
+    tables.forEach((t, idx) => { html = html.replace(`@@TBL${idx}@@`, t); });
+    codeBlocks.forEach((c, idx) => { html = html.replace(`@@CODE${idx}@@`, c); });
+
+    return html;
+}
+
+window.openInvestmentResultModal = (title, markdown) => {
+    const modal = $('#invest-result-modal');
+    const titleEl = $('#invest-result-title');
+    const bodyEl = $('#invest-result-body');
+    if (!modal || !bodyEl) return;
+    if (titleEl) titleEl.textContent = title || '結果';
+    bodyEl.innerHTML = renderInvestmentMarkdown(markdown || '');
+    modal.classList.remove('hidden');
+};
+
+window.closeInvestmentResultModal = () => {
+    $('#invest-result-modal')?.classList.add('hidden');
+};
+
+function _setInvestBusy(busy) {
+    _investBusy = busy;
+    document.querySelectorAll('#tab-invest .chip-btn, #tab-invest .modal-btn').forEach(b => {
+        b.disabled = busy;
+        b.style.opacity = busy ? '0.5' : '1';
+    });
+}
+
+async function _callInvestmentApi(path, body, label) {
+    if (_investBusy) {
+        showToast('処理中です。完了まで待ってください', true);
+        return null;
+    }
+    _setInvestBusy(true);
+    showToast(`${label}を実行中...`);
+    try {
+        const opts = { method: 'POST' };
+        if (body !== null && body !== undefined) opts.body = JSON.stringify(body);
+        const data = await apiFetch(path, opts);
+        if (!data || data.ok === false) {
+            const err = (data && (data.error || data.detail)) || '失敗しました';
+            showToast(`${label}: ${err}`, true);
+            return data;
+        }
+        showToast(`${label} 完了`);
+        return data;
+    } catch (e) {
+        showToast(`${label}失敗: ${e.message || e}`, true);
+        return null;
+    } finally {
+        _setInvestBusy(false);
+    }
+}
+
+window.runMarketSentiment = async () => {
+    const sentinelEl = $('#invest-sentiment-result');
+    if (sentinelEl) sentinelEl.textContent = '取得中...';
+    const data = await _callInvestmentApi('/api/investment/sentiment', null, '地合い分析');
+    if (data && data.ok && data.report) {
+        if (sentinelEl) sentinelEl.innerHTML = renderInvestmentMarkdown(data.report);
+        window.openInvestmentResultModal('🌍 市場の地合い', data.report);
+        window.loadInvestmentHistory();
+    } else if (sentinelEl) {
+        sentinelEl.textContent = '取得に失敗しました。再度お試しください。';
+    }
+};
+
+function _getTickerInput() {
+    const t = $('#invest-ticker-input')?.value?.trim();
+    if (!t) {
+        showToast('ティッカーを入力してください', true);
+        return null;
+    }
+    return t;
+}
+
+window.runStockSnapshot = async () => {
+    const ticker = _getTickerInput();
+    if (!ticker) return;
+    const data = await _callInvestmentApi('/api/investment/snapshot', { ticker }, `${ticker} スナップショット`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`📷 ${data.ticker} スナップショット`, data.report);
+        window.loadInvestmentHistory();
+    }
+};
+
+window.runStockAudit = async () => {
+    const ticker = _getTickerInput();
+    if (!ticker) return;
+    const data = await _callInvestmentApi('/api/investment/audit', { ticker }, `${ticker} 憲法審査`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`🎯 ${data.ticker} 投資憲法審査`, data.audit);
+        window.loadInvestmentHistory();
+    }
+};
+
+window.runEarningsSchedule = async () => {
+    const ticker = _getTickerInput();
+    if (!ticker) return;
+    const data = await _callInvestmentApi('/api/investment/earnings_schedule', { ticker, register_calendar: true }, `${ticker} 決算予定`);
+    if (data && data.ok) {
+        const d = data.data || {};
+        const lines = [
+            `# 📅 ${d.company_name || data.ticker} (${data.ticker}) 決算予定`,
+            '',
+            `- 次回決算日: **${d.next_earnings_date || '不明'}**`,
+            `- 発表時間帯: ${d.earnings_time || '不明'}`,
+            `- 会計期間: ${d.fiscal_period || '不明'}`,
+            `- 信頼度: ${d.confidence || 'N/A'}`,
+            `- 出典: ${d.source || 'N/A'}`,
+            '',
+        ];
+        const events = d.related_events || [];
+        if (events.length) {
+            lines.push('## 🗓 関連イベント');
+            events.forEach(ev => lines.push(`- ${ev.title}: ${ev.date}`));
+            lines.push('');
+        }
+        const reg = data.registered || [];
+        if (reg.length) {
+            lines.push('## ✅ カレンダー登録結果');
+            reg.forEach(r => {
+                if (r.error) lines.push(`- ❌ ${r.summary}: ${r.error}`);
+                else lines.push(`- ✅ ${r.summary} (${r.date}): ${r.result || ''}`);
+            });
+        }
+        window.openInvestmentResultModal(`📅 ${data.ticker} 決算予定`, lines.join('\n'));
+    }
+};
+
+window.runEarningsDocuments = async () => {
+    const ticker = _getTickerInput();
+    if (!ticker) return;
+    const data = await _callInvestmentApi('/api/investment/earnings_documents', { ticker }, `${ticker} 決算資料`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`📑 ${data.ticker} 決算関連資料`, data.report);
+        window.loadInvestmentHistory();
+    }
+};
+
+window.runCEOCheck = async () => {
+    const ticker = $('#invest-ceo-ticker')?.value?.trim();
+    const url = $('#invest-ceo-url')?.value?.trim();
+    const title = $('#invest-ceo-title')?.value?.trim();
+    if (!ticker) { showToast('ティッカーを入力してください', true); return; }
+    if (!url) { showToast('YouTube URLを入力してください', true); return; }
+    const data = await _callInvestmentApi('/api/investment/ceo_check', { ticker, video_url: url, video_title: title }, `${ticker} CEO検証`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`🎬 ${data.ticker} CEO発言クロスチェック`, data.analysis);
+        window.loadInvestmentHistory();
+    }
+};
+
+window.openConstitutionEditor = async () => {
+    const modal = $('#invest-constitution-modal');
+    const textarea = $('#invest-constitution-text');
+    if (!modal || !textarea) return;
+    textarea.value = '読み込み中...';
+    modal.classList.remove('hidden');
+    try {
+        const data = await apiFetch('/api/investment/constitution');
+        if (data && data.ok) {
+            textarea.value = data.content || '';
+        } else {
+            textarea.value = '';
+            showToast('憲法が未作成です。サンプルにリセットで作成できます。', true);
+        }
+    } catch (e) {
+        textarea.value = '';
+        showToast('読み込み失敗: ' + (e.message || e), true);
+    }
+};
+
+window.closeConstitutionEditor = () => {
+    $('#invest-constitution-modal')?.classList.add('hidden');
+};
+
+window.saveConstitution = async () => {
+    const text = $('#invest-constitution-text')?.value || '';
+    if (!text.trim()) { showToast('内容が空です', true); return; }
+    try {
+        const data = await apiFetch('/api/investment/constitution', {
+            method: 'POST',
+            body: JSON.stringify({ content: text }),
+        });
+        if (data && data.ok) {
+            showToast('投資憲法を保存しました');
+            window.closeConstitutionEditor();
+        } else {
+            showToast(data?.error || '保存失敗', true);
+        }
+    } catch (e) {
+        showToast('保存失敗: ' + (e.message || e), true);
+    }
+};
+
+window.resetConstitution = async () => {
+    if (!confirm('投資憲法をサンプルで上書きしますか？現在の内容は失われます。')) return;
+    try {
+        const data = await apiFetch('/api/investment/constitution/init', {
+            method: 'POST',
+            body: JSON.stringify({ force: true }),
+        });
+        if (data && data.ok) {
+            $('#invest-constitution-text').value = data.content || '';
+            showToast('サンプルで上書きしました');
+        } else {
+            showToast(data?.error || 'リセット失敗', true);
+        }
+    } catch (e) {
+        showToast('リセット失敗: ' + (e.message || e), true);
+    }
+};
+
+window.switchInvestHistory = (cat) => {
+    _investHistoryCategory = cat;
+    document.querySelectorAll('#tab-invest .invest-history-tab').forEach(b => {
+        b.classList.toggle('active', b.dataset.cat === cat);
+    });
+    window.loadInvestmentHistory();
+};
+
+window.loadInvestmentHistory = async () => {
+    const listEl = $('#invest-history-list');
+    if (!listEl) return;
+    listEl.innerHTML = '<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">読み込み中...</div>';
+    try {
+        const data = await apiFetch(`/api/investment/history/${encodeURIComponent(_investHistoryCategory)}?limit=20`);
+        if (!data || !data.ok) {
+            listEl.innerHTML = '<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">履歴の取得に失敗しました</div>';
+            return;
+        }
+        const items = data.items || [];
+        if (!items.length) {
+            listEl.innerHTML = '<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">まだ履歴がありません</div>';
+            return;
+        }
+        const cat = _investHistoryCategory;
+        listEl.innerHTML = items.map(it => {
+            const modified = it.modifiedTime ? new Date(it.modifiedTime).toLocaleString('ja-JP', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+            const safeName = escapeHtml(it.name || '(名前なし)');
+            const safeId = escapeHtml(it.id || '');
+            return `<div class="invest-history-item" onclick="openInvestHistoryItem('${cat}','${safeId}','${safeName.replace(/'/g, '&#39;')}')"><span class="name">${safeName}</span><span class="meta">${modified}</span></div>`;
+        }).join('');
+    } catch (e) {
+        listEl.innerHTML = `<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+};
+
+window.openInvestHistoryItem = async (category, fileId, name) => {
+    showToast(`${name} を読み込み中...`);
+    try {
+        const data = await apiFetch(`/api/investment/history/${encodeURIComponent(category)}/${encodeURIComponent(fileId)}`);
+        if (!data || !data.ok) {
+            showToast(data?.error || '読み込み失敗', true);
+            return;
+        }
+        window.openInvestmentResultModal(name, data.content);
+    } catch (e) {
+        showToast('読み込み失敗: ' + (e.message || e), true);
+    }
+};

@@ -589,6 +589,42 @@ PROMPT_EARNINGS_SCHEDULE = """
 - confidence: 公式IRページ由来=high、ニュース2次情報=medium、推測=low。
 """
 
+PROMPT_EARNINGS_DOCUMENTS = """
+あなたは投資情報の調査担当です。指定された銘柄の最新の決算関連資料（IR資料）の入手元URLをまとめてください。
+
+【対象銘柄】
+- ティッカー/コード: {ticker}
+- 市場: {market}
+
+【調査すべき情報源】
+- 日本株: EDINET（有価証券報告書・四半期報告書）、企業のIRページ、決算短信PDF、決算説明会資料
+- 米国株: SEC EDGAR（10-K、10-Q、8-K）、企業のIRページ、Earnings Call Transcripts、Press Release
+
+【出力形式: 必ず以下のJSONのみ。前置き不要】
+{{
+  "company_name": "企業名",
+  "ir_page_url": "公式IRページのURL",
+  "documents": [
+    {{
+      "title": "資料タイトル（例: 2026年3月期 第2四半期 決算短信）",
+      "type": "earnings_short / 10-K / 10-Q / 8-K / annual_report / earnings_call / presentation / press_release",
+      "fiscal_period": "対象会計期間",
+      "published_date": "YYYY-MM-DD",
+      "url": "資料の直接URL（PDFまたはHTML）",
+      "language": "ja / en"
+    }}
+  ],
+  "source_quality": "high / medium / low",
+  "notes": "補足情報があれば1〜2行"
+}}
+
+【ルール】
+- documents には直近6ヶ月以内に公表された資料を最大10件まで含める。
+- URLが取得できなかった項目は除外する（捏造禁止）。
+- type は必ず指定された値のいずれかにする。
+- source_quality: 公式IRやEDINET/EDGARから直接取れた=high、ニュース・まとめサイト経由=medium、推測=low。
+"""
+
 PROMPT_CEO_CROSSCHECK = """
 あなたは敏腕の経済ジャーナリストです。
 動画内のCEO発言と、過去の財務諸表・公式開示の数値を厳格に照合し、矛盾点を洗い出してください。

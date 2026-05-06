@@ -1,20 +1,30 @@
 """投資サポート機能を提供するCog。
 
-提供コマンド:
-- !地合い              : 日米市場の現在の環境を分析
-- !銘柄スナップ <ticker>: 指定銘柄の最新の財務指標スナップショットを取得
-- !銘柄審査 <ticker>    : 投資憲法に照らして銘柄を審査
-- !決算予定 <ticker>    : 次回決算発表日を調査してGoogle Calendarに登録
-- !投資憲法            : 現在の投資憲法を表示
-- !投資憲法初期化       : 投資憲法をサンプルで再生成（既存があれば上書きしない）
+提供コマンド (Discord):
+- !地合い                 : 日米市場の現在の環境を分析
+- !銘柄スナップ <ticker>   : 指定銘柄の最新の財務指標スナップショットを取得
+- !銘柄審査 <ticker>       : 投資憲法に照らして銘柄を審査
+- !決算予定 <ticker>       : 次回決算発表日を調査してGoogle Calendarに登録
+- !決算資料 <ticker>       : 決算関連資料のリンク一覧を取得して保存
+- !CEO検証 <ticker> <url>  : YouTube動画のCEO発言と財務情報を照合
+- !投資憲法               : 現在の投資憲法を表示
+- !投資憲法初期化          : 投資憲法をサンプルで再生成（既存があれば上書きしない）
 
-データ保存先（Googleドライブ）:
+サービスメソッド (PWA APIから呼ばれる):
+- run_market_sentiment() / run_stock_snapshot() / run_stock_audit()
+- run_earnings_schedule() / run_earnings_documents() / run_ceo_crosscheck()
+- run_get_constitution() / run_init_constitution() / run_update_constitution()
+- list_history(category, limit)
+
+データ保存先 (Googleドライブ):
 - Investment/
   - Investment_Constitution.md
   - Stocks/{code}_{企業名}.md       … 銘柄個別ノート（既存StockCogと共通）
   - Snapshots/{date}_{ticker}.md    … 銘柄スナップショット履歴
   - Audits/{date}_{ticker}.md       … 銘柄審査結果履歴
   - Sentiment/{date}.md             … 地合い分析履歴
+  - EarningsDocs/{date}_{ticker}.md … 決算関連資料一覧
+  - CEOChecks/{date}_{ticker}.md    … CEO発言クロスチェック結果
 """
 import os
 import re
@@ -23,7 +33,6 @@ import asyncio
 import logging
 import datetime
 
-import discord
 from discord.ext import commands
 from google.genai import types
 
@@ -33,6 +42,8 @@ from prompts import (
     PROMPT_STOCK_SNAPSHOT,
     PROMPT_STOCK_AUDIT,
     PROMPT_EARNINGS_SCHEDULE,
+    PROMPT_EARNINGS_DOCUMENTS,
+    PROMPT_CEO_CROSSCHECK,
 )
 
 
@@ -41,14 +52,17 @@ STOCKS_FOLDER = "Stocks"
 SNAPSHOTS_FOLDER = "Snapshots"
 AUDITS_FOLDER = "Audits"
 SENTIMENT_FOLDER = "Sentiment"
+EARNINGS_DOCS_FOLDER = "EarningsDocs"
+CEO_CHECKS_FOLDER = "CEOChecks"
 CONSTITUTION_FILE = "Investment_Constitution.md"
 
 GEMINI_MODEL = "gemini-2.5-pro"
+GEMINI_FLASH_MODEL = "gemini-2.5-flash"
 
-DISCORD_CHUNK_SIZE = 1900  # Discordの2000文字制限から余裕を見た値
+DISCORD_CHUNK_SIZE = 1900
 
 
-# 投資憲法サンプル（初回起動時にDriveに作成される）
+# 投資憲法サンプル (初回起動時にDriveに作成される)
 INVESTMENT_CONSTITUTION_SAMPLE = """---
 title: 投資憲法
 version: 1.0
@@ -137,14 +151,35 @@ def _split_for_discord(text: str, chunk_size: int = DISCORD_CHUNK_SIZE):
 
 def _resolve_market(ticker: str):
     """ティッカーから市場を判別する。
-    戻り値: ("JP" or "US", 正規化後のティッカー)
+    戻り値: (market: "JP" or "US", normalized_code: str)
     """
-    t = ticker.strip().upper()
-    # 4桁数字 (+ オプションで .T) は日本株
+    t = (ticker or "").strip().upper()
     m = re.match(r"^(\d{4})(\.T)?$", t)
     if m:
         return "JP", m.group(1)
     return "US", t
+
+
+def _safe_filename(name: str) -> str:
+    return re.sub(r"[\\/:*?\"<>|]", "_", name).strip() or "untitled"
+
+
+def _extract_youtube_id(url: str):
+    """YouTube URLからvideo IDを抽出する。"""
+    if not url:
+        return None
+    patterns = [
+        r"(?:youtube\.com/watch\?v=|youtube\.com/shorts/|youtu\.be/|youtube\.com/embed/)([A-Za-z0-9_-]{11})",
+        r"(?:youtube\.com/live/)([A-Za-z0-9_-]{11})",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    # 11文字IDが直接渡された場合
+    if re.match(r"^[A-Za-z0-9_-]{11}$", url.strip()):
+        return url.strip()
+    return None
 
 
 class InvestmentCog(commands.Cog):
@@ -156,7 +191,6 @@ class InvestmentCog(commands.Cog):
         self.drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
 
     async def cog_load(self):
-        # サンプル投資憲法をバックグラウンドで作成
         asyncio.create_task(self._ensure_constitution_exists())
 
     # ==========================================================
@@ -187,7 +221,7 @@ class InvestmentCog(commands.Cog):
                 service, inv_folder_id, CONSTITUTION_FILE
             )
             if existing:
-                return  # 既存はそのまま
+                return
             today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
             content = INVESTMENT_CONSTITUTION_SAMPLE.format(date=today)
             await self.drive_service.upload_text(
@@ -200,6 +234,8 @@ class InvestmentCog(commands.Cog):
             logging.error(f"InvestmentCog: 投資憲法初期化エラー: {e}", exc_info=True)
 
     async def _read_constitution(self):
+        if not self.drive_service:
+            return None
         service = self.drive_service.get_service()
         if not service:
             return None
@@ -211,10 +247,10 @@ class InvestmentCog(commands.Cog):
             return None
         return await self.drive_service.read_text_file(service, f_id)
 
-    async def _save_dated_note(
-        self, subfolder: str, filename: str, content: str
-    ):
+    async def _save_dated_note(self, subfolder: str, filename: str, content: str):
         """Investment/{subfolder}/{filename} に保存。"""
+        if not self.drive_service:
+            return None
         service = self.drive_service.get_service()
         if not service:
             return None
@@ -228,12 +264,49 @@ class InvestmentCog(commands.Cog):
             service, sub_id, filename, content
         )
 
+    async def _list_subfolder_files(self, subfolder: str, limit: int = 30):
+        """指定サブフォルダ内のMarkdownファイル一覧を取得する。"""
+        if not self.drive_service:
+            return []
+        service = self.drive_service.get_service()
+        if not service:
+            return []
+        inv_id = await self._get_investment_folder(service)
+        sub_id = await self.drive_service.find_file(service, inv_id, subfolder)
+        if not sub_id:
+            return []
+        query = (
+            f"'{sub_id}' in parents and mimeType = 'text/markdown' and trashed = false"
+        )
+        try:
+            results = await asyncio.to_thread(
+                lambda: service.files()
+                .list(
+                    q=query,
+                    fields="files(id, name, modifiedTime)",
+                    orderBy="modifiedTime desc",
+                    pageSize=limit,
+                )
+                .execute()
+            )
+            return results.get("files", [])
+        except Exception as e:
+            logging.error(f"InvestmentCog: list error ({subfolder}): {e}")
+            return []
+
+    async def _read_subfolder_file(self, subfolder: str, file_id: str):
+        if not self.drive_service:
+            return ""
+        service = self.drive_service.get_service()
+        if not service:
+            return ""
+        return await self.drive_service.read_text_file(service, file_id)
+
     # ==========================================================
     # Gemini呼び出しヘルパー
     # ==========================================================
 
     async def _gemini_with_search(self, prompt: str, model: str = GEMINI_MODEL) -> str:
-        """Google検索Groundingを有効にしてGeminiに問い合わせる。"""
         if not self.gemini_client:
             return ""
         try:
@@ -250,7 +323,6 @@ class InvestmentCog(commands.Cog):
             return ""
 
     async def _gemini_plain(self, prompt: str, model: str = GEMINI_MODEL) -> str:
-        """Groundingなしの純粋な推論。"""
         if not self.gemini_client:
             return ""
         try:
@@ -263,192 +335,175 @@ class InvestmentCog(commands.Cog):
             logging.error(f"InvestmentCog: Gemini(plain) error: {e}", exc_info=True)
             return ""
 
-    # ==========================================================
-    # Discordユーティリティ
-    # ==========================================================
-
-    async def _send_long(self, ctx: commands.Context, text: str):
-        for chunk in _split_for_discord(text):
-            await ctx.send(chunk)
-
-    # ==========================================================
-    # コマンド: !地合い
-    # ==========================================================
-
-    @commands.command(name="地合い", aliases=["sentiment", "market"])
-    async def market_sentiment(self, ctx: commands.Context):
-        """日米市場の現在の地合いを分析する。"""
+    async def _gemini_with_video(
+        self, prompt: str, video_url: str, model: str = GEMINI_MODEL
+    ) -> str:
+        """Gemini multimodalにYouTube URLを直接渡して解析させる。"""
         if not self.gemini_client:
-            await ctx.send("Geminiクライアントが未設定のため使えません。")
-            return
-
-        async with ctx.typing():
-            today = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-            prompt = PROMPT_MARKET_SENTIMENT.format(date=today)
-            result = await self._gemini_with_search(prompt)
-
-            if not result:
-                await ctx.send("地合い分析の取得に失敗しました。")
-                return
-
-            # Drive保存
-            date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
-            filename = f"{date_str}.md"
-            note_body = (
-                f"---\ndate: {date_str}\ntags: [market, sentiment]\n---\n\n"
-                + result
+            return ""
+        try:
+            video_part = types.Part(
+                file_data=types.FileData(file_uri=video_url, mime_type="video/*")
             )
+            text_part = types.Part.from_text(text=prompt)
+            content = types.Content(role="user", parts=[video_part, text_part])
+            response = await self.gemini_client.aio.models.generate_content(
+                model=model,
+                contents=[content],
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                ),
+            )
+            return (response.text or "").strip()
+        except Exception as e:
+            logging.error(f"InvestmentCog: Gemini(video) error: {e}", exc_info=True)
+            return ""
+
+    @staticmethod
+    def _extract_json(text: str):
+        if not text:
+            return None
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if m:
             try:
-                await self._save_dated_note(SENTIMENT_FOLDER, filename, note_body)
-            except Exception as e:
-                logging.error(f"地合いノート保存エラー: {e}")
-
-            await self._send_long(ctx, result)
-
-    # ==========================================================
-    # コマンド: !銘柄スナップ
-    # ==========================================================
-
-    @commands.command(name="銘柄スナップ", aliases=["snapshot", "snap"])
-    async def stock_snapshot(self, ctx: commands.Context, ticker: str = None):
-        """指定銘柄の最新財務指標を取得して保存する。"""
-        if not ticker:
-            await ctx.send("使い方: `!銘柄スナップ <ティッカー>` 例: `!銘柄スナップ 7203` / `!銘柄スナップ AAPL`")
-            return
-        if not self.gemini_client:
-            await ctx.send("Geminiクライアントが未設定のため使えません。")
-            return
-
-        market, code = _resolve_market(ticker)
-        async with ctx.typing():
-            now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-            prompt = PROMPT_STOCK_SNAPSHOT.format(
-                ticker=code, market=market, date=now_str
-            )
-            result = await self._gemini_with_search(prompt)
-            if not result:
-                await ctx.send("スナップショットの取得に失敗しました。")
-                return
-
-            # スナップショット履歴を保存
-            date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
-            snapshot_filename = f"{date_str}_{code}.md"
-            note_body = (
-                f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
-                f"tags: [investment, snapshot]\n---\n\n{result}"
-            )
+                return json.loads(m.group(1))
+            except json.JSONDecodeError:
+                pass
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
             try:
-                await self._save_dated_note(
-                    SNAPSHOTS_FOLDER, snapshot_filename, note_body
-                )
-            except Exception as e:
-                logging.error(f"スナップショット保存エラー: {e}")
-
-            await self._send_long(ctx, result)
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+        return None
 
     # ==========================================================
-    # コマンド: !銘柄審査
+    # サービスメソッド (PWA APIから呼ばれる)
     # ==========================================================
 
-    @commands.command(name="銘柄審査", aliases=["audit"])
-    async def stock_audit(self, ctx: commands.Context, ticker: str = None):
-        """投資憲法に基づいて銘柄を審査する。"""
-        if not ticker:
-            await ctx.send("使い方: `!銘柄審査 <ティッカー>` 例: `!銘柄審査 7203`")
-            return
+    async def run_market_sentiment(self) -> dict:
         if not self.gemini_client:
-            await ctx.send("Geminiクライアントが未設定のため使えません。")
-            return
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        today = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+        prompt = PROMPT_MARKET_SENTIMENT.format(date=today)
+        result = await self._gemini_with_search(prompt)
+        if not result:
+            return {"ok": False, "error": "地合い分析の取得に失敗"}
 
-        market, code = _resolve_market(ticker)
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filename = f"{date_str}.md"
+        body = (
+            f"---\ndate: {date_str}\ntags: [market, sentiment]\n---\n\n{result}"
+        )
+        try:
+            await self._save_dated_note(SENTIMENT_FOLDER, filename, body)
+        except Exception as e:
+            logging.error(f"地合いノート保存エラー: {e}")
+        return {"ok": True, "report": result, "saved_as": filename}
 
-        async with ctx.typing():
-            # 1. 投資憲法を読み込み
-            constitution = await self._read_constitution()
-            if not constitution:
-                await ctx.send(
-                    "投資憲法が見つかりません。`!投資憲法初期化` でサンプルを作成してください。"
-                )
-                return
-
-            # 2. スナップショットを取得（その場で生成）
-            now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-            snap_prompt = PROMPT_STOCK_SNAPSHOT.format(
-                ticker=code, market=market, date=now_str
-            )
-            snapshot = await self._gemini_with_search(snap_prompt)
-            if not snapshot:
-                await ctx.send("銘柄データの取得に失敗しました。")
-                return
-
-            # 3. 投資憲法 + スナップショットで審査
-            audit_prompt = PROMPT_STOCK_AUDIT.format(
-                constitution=constitution,
-                snapshot=snapshot,
-                ticker=code,
-            )
-            audit = await self._gemini_plain(audit_prompt)
-            if not audit:
-                await ctx.send("審査結果の生成に失敗しました。")
-                return
-
-            # 4. 結果を保存（スナップショット + 審査をまとめて記録）
-            date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
-            audit_filename = f"{date_str}_{code}.md"
-            note_body = (
-                f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
-                f"tags: [investment, audit]\n---\n\n"
-                f"{audit}\n\n---\n\n## 📊 使用したスナップショット\n\n{snapshot}"
-            )
-            try:
-                await self._save_dated_note(AUDITS_FOLDER, audit_filename, note_body)
-            except Exception as e:
-                logging.error(f"審査結果保存エラー: {e}")
-
-            await self._send_long(ctx, audit)
-
-    # ==========================================================
-    # コマンド: !決算予定
-    # ==========================================================
-
-    @commands.command(name="決算予定", aliases=["earnings"])
-    async def earnings_schedule(self, ctx: commands.Context, ticker: str = None):
-        """次回決算日を調査してGoogle Calendarに登録する。"""
-        if not ticker:
-            await ctx.send("使い方: `!決算予定 <ティッカー>` 例: `!決算予定 AAPL`")
-            return
+    async def run_stock_snapshot(self, ticker: str) -> dict:
         if not self.gemini_client:
-            await ctx.send("Geminiクライアントが未設定のため使えません。")
-            return
-        if not self.calendar_service:
-            await ctx.send("Google Calendarが未設定のため使えません。")
-            return
-
+            return {"ok": False, "error": "Geminiクライアント未設定"}
         market, code = _resolve_market(ticker)
+        now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+        prompt = PROMPT_STOCK_SNAPSHOT.format(
+            ticker=code, market=market, date=now_str
+        )
+        result = await self._gemini_with_search(prompt)
+        if not result:
+            return {"ok": False, "error": "スナップショットの取得に失敗"}
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filename = f"{date_str}_{_safe_filename(code)}.md"
+        body = (
+            f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
+            f"tags: [investment, snapshot]\n---\n\n{result}"
+        )
+        try:
+            await self._save_dated_note(SNAPSHOTS_FOLDER, filename, body)
+        except Exception as e:
+            logging.error(f"スナップショット保存エラー: {e}")
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "report": result,
+            "saved_as": filename,
+        }
 
-        async with ctx.typing():
-            prompt = PROMPT_EARNINGS_SCHEDULE.format(ticker=code, market=market)
-            raw = await self._gemini_with_search(prompt)
-            if not raw:
-                await ctx.send("決算情報の取得に失敗しました。")
-                return
+    async def run_stock_audit(self, ticker: str) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        constitution = await self._read_constitution()
+        if not constitution:
+            return {
+                "ok": False,
+                "error": "投資憲法が見つかりません。先に投資憲法を初期化してください。",
+            }
+        market, code = _resolve_market(ticker)
+        now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
 
-            data = self._extract_json(raw)
-            if not data:
-                await ctx.send(
-                    f"決算情報のパースに失敗しました。生応答:\n```\n{raw[:1500]}\n```"
-                )
-                return
+        snap_prompt = PROMPT_STOCK_SNAPSHOT.format(
+            ticker=code, market=market, date=now_str
+        )
+        snapshot = await self._gemini_with_search(snap_prompt)
+        if not snapshot:
+            return {"ok": False, "error": "銘柄データの取得に失敗"}
 
-            company = data.get("company_name") or code
-            earnings_date = data.get("next_earnings_date")
-            if not earnings_date:
-                await ctx.send(
-                    f"{company} ({code}) の次回決算日が確認できませんでした。"
-                )
-                return
+        audit_prompt = PROMPT_STOCK_AUDIT.format(
+            constitution=constitution,
+            snapshot=snapshot,
+            ticker=code,
+        )
+        audit = await self._gemini_plain(audit_prompt)
+        if not audit:
+            return {"ok": False, "error": "審査結果の生成に失敗"}
 
-            # カレンダー登録（終日予定）
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filename = f"{date_str}_{_safe_filename(code)}.md"
+        body = (
+            f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
+            f"tags: [investment, audit]\n---\n\n{audit}\n\n---\n\n"
+            f"## 📊 使用したスナップショット\n\n{snapshot}"
+        )
+        try:
+            await self._save_dated_note(AUDITS_FOLDER, filename, body)
+        except Exception as e:
+            logging.error(f"審査結果保存エラー: {e}")
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "audit": audit,
+            "snapshot": snapshot,
+            "saved_as": filename,
+        }
+
+    async def run_earnings_schedule(self, ticker: str, register_calendar: bool = True) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        market, code = _resolve_market(ticker)
+        prompt = PROMPT_EARNINGS_SCHEDULE.format(ticker=code, market=market)
+        raw = await self._gemini_with_search(prompt)
+        if not raw:
+            return {"ok": False, "error": "決算情報の取得に失敗"}
+        data = self._extract_json(raw)
+        if not data:
+            return {
+                "ok": False,
+                "error": "決算情報のパースに失敗",
+                "raw": raw[:1500],
+            }
+        company = data.get("company_name") or code
+        earnings_date = data.get("next_earnings_date")
+        if not earnings_date:
+            return {
+                "ok": False,
+                "error": f"{company} ({code}) の次回決算日が確認できませんでした",
+                "data": data,
+            }
+        registered = []
+        if register_calendar and self.calendar_service:
             summary = f"📊 {company} ({code}) 決算発表"
             description_lines = [
                 f"会計期間: {data.get('fiscal_period', '不明')}",
@@ -464,87 +519,387 @@ class InvestmentCog(commands.Cog):
                         f"- {ev.get('title', '?')} : {ev.get('date', '?')}"
                     )
             description = "\n".join(description_lines)
-
-            cal_result = await self.calendar_service.create_event(
-                summary=summary,
-                start_time=earnings_date,
-                end_time=earnings_date,
-                description=description,
-            )
-
-            # 関連イベントもまとめて登録
-            related_results = []
+            try:
+                cal_result = await self.calendar_service.create_event(
+                    summary=summary,
+                    start_time=earnings_date,
+                    end_time=earnings_date,
+                    description=description,
+                )
+                registered.append(
+                    {"summary": summary, "date": earnings_date, "result": cal_result}
+                )
+            except Exception as e:
+                registered.append({"error": str(e), "summary": summary})
             for ev in related:
                 ev_date = ev.get("date")
                 ev_title = ev.get("title")
-                if ev_date and ev_title:
+                if not (ev_date and ev_title):
+                    continue
+                try:
                     r = await self.calendar_service.create_event(
                         summary=f"📅 {company} {ev_title}",
                         start_time=ev_date,
                         end_time=ev_date,
                         description=f"出典: {data.get('source', 'N/A')}",
                     )
-                    related_results.append(f"- {ev_title} ({ev_date}): {r}")
+                    registered.append(
+                        {"summary": ev_title, "date": ev_date, "result": r}
+                    )
+                except Exception as e:
+                    registered.append({"error": str(e), "summary": ev_title})
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "data": data,
+            "registered": registered,
+        }
 
-            msg = (
-                f"**{company} ({code})** の次回決算: **{earnings_date}** "
-                f"({data.get('earnings_time', '時間帯不明')})\n"
-                f"カレンダー登録結果: {cal_result}"
+    async def run_earnings_documents(self, ticker: str) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        market, code = _resolve_market(ticker)
+        prompt = PROMPT_EARNINGS_DOCUMENTS.format(ticker=code, market=market)
+        raw = await self._gemini_with_search(prompt)
+        if not raw:
+            return {"ok": False, "error": "決算資料の取得に失敗"}
+        data = self._extract_json(raw)
+        if not data:
+            return {
+                "ok": False,
+                "error": "決算資料情報のパースに失敗",
+                "raw": raw[:1500],
+            }
+        company = data.get("company_name") or code
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filename = f"{date_str}_{_safe_filename(code)}.md"
+
+        # Markdown形式に整形
+        lines = [
+            f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
+            f"tags: [investment, earnings_docs]\n---\n",
+            f"# 📑 {company} ({code}) 決算関連資料",
+            "",
+            f"- 公式IR: {data.get('ir_page_url', 'N/A')}",
+            f"- 情報源品質: {data.get('source_quality', 'N/A')}",
+            f"- 取得日: {date_str}",
+            "",
+            "## 📋 資料一覧",
+            "",
+        ]
+        documents = data.get("documents") or []
+        if not documents:
+            lines.append("（取得できる資料がありませんでした）")
+        else:
+            for doc in documents:
+                title = doc.get("title", "(無題)")
+                doc_type = doc.get("type", "")
+                period = doc.get("fiscal_period", "")
+                pub = doc.get("published_date", "")
+                url = doc.get("url", "")
+                lang = doc.get("language", "")
+                lines.append(f"### {title}")
+                lines.append(
+                    f"- 種別: {doc_type} / 会計期間: {period} / 公表日: {pub} / 言語: {lang}"
+                )
+                lines.append(f"- URL: {url}")
+                lines.append("")
+        notes = data.get("notes")
+        if notes:
+            lines.append("## 📝 補足")
+            lines.append(notes)
+        body = "\n".join(lines)
+
+        try:
+            await self._save_dated_note(EARNINGS_DOCS_FOLDER, filename, body)
+        except Exception as e:
+            logging.error(f"決算資料保存エラー: {e}")
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "data": data,
+            "saved_as": filename,
+            "report": body,
+        }
+
+    async def run_ceo_crosscheck(
+        self, ticker: str, video_url: str, video_title: str = ""
+    ) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        if not video_url:
+            return {"ok": False, "error": "動画URLが指定されていません"}
+        if not _extract_youtube_id(video_url):
+            return {
+                "ok": False,
+                "error": "YouTubeのURLとして認識できませんでした",
+            }
+        market, code = _resolve_market(ticker)
+
+        # 1. 銘柄スナップショットを下調べとして取得
+        now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+        snap_prompt = PROMPT_STOCK_SNAPSHOT.format(
+            ticker=code, market=market, date=now_str
+        )
+        snapshot = await self._gemini_with_search(snap_prompt)
+
+        # 2. 動画解析プロンプトを構築
+        background = (
+            f"\n\n【参考: 直近の財務スナップショット】\n{snapshot}\n"
+            if snapshot
+            else ""
+        )
+        cross_prompt = PROMPT_CEO_CROSSCHECK.format(
+            ticker=code,
+            video_title=video_title or video_url,
+        ) + background + (
+            "\n\n【動画URL】\n" + video_url +
+            "\n\n動画内のCEO発言を以下の観点で抽出・検証してください:\n"
+            "1. 発言された具体的な数値（売上・利益・成長率・新工場/新店舗など）\n"
+            "2. 発言と直近財務データとの整合性\n"
+            "3. 計画スケジュール（新工場建設等）について Google 検索で衛星写真や"
+            "関連報道を裏取りし、進捗が現実と一致しているかを判定\n"
+            "4. CEOの非言語シグナル（自信のなさ・視線そらし・口ごもり）\n"
+            "5. スライド/字幕の隅に書かれた小さな注釈や但し書き\n"
+            "数値を引用するときは必ず時刻（mm:ss）も併記してください。"
+        )
+
+        analysis = await self._gemini_with_video(cross_prompt, video_url)
+        if not analysis:
+            return {"ok": False, "error": "動画解析に失敗しました"}
+
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filename = f"{date_str}_{_safe_filename(code)}.md"
+        body = (
+            f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
+            f"video_url: {video_url}\ntags: [investment, ceo_check]\n---\n\n"
+            f"{analysis}\n\n---\n\n"
+            f"## 📊 使用したスナップショット\n\n{snapshot or '(取得失敗)'}"
+        )
+        try:
+            await self._save_dated_note(CEO_CHECKS_FOLDER, filename, body)
+        except Exception as e:
+            logging.error(f"CEO検証保存エラー: {e}")
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "video_url": video_url,
+            "analysis": analysis,
+            "snapshot": snapshot,
+            "saved_as": filename,
+        }
+
+    async def run_get_constitution(self) -> dict:
+        constitution = await self._read_constitution()
+        if not constitution:
+            return {"ok": False, "error": "投資憲法が存在しません"}
+        return {"ok": True, "content": constitution}
+
+    async def run_init_constitution(self, force: bool = False) -> dict:
+        if not self.drive_service:
+            return {"ok": False, "error": "Driveサービス未設定"}
+        existing = await self._read_constitution()
+        if existing and not force:
+            return {"ok": False, "error": "既存の投資憲法があるため上書きしません"}
+        await self._ensure_constitution_exists()
+        if force and existing is not None:
+            # 強制上書き
+            service = self.drive_service.get_service()
+            inv_id = await self._get_investment_folder(service)
+            f_id = await self.drive_service.find_file(
+                service, inv_id, CONSTITUTION_FILE
             )
-            if related_results:
-                msg += "\n" + "\n".join(related_results)
-            await self._send_long(ctx, msg)
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            content = INVESTMENT_CONSTITUTION_SAMPLE.format(date=today)
+            if f_id:
+                await self.drive_service.update_text(service, f_id, content)
+        result = await self._read_constitution()
+        return {"ok": True, "content": result or ""}
 
-    @staticmethod
-    def _extract_json(text: str):
-        """LLM応答からJSONブロックを抽出する。"""
-        if not text:
-            return None
-        # ```json ... ``` の中身を優先
-        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except json.JSONDecodeError:
-                pass
-        # 最初の { から最後の } まで貪欲に
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            try:
-                return json.loads(text[start : end + 1])
-            except json.JSONDecodeError:
-                return None
-        return None
+    async def run_update_constitution(self, content: str) -> dict:
+        if not self.drive_service:
+            return {"ok": False, "error": "Driveサービス未設定"}
+        if not content or not content.strip():
+            return {"ok": False, "error": "内容が空です"}
+        service = self.drive_service.get_service()
+        if not service:
+            return {"ok": False, "error": "Drive接続失敗"}
+        inv_id = await self._get_investment_folder(service)
+        f_id = await self.drive_service.find_file(service, inv_id, CONSTITUTION_FILE)
+        if f_id:
+            await self.drive_service.update_text(service, f_id, content)
+        else:
+            await self.drive_service.upload_text(
+                service, inv_id, CONSTITUTION_FILE, content
+            )
+        return {"ok": True, "content": content}
+
+    async def list_history(self, category: str, limit: int = 20) -> dict:
+        """履歴一覧を取得する。category: snapshot/audit/sentiment/earnings_docs/ceo_check"""
+        folder_map = {
+            "snapshot": SNAPSHOTS_FOLDER,
+            "audit": AUDITS_FOLDER,
+            "sentiment": SENTIMENT_FOLDER,
+            "earnings_docs": EARNINGS_DOCS_FOLDER,
+            "ceo_check": CEO_CHECKS_FOLDER,
+        }
+        sub = folder_map.get(category)
+        if not sub:
+            return {"ok": False, "error": f"未知のカテゴリ: {category}"}
+        files = await self._list_subfolder_files(sub, limit=limit)
+        return {
+            "ok": True,
+            "category": category,
+            "items": [
+                {
+                    "id": f.get("id"),
+                    "name": f.get("name"),
+                    "modifiedTime": f.get("modifiedTime"),
+                }
+                for f in files
+            ],
+        }
+
+    async def read_history_item(self, category: str, file_id: str) -> dict:
+        folder_map = {
+            "snapshot": SNAPSHOTS_FOLDER,
+            "audit": AUDITS_FOLDER,
+            "sentiment": SENTIMENT_FOLDER,
+            "earnings_docs": EARNINGS_DOCS_FOLDER,
+            "ceo_check": CEO_CHECKS_FOLDER,
+        }
+        if category not in folder_map:
+            return {"ok": False, "error": f"未知のカテゴリ: {category}"}
+        content = await self._read_subfolder_file(folder_map[category], file_id)
+        if not content:
+            return {"ok": False, "error": "ファイルが空または取得失敗"}
+        return {"ok": True, "content": content}
 
     # ==========================================================
-    # コマンド: !投資憲法
+    # Discordユーティリティ
     # ==========================================================
+
+    async def _send_long(self, ctx: commands.Context, text: str):
+        for chunk in _split_for_discord(text):
+            await ctx.send(chunk)
+
+    # ==========================================================
+    # Discordコマンド (薄いラッパー、サービスメソッドを呼ぶ)
+    # ==========================================================
+
+    @commands.command(name="地合い", aliases=["sentiment", "market"])
+    async def market_sentiment(self, ctx: commands.Context):
+        async with ctx.typing():
+            res = await self.run_market_sentiment()
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
+            return
+        await self._send_long(ctx, res["report"])
+
+    @commands.command(name="銘柄スナップ", aliases=["snapshot", "snap"])
+    async def stock_snapshot(self, ctx: commands.Context, ticker: str = None):
+        if not ticker:
+            await ctx.send(
+                "使い方: `!銘柄スナップ <ティッカー>` 例: `!銘柄スナップ 7203`"
+            )
+            return
+        async with ctx.typing():
+            res = await self.run_stock_snapshot(ticker)
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
+            return
+        await self._send_long(ctx, res["report"])
+
+    @commands.command(name="銘柄審査", aliases=["audit"])
+    async def stock_audit(self, ctx: commands.Context, ticker: str = None):
+        if not ticker:
+            await ctx.send("使い方: `!銘柄審査 <ティッカー>`")
+            return
+        async with ctx.typing():
+            res = await self.run_stock_audit(ticker)
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
+            return
+        await self._send_long(ctx, res["audit"])
+
+    @commands.command(name="決算予定", aliases=["earnings"])
+    async def earnings_schedule(self, ctx: commands.Context, ticker: str = None):
+        if not ticker:
+            await ctx.send("使い方: `!決算予定 <ティッカー>`")
+            return
+        if not self.calendar_service:
+            await ctx.send("Google Calendarが未設定のため使えません。")
+            return
+        async with ctx.typing():
+            res = await self.run_earnings_schedule(ticker)
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
+            return
+        data = res.get("data") or {}
+        registered = res.get("registered") or []
+        msg_lines = [
+            f"**{data.get('company_name', res['ticker'])} ({res['ticker']})**",
+            f"次回決算: {data.get('next_earnings_date', '?')} ({data.get('earnings_time', '?')})",
+        ]
+        for r in registered:
+            if "error" in r:
+                msg_lines.append(f"❌ {r.get('summary')}: {r['error']}")
+            else:
+                msg_lines.append(f"✅ {r.get('summary')}: {r.get('result')}")
+        await self._send_long(ctx, "\n".join(msg_lines))
+
+    @commands.command(name="決算資料", aliases=["earnings_docs", "docs"])
+    async def earnings_documents(self, ctx: commands.Context, ticker: str = None):
+        if not ticker:
+            await ctx.send("使い方: `!決算資料 <ティッカー>`")
+            return
+        async with ctx.typing():
+            res = await self.run_earnings_documents(ticker)
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
+            return
+        await self._send_long(ctx, res["report"])
+
+    @commands.command(name="CEO検証", aliases=["ceo_check", "ceo"])
+    async def ceo_crosscheck(
+        self,
+        ctx: commands.Context,
+        ticker: str = None,
+        video_url: str = None,
+        *,
+        video_title: str = "",
+    ):
+        if not ticker or not video_url:
+            await ctx.send(
+                "使い方: `!CEO検証 <ティッカー> <YouTube URL> [動画タイトル]`"
+            )
+            return
+        async with ctx.typing():
+            res = await self.run_ceo_crosscheck(
+                ticker, video_url, video_title=video_title
+            )
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
+            return
+        await self._send_long(ctx, res["analysis"])
 
     @commands.command(name="投資憲法", aliases=["constitution"])
     async def show_constitution(self, ctx: commands.Context):
-        """現在の投資憲法を表示する。"""
-        constitution = await self._read_constitution()
-        if not constitution:
-            await ctx.send(
-                "投資憲法が見つかりません。`!投資憲法初期化` でサンプルを作成できます。"
-            )
+        res = await self.run_get_constitution()
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
             return
-        await self._send_long(ctx, constitution)
+        await self._send_long(ctx, res["content"])
 
     @commands.command(name="投資憲法初期化", aliases=["init_constitution"])
     async def init_constitution(self, ctx: commands.Context):
-        """投資憲法サンプルを作成する（既存があれば上書きしない）。"""
-        if not self.drive_service:
-            await ctx.send("Driveサービスが未設定です。")
+        res = await self.run_init_constitution(force=False)
+        if not res.get("ok"):
+            await ctx.send(f"❌ {res.get('error')}")
             return
-        existing = await self._read_constitution()
-        if existing:
-            await ctx.send(
-                "投資憲法は既に存在します。上書きしません。編集はDrive上で直接行ってください。"
-            )
-            return
-        await self._ensure_constitution_exists()
         await ctx.send(
             f"投資憲法サンプルを作成しました: `Investment/{CONSTITUTION_FILE}`"
         )
