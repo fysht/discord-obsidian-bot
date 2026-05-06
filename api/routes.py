@@ -495,8 +495,10 @@ async def dashboard():
     next_actions_raw = extract_section(content, "## 🚀 Next Actions") or ""
     next_actions = next_actions_raw
     mit_raw = extract_section(content, "## 🎯 MIT") or ""
+    # フロント側で完了/未完了を判定するため、`[ ] text` / `[x] text` の形式で返す。
+    # （行頭の "- " のみ削除して `[ ]`/`[x]` プレフィックスは残す）
     mit_items = [
-        re.sub(r"^- \[[ x]\] ", "", l).strip()
+        re.sub(r"^-\s*", "", l).strip()
         for l in mit_raw.splitlines()
         if l.strip().startswith("- [")
     ]

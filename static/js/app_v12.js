@@ -510,8 +510,10 @@ function renderWeather(w, weatherEl) {
     // Yahoo!天気へのリンク（location が "33/6710" 形式の場合のみ）
     const loc = w.location || localStorage.getItem('mng_weather_location') || '33/6610';
     if (/^\d+\/\d+$/.test(loc)) {
+        // 末尾を `.html` 形式にする（ディレクトリ形式は404になるため）
+        const yahooUrl = `https://weather.yahoo.co.jp/weather/jp/${encodeURI(loc)}.html`;
         html += `<div style="margin-top:8px;text-align:right;">
-            <a href="https://weather.yahoo.co.jp/weather/jp/${encodeURI(loc)}/" target="_blank" rel="noopener"
+            <a href="${yahooUrl}" target="_blank" rel="noopener"
                style="font-size:0.78rem;color:var(--text-muted);text-decoration:none;">
                Yahoo!天気で詳細を見る ↗
             </a>
@@ -870,12 +872,8 @@ function initTaskSortable(container, listName) {
         ghostClass: 'sortable-ghost',
         chosenClass: 'sortable-chosen',
         dragClass: 'sortable-drag',
-        // 完了済みは並び替え不可（drop 先としても禁止）
+        // 完了済みは並び替え不可
         filter: '.list-item:not(.gtask-item)',
-        onMove: (evt) => {
-            // 完了済みタスク (.gtask-item を持たない .list-item) の上に drop しない
-            return evt.related && evt.related.classList && evt.related.classList.contains('gtask-item');
-        },
         onEnd: async (evt) => {
             const item = evt.item;
             const taskId = item && item.dataset && item.dataset.taskId;
@@ -894,7 +892,7 @@ function initTaskSortable(container, listName) {
             if (previousId) body.previous_task_id = previousId;
             if (previousTask && previousTask.parent) body.parent = previousTask.parent;
 
-            // 楽観更新: ローカル配列を新しい順序に並び替え（DOM 順を信頼）
+            // 楽観更新: ローカル配列を新しい DOM 順に並び替え
             const newOrderIds = items.map(el => el.dataset.taskId).filter(Boolean);
             const reordered = newOrderIds.map(id => tasksRef.find(t => t.id === id)).filter(Boolean);
             const orphans = tasksRef.filter(t => !newOrderIds.includes(t.id));
@@ -908,10 +906,15 @@ function initTaskSortable(container, listName) {
                     method: 'POST',
                     body: JSON.stringify(body),
                 });
-                // 楽観更新で十分。サーバ確定値は次回ダッシュボード自動更新時に反映される
+                showToast('並び替えました');
+                // 習慣と同じく軽量再描画でリストだけ再構築（loadDashboard を呼ばない）
+                setTimeout(() => {
+                    const ref = ln === '仕事' ? _currentWorkTasks : ln === '習慣' ? _currentHabitTasks : _currentPrivateTasks;
+                    renderTaskGroup(container, ref, ln);
+                }, 100);
             } catch (e) {
                 showToast('並び替えに失敗しました', true);
-                // 失敗時のみフル再ロードして元に戻す
+                // 失敗時のみフル再ロードして元の順序に戻す
                 loadDashboard();
             }
         },
@@ -3390,24 +3393,23 @@ async function msgActionSavePhrase() {
 let _phraseSelectCtx = null;
 function openPhraseSelectModal(candidates, translationHint, context) {
     _phraseSelectCtx = { candidates, translationHint, context };
-    let modal = document.getElementById('phrase-select-modal');
-    if (!modal) {
-        modal = document.createElement('div');
-        modal.id = 'phrase-select-modal';
-        modal.className = 'modal-overlay hidden';
-        modal.innerHTML = `
-            <div class="modal-card" style="max-width:480px;max-height:80vh;display:flex;flex-direction:column;">
-                <h3 class="modal-title">📚 保存するフレーズを選択</h3>
-                <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">複数選択して一括保存できます。</p>
-                <div id="phrase-select-list" style="flex:1;overflow-y:auto;padding:4px 0;display:flex;flex-direction:column;gap:6px;"></div>
-                <div style="display:flex;gap:8px;margin-top:12px;">
-                    <button class="modal-btn cancel" onclick="closePhraseSelectModal()">キャンセル</button>
-                    <button class="modal-btn submit" id="phrase-select-save" onclick="submitPhraseSelection()">保存</button>
-                </div>
+    // 既存の残骸があれば必ず削除して新規作成（暗転残りを防止）
+    document.getElementById('phrase-select-modal')?.remove();
+    const modal = document.createElement('div');
+    modal.id = 'phrase-select-modal';
+    modal.className = 'modal-overlay';
+    modal.innerHTML = `
+        <div class="modal-card" style="max-width:480px;max-height:80vh;display:flex;flex-direction:column;">
+            <h3 class="modal-title">📚 保存するフレーズを選択</h3>
+            <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">複数選択して一括保存できます。</p>
+            <div id="phrase-select-list" style="flex:1;overflow-y:auto;padding:4px 0;display:flex;flex-direction:column;gap:6px;"></div>
+            <div style="display:flex;gap:8px;margin-top:12px;">
+                <button class="modal-btn cancel" onclick="closePhraseSelectModal()">キャンセル</button>
+                <button class="modal-btn submit" id="phrase-select-save" onclick="submitPhraseSelection()">保存</button>
             </div>
-        `;
-        document.body.appendChild(modal);
-    }
+        </div>
+    `;
+    document.body.appendChild(modal);
     const listEl = modal.querySelector('#phrase-select-list');
     listEl.innerHTML = candidates.map((c, i) => `
         <label style="display:flex;align-items:flex-start;gap:8px;padding:8px;border:1px solid var(--border-glass);border-radius:8px;cursor:pointer;">
@@ -3415,11 +3417,11 @@ function openPhraseSelectModal(candidates, translationHint, context) {
             <span style="font-size:0.88rem;line-height:1.4;flex:1;word-break:normal;overflow-wrap:anywhere;">${escapeHtml(c)}</span>
         </label>
     `).join('');
-    modal.classList.remove('hidden');
 }
 
 window.closePhraseSelectModal = () => {
-    document.getElementById('phrase-select-modal')?.classList.add('hidden');
+    // hidden クラスではなく DOM から完全に削除して、暗いオーバーレイの残留を防ぐ
+    document.getElementById('phrase-select-modal')?.remove();
     _phraseSelectCtx = null;
 };
 
@@ -3446,11 +3448,11 @@ window.submitPhraseSelection = async () => {
         });
         showToast(`📚 ${phrases.length}件のフレーズを保存しました`);
         loadEnglishPhrases();
-        closePhraseSelectModal();
     } catch (e) {
         showToast('保存に失敗しました', true);
     } finally {
-        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+        // 成功でも失敗でも必ず閉じる（モーダル残留 = 画面が暗いままの原因）
+        closePhraseSelectModal();
     }
 };
 
