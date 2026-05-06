@@ -75,7 +75,6 @@ class DailyOrganizeCog(commands.Cog):
 
         result = {
             "journal": "",
-            "events": [],
             "insights": [],
             "next_actions": [],
             "message": "（今日の会話とデータをノートにまとめたよ🌙 おやすみ！）",
@@ -188,14 +187,8 @@ class DailyOrganizeCog(commands.Cog):
             content = update_section(content, data["timeline"], "## ⏱ Daily Timeline")
         if data.get("journal"):
             content = update_section(content, data["journal"], "## 📔 Daily Journal")
-        if data.get("events") and len(data["events"]) > 0:
-            content = update_section(
-                content,
-                "\n".join(data["events"])
-                if isinstance(data["events"], list)
-                else str(data["events"]),
-                "## 🪟 Lifelog",
-            )
+        # events は Lifelog（ユーザーが log_life_activity で記録する事実）に集約。
+        # AI による events 補完はプロンプトから外したため、ここでは書き込まない。
         if data.get("insights") and len(data["insights"]) > 0:
             content = update_section(
                 content,

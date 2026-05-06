@@ -258,7 +258,7 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
     import re
     now = datetime.datetime.now(JST)
     folder_map = {"youtube": "YouTube", "recipe": "Recipes", "web": "WebClips", "map": "Places", "book": "BookNotes"}
-    section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🔗 WebClips", "book": "## 📖 Reading Log"}
+    section_map = {"youtube": "## 📺 YouTube", "recipe": "## 🍳 Recipes", "web": "## 🔗 WebClips", "map": "## 🗺 Places", "book": "## 📖 Reading Log"}
     
     folder_name = folder_map.get(link_type, "WebClips")
     section_header = section_map.get(link_type, "## 🔗 WebClips")
@@ -1406,6 +1406,17 @@ async def save_note(req: SaveNoteRequest):
                     f"# {subject} 学習ノート\n\n## 📝 Learning Log\n"
                 )
                 section = "## 📝 Learning Log"
+            elif req.category == "reading":
+                # 読書メモは BookNotes フォルダに書籍タイトル単位で集約する
+                import re as _re
+                folder_name = "BookNotes"
+                safe_title = _re.sub(r'[\\/*?:"<>|]', "", title)[:80] or "Untitled"
+                filename = f"{safe_title}.md"
+                initial = (
+                    f"---\ntitle: {safe_title}\ndate: {today_str}\ntags: [book]\n---\n\n"
+                    f"# {safe_title}\n\n## 📖 Reading Log\n"
+                )
+                section = "## 📖 Reading Log"
             else:
                 folder_name = "Notes"
                 filename = f"{now.strftime('%Y%m%d%H%M%S')}-{title[:40]}.md"
@@ -1441,6 +1452,31 @@ async def save_note(req: SaveNoteRequest):
                         await bot.tasks_service.add_task(item.strip(), list_name=list_name)
                     except Exception as e:
                         logging.error(f"save_note task add error: {e}")
+
+        # 読書ノートはデイリーノートの Reading Log にもリンクを追記
+        if req.mode == "new" and req.category == "reading":
+            try:
+                import re as _re
+                safe_title = _re.sub(r'[\\/*?:"<>|]', "", req.title or "Untitled")[:80] or "Untitled"
+                daily_link = f"- [[BookNotes/{safe_title}|{safe_title}]]"
+                daily_fid = await chat_service.drive_service.find_file(service, drive_root, "DailyNotes")
+                if daily_fid:
+                    df_id = await chat_service.drive_service.find_file(service, daily_fid, f"{today_str}.md")
+                    if df_id:
+                        cur = await chat_service.drive_service.read_text_file(service, df_id)
+                        if daily_link not in cur:
+                            await chat_service.drive_service.update_text(
+                                service, df_id, update_section(cur, daily_link, "## 📖 Reading Log")
+                            )
+                    else:
+                        # 当日のデイリーノートが無ければ作成
+                        initial_dn = f"---\ndate: {today_str}\n---\n\n# Daily Note {today_str}\n"
+                        await chat_service.drive_service.upload_text(
+                            service, daily_fid, f"{today_str}.md",
+                            update_section(initial_dn, daily_link, "## 📖 Reading Log"),
+                        )
+            except Exception as e:
+                logging.error(f"save_note reading daily link error: {e}")
 
     except Exception as e:
         logging.error(f"save_note error: {e}")
@@ -1712,6 +1748,26 @@ async def mit_rollover():
         raise HTTPException(status_code=503, detail="PartnerCog 不在")
     msg = await partner_cog._rollover_mit()
     return {"status": "success", "message": msg}
+
+
+class MitToggleRequest(BaseModel):
+    index: int
+
+
+@router.post("/mit_toggle", dependencies=[Depends(verify_api_key)])
+async def mit_toggle(req: MitToggleRequest):
+    """今日のMITの `index` 番目（0始まり）の完了/未完了をトグルする。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="PartnerCog 不在")
+    result = await partner_cog._toggle_mit_in_obsidian(req.index)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=400, detail=result.get("message", "MIT toggle 失敗"))
+    return result
 
 
 # ===== Web Push 通知 =====
@@ -2387,6 +2443,34 @@ async def save_english_phrase(req: PhraseSaveRequest):
     phrase_id = await add_english_phrase(req.phrase.strip(), req.translation.strip(), req.context.strip())
     return {"id": phrase_id}
 
+
+class PhraseBulkItem(BaseModel):
+    phrase: str
+    translation: str = ""
+    context: str = ""
+
+
+class PhraseBulkRequest(BaseModel):
+    phrases: List[PhraseBulkItem]
+
+
+@router.post("/english_phrases/bulk", dependencies=[Depends(verify_api_key)])
+async def save_english_phrases_bulk(req: PhraseBulkRequest):
+    """複数の英語フレーズを一括保存する。長押しメッセージから複数文を選択保存する用途。"""
+    saved_ids = []
+    for item in req.phrases:
+        phrase = (item.phrase or "").strip()
+        if not phrase:
+            continue
+        pid = await add_english_phrase(
+            phrase,
+            (item.translation or "").strip(),
+            (item.context or "").strip(),
+        )
+        if pid:
+            saved_ids.append(pid)
+    return {"saved": len(saved_ids), "ids": saved_ids}
+
 @router.delete("/english_phrases/{phrase_id}", dependencies=[Depends(verify_api_key)])
 async def remove_english_phrase(phrase_id: int):
     deleted = await delete_english_phrase(phrase_id)
@@ -2799,16 +2883,20 @@ async def _generate_daily_summary(date_str: str, answers: dict | None = None) ->
 
     prompt = (
         "あなたはユーザーのマネージャーです。1日の統合ログ（デイリーサマリー）を Markdown で書きます。\n"
-        "以下の情報をもとに、その日の出来事を時系列に整理した簡潔なサマリーを作ってください。\n"
-        "会話部分は重要なやりとりのみ要約し、雑談は省略して構いません。\n"
-        "推測ではなく、事実に基づいて記述してください。\n"
-        "判断に迷う点（例: 出来事の意図、感情の解釈、欠けている情報）があれば JSON の `questions` フィールドに\n"
-        "ユーザーへの具体的な質問として列挙してください（質問数は最大 5 件）。\n"
-        "**質問が必要な場合は推測で穴埋めせず、必ず質問してください。**\n\n"
+        "このサマリーはアプリの画面と Obsidian の `## 📅 Daily Summary` セクションに**同じ内容で**保存され、"
+        "他の `## 📔 Daily Journal` `## 💡 Insights & Thoughts` `## 🚀 Next Actions` セクションとは別に表示されます。\n\n"
+        "【重要】重複を避けるため、以下のルールを守ってください：\n"
+        "1. Daily Journal は「Lifelog ＋ 客観データから生成された俯瞰的な振り返り日記」が別途保存されています。\n"
+        "   サマリーでは Lifelog の単純な書き起こしは避け、**会話と出来事から見えた重要なトピックのまとめ**にフォーカスしてください。\n"
+        "2. AI による洞察 (Insights) や明日のアクション (Next Actions) は別セクションに保存されるため、サマリー本文には含めないでください。\n"
+        "3. サマリーは「朝 / 昼 / 夜」など時間帯ごとに **3〜6行程度の短いダイジェスト** にし、長くしすぎないでください。\n"
+        "4. 推測ではなく事実に基づいて記述してください。\n"
+        "5. 判断に迷う点（例: 出来事の意図、感情の解釈、欠けている情報）があれば JSON の `questions` フィールドに\n"
+        "   ユーザーへの具体的な質問として列挙してください（質問数は最大 5 件）。**質問が必要な場合は推測で穴埋めせず、必ず質問してください。**\n\n"
         "## 出力フォーマット (JSON)\n"
         "```json\n"
         "{\n"
-        "  \"summary\": \"# 1日の振り返り\\n\\n## 朝\\n...\\n\\n## 昼\\n...\\n\\n## 夜\\n...\",\n"
+        "  \"summary\": \"## 朝\\n- ...\\n## 昼\\n- ...\\n## 夜\\n- ...\",\n"
         "  \"questions\": [\"質問1\", \"質問2\"]\n"
         "}\n"
         "```\n\n"

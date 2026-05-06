@@ -605,6 +605,32 @@ class PartnerCog(commands.Cog):
                             "確認ボタンを返してから実際に書き込む。"
                         ),
                     ),
+                    types.FunctionDeclaration(
+                        name="propose_note",
+                        description=(
+                            "ユーザーの会話の中で「メモにしておきたい」「書籍からの学びがある」などの"
+                            "ノート化に値する内容が出てきたとき、ノート保存を提案する。"
+                            "このツールは即実行せず、フロントに確認ボタンを返す。"
+                            "ユーザーが押下したらノート保存モーダルが開き、内容を編集して保存できる。"
+                            "category は 'study'（勉強）/ 'work'（仕事）/ 'idea'（アイデア）/ "
+                            "'reading'（読書） / 'other'（その他）のいずれか。"
+                            "読書メモを取りたい文脈では必ず category='reading' を指定すること。"
+                        ),
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "title": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="ノートのタイトル（短く具体的に）",
+                                ),
+                                "category": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="study / work / idea / reading / other",
+                                ),
+                            },
+                            required=["title", "category"],
+                        ),
+                    ),
                 ]
             )
         ]
@@ -627,6 +653,40 @@ class PartnerCog(commands.Cog):
         new_content = update_section(note_content, section_text, "## 🎯 MIT")
         await self._save_todays_obsidian_note(new_content)
         return f"今日のMIT3つを設定したよ！: {' / '.join(items)}"
+
+    async def _toggle_mit_in_obsidian(self, index: int) -> dict:
+        """今日のMITの `index` 番目（0始まり）の `[ ]`/`[x]` をトグルする。"""
+        import re as _re
+
+        note_content = await self._get_todays_obsidian_note()
+        if not note_content:
+            return {"status": "error", "message": "今日のデイリーノートが見つかりません。"}
+
+        m = _re.search(r"## 🎯 MIT\n(.*?)(?=\n## |\Z)", note_content, _re.DOTALL)
+        if not m:
+            return {"status": "error", "message": "MIT セクションが見つかりません。"}
+
+        section_body = m.group(1)
+        item_lines = []
+        for line in section_body.splitlines():
+            if _re.match(r"^\s*-\s*\[[ xX]\]\s*", line):
+                item_lines.append(line)
+        if index < 0 or index >= len(item_lines):
+            return {"status": "error", "message": "対象の MIT が見つかりません。"}
+
+        target_line = item_lines[index]
+        is_done = bool(_re.match(r"^\s*-\s*\[[xX]\]\s*", target_line))
+        if is_done:
+            new_line = _re.sub(r"\[[xX]\]", "[ ]", target_line, count=1)
+        else:
+            new_line = _re.sub(r"\[\s\]", "[x]", target_line, count=1)
+
+        new_section_body = section_body.replace(target_line, new_line, 1)
+        new_content = note_content.replace(section_body, new_section_body, 1)
+        await self._save_todays_obsidian_note(new_content)
+
+        text = _re.sub(r"^\s*-\s*\[[ xX]\]\s*", "", new_line).strip()
+        return {"status": "success", "index": index, "done": not is_done, "text": text}
 
     async def _rollover_mit(self) -> str:
         """今日の未達 MIT を翌日のノートに繰り越す。"""
@@ -678,6 +738,12 @@ class PartnerCog(commands.Cog):
             return f"[ACTION:mit_set:items={items_str}] (今日のMIT3つ、これでOK？)"
         elif name == "rollover_mit":
             return "[ACTION:mit_rollover] (未達のMIT、明日に持ち越すね、OK？)"
+        elif name == "propose_note":
+            t = (args.get("title") or "メモ").replace("|", " ").replace("=", " ")
+            cat = (args.get("category") or "other").strip()
+            if cat not in {"study", "work", "idea", "reading", "other"}:
+                cat = "other"
+            return f"[ACTION:note_create:title={t}|category={cat}] (この内容、ノートに保存しておく？モーダルで内容を確認・編集できるよ)"
         elif name == "get_mit_status":
             section = await self._get_mit_section()
             return section if section else "今日はまだMITが設定されてないみたい。"

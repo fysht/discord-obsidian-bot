@@ -63,7 +63,9 @@ const escapeHtml = t => {
 
 async function apiFetch(path, options = {}) {
     const headers = { 'Content-Type': 'application/json', 'X-Api-Key': apiKey, ...(options.headers || {}) };
-    const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    const fetchOpts = { ...options, headers };
+    if (options.signal) fetchOpts.signal = options.signal;
+    const res = await fetch(`${API_BASE}${path}`, fetchOpts);
     if (res.status === 401) {
         localStorage.removeItem('secretary_api_key');
         apiKey = '';
@@ -208,6 +210,7 @@ if (sendBtn) {
     sendBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); }, { passive: false });
 }
 
+let _chatAbortCtrl = null;
 if (chatForm) {
     chatForm.addEventListener('submit', async (e) => {
         e.preventDefault();
@@ -227,10 +230,12 @@ if (chatForm) {
         messageInput.style.height = '40px';
         sendBtn.classList.remove('active');
 
+        _chatAbortCtrl = new AbortController();
         try {
             const data = await apiFetch('/api/chat', {
                 method: 'POST',
                 body: JSON.stringify({ message: msg, reply_to_id: replyTo, english_mode: _isEnglishMode }),
+                signal: _chatAbortCtrl.signal,
             });
             if (userEl && data.user_message_id) userEl.dataset.msgId = String(data.user_message_id);
 
@@ -248,14 +253,28 @@ if (chatForm) {
             // AI応答後にダッシュボードをリロードして反映させる
             if (typeof loadDashboard === 'function') loadDashboard();
         } catch (err) {
-            appendMsg('assistant', 'すみません、エラーが発生しました。');
+            if (err.name !== 'AbortError') {
+                appendMsg('assistant', 'すみません、エラーが発生しました。');
+            }
         } finally {
+            _chatAbortCtrl = null;
             isChatSending = false;
             sendBtn.style.opacity = '1';
             sendBtn.disabled = false;
         }
     });
 }
+
+// 画面が閉じられた / バックグラウンドに移った場合は送信中の chat リクエストを中断し、
+// 二重送信や宙吊り状態を防ぐ。
+window.addEventListener('pagehide', () => {
+    if (_chatAbortCtrl) _chatAbortCtrl.abort();
+});
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && _chatAbortCtrl) {
+        _chatAbortCtrl.abort();
+    }
+});
 
 function clearReplyContext() {
     _pendingReplyToId = null;
@@ -312,7 +331,10 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         actionHtml = '<div class="msg-actions">' + actions.map((p, i) => {
             const label = describeAction(p);
             const safe = encodeURIComponent(p);
-            return `<button class="msg-action-btn" onclick="executeAction('${safe}', this)">${escapeHtml(label)}</button>`;
+            return `<div class="msg-action-row">`
+                + `<button class="msg-action-btn" onclick="executeAction('${safe}', this)">${escapeHtml(label)}</button>`
+                + `<button class="msg-action-cancel" onclick="cancelAction(this)" title="キャンセル" aria-label="キャンセル">✕</button>`
+                + `</div>`;
         }).join('') + '</div>';
     }
 
@@ -325,7 +347,7 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
 
     html += `
         <div class="msg-content">
-            <div class="msg-bubble" style="word-break: break-all;" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}${actionHtml}</div>
+            <div class="msg-bubble" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}${actionHtml}</div>
             <div class="msg-time">${tStr}${ttsHtml}</div>
         </div>
     `;
@@ -360,9 +382,25 @@ function describeAction(payload) {
         case 'task_delete':  return `🗑 タスクを削除: ${args.keyword || ''}`;
         case 'mit_set':      return `🎯 今日のMITを登録 (${(args.items || '').split(',').filter(Boolean).length}件)`;
         case 'mit_rollover': return `📤 未達MITを翌日へ繰越`;
+        case 'note_create':  return `📝 ノートに保存: ${args.title || ''}`;
         default:             return `▶ ${action} を実行`;
     }
 }
+
+window.cancelAction = function(btn) {
+    const row = btn && btn.closest && btn.closest('.msg-action-row');
+    if (!row) return;
+    row.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
+    row.style.opacity = '0';
+    row.style.transform = 'translateX(8px)';
+    setTimeout(() => {
+        const wrap = row.parentElement;
+        row.remove();
+        if (wrap && wrap.classList.contains('msg-actions') && wrap.children.length === 0) {
+            wrap.remove();
+        }
+    }, 150);
+};
 
 window.executeAction = async function(encodedPayload, btn) {
     const payload = decodeURIComponent(encodedPayload);
@@ -391,6 +429,23 @@ window.executeAction = async function(encodedPayload, btn) {
         } else if (action === 'mit_rollover') {
             await apiFetch('/api/mit_rollover', { method: 'POST' });
             showToast('未達MITを翌日に繰り越しました');
+        } else if (action === 'note_create') {
+            // メッセージ本文を pendingNote にセットして保存モーダルを開く
+            const msgEl = btn ? btn.closest('.message') : null;
+            const bubble = msgEl ? msgEl.querySelector('.msg-bubble') : null;
+            const raw = bubble ? (bubble.dataset.raw || bubble.innerText || '') : '';
+            const cleanContent = String(raw).replace(/\[ACTION:[^\]]+\]/g, '').trim();
+            pendingNote = {
+                structured_content: cleanContent,
+                transcription: cleanContent,
+                subject: args.title || '',
+                category: args.category || 'other',
+                action_items: [],
+            };
+            await openNoteSaveModal();
+            // モーダルを開いたらアクションボタン側は閉じる扱い（実行扱い）
+            if (btn) { btn.textContent = '保存モーダルを開いた ✓'; btn.classList.add('done'); }
+            return;
         } else {
             showToast('未対応のアクションです', true);
         }
@@ -643,17 +698,17 @@ async function loadDashboard() {
         const mitItemsEl = $('#mit-banner-items');
         const mitScheduleEl = $('#mit-schedule-items');
         if (data.mit && data.mit.length > 0) {
-            const mitHtml = data.mit.map(item => {
+            const mitHtml = data.mit.map((item, idx) => {
                 const done = item.startsWith('[x]') || item.startsWith('[X]');
                 const text = item.replace(/^\[[ xX]\]\s*/, '').trim();
-                return `<div class="mit-banner-item ${done ? 'done' : ''}">${escapeHtml(text)}</div>`;
+                return `<div class="mit-banner-item ${done ? 'done' : ''}" data-mit-index="${idx}" onclick="toggleMit(${idx}, this)" role="button" tabindex="0" title="クリックで完了切替">${escapeHtml(text)}</div>`;
             }).join('');
             if (mitBanner && mitItemsEl) { mitItemsEl.innerHTML = mitHtml; mitBanner.classList.remove('hidden'); }
             if (mitScheduleEl) {
-                mitScheduleEl.innerHTML = data.mit.map(item => {
+                mitScheduleEl.innerHTML = data.mit.map((item, idx) => {
                     const done = item.startsWith('[x]') || item.startsWith('[X]');
                     const text = item.replace(/^\[[ xX]\]\s*/, '').trim();
-                    return `<div class="list-item" style="gap:8px;">
+                    return `<div class="list-item mit-schedule-row" data-mit-index="${idx}" style="gap:8px;cursor:pointer;" onclick="toggleMit(${idx}, this)">
                         <div class="checkbox-custom" style="${done ? 'background:var(--accent);border-color:var(--accent);color:#fff;font-size:0.7rem;display:flex;align-items:center;justify-content:center;' : ''}">${done ? '✓' : ''}</div>
                         <span style="${done ? 'text-decoration:line-through;color:var(--text-muted);' : ''}">${escapeHtml(text)}</span>
                     </div>`;
@@ -815,8 +870,12 @@ function initTaskSortable(container, listName) {
         ghostClass: 'sortable-ghost',
         chosenClass: 'sortable-chosen',
         dragClass: 'sortable-drag',
-        // 完了済みは並び替え不可
+        // 完了済みは並び替え不可（drop 先としても禁止）
         filter: '.list-item:not(.gtask-item)',
+        onMove: (evt) => {
+            // 完了済みタスク (.gtask-item を持たない .list-item) の上に drop しない
+            return evt.related && evt.related.classList && evt.related.classList.contains('gtask-item');
+        },
         onEnd: async (evt) => {
             const item = evt.item;
             const taskId = item && item.dataset && item.dataset.taskId;
@@ -834,16 +893,25 @@ function initTaskSortable(container, listName) {
             const body = { task_id: taskId, list_name: ln };
             if (previousId) body.previous_task_id = previousId;
             if (previousTask && previousTask.parent) body.parent = previousTask.parent;
+
+            // 楽観更新: ローカル配列を新しい順序に並び替え（DOM 順を信頼）
+            const newOrderIds = items.map(el => el.dataset.taskId).filter(Boolean);
+            const reordered = newOrderIds.map(id => tasksRef.find(t => t.id === id)).filter(Boolean);
+            const orphans = tasksRef.filter(t => !newOrderIds.includes(t.id));
+            const newTasks = [...reordered, ...orphans];
+            if (ln === '仕事') _currentWorkTasks = newTasks;
+            else if (ln === '習慣') _currentHabitTasks = newTasks;
+            else _currentPrivateTasks = newTasks;
+
             try {
                 await apiFetch('/api/google_tasks_move', {
                     method: 'POST',
                     body: JSON.stringify(body),
                 });
-                showToast('並び替えました');
-                // 軽量な再描画のため少し待ってから再ロード
-                setTimeout(() => loadDashboard(), 100);
+                // 楽観更新で十分。サーバ確定値は次回ダッシュボード自動更新時に反映される
             } catch (e) {
                 showToast('並び替えに失敗しました', true);
+                // 失敗時のみフル再ロードして元に戻す
                 loadDashboard();
             }
         },
@@ -2929,7 +2997,7 @@ function removeLoadingBubble(id) {
     if (el) el.remove();
 }
 
-const CATEGORY_LABEL = { work: '💼 仕事', study: '📚 勉強', idea: '💡 アイデア', task: '📋 タスク', other: '📝 その他' };
+const CATEGORY_LABEL = { work: '💼 仕事', study: '📚 勉強', idea: '💡 アイデア', reading: '📖 読書', task: '📋 タスク', other: '📝 その他' };
 
 function appendNoteCard(note) {
     if (!chatMessages) return;
@@ -3186,7 +3254,8 @@ function openMsgActionSheet() {
             starBtn.classList.toggle('is-active', isStarred);
         }
         const isAssistant = _longPressTarget.classList.contains('assistant');
-        if (phraseBtn) phraseBtn.style.display = isAssistant ? '' : 'none';
+        // 📚 フレーズ保存: AI/ユーザー両方のメッセージで利用可能（複数文選択モーダルで対応）
+        if (phraseBtn) phraseBtn.style.display = '';
         // 英訳保存はユーザーメッセージのみ
         if (transBtn) transBtn.style.display = !isAssistant ? '' : 'none';
     }
@@ -3258,48 +3327,136 @@ async function msgActionDelete() {
 }
 
 // ----- 英語フレーズ保存 -----
+function _extractEnglishCandidates(text) {
+    // 引用符・装飾を除去しつつ、英文として成立しそうな文/フレーズを抽出する。
+    if (!text) return [];
+    const clean = text.replace(/\*\*/g, '');
+    const seen = new Set();
+    const results = [];
+    const push = (s) => {
+        const v = (s || '').replace(/^[\s「"「"'"'>*\-]+|[\s」"」"'"'*]+$/g, '').trim();
+        if (!v) return;
+        if (v.length < 4) return;
+        if (!/[A-Za-z]/.test(v)) return;
+        // ある程度英語が支配的（半数以上が英字 or 空白記号）
+        const enChars = (v.match(/[A-Za-z\s.,'’"\-?!]/g) || []).length;
+        if (enChars / v.length < 0.6) return;
+        const key = v.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        results.push(v);
+    };
+    // 1) 行ごとに走査し、文末記号で更に分割
+    clean.split('\n').forEach(line => {
+        const trimmed = line.trim();
+        if (!trimmed) return;
+        // 行頭の "> " や "- " 等を除去
+        const stripped = trimmed.replace(/^[>\-•*]+\s*/, '');
+        const sentences = stripped.split(/(?<=[.!?])\s+(?=[A-Z"'(])/);
+        if (sentences.length > 1) {
+            sentences.forEach(push);
+        } else {
+            push(stripped);
+        }
+    });
+    // 2) 引用符内の英文も拾う（複数行をまたぐもの）
+    const quoteRe = /[「"「"]([A-Za-z][^「"「"」"」"]{4,})[」"」"]/g;
+    let m;
+    while ((m = quoteRe.exec(clean))) push(m[1]);
+    return results;
+}
+
+function _extractTranslationHint(text) {
+    if (!text) return '';
+    const m = text.match(/💬\s*(.+)/);
+    return m ? m[1].trim() : '';
+}
+
 async function msgActionSavePhrase() {
     const text = _getLongPressText();
-    if (!text) { closeMsgActionSheet(); return; }
-
-    let phrase = '', translation = '';
-
-    // ENモード: Manager's reply パターン
-    const managerMatch = text.match(/Manager(?:'s|s) reply[^>]*>\s*([^\n]+)/i);
-    if (managerMatch) phrase = managerMatch[1].replace(/\*\*/g, '').trim();
-
-    // ブリーフィング: 今日のワンフレーズ パターン
-    if (!phrase) {
-        const bfMatch = text.match(/今日のワンフレーズ[^\n]*\n+([^\n]*[A-Za-z][^\n]*)/);
-        if (bfMatch) phrase = bfMatch[1].replace(/^[「"「"*\s]+|[」"」"*\s]+$/g, '').trim();
-    }
-    // 引用符内の英語
-    if (!phrase) {
-        const qMatch = text.match(/[「"「"]([A-Za-z][^「"「"」"」"]{4,})[」"」"]/);
-        if (qMatch) phrase = qMatch[1].trim();
-    }
-    // 最初の英語行
-    if (!phrase) {
-        const engLine = text.split('\n').find(l => /[A-Za-z]{3}/.test(l) && l.trim().length > 5);
-        if (engLine) phrase = engLine.trim();
-    }
-    if (!phrase) phrase = text.slice(0, 150);
-
-    // 💬 日本語訳
-    const transMatch = text.match(/💬\s*(.+)/);
-    if (transMatch) translation = transMatch[1].trim();
-
-    try {
-        await apiFetch('/api/english_phrases', {
-            method: 'POST',
-            body: JSON.stringify({ phrase, translation, context: text.slice(0, 500) }),
-        });
-        showToast('📚 フレーズを保存しました');
-        loadEnglishPhrases();
-    } catch {
-        showToast('保存に失敗しました', true);
-    }
     closeMsgActionSheet();
+    if (!text) return;
+
+    const candidates = _extractEnglishCandidates(text);
+    if (candidates.length === 0) {
+        showToast('英文が見つかりませんでした', true);
+        return;
+    }
+
+    const translationHint = _extractTranslationHint(text);
+    openPhraseSelectModal(candidates, translationHint, text.slice(0, 500));
+}
+
+let _phraseSelectCtx = null;
+function openPhraseSelectModal(candidates, translationHint, context) {
+    _phraseSelectCtx = { candidates, translationHint, context };
+    let modal = document.getElementById('phrase-select-modal');
+    if (!modal) {
+        modal = document.createElement('div');
+        modal.id = 'phrase-select-modal';
+        modal.className = 'modal-overlay hidden';
+        modal.innerHTML = `
+            <div class="modal-card" style="max-width:480px;max-height:80vh;display:flex;flex-direction:column;">
+                <h3 class="modal-title">📚 保存するフレーズを選択</h3>
+                <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 8px;">複数選択して一括保存できます。</p>
+                <div id="phrase-select-list" style="flex:1;overflow-y:auto;padding:4px 0;display:flex;flex-direction:column;gap:6px;"></div>
+                <div style="display:flex;gap:8px;margin-top:12px;">
+                    <button class="modal-btn cancel" onclick="closePhraseSelectModal()">キャンセル</button>
+                    <button class="modal-btn submit" id="phrase-select-save" onclick="submitPhraseSelection()">保存</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+    }
+    const listEl = modal.querySelector('#phrase-select-list');
+    listEl.innerHTML = candidates.map((c, i) => `
+        <label style="display:flex;align-items:flex-start;gap:8px;padding:8px;border:1px solid var(--border-glass);border-radius:8px;cursor:pointer;">
+            <input type="checkbox" data-idx="${i}" ${candidates.length === 1 ? 'checked' : ''} style="margin-top:3px;flex-shrink:0;">
+            <span style="font-size:0.88rem;line-height:1.4;flex:1;word-break:normal;overflow-wrap:anywhere;">${escapeHtml(c)}</span>
+        </label>
+    `).join('');
+    modal.classList.remove('hidden');
+}
+
+window.closePhraseSelectModal = () => {
+    document.getElementById('phrase-select-modal')?.classList.add('hidden');
+    _phraseSelectCtx = null;
+};
+
+window.submitPhraseSelection = async () => {
+    if (!_phraseSelectCtx) return;
+    const modal = document.getElementById('phrase-select-modal');
+    if (!modal) return;
+    const checked = Array.from(modal.querySelectorAll('input[type="checkbox"]:checked'));
+    if (checked.length === 0) { showToast('1つ以上選択してください', true); return; }
+    const phrases = checked
+        .map(cb => _phraseSelectCtx.candidates[parseInt(cb.dataset.idx, 10)])
+        .filter(Boolean)
+        .map(phrase => ({
+            phrase,
+            translation: phrases_pickTranslation(phrase, _phraseSelectCtx.translationHint, checked.length),
+            context: _phraseSelectCtx.context,
+        }));
+    const saveBtn = document.getElementById('phrase-select-save');
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中…'; }
+    try {
+        await apiFetch('/api/english_phrases/bulk', {
+            method: 'POST',
+            body: JSON.stringify({ phrases }),
+        });
+        showToast(`📚 ${phrases.length}件のフレーズを保存しました`);
+        loadEnglishPhrases();
+        closePhraseSelectModal();
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    } finally {
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+    }
+};
+
+function phrases_pickTranslation(phrase, hint, total) {
+    // 訳ヒントは選択数が1つのときだけ流用（複数選択時はどの文の訳かが曖昧なため空に）
+    return total === 1 ? hint : '';
 }
 
 async function loadEnglishPhrases() {
@@ -3465,6 +3622,44 @@ window.msgActionTranslateAndSave = async () => {
 // ----- MIT設定モーダル -----
 // 重い /api/dashboard ではなく専用 /api/mit_get を使う。先にモーダルを表示し、
 // 取得は非同期で行う（体感的な遅延を排除）。
+window.toggleMit = async (index, el) => {
+    if (el && el.dataset && el.dataset.mitToggling === '1') return;
+    if (el) el.dataset.mitToggling = '1';
+    // 楽観更新
+    document.querySelectorAll(`[data-mit-index="${index}"]`).forEach(node => {
+        const wasDone = node.classList.contains('done') || node.querySelector('.checkbox-custom')?.textContent === '✓';
+        if (node.classList.contains('mit-banner-item')) {
+            node.classList.toggle('done', !wasDone);
+        } else if (node.classList.contains('mit-schedule-row')) {
+            const cb = node.querySelector('.checkbox-custom');
+            const span = node.querySelector('span');
+            const willBeDone = !wasDone;
+            if (cb) {
+                if (willBeDone) {
+                    cb.style.cssText = 'background:var(--accent);border-color:var(--accent);color:#fff;font-size:0.7rem;display:flex;align-items:center;justify-content:center;';
+                    cb.textContent = '✓';
+                } else {
+                    cb.style.cssText = '';
+                    cb.textContent = '';
+                }
+            }
+            if (span) span.style.cssText = willBeDone ? 'text-decoration:line-through;color:var(--text-muted);' : '';
+        }
+    });
+    try {
+        await apiFetch('/api/mit_toggle', {
+            method: 'POST',
+            body: JSON.stringify({ index }),
+        });
+    } catch (e) {
+        showToast('MIT の更新に失敗しました', true);
+        // 失敗したら再ロード
+        if (typeof loadDashboard === 'function') loadDashboard();
+    } finally {
+        if (el) delete el.dataset.mitToggling;
+    }
+};
+
 window.openMitModal = async () => {
     const modal = $('#mit-modal');
     if (!modal) return;

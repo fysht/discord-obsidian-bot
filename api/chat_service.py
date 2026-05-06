@@ -216,6 +216,23 @@ class ChatService:
                             required=["keywords"],
                         ),
                     ),
+                    types.FunctionDeclaration(
+                        name="propose_note",
+                        description=(
+                            "ユーザーの会話の中で「メモにしておきたい」「書籍からの学びがある」など"
+                            "ノート化に値する内容が出てきたとき、ノート保存を提案する。即実行せず、"
+                            "フロントに確認ボタンを返す。category は 'study' / 'work' / 'idea' / 'reading' / 'other'。"
+                            "読書メモを取りたい文脈では必ず category='reading' を指定すること。"
+                        ),
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "title": types.Schema(type=types.Type.STRING, description="ノートのタイトル"),
+                                "category": types.Schema(type=types.Type.STRING, description="study / work / idea / reading / other"),
+                            },
+                            required=["title", "category"],
+                        ),
+                    ),
                 ]
             )
         ]
@@ -268,6 +285,15 @@ class ChatService:
                         tool_result = await self._create_permanent_note(fc.args["title"], fc.args["content"])
                     elif fc.name == "search_memory":
                         tool_result = await self._search_drive_notes(fc.args["keywords"])
+                    elif fc.name == "propose_note":
+                        t = (fc.args.get("title") or "メモ").replace("|", " ").replace("=", " ")
+                        cat = (fc.args.get("category") or "other").strip()
+                        if cat not in {"study", "work", "idea", "reading", "other"}:
+                            cat = "other"
+                        tool_result = (
+                            f"[ACTION:note_create:title={t}|category={cat}] "
+                            f"(この内容、ノートに保存しておく？モーダルで内容を確認・編集できるよ)"
+                        )
 
                     function_responses.append(
                         types.Part.from_function_response(name=fc.name, response={"result": str(tool_result)})

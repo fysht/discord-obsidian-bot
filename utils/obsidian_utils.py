@@ -3,28 +3,31 @@ import re
 # --- 定数定義 ---
 # デイリーノートの見出し順序定義
 # Botは項目を新規作成する際、この順序に従って適切な位置に挿入します。
+# 「やること → 実行 → 振り返り → インプット → 自動記録」の流れに統一。
 SECTION_ORDER = [
-    # --- 0. Integrated Daily Overview ---
+    # --- 1. Plan (今日やること) ---
+    "## 🎯 MIT",  # 今日の最重要タスク (PartnerCog)
     "## ⏱ Daily Timeline",  # 全データ統合の時系列ビュー (DailyOrganizeCog)
-    # --- 1. Timeline (リアルタイムメモ) ---
-    "## 🎯 Tasks",     # LLR風タスク＆時間記録 (PartnerCog)
+    # --- 2. Execution (リアルタイム記録) ---
     "## 🪟 Lifelog",   # 行動記録 (PartnerCog / PWA)
+    "## 🎯 Tasks",     # LLR風タスク＆時間記録 (PartnerCog)
     "## 💬 Timeline",  # 日常のつぶやき・メモ (PartnerCog)
     "## 🤔 Thought Reflection",  # 壁打ち (PartnerCog)
-    # --- 2. Daily Summary (1日の振り返り整理) ---
-    "## 🪞 Alter Log",  # 忖度ゼロの客観的プロファイリング (DailyOrganizeCog)
-    "## 📔 Daily Journal",  # AIによる振り返り日記 (DailyOrganizeCog)
-    "## 📝 Events & Actions",  # 具体的な出来事 (DailyOrganizeCog)
+    # --- 3. Reflection (1日の振り返り) ---
+    "## 📔 Daily Journal",  # Lifelog + 客観データから生成する振り返り (DailyOrganizeCog)
     "## 💡 Insights & Thoughts",  # 客観的な分析 (DailyOrganizeCog)
     "## 🚀 Next Actions",  # 明日のアクション (DailyOrganizeCog)
-    # --- 3. Input & Information (インプット・情報収集) ---
+    "## 📅 Daily Summary",  # アプリ表示と同一の統合ダイジェスト (routes.py)
+    "## 🪞 Alter Log",  # 忖度ゼロの客観的プロファイリング (DailyOrganizeCog)
+    # --- 4. Input & Information (インプット・情報収集) ---
+    "## 📖 Reading Log",  # 読書メモ (PartnerCog)
     "## 🍳 Recipes",  # レシピクリップ (WebClipService)
     "## 📺 YouTube",  # YouTube動画リンク (WebClipService)
+    "## 🗺 Places",   # Google Maps の場所情報 (旧 WebClips から分離)
     "## 🔗 WebClips",  # Web記事クリップ (WebClipService)
-    "## 📖 Reading Log",  # 読書メモ (PartnerCog)
-    # --- 4. Logs & Records (自動記録・活動データ) ---
-    "## 📍 Location History",  # 位置情報ログ (LocationLogCog)
+    # --- 5. Logs & Records (自動記録・活動データ) ---
     "## 📊 Health Metrics",  # 健康データ (FitbitCog)
+    "## 📍 Location History",  # 位置情報ログ (LocationLogCog)
     "## 🗒️ Logs",  # 一般ログ (PartnerCog)
     "## Memo",  # メモ (sync_worker)
 ]
