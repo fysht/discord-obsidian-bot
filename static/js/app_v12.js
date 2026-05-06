@@ -185,6 +185,9 @@ function switchTab(tab) {
     }
     if (tab === 'invest') {
         loadInvestmentHistory();
+        if (typeof loadPortfolio === 'function') loadPortfolio();
+        if (typeof loadJournalList === 'function') loadJournalList();
+        if (typeof loadAlertsList === 'function') loadAlertsList();
     }
 }
 
@@ -5381,5 +5384,518 @@ window.openInvestHistoryItem = async (category, fileId, name) => {
         window.openInvestmentResultModal(name, data.content);
     } catch (e) {
         showToast('読み込み失敗: ' + (e.message || e), true);
+    }
+};
+
+// =================================================================
+// Investment Tab — 拡張機能 (ポートフォリオ・日記・アラート・他)
+// =================================================================
+
+// --- 同業比較 / ニュースセンチメント / 配当 ---
+
+window.runPeerComparison = async () => {
+    const ticker = _getTickerInput();
+    if (!ticker) return;
+    const data = await _callInvestmentApi('/api/investment/peer_comparison', { ticker }, `${ticker} 同業比較`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`🔬 ${data.ticker} 同業他社比較`, data.report);
+        window.loadInvestmentHistory();
+    }
+};
+
+window.runNewsSentiment = async () => {
+    const ticker = _getTickerInput();
+    if (!ticker) return;
+    const data = await _callInvestmentApi('/api/investment/news_sentiment', { ticker }, `${ticker} ニュース`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`📰 ${data.ticker} ニュースセンチメント`, data.report);
+        window.loadInvestmentHistory();
+    }
+};
+
+window.runDividend = async () => {
+    const ticker = _getTickerInput();
+    if (!ticker) return;
+    const data = await _callInvestmentApi('/api/investment/dividend', { ticker, register_calendar: true }, `${ticker} 配当`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`💴 ${data.ticker} 配当カレンダー`, data.report);
+        window.loadInvestmentHistory();
+    }
+};
+
+// --- ポートフォリオ ---
+
+// 直近に取得した保有銘柄キャッシュ（pickerやアクションシートが参照する）
+let _investHoldingsCache = [];
+
+window.loadPortfolio = async () => {
+    const listEl = $('#invest-portfolio-list');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/investment/portfolio');
+        if (!data || !data.ok) {
+            listEl.innerHTML = '<div class="invest-empty">取得に失敗しました</div>';
+            _investHoldingsCache = [];
+            return;
+        }
+        const holdings = data.holdings || [];
+        _investHoldingsCache = holdings;
+        if (!holdings.length) {
+            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。「追加」から登録してください。</div>';
+            return;
+        }
+        listEl.innerHTML = holdings.map(h => {
+            const ticker = escapeHtml(h.code || '?');
+            const name = escapeHtml(h.name || ticker);
+            const sector = escapeHtml(h.sector || '');
+            const shares = h.shares || 0;
+            const cost = h.avg_cost || 0;
+            const currency = escapeHtml(h.currency || '');
+            const market = escapeHtml(h.market || '');
+            const meta = `${shares}株 @ ${cost} ${currency} / ${market}${sector ? ' / ' + sector : ''}`;
+            return `<div class="invest-row" style="cursor:pointer;" onclick="openHoldingActionModal('${ticker.replace(/'/g, '&#39;')}')">
+                <div class="row-main">
+                    <div class="row-title">${name} (${ticker})</div>
+                    <div class="row-meta">${meta}</div>
+                </div>
+                <div class="row-actions">
+                    <button onclick="event.stopPropagation(); openHoldingActionModal('${ticker.replace(/'/g, '&#39;')}')">▾ 操作</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+        _investHoldingsCache = [];
+    }
+};
+
+// === 保有銘柄ピッカー（銘柄分析カード/CEOカード用） ===
+let _holdingPickerTarget = null; // 'analysis' or 'ceo'
+
+window.openHoldingPicker = async (target) => {
+    _holdingPickerTarget = target;
+    const modal = $('#invest-holding-picker-modal');
+    const listEl = $('#invest-holding-picker-list');
+    if (!modal || !listEl) return;
+    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    modal.classList.remove('hidden');
+    try {
+        if (!_investHoldingsCache.length) {
+            const data = await apiFetch('/api/investment/portfolio');
+            _investHoldingsCache = (data && data.ok) ? (data.holdings || []) : [];
+        }
+        const holdings = _investHoldingsCache;
+        if (!holdings.length) {
+            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。ポートフォリオから追加してください。</div>';
+            return;
+        }
+        listEl.innerHTML = holdings.map(h => {
+            const code = escapeHtml(h.code || '?');
+            const name = escapeHtml(h.name || code);
+            const market = escapeHtml(h.market || '');
+            const shares = h.shares || 0;
+            return `<div class="invest-row" style="cursor:pointer;" onclick="pickHolding('${code.replace(/'/g, '&#39;')}')">
+                <div class="row-main">
+                    <div class="row-title">${name} (${code})</div>
+                    <div class="row-meta">${shares}株 / ${market}</div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+};
+
+window.closeHoldingPicker = () => {
+    $('#invest-holding-picker-modal')?.classList.add('hidden');
+};
+
+window.pickHolding = (code) => {
+    if (_holdingPickerTarget === 'ceo') {
+        const el = $('#invest-ceo-ticker');
+        if (el) el.value = code;
+    } else {
+        const el = $('#invest-ticker-input');
+        if (el) el.value = code;
+    }
+    showToast(`${code} を選択しました`);
+    window.closeHoldingPicker();
+};
+
+// === 保有銘柄アクションシート（ポートフォリオ行クリック用） ===
+let _holdingActionCode = null;
+
+window.openHoldingActionModal = (code) => {
+    _holdingActionCode = code;
+    const holding = (_investHoldingsCache || []).find(h => h.code === code);
+    const titleEl = $('#invest-holding-action-title');
+    const metaEl = $('#invest-holding-action-meta');
+    if (titleEl) {
+        titleEl.textContent = holding
+            ? `${holding.name || code} (${code})`
+            : code;
+    }
+    if (metaEl) {
+        if (holding) {
+            metaEl.textContent = `${holding.shares}株 @ ${holding.avg_cost} ${holding.currency || ''} / ${holding.market || ''}`;
+        } else {
+            metaEl.textContent = '';
+        }
+    }
+    $('#invest-holding-action-modal')?.classList.remove('hidden');
+};
+
+window.closeHoldingActionModal = () => {
+    $('#invest-holding-action-modal')?.classList.add('hidden');
+    _holdingActionCode = null;
+};
+
+window.runHoldingAction = async (action) => {
+    const code = _holdingActionCode;
+    if (!code) return;
+    // CEO検証は動画URLが必要なのでCEOカードへ誘導
+    if (action === 'ceo') {
+        const el = $('#invest-ceo-ticker');
+        if (el) el.value = code;
+        window.closeHoldingActionModal();
+        showToast('CEO検証カードにティッカーをセットしました。動画URLを入力して実行してください。');
+        // CEOカードへスクロール
+        $('#invest-ceo-url')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+    }
+    // 他のアクションはticker入力欄に値を入れて該当の関数を呼ぶ
+    const tickerInput = $('#invest-ticker-input');
+    if (tickerInput) tickerInput.value = code;
+    window.closeHoldingActionModal();
+    const handler = {
+        snapshot: window.runStockSnapshot,
+        audit: window.runStockAudit,
+        news: window.runNewsSentiment,
+        peer: window.runPeerComparison,
+        earnings: window.runEarningsSchedule,
+        docs: window.runEarningsDocuments,
+        dividend: window.runDividend,
+    }[action];
+    if (typeof handler === 'function') {
+        await handler();
+    }
+};
+
+window.removeHoldingFromAction = async () => {
+    const code = _holdingActionCode;
+    if (!code) return;
+    if (!confirm(`${code} をポートフォリオから削除しますか？（全数売却扱い）`)) return;
+    try {
+        const data = await apiFetch('/api/investment/portfolio/remove', {
+            method: 'POST',
+            body: JSON.stringify({ code, shares: null }),
+        });
+        if (data && data.ok) {
+            showToast(`${code} を削除しました`);
+            window.closeHoldingActionModal();
+            window.loadPortfolio();
+        } else {
+            showToast(data?.error || '削除失敗', true);
+        }
+    } catch (e) {
+        showToast('削除失敗: ' + (e.message || e), true);
+    }
+};
+
+window.openPortfolioAddModal = () => {
+    ['portfolio-add-ticker','portfolio-add-name','portfolio-add-sector','portfolio-add-shares','portfolio-add-cost','portfolio-add-currency','portfolio-add-notes'].forEach(id => {
+        const el = $('#'+id);
+        if (el) el.value = '';
+    });
+    $('#invest-portfolio-modal')?.classList.remove('hidden');
+};
+window.closePortfolioAddModal = () => $('#invest-portfolio-modal')?.classList.add('hidden');
+
+window.submitPortfolioAdd = async () => {
+    const ticker = $('#portfolio-add-ticker')?.value?.trim();
+    const sharesStr = $('#portfolio-add-shares')?.value?.trim();
+    const costStr = $('#portfolio-add-cost')?.value?.trim();
+    if (!ticker || !sharesStr || !costStr) {
+        showToast('ティッカー・株数・取得単価は必須です', true);
+        return;
+    }
+    const body = {
+        ticker,
+        shares: parseFloat(sharesStr),
+        avg_cost: parseFloat(costStr),
+        name: $('#portfolio-add-name')?.value?.trim() || null,
+        sector: $('#portfolio-add-sector')?.value?.trim() || null,
+        currency: $('#portfolio-add-currency')?.value?.trim() || null,
+        notes: $('#portfolio-add-notes')?.value?.trim() || null,
+    };
+    try {
+        const data = await apiFetch('/api/investment/portfolio/add', { method: 'POST', body: JSON.stringify(body) });
+        if (data && data.ok) {
+            showToast('ポートフォリオに追加しました');
+            window.closePortfolioAddModal();
+            window.loadPortfolio();
+        } else {
+            showToast(data?.error || '追加失敗', true);
+        }
+    } catch (e) {
+        showToast('追加失敗: ' + (e.message || e), true);
+    }
+};
+
+window.runRiskAssessment = async () => {
+    const data = await _callInvestmentApi('/api/investment/risk_assessment', null, 'リスク評価');
+    if (data && data.ok) {
+        window.openInvestmentResultModal('⚠️ ポートフォリオリスク評価', data.report);
+        window.loadInvestmentHistory();
+    }
+};
+
+// --- 投資日記 ---
+
+window.loadJournalList = async () => {
+    const listEl = $('#invest-journal-list');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/investment/journal?limit=50');
+        if (!data || !data.ok) {
+            listEl.innerHTML = '<div class="invest-empty">取得に失敗しました</div>';
+            return;
+        }
+        const items = data.items || [];
+        if (!items.length) {
+            listEl.innerHTML = '<div class="invest-empty">日記がまだありません。「追加」から書いてみましょう。</div>';
+            return;
+        }
+        listEl.innerHTML = items.map(it => {
+            const title = escapeHtml(it.title || '(無題)');
+            const date = escapeHtml(it.date || '');
+            const time = escapeHtml(it.time || '');
+            const ticker = escapeHtml(it.ticker || '');
+            const action = escapeHtml(it.action || '');
+            const emotion = escapeHtml(it.emotion || '');
+            const meta = [date+' '+time, ticker, action, emotion].filter(Boolean).join(' / ');
+            const safeFn = escapeHtml(it.filename || '');
+            return `<div class="invest-row" onclick="openJournalEntry('${safeFn.replace(/'/g, '&#39;')}', '${title.replace(/'/g, '&#39;')}')" style="cursor:pointer;">
+                <div class="row-main">
+                    <div class="row-title">${title}</div>
+                    <div class="row-meta">${meta}</div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+};
+
+window.openJournalEntry = async (filename, title) => {
+    if (!filename) return;
+    showToast(`${title} を読み込み中...`);
+    // 履歴経由で読み込む (category=journal)
+    try {
+        // ファイルID取得のため、一覧APIを叩いてfilenameに一致するidを探す
+        const list = await apiFetch('/api/investment/history/journal?limit=200');
+        if (!list || !list.ok) { showToast('一覧取得失敗', true); return; }
+        const item = (list.items || []).find(it => it.name === filename);
+        if (!item) { showToast('日記エントリが見つかりません', true); return; }
+        const data = await apiFetch(`/api/investment/history/journal/${encodeURIComponent(item.id)}`);
+        if (!data || !data.ok) { showToast(data?.error || '読み込み失敗', true); return; }
+        window.openInvestmentResultModal(title, data.content);
+    } catch (e) {
+        showToast('読み込み失敗: ' + (e.message || e), true);
+    }
+};
+
+window.openJournalAddModal = () => {
+    ['journal-add-title','journal-add-ticker','journal-add-emotion','journal-add-content'].forEach(id => {
+        const el = $('#'+id);
+        if (el) el.value = '';
+    });
+    const sel = $('#journal-add-action');
+    if (sel) sel.value = '';
+    $('#invest-journal-modal')?.classList.remove('hidden');
+};
+window.closeJournalAddModal = () => $('#invest-journal-modal')?.classList.add('hidden');
+
+window.submitJournalAdd = async () => {
+    const content = $('#journal-add-content')?.value?.trim();
+    if (!content) {
+        showToast('本文は必須です', true);
+        return;
+    }
+    const body = {
+        title: $('#journal-add-title')?.value?.trim() || '',
+        content,
+        ticker: $('#journal-add-ticker')?.value?.trim() || '',
+        action: $('#journal-add-action')?.value || '',
+        emotion: $('#journal-add-emotion')?.value?.trim() || '',
+    };
+    try {
+        const data = await apiFetch('/api/investment/journal/add', { method: 'POST', body: JSON.stringify(body) });
+        if (data && data.ok) {
+            showToast('日記を保存しました');
+            window.closeJournalAddModal();
+            window.loadJournalList();
+        } else {
+            showToast(data?.error || '保存失敗', true);
+        }
+    } catch (e) {
+        showToast('保存失敗: ' + (e.message || e), true);
+    }
+};
+
+window.runJournalAnalyze = async () => {
+    const data = await _callInvestmentApi('/api/investment/journal/analyze', { limit: 30 }, '投資日記の癖分析');
+    if (data && data.ok) {
+        window.openInvestmentResultModal('🧠 投資行動パターン分析', data.report);
+    }
+};
+
+// --- アラート ---
+
+window.loadAlertsList = async () => {
+    const listEl = $('#invest-alerts-list');
+    if (!listEl) return;
+    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/investment/alerts');
+        if (!data || !data.ok) {
+            listEl.innerHTML = '<div class="invest-empty">取得に失敗しました</div>';
+            return;
+        }
+        const rules = data.rules || [];
+        if (!rules.length) {
+            listEl.innerHTML = '<div class="invest-empty">アラートがまだありません。「追加」から登録してください。</div>';
+            return;
+        }
+        listEl.innerHTML = rules.map(r => {
+            const ticker = escapeHtml(r.ticker || '(全体)');
+            const type = escapeHtml(r.type || '?');
+            const threshold = r.threshold ?? '?';
+            const memo = escapeHtml(r.memo || '');
+            const enabled = !!r.enabled;
+            const cls = enabled ? '' : 'disabled';
+            const onLabel = enabled ? '無効化' : '有効化';
+            return `<div class="invest-row ${cls}">
+                <div class="row-main">
+                    <div class="row-title">${ticker} — ${type} (${threshold})</div>
+                    <div class="row-meta">${memo || '(メモなし)'}</div>
+                </div>
+                <div class="row-actions">
+                    <button onclick="toggleAlert(${r.id}, ${!enabled})">${onLabel}</button>
+                    <button onclick="removeAlert(${r.id})">削除</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+};
+
+window.toggleAlert = async (ruleId, enabled) => {
+    try {
+        const data = await apiFetch('/api/investment/alerts/toggle', {
+            method: 'POST',
+            body: JSON.stringify({ rule_id: ruleId, enabled }),
+        });
+        if (data && data.ok) {
+            showToast(enabled ? '有効化しました' : '無効化しました');
+            window.loadAlertsList();
+        } else {
+            showToast(data?.error || '失敗', true);
+        }
+    } catch (e) {
+        showToast('失敗: ' + (e.message || e), true);
+    }
+};
+
+window.removeAlert = async (ruleId) => {
+    if (!confirm('このアラートを削除しますか？')) return;
+    try {
+        const data = await apiFetch('/api/investment/alerts/remove', {
+            method: 'POST',
+            body: JSON.stringify({ rule_id: ruleId }),
+        });
+        if (data && data.ok) {
+            showToast('削除しました');
+            window.loadAlertsList();
+        } else {
+            showToast(data?.error || '失敗', true);
+        }
+    } catch (e) {
+        showToast('失敗: ' + (e.message || e), true);
+    }
+};
+
+window.openAlertAddModal = () => {
+    ['alert-add-ticker','alert-add-threshold','alert-add-memo'].forEach(id => {
+        const el = $('#'+id);
+        if (el) el.value = '';
+    });
+    const sel = $('#alert-add-type');
+    if (sel) sel.value = 'per_below';
+    $('#invest-alert-modal')?.classList.remove('hidden');
+};
+window.closeAlertAddModal = () => $('#invest-alert-modal')?.classList.add('hidden');
+
+window.submitAlertAdd = async () => {
+    const type = $('#alert-add-type')?.value;
+    const ticker = $('#alert-add-ticker')?.value?.trim();
+    const thresholdStr = $('#alert-add-threshold')?.value?.trim();
+    if (!type || !thresholdStr) {
+        showToast('種別と閾値は必須です', true);
+        return;
+    }
+    if (!ticker && type !== 'earnings_within_days') {
+        showToast('ティッカーは必須です（earnings_within_daysを除く）', true);
+        return;
+    }
+    const body = {
+        ticker,
+        type,
+        threshold: parseFloat(thresholdStr),
+        memo: $('#alert-add-memo')?.value?.trim() || '',
+        enabled: true,
+    };
+    try {
+        const data = await apiFetch('/api/investment/alerts/add', { method: 'POST', body: JSON.stringify(body) });
+        if (data && data.ok) {
+            showToast('アラートを追加しました');
+            window.closeAlertAddModal();
+            window.loadAlertsList();
+        } else {
+            showToast(data?.error || '失敗', true);
+        }
+    } catch (e) {
+        showToast('失敗: ' + (e.message || e), true);
+    }
+};
+
+window.runAlertsCheck = async () => {
+    const data = await _callInvestmentApi('/api/investment/alerts/check', null, 'アラート評価');
+    if (!data || !data.ok) return;
+    const hits = data.hits || [];
+    const lines = [`# 🔔 アラート評価結果 (as of ${data.as_of || '今'})`, '', `- 評価ルール数: ${data.checked || 0}`, `- ヒット数: ${hits.length}`, ''];
+    if (!hits.length) {
+        lines.push('現時点でヒットしているルールはありません。');
+    } else {
+        lines.push('## 🚨 発火中');
+        hits.forEach(h => {
+            lines.push(`- **${h.ticker || '(全体)'}** [${h.type}] 現在値: ${h.current_value} (閾値: ${h.threshold})`);
+            if (h.message) lines.push(`  - ${h.message}`);
+        });
+    }
+    window.openInvestmentResultModal('🔔 アラート評価結果', lines.join('\n'));
+};
+
+// --- 投資憲法レビュー ---
+
+window.runConstitutionReview = async () => {
+    if (!confirm('過去半年の審査履歴・日記・保有銘柄を読み込んで投資憲法のレビューを実行します。少し時間がかかりますがよろしいですか？')) return;
+    const data = await _callInvestmentApi('/api/investment/constitution_review', { lookback_days: 180 }, '憲法レビュー');
+    if (data && data.ok) {
+        window.openInvestmentResultModal('🔄 投資憲法レビュー', data.report);
+        window.loadInvestmentHistory();
     }
 };

@@ -1,30 +1,35 @@
-"""投資サポート機能を提供するCog。
+"""投資サポート機能を提供するCog（PWA専用）。
 
-提供コマンド (Discord):
-- !地合い                 : 日米市場の現在の環境を分析
-- !銘柄スナップ <ticker>   : 指定銘柄の最新の財務指標スナップショットを取得
-- !銘柄審査 <ticker>       : 投資憲法に照らして銘柄を審査
-- !決算予定 <ticker>       : 次回決算発表日を調査してGoogle Calendarに登録
-- !決算資料 <ticker>       : 決算関連資料のリンク一覧を取得して保存
-- !CEO検証 <ticker> <url>  : YouTube動画のCEO発言と財務情報を照合
-- !投資憲法               : 現在の投資憲法を表示
-- !投資憲法初期化          : 投資憲法をサンプルで再生成（既存があれば上書きしない）
+PWAから REST 経由でのみ呼び出されるサービス層。Discordコマンドは持たない。
 
-サービスメソッド (PWA APIから呼ばれる):
+サービスメソッド:
 - run_market_sentiment() / run_stock_snapshot() / run_stock_audit()
 - run_earnings_schedule() / run_earnings_documents() / run_ceo_crosscheck()
+- run_peer_comparison() / run_news_sentiment() / run_dividend_schedule()
+- run_constitution_review() / run_risk_assessment()
 - run_get_constitution() / run_init_constitution() / run_update_constitution()
-- list_history(category, limit)
+- portfolio_list() / portfolio_add() / portfolio_remove() / portfolio_transactions()
+- journal_list() / journal_add() / journal_analyze_pattern()
+- alerts_list() / alerts_add() / alerts_remove() / alerts_toggle() / alerts_check_now()
+- list_history(category, limit) / read_history_item(category, file_id)
 
 データ保存先 (Googleドライブ):
 - Investment/
   - Investment_Constitution.md
-  - Stocks/{code}_{企業名}.md       … 銘柄個別ノート（既存StockCogと共通）
-  - Snapshots/{date}_{ticker}.md    … 銘柄スナップショット履歴
-  - Audits/{date}_{ticker}.md       … 銘柄審査結果履歴
-  - Sentiment/{date}.md             … 地合い分析履歴
-  - EarningsDocs/{date}_{ticker}.md … 決算関連資料一覧
-  - CEOChecks/{date}_{ticker}.md    … CEO発言クロスチェック結果
+  - Snapshots/{date}_{ticker}.md
+  - Audits/{date}_{ticker}.md
+  - Sentiment/{date}.md
+  - EarningsDocs/{date}_{ticker}.md
+  - CEOChecks/{date}_{ticker}.md
+  - Comparisons/{date}_{ticker}.md
+  - NewsSentiment/{date}_{ticker}.md
+  - Dividends/{date}_{ticker}.md
+  - RiskReports/{date}.md
+  - ConstitutionReviews/{date}.md
+  - Portfolio/holdings.json
+  - Portfolio/transactions.jsonl
+  - Journal/journal_index.json + 個別エントリ
+  - Alerts/rules.json + alert_log.jsonl
 """
 import os
 import re
@@ -44,6 +49,12 @@ from prompts import (
     PROMPT_EARNINGS_SCHEDULE,
     PROMPT_EARNINGS_DOCUMENTS,
     PROMPT_CEO_CROSSCHECK,
+    PROMPT_PEER_COMPARISON,
+    PROMPT_NEWS_SENTIMENT,
+    PROMPT_JOURNAL_PATTERN,
+    PROMPT_CONSTITUTION_REVIEW,
+    PROMPT_DIVIDEND_SCHEDULE,
+    PROMPT_RISK_ASSESSMENT,
 )
 
 
@@ -54,12 +65,24 @@ AUDITS_FOLDER = "Audits"
 SENTIMENT_FOLDER = "Sentiment"
 EARNINGS_DOCS_FOLDER = "EarningsDocs"
 CEO_CHECKS_FOLDER = "CEOChecks"
+COMPARISONS_FOLDER = "Comparisons"
+NEWS_SENTIMENT_FOLDER = "NewsSentiment"
+DIVIDENDS_FOLDER = "Dividends"
+RISK_REPORTS_FOLDER = "RiskReports"
+CONSTITUTION_REVIEWS_FOLDER = "ConstitutionReviews"
+PORTFOLIO_FOLDER = "Portfolio"
+JOURNAL_FOLDER = "Journal"
+ALERTS_FOLDER = "Alerts"
+
 CONSTITUTION_FILE = "Investment_Constitution.md"
+HOLDINGS_FILE = "holdings.json"
+TRANSACTIONS_FILE = "transactions.jsonl"
+JOURNAL_INDEX_FILE = "journal_index.json"
+ALERT_RULES_FILE = "rules.json"
+ALERT_LOG_FILE = "alert_log.jsonl"
 
 GEMINI_MODEL = "gemini-2.5-pro"
 GEMINI_FLASH_MODEL = "gemini-2.5-flash"
-
-DISCORD_CHUNK_SIZE = 1900
 
 
 # 投資憲法サンプル (初回起動時にDriveに作成される)
@@ -130,23 +153,6 @@ tags: [investment, constitution]
 ## 📝 改訂履歴
 - 1.0 ({date}): 初版作成（自動生成サンプル）
 """
-
-
-def _split_for_discord(text: str, chunk_size: int = DISCORD_CHUNK_SIZE):
-    """Discord送信用にテキストを分割する。改行境界を尊重する。"""
-    if len(text) <= chunk_size:
-        return [text]
-    chunks = []
-    remaining = text
-    while len(remaining) > chunk_size:
-        cut = remaining.rfind("\n", 0, chunk_size)
-        if cut == -1:
-            cut = chunk_size
-        chunks.append(remaining[:cut])
-        remaining = remaining[cut:].lstrip("\n")
-    if remaining:
-        chunks.append(remaining)
-    return chunks
 
 
 def _resolve_market(ticker: str):
@@ -737,16 +743,23 @@ class InvestmentCog(commands.Cog):
             )
         return {"ok": True, "content": content}
 
+    HISTORY_FOLDER_MAP = {
+        "snapshot": SNAPSHOTS_FOLDER,
+        "audit": AUDITS_FOLDER,
+        "sentiment": SENTIMENT_FOLDER,
+        "earnings_docs": EARNINGS_DOCS_FOLDER,
+        "ceo_check": CEO_CHECKS_FOLDER,
+        "comparison": COMPARISONS_FOLDER,
+        "news_sentiment": NEWS_SENTIMENT_FOLDER,
+        "dividend": DIVIDENDS_FOLDER,
+        "risk_report": RISK_REPORTS_FOLDER,
+        "constitution_review": CONSTITUTION_REVIEWS_FOLDER,
+        "journal": JOURNAL_FOLDER,
+    }
+
     async def list_history(self, category: str, limit: int = 20) -> dict:
-        """履歴一覧を取得する。category: snapshot/audit/sentiment/earnings_docs/ceo_check"""
-        folder_map = {
-            "snapshot": SNAPSHOTS_FOLDER,
-            "audit": AUDITS_FOLDER,
-            "sentiment": SENTIMENT_FOLDER,
-            "earnings_docs": EARNINGS_DOCS_FOLDER,
-            "ceo_check": CEO_CHECKS_FOLDER,
-        }
-        sub = folder_map.get(category)
+        """履歴一覧を取得する。"""
+        sub = self.HISTORY_FOLDER_MAP.get(category)
         if not sub:
             return {"ok": False, "error": f"未知のカテゴリ: {category}"}
         files = await self._list_subfolder_files(sub, limit=limit)
@@ -764,146 +777,738 @@ class InvestmentCog(commands.Cog):
         }
 
     async def read_history_item(self, category: str, file_id: str) -> dict:
-        folder_map = {
-            "snapshot": SNAPSHOTS_FOLDER,
-            "audit": AUDITS_FOLDER,
-            "sentiment": SENTIMENT_FOLDER,
-            "earnings_docs": EARNINGS_DOCS_FOLDER,
-            "ceo_check": CEO_CHECKS_FOLDER,
-        }
-        if category not in folder_map:
+        if category not in self.HISTORY_FOLDER_MAP:
             return {"ok": False, "error": f"未知のカテゴリ: {category}"}
-        content = await self._read_subfolder_file(folder_map[category], file_id)
+        content = await self._read_subfolder_file(
+            self.HISTORY_FOLDER_MAP[category], file_id
+        )
         if not content:
             return {"ok": False, "error": "ファイルが空または取得失敗"}
         return {"ok": True, "content": content}
 
     # ==========================================================
-    # Discordユーティリティ
+    # JSONストレージヘルパー (ポートフォリオ・日記・アラート用)
     # ==========================================================
 
-    async def _send_long(self, ctx: commands.Context, text: str):
-        for chunk in _split_for_discord(text):
-            await ctx.send(chunk)
+    async def _read_json_file(self, subfolder: str, filename: str, default):
+        """Investment/{subfolder}/{filename} をJSONとして読む。無ければdefault。"""
+        if not self.drive_service:
+            return default
+        service = self.drive_service.get_service()
+        if not service:
+            return default
+        inv_id = await self._get_investment_folder(service)
+        sub_id = await self._get_or_create_folder(service, inv_id, subfolder)
+        f_id = await self.drive_service.find_file(service, sub_id, filename)
+        if not f_id:
+            return default
+        try:
+            text = await self.drive_service.read_text_file(service, f_id)
+            return json.loads(text) if text else default
+        except Exception as e:
+            logging.error(f"InvestmentCog: JSON read error ({filename}): {e}")
+            return default
+
+    async def _write_json_file(self, subfolder: str, filename: str, data):
+        """Investment/{subfolder}/{filename} にJSONを書き込む。"""
+        if not self.drive_service:
+            return False
+        service = self.drive_service.get_service()
+        if not service:
+            return False
+        inv_id = await self._get_investment_folder(service)
+        sub_id = await self._get_or_create_folder(service, inv_id, subfolder)
+        body = json.dumps(data, ensure_ascii=False, indent=2)
+        existing = await self.drive_service.find_file(service, sub_id, filename)
+        if existing:
+            await self.drive_service.update_text(
+                service, existing, body, mime_type="application/json"
+            )
+        else:
+            await self.drive_service.upload_text(
+                service, sub_id, filename, body, mime_type="application/json"
+            )
+        return True
+
+    async def _append_jsonl(self, subfolder: str, filename: str, entry: dict):
+        """append-only JSONL ファイルに1行追加する。"""
+        if not self.drive_service:
+            return False
+        service = self.drive_service.get_service()
+        if not service:
+            return False
+        inv_id = await self._get_investment_folder(service)
+        sub_id = await self._get_or_create_folder(service, inv_id, subfolder)
+        existing_id = await self.drive_service.find_file(service, sub_id, filename)
+        prev = ""
+        if existing_id:
+            try:
+                prev = await self.drive_service.read_text_file(service, existing_id)
+            except Exception:
+                prev = ""
+        new_line = json.dumps(entry, ensure_ascii=False)
+        new_text = (prev or "") + new_line + "\n"
+        if existing_id:
+            await self.drive_service.update_text(
+                service, existing_id, new_text, mime_type="application/x-ndjson"
+            )
+        else:
+            await self.drive_service.upload_text(
+                service, sub_id, filename, new_text, mime_type="application/x-ndjson"
+            )
+        return True
+
+    async def _read_jsonl(self, subfolder: str, filename: str):
+        """JSONLファイルの全行をパースしてリストで返す。"""
+        if not self.drive_service:
+            return []
+        service = self.drive_service.get_service()
+        if not service:
+            return []
+        inv_id = await self._get_investment_folder(service)
+        sub_id = await self.drive_service.find_file(service, inv_id, subfolder)
+        if not sub_id:
+            return []
+        f_id = await self.drive_service.find_file(service, sub_id, filename)
+        if not f_id:
+            return []
+        try:
+            text = await self.drive_service.read_text_file(service, f_id)
+        except Exception:
+            return []
+        out = []
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out
 
     # ==========================================================
-    # Discordコマンド (薄いラッパー、サービスメソッドを呼ぶ)
+    # ポートフォリオ管理
     # ==========================================================
 
-    @commands.command(name="地合い", aliases=["sentiment", "market"])
-    async def market_sentiment(self, ctx: commands.Context):
-        async with ctx.typing():
-            res = await self.run_market_sentiment()
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        await self._send_long(ctx, res["report"])
-
-    @commands.command(name="銘柄スナップ", aliases=["snapshot", "snap"])
-    async def stock_snapshot(self, ctx: commands.Context, ticker: str = None):
-        if not ticker:
-            await ctx.send(
-                "使い方: `!銘柄スナップ <ティッカー>` 例: `!銘柄スナップ 7203`"
-            )
-            return
-        async with ctx.typing():
-            res = await self.run_stock_snapshot(ticker)
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        await self._send_long(ctx, res["report"])
-
-    @commands.command(name="銘柄審査", aliases=["audit"])
-    async def stock_audit(self, ctx: commands.Context, ticker: str = None):
-        if not ticker:
-            await ctx.send("使い方: `!銘柄審査 <ティッカー>`")
-            return
-        async with ctx.typing():
-            res = await self.run_stock_audit(ticker)
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        await self._send_long(ctx, res["audit"])
-
-    @commands.command(name="決算予定", aliases=["earnings"])
-    async def earnings_schedule(self, ctx: commands.Context, ticker: str = None):
-        if not ticker:
-            await ctx.send("使い方: `!決算予定 <ティッカー>`")
-            return
-        if not self.calendar_service:
-            await ctx.send("Google Calendarが未設定のため使えません。")
-            return
-        async with ctx.typing():
-            res = await self.run_earnings_schedule(ticker)
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        data = res.get("data") or {}
-        registered = res.get("registered") or []
-        msg_lines = [
-            f"**{data.get('company_name', res['ticker'])} ({res['ticker']})**",
-            f"次回決算: {data.get('next_earnings_date', '?')} ({data.get('earnings_time', '?')})",
-        ]
-        for r in registered:
-            if "error" in r:
-                msg_lines.append(f"❌ {r.get('summary')}: {r['error']}")
-            else:
-                msg_lines.append(f"✅ {r.get('summary')}: {r.get('result')}")
-        await self._send_long(ctx, "\n".join(msg_lines))
-
-    @commands.command(name="決算資料", aliases=["earnings_docs", "docs"])
-    async def earnings_documents(self, ctx: commands.Context, ticker: str = None):
-        if not ticker:
-            await ctx.send("使い方: `!決算資料 <ティッカー>`")
-            return
-        async with ctx.typing():
-            res = await self.run_earnings_documents(ticker)
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        await self._send_long(ctx, res["report"])
-
-    @commands.command(name="CEO検証", aliases=["ceo_check", "ceo"])
-    async def ceo_crosscheck(
-        self,
-        ctx: commands.Context,
-        ticker: str = None,
-        video_url: str = None,
-        *,
-        video_title: str = "",
-    ):
-        if not ticker or not video_url:
-            await ctx.send(
-                "使い方: `!CEO検証 <ティッカー> <YouTube URL> [動画タイトル]`"
-            )
-            return
-        async with ctx.typing():
-            res = await self.run_ceo_crosscheck(
-                ticker, video_url, video_title=video_title
-            )
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        await self._send_long(ctx, res["analysis"])
-
-    @commands.command(name="投資憲法", aliases=["constitution"])
-    async def show_constitution(self, ctx: commands.Context):
-        res = await self.run_get_constitution()
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        await self._send_long(ctx, res["content"])
-
-    @commands.command(name="投資憲法初期化", aliases=["init_constitution"])
-    async def init_constitution(self, ctx: commands.Context):
-        res = await self.run_init_constitution(force=False)
-        if not res.get("ok"):
-            await ctx.send(f"❌ {res.get('error')}")
-            return
-        await ctx.send(
-            f"投資憲法サンプルを作成しました: `Investment/{CONSTITUTION_FILE}`"
+    async def portfolio_list(self) -> dict:
+        holdings = await self._read_json_file(
+            PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
         )
+        return {"ok": True, "holdings": holdings}
 
+    async def portfolio_add(self, holding: dict) -> dict:
+        ticker = (holding.get("ticker") or "").strip()
+        if not ticker:
+            return {"ok": False, "error": "tickerが必要です"}
+        market, code = _resolve_market(ticker)
+        try:
+            shares = float(holding.get("shares", 0))
+            avg_cost = float(holding.get("avg_cost", 0))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "shares/avg_cost は数値を指定してください"}
+        if shares <= 0 or avg_cost <= 0:
+            return {"ok": False, "error": "shares と avg_cost は正の値が必要です"}
+
+        holdings = await self._read_json_file(
+            PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
+        )
+        # 既存があれば加重平均で更新、なければ追加
+        idx = next(
+            (i for i, h in enumerate(holdings) if h.get("code") == code),
+            None,
+        )
+        now_iso = datetime.datetime.now(JST).isoformat()
+        if idx is not None:
+            existing = holdings[idx]
+            old_shares = float(existing.get("shares", 0))
+            old_cost = float(existing.get("avg_cost", 0))
+            total_shares = old_shares + shares
+            new_avg = (
+                (old_shares * old_cost + shares * avg_cost) / total_shares
+                if total_shares > 0
+                else avg_cost
+            )
+            existing["shares"] = total_shares
+            existing["avg_cost"] = round(new_avg, 4)
+            existing["updated_at"] = now_iso
+            if holding.get("name"):
+                existing["name"] = holding["name"]
+            if holding.get("sector"):
+                existing["sector"] = holding["sector"]
+            if holding.get("notes"):
+                existing["notes"] = holding["notes"]
+        else:
+            holdings.append(
+                {
+                    "code": code,
+                    "ticker": ticker,
+                    "market": market,
+                    "name": holding.get("name") or code,
+                    "sector": holding.get("sector") or "",
+                    "shares": shares,
+                    "avg_cost": avg_cost,
+                    "currency": holding.get("currency") or ("JPY" if market == "JP" else "USD"),
+                    "opened_at": holding.get("opened_at") or now_iso,
+                    "updated_at": now_iso,
+                    "notes": holding.get("notes") or "",
+                }
+            )
+        await self._write_json_file(PORTFOLIO_FOLDER, HOLDINGS_FILE, holdings)
+        # 取引履歴にも追記
+        await self._append_jsonl(
+            PORTFOLIO_FOLDER,
+            TRANSACTIONS_FILE,
+            {
+                "ts": now_iso,
+                "action": "buy",
+                "code": code,
+                "shares": shares,
+                "price": avg_cost,
+                "notes": holding.get("notes") or "",
+            },
+        )
+        return {"ok": True, "holdings": holdings}
+
+    async def portfolio_remove(self, code: str, shares: float = None) -> dict:
+        """sharesがNoneなら全数売却。指定なら部分売却。"""
+        holdings = await self._read_json_file(
+            PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
+        )
+        idx = next(
+            (i for i, h in enumerate(holdings) if h.get("code") == code),
+            None,
+        )
+        if idx is None:
+            return {"ok": False, "error": f"{code} は保有していません"}
+
+        existing = holdings[idx]
+        now_iso = datetime.datetime.now(JST).isoformat()
+        sold_shares = float(existing.get("shares", 0)) if shares is None else float(shares)
+        if sold_shares <= 0:
+            return {"ok": False, "error": "売却数量が不正"}
+        if sold_shares >= float(existing.get("shares", 0)):
+            holdings.pop(idx)
+        else:
+            existing["shares"] = float(existing["shares"]) - sold_shares
+            existing["updated_at"] = now_iso
+        await self._write_json_file(PORTFOLIO_FOLDER, HOLDINGS_FILE, holdings)
+        await self._append_jsonl(
+            PORTFOLIO_FOLDER,
+            TRANSACTIONS_FILE,
+            {
+                "ts": now_iso,
+                "action": "sell",
+                "code": code,
+                "shares": sold_shares,
+                "price": existing.get("avg_cost"),
+            },
+        )
+        return {"ok": True, "holdings": holdings}
+
+    async def portfolio_transactions(self, limit: int = 100) -> dict:
+        items = await self._read_jsonl(PORTFOLIO_FOLDER, TRANSACTIONS_FILE)
+        items = items[-limit:][::-1]
+        return {"ok": True, "transactions": items}
+
+    # ==========================================================
+    # 投資日記
+    # ==========================================================
+
+    async def journal_add(self, entry: dict) -> dict:
+        title = (entry.get("title") or "").strip() or "(無題)"
+        content = (entry.get("content") or "").strip()
+        if not content:
+            return {"ok": False, "error": "本文が空です"}
+        ticker = (entry.get("ticker") or "").strip().upper()
+        action = (entry.get("action") or "").strip()  # buy / sell / hold / observe
+        emotion = (entry.get("emotion") or "").strip()
+        now = datetime.datetime.now(JST)
+        date_str = now.strftime("%Y-%m-%d")
+        time_str = now.strftime("%H:%M")
+        slug = _safe_filename(ticker or title)[:40]
+        filename = f"{date_str}_{now.strftime('%H%M%S')}_{slug}.md"
+
+        body_lines = [
+            f"---",
+            f"title: {title}",
+            f"date: {date_str}",
+            f"ticker: {ticker}",
+            f"action: {action}",
+            f"emotion: {emotion}",
+            f"tags: [investment, journal]",
+            f"---",
+            "",
+            f"# {title}",
+            "",
+            f"- 日時: {date_str} {time_str}",
+            f"- 銘柄: {ticker or '(なし)'}",
+            f"- アクション: {action or '(なし)'}",
+            f"- 感情: {emotion or '(なし)'}",
+            "",
+            "## 内容",
+            "",
+            content,
+        ]
+        body = "\n".join(body_lines)
+        await self._save_dated_note(JOURNAL_FOLDER, filename, body)
+
+        # インデックスを更新
+        index = await self._read_json_file(
+            JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]
+        )
+        index.append(
+            {
+                "filename": filename,
+                "date": date_str,
+                "time": time_str,
+                "title": title,
+                "ticker": ticker,
+                "action": action,
+                "emotion": emotion,
+            }
+        )
+        await self._write_json_file(JOURNAL_FOLDER, JOURNAL_INDEX_FILE, index)
+        return {"ok": True, "filename": filename}
+
+    async def journal_list(self, limit: int = 50) -> dict:
+        index = await self._read_json_file(
+            JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]
+        )
+        # 新しい順
+        items = list(reversed(index))[:limit]
+        return {"ok": True, "items": items}
+
+    async def journal_analyze_pattern(self, limit: int = 30) -> dict:
+        index = await self._read_json_file(
+            JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]
+        )
+        if not index:
+            return {"ok": False, "error": "投資日記がまだありません"}
+        # 直近N件を読み込む
+        recent = list(reversed(index))[:limit]
+        chunks = []
+        service = self.drive_service.get_service() if self.drive_service else None
+        if not service:
+            return {"ok": False, "error": "Drive接続失敗"}
+        inv_id = await self._get_investment_folder(service)
+        sub_id = await self.drive_service.find_file(service, inv_id, JOURNAL_FOLDER)
+        if not sub_id:
+            return {"ok": False, "error": "Journalフォルダがありません"}
+        for it in recent:
+            f_id = await self.drive_service.find_file(
+                service, sub_id, it.get("filename") or ""
+            )
+            if not f_id:
+                continue
+            content = await self.drive_service.read_text_file(service, f_id)
+            if content:
+                chunks.append(content)
+        if not chunks:
+            return {"ok": False, "error": "日記本文の読み込みに失敗"}
+        joined = "\n\n---\n\n".join(chunks)
+        if len(joined) > 80000:
+            joined = joined[:80000] + "\n\n（以下省略）"
+        prompt = PROMPT_JOURNAL_PATTERN.format(entries=joined)
+        result = await self._gemini_plain(prompt)
+        if not result:
+            return {"ok": False, "error": "Geminiでの解析に失敗"}
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        await self._save_dated_note(
+            JOURNAL_FOLDER, f"_pattern_{date_str}.md", result
+        )
+        return {"ok": True, "report": result}
+
+    # ==========================================================
+    # アラート
+    # ==========================================================
+
+    async def alerts_list(self) -> dict:
+        rules = await self._read_json_file(
+            ALERTS_FOLDER, ALERT_RULES_FILE, default=[]
+        )
+        return {"ok": True, "rules": rules}
+
+    async def alerts_add(self, rule: dict) -> dict:
+        ticker = (rule.get("ticker") or "").strip()
+        rtype = (rule.get("type") or "").strip()
+        valid_types = {
+            "per_below", "per_above",
+            "price_below", "price_above",
+            "drop_pct", "rise_pct",
+            "earnings_within_days",
+        }
+        if rtype not in valid_types:
+            return {
+                "ok": False,
+                "error": f"未知のアラート種別: {rtype}. 有効値: {sorted(valid_types)}",
+            }
+        if not ticker and rtype != "earnings_within_days":
+            return {"ok": False, "error": "tickerが必要です"}
+        try:
+            threshold = float(rule.get("threshold", 0))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "threshold は数値を指定してください"}
+
+        rules = await self._read_json_file(
+            ALERTS_FOLDER, ALERT_RULES_FILE, default=[]
+        )
+        market, code = _resolve_market(ticker) if ticker else ("", "")
+        new_rule = {
+            "id": int(datetime.datetime.now(JST).timestamp() * 1000),
+            "ticker": ticker,
+            "code": code,
+            "market": market,
+            "type": rtype,
+            "threshold": threshold,
+            "enabled": rule.get("enabled", True),
+            "memo": rule.get("memo") or "",
+            "created_at": datetime.datetime.now(JST).isoformat(),
+        }
+        rules.append(new_rule)
+        await self._write_json_file(ALERTS_FOLDER, ALERT_RULES_FILE, rules)
+        return {"ok": True, "rule": new_rule, "rules": rules}
+
+    async def alerts_remove(self, rule_id: int) -> dict:
+        rules = await self._read_json_file(
+            ALERTS_FOLDER, ALERT_RULES_FILE, default=[]
+        )
+        new_rules = [r for r in rules if r.get("id") != int(rule_id)]
+        if len(new_rules) == len(rules):
+            return {"ok": False, "error": f"rule_id={rule_id} が見つかりません"}
+        await self._write_json_file(ALERTS_FOLDER, ALERT_RULES_FILE, new_rules)
+        return {"ok": True, "rules": new_rules}
+
+    async def alerts_toggle(self, rule_id: int, enabled: bool) -> dict:
+        rules = await self._read_json_file(
+            ALERTS_FOLDER, ALERT_RULES_FILE, default=[]
+        )
+        for r in rules:
+            if r.get("id") == int(rule_id):
+                r["enabled"] = bool(enabled)
+                await self._write_json_file(ALERTS_FOLDER, ALERT_RULES_FILE, rules)
+                return {"ok": True, "rules": rules}
+        return {"ok": False, "error": f"rule_id={rule_id} が見つかりません"}
+
+    async def alerts_check_now(self) -> dict:
+        """現在のアラートルールをすべて評価し、ヒットしたものを返す。"""
+        rules = await self._read_json_file(
+            ALERTS_FOLDER, ALERT_RULES_FILE, default=[]
+        )
+        active = [r for r in rules if r.get("enabled")]
+        if not active:
+            return {"ok": True, "hits": [], "checked": 0}
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        # すべてのルールをまとめてGeminiに渡し、現在の市場データで判定させる
+        rules_str = json.dumps(active, ensure_ascii=False, indent=2)
+        today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        prompt = (
+            f"以下の投資アラートルールを、Google検索とGoogleファイナンスから取得"
+            f"できる現在の最新データで評価してください。今日の日付は {today} です。\n\n"
+            f"【ルール】\n{rules_str}\n\n"
+            f"各ルールを評価し、ヒットしたものを報告してください。\n"
+            f"出力は以下の JSON のみで、前置き不要:\n"
+            f"{{\n"
+            f'  "hits": [\n'
+            f'    {{"id": 123, "ticker": "...", "type": "...", "threshold": 0,'
+            f'      "current_value": 0, "message": "1行で日本語"}}\n'
+            f"  ],\n"
+            f'  "checked_count": 0,\n'
+            f'  "as_of": "YYYY-MM-DD HH:MM"\n'
+            f"}}\n"
+            f"ルール種別の意味:\n"
+            f"- per_below/per_above: PERが threshold を下回った/上回った\n"
+            f"- price_below/price_above: 株価が threshold を下回った/上回った\n"
+            f"- drop_pct/rise_pct: 直近1ヶ月で threshold% 以上下落/上昇\n"
+            f"- earnings_within_days: 次回決算が threshold 日以内に迫っている"
+        )
+        raw = await self._gemini_with_search(prompt)
+        data = self._extract_json(raw) or {}
+        hits = data.get("hits") or []
+        # ログ追記
+        for h in hits:
+            await self._append_jsonl(
+                ALERTS_FOLDER,
+                ALERT_LOG_FILE,
+                {"ts": datetime.datetime.now(JST).isoformat(), **h},
+            )
+        return {
+            "ok": True,
+            "hits": hits,
+            "checked": data.get("checked_count", len(active)),
+            "as_of": data.get("as_of") or today,
+            "raw": raw if not data else None,
+        }
+
+    # ==========================================================
+    # 同業他社比較
+    # ==========================================================
+
+    async def run_peer_comparison(self, ticker: str) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        market, code = _resolve_market(ticker)
+        prompt = PROMPT_PEER_COMPARISON.format(ticker=code, market=market)
+        result = await self._gemini_with_search(prompt)
+        if not result:
+            return {"ok": False, "error": "比較レポートの生成に失敗"}
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filename = f"{date_str}_{_safe_filename(code)}.md"
+        body = (
+            f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
+            f"tags: [investment, comparison]\n---\n\n{result}"
+        )
+        await self._save_dated_note(COMPARISONS_FOLDER, filename, body)
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "report": result,
+            "saved_as": filename,
+        }
+
+    # ==========================================================
+    # ニュースセンチメント
+    # ==========================================================
+
+    async def run_news_sentiment(self, ticker: str) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        market, code = _resolve_market(ticker)
+        prompt = PROMPT_NEWS_SENTIMENT.format(ticker=code, market=market)
+        result = await self._gemini_with_search(prompt)
+        if not result:
+            return {"ok": False, "error": "ニュース取得に失敗"}
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        filename = f"{date_str}_{_safe_filename(code)}.md"
+        body = (
+            f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
+            f"tags: [investment, news_sentiment]\n---\n\n{result}"
+        )
+        await self._save_dated_note(NEWS_SENTIMENT_FOLDER, filename, body)
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "report": result,
+            "saved_as": filename,
+        }
+
+    # ==========================================================
+    # 配当カレンダー
+    # ==========================================================
+
+    async def run_dividend_schedule(
+        self, ticker: str, register_calendar: bool = True
+    ) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        market, code = _resolve_market(ticker)
+        prompt = PROMPT_DIVIDEND_SCHEDULE.format(ticker=code, market=market)
+        raw = await self._gemini_with_search(prompt)
+        if not raw:
+            return {"ok": False, "error": "配当情報の取得に失敗"}
+        data = self._extract_json(raw)
+        if not data:
+            return {
+                "ok": False,
+                "error": "配当情報のパースに失敗",
+                "raw": raw[:1500],
+            }
+        company = data.get("company_name") or code
+        events = data.get("events") or []
+        currency = data.get("currency") or ("JPY" if market == "JP" else "USD")
+
+        # Markdownレポート
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        lines = [
+            f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
+            f"tags: [investment, dividend]\n---\n",
+            f"# 💴 {company} ({code}) 配当カレンダー",
+            "",
+            f"- 年間配当: {data.get('annual_dividend_per_share', 'N/A')} {currency}/株",
+            f"- 配当利回り: {data.get('yield_pct', 'N/A')}%",
+            f"- 信頼度: {data.get('confidence', 'N/A')}",
+            f"- 出典: {data.get('source', 'N/A')}",
+            "",
+            "## 🗓 イベント",
+            "",
+        ]
+        if not events:
+            lines.append("（取得できる配当イベントがありませんでした）")
+        else:
+            for ev in events:
+                lines.append(
+                    f"- **{ev.get('date', '?')}** [{ev.get('type', '?')}] "
+                    f"{ev.get('amount_per_share', '?')} {currency}/株 "
+                    f"({ev.get('fiscal_period', '?')})"
+                )
+        body = "\n".join(lines)
+
+        registered = []
+        if register_calendar and self.calendar_service and events:
+            for ev in events:
+                ev_date = ev.get("date")
+                ev_type = ev.get("type")
+                if not (ev_date and ev_type):
+                    continue
+                type_label_map = {
+                    "ex_dividend": "配当落ち日",
+                    "record_date": "権利確定日",
+                    "payment_date": "配当支払日",
+                    "forecast": "配当予想",
+                }
+                summary = (
+                    f"💴 {company} {type_label_map.get(ev_type, ev_type)}"
+                )
+                desc = (
+                    f"配当: {ev.get('amount_per_share', '?')} {currency}/株\n"
+                    f"対象期: {ev.get('fiscal_period', '?')}\n"
+                    f"出典: {data.get('source', 'N/A')}"
+                )
+                try:
+                    r = await self.calendar_service.create_event(
+                        summary=summary,
+                        start_time=ev_date,
+                        end_time=ev_date,
+                        description=desc,
+                    )
+                    registered.append({"summary": summary, "date": ev_date, "result": r})
+                except Exception as e:
+                    registered.append({"error": str(e), "summary": summary})
+        await self._save_dated_note(
+            DIVIDENDS_FOLDER, f"{date_str}_{_safe_filename(code)}.md", body
+        )
+        return {
+            "ok": True,
+            "ticker": code,
+            "market": market,
+            "data": data,
+            "report": body,
+            "registered": registered,
+        }
+
+    # ==========================================================
+    # 投資憲法レビュー
+    # ==========================================================
+
+    async def run_constitution_review(self, lookback_days: int = 180) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        constitution = await self._read_constitution()
+        if not constitution:
+            return {"ok": False, "error": "投資憲法が存在しません"}
+
+        cutoff = datetime.datetime.now(JST) - datetime.timedelta(days=lookback_days)
+        cutoff_str = cutoff.strftime("%Y-%m-%d")
+
+        # 過去Nヶ月の審査履歴を集約
+        audit_files = await self._list_subfolder_files(AUDITS_FOLDER, limit=50)
+        audit_chunks = []
+        service = self.drive_service.get_service() if self.drive_service else None
+        if service:
+            for f in audit_files:
+                name = f.get("name") or ""
+                if name[:10] >= cutoff_str:
+                    content = await self.drive_service.read_text_file(
+                        service, f.get("id")
+                    )
+                    if content:
+                        audit_chunks.append(f"### {name}\n{content[:3000]}")
+        audits_str = "\n\n".join(audit_chunks)[:40000] or "(履歴なし)"
+
+        # 投資日記の最近を抜粋
+        index = await self._read_json_file(
+            JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]
+        )
+        recent_journal = [
+            it for it in index if (it.get("date", "") >= cutoff_str)
+        ]
+        journal_summary_lines = []
+        for it in recent_journal[-30:]:
+            journal_summary_lines.append(
+                f"- {it.get('date')} [{it.get('ticker', '')}/{it.get('action', '')}] "
+                f"{it.get('title')} (感情: {it.get('emotion', '')})"
+            )
+        journal_str = "\n".join(journal_summary_lines) or "(日記なし)"
+
+        # 保有銘柄
+        holdings = await self._read_json_file(
+            PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
+        )
+        holdings_str = json.dumps(holdings, ensure_ascii=False, indent=2)
+
+        prompt = PROMPT_CONSTITUTION_REVIEW.format(
+            constitution=constitution,
+            audits=audits_str,
+            journal=journal_str,
+            holdings=holdings_str,
+        )
+        result = await self._gemini_plain(prompt)
+        if not result:
+            return {"ok": False, "error": "レビュー生成に失敗"}
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        await self._save_dated_note(
+            CONSTITUTION_REVIEWS_FOLDER, f"{date_str}.md", result
+        )
+        return {"ok": True, "report": result, "lookback_days": lookback_days}
+
+    # ==========================================================
+    # リスク評価
+    # ==========================================================
+
+    async def run_risk_assessment(self) -> dict:
+        if not self.gemini_client:
+            return {"ok": False, "error": "Geminiクライアント未設定"}
+        constitution = await self._read_constitution() or ""
+        # ポジション管理セクションを抜粋
+        pos_section = ""
+        if constitution:
+            m = re.search(
+                r"(##\s*💰?\s*ポジション管理.*?)(?=\n##\s|\Z)",
+                constitution,
+                re.DOTALL,
+            )
+            if m:
+                pos_section = m.group(1).strip()
+        if not pos_section:
+            pos_section = "(投資憲法のポジション管理セクションが見つかりません)"
+
+        holdings = await self._read_json_file(
+            PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
+        )
+        if not holdings:
+            return {"ok": False, "error": "保有銘柄がありません"}
+
+        # 各銘柄の現在価格をGeminiで一気に取得
+        codes = [h.get("code") for h in holdings if h.get("code")]
+        market_data_prompt = (
+            "次の銘柄について Google検索/Googleファイナンスから現在株価とPERを取得し、"
+            "JSONのみで返してください。前置き不要。\n\n"
+            f"銘柄リスト: {codes}\n\n"
+            "形式:\n"
+            '{"data": [{"code": "...", "price": 0, "currency": "JPY/USD", "per": 0, "change_pct_1m": 0}]}\n'
+        )
+        raw = await self._gemini_with_search(market_data_prompt)
+        market_obj = self._extract_json(raw) or {"data": []}
+        market_data_str = json.dumps(market_obj, ensure_ascii=False, indent=2)
+
+        prompt = PROMPT_RISK_ASSESSMENT.format(
+            constitution_position_rules=pos_section,
+            holdings_json=json.dumps(holdings, ensure_ascii=False, indent=2),
+            market_data=market_data_str,
+        )
+        report = await self._gemini_plain(prompt)
+        if not report:
+            return {"ok": False, "error": "リスク評価の生成に失敗"}
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        await self._save_dated_note(RISK_REPORTS_FOLDER, f"{date_str}.md", report)
+        return {
+            "ok": True,
+            "report": report,
+            "market_data": market_obj.get("data", []),
+        }
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(InvestmentCog(bot))

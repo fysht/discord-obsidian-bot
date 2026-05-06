@@ -1547,3 +1547,53 @@ mark.search-hl {
     margin: 8px 0;
     color: var(--text-secondary);
 }
+
+/* ポートフォリオ・日記・アラートの行 */
+.invest-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-glass);
+    font-size: 0.84rem;
+}
+.invest-row:last-child { border-bottom: none; }
+.invest-row .row-main { flex: 1; min-width: 0; }
+.invest-row .row-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.invest-row .row-meta {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.invest-row .row-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+.invest-row .row-actions button {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border-glass);
+    color: var(--text-secondary);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    cursor: pointer;
+}
+.invest-row .row-actions button:hover {
+    background: rgba(0,186,152,0.15);
+    color: var(--accent);
+}
+.invest-row.disabled { opacity: 0.5; }
+.invest-empty {
+    padding: 20px 12px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    text-align: center;
+}

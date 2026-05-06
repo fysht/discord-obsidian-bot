@@ -3245,3 +3245,168 @@ async def investment_history(category: str, limit: int = 20):
 async def investment_history_item(category: str, file_id: str):
     cog = _get_investment_cog()
     return await cog.read_history_item(category, file_id)
+
+
+# ----- 同業比較 / ニュース / 配当 / リスク / 憲法レビュー -----
+
+@router.post("/investment/peer_comparison", dependencies=[Depends(verify_api_key)])
+async def investment_peer_comparison(req: InvestmentTickerRequest):
+    cog = _get_investment_cog()
+    return await cog.run_peer_comparison(req.ticker)
+
+
+@router.post("/investment/news_sentiment", dependencies=[Depends(verify_api_key)])
+async def investment_news_sentiment(req: InvestmentTickerRequest):
+    cog = _get_investment_cog()
+    return await cog.run_news_sentiment(req.ticker)
+
+
+class InvestmentDividendRequest(BaseModel):
+    ticker: str
+    register_calendar: bool = True
+
+
+@router.post("/investment/dividend", dependencies=[Depends(verify_api_key)])
+async def investment_dividend(req: InvestmentDividendRequest):
+    cog = _get_investment_cog()
+    return await cog.run_dividend_schedule(
+        req.ticker, register_calendar=req.register_calendar
+    )
+
+
+@router.post("/investment/risk_assessment", dependencies=[Depends(verify_api_key)])
+async def investment_risk():
+    cog = _get_investment_cog()
+    return await cog.run_risk_assessment()
+
+
+class InvestmentReviewRequest(BaseModel):
+    lookback_days: int = 180
+
+
+@router.post("/investment/constitution_review", dependencies=[Depends(verify_api_key)])
+async def investment_constitution_review(req: InvestmentReviewRequest):
+    cog = _get_investment_cog()
+    return await cog.run_constitution_review(lookback_days=req.lookback_days)
+
+
+# ----- ポートフォリオ -----
+
+class PortfolioAddRequest(BaseModel):
+    ticker: str
+    shares: float
+    avg_cost: float
+    name: Optional[str] = None
+    sector: Optional[str] = None
+    currency: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PortfolioRemoveRequest(BaseModel):
+    code: str
+    shares: Optional[float] = None  # None なら全数売却
+
+
+@router.get("/investment/portfolio", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_list():
+    cog = _get_investment_cog()
+    return await cog.portfolio_list()
+
+
+@router.post("/investment/portfolio/add", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_add(req: PortfolioAddRequest):
+    cog = _get_investment_cog()
+    return await cog.portfolio_add(req.dict())
+
+
+@router.post("/investment/portfolio/remove", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_remove(req: PortfolioRemoveRequest):
+    cog = _get_investment_cog()
+    return await cog.portfolio_remove(req.code, shares=req.shares)
+
+
+@router.get("/investment/portfolio/transactions", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_transactions(limit: int = 100):
+    cog = _get_investment_cog()
+    return await cog.portfolio_transactions(limit=limit)
+
+
+# ----- 投資日記 -----
+
+class JournalAddRequest(BaseModel):
+    title: Optional[str] = ""
+    content: str
+    ticker: Optional[str] = ""
+    action: Optional[str] = ""   # buy / sell / hold / observe
+    emotion: Optional[str] = ""
+
+
+@router.get("/investment/journal", dependencies=[Depends(verify_api_key)])
+async def investment_journal_list(limit: int = 50):
+    cog = _get_investment_cog()
+    return await cog.journal_list(limit=limit)
+
+
+@router.post("/investment/journal/add", dependencies=[Depends(verify_api_key)])
+async def investment_journal_add(req: JournalAddRequest):
+    cog = _get_investment_cog()
+    return await cog.journal_add(req.dict())
+
+
+class JournalAnalyzeRequest(BaseModel):
+    limit: int = 30
+
+
+@router.post("/investment/journal/analyze", dependencies=[Depends(verify_api_key)])
+async def investment_journal_analyze(req: JournalAnalyzeRequest):
+    cog = _get_investment_cog()
+    return await cog.journal_analyze_pattern(limit=req.limit)
+
+
+# ----- アラート -----
+
+class AlertAddRequest(BaseModel):
+    ticker: Optional[str] = ""
+    type: str  # per_below / per_above / price_below / price_above / drop_pct / rise_pct / earnings_within_days
+    threshold: float
+    enabled: bool = True
+    memo: Optional[str] = ""
+
+
+class AlertToggleRequest(BaseModel):
+    rule_id: int
+    enabled: bool
+
+
+class AlertRemoveRequest(BaseModel):
+    rule_id: int
+
+
+@router.get("/investment/alerts", dependencies=[Depends(verify_api_key)])
+async def investment_alerts_list():
+    cog = _get_investment_cog()
+    return await cog.alerts_list()
+
+
+@router.post("/investment/alerts/add", dependencies=[Depends(verify_api_key)])
+async def investment_alerts_add(req: AlertAddRequest):
+    cog = _get_investment_cog()
+    return await cog.alerts_add(req.dict())
+
+
+@router.post("/investment/alerts/toggle", dependencies=[Depends(verify_api_key)])
+async def investment_alerts_toggle(req: AlertToggleRequest):
+    cog = _get_investment_cog()
+    return await cog.alerts_toggle(req.rule_id, req.enabled)
+
+
+@router.post("/investment/alerts/remove", dependencies=[Depends(verify_api_key)])
+async def investment_alerts_remove(req: AlertRemoveRequest):
+    cog = _get_investment_cog()
+    return await cog.alerts_remove(req.rule_id)
+
+
+@router.post("/investment/alerts/check", dependencies=[Depends(verify_api_key)])
+async def investment_alerts_check():
+    cog = _get_investment_cog()
+    return await cog.alerts_check_now()
