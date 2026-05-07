@@ -30,7 +30,11 @@ class DailySummaryCog(commands.Cog):
     async def _run(self):
         """サマリー生成を試行し、質問が出た場合のみマネージャーから声をかける。"""
         try:
-            from api.routes import _generate_daily_summary, _save_daily_summary_to_obsidian
+            from api.routes import (
+                _generate_daily_summary,
+                _save_daily_summary_to_obsidian,
+                _save_manager_qa_to_obsidian,
+            )
             from api.database import (
                 add_daily_question, get_questions_by_date, resolve_questions,
             )
@@ -85,6 +89,7 @@ class DailySummaryCog(commands.Cog):
         if summary:
             saved = await _save_daily_summary_to_obsidian(today_str, summary)
             if saved:
+                await _save_manager_qa_to_obsidian(today_str)
                 await resolve_questions(today_str, scope='summary')
                 if partner_cog:
                     instruction = (

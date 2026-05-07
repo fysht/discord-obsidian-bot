@@ -795,14 +795,14 @@ function renderTaskGroup(container, tasks, listName) {
             <div class="list-item gtask-item" style="gap:6px;${indent}" id="gtask-item-${t.id}" data-task-id="${t.id}" data-list="${listName}" data-parent="${t.parent || ''}">
                 <span class="gtask-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:12px 10px;margin-left:-8px;user-select:none;" title="長押しして並び替え">⠿</span>
                 ${childMark}
-                <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}')" style="cursor:pointer;"></div>
+                <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}', false)" style="cursor:pointer;"></div>
                 <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
                 <button class="task-due-btn" onclick="openTaskDueEditor('${t.id}', '${listName}', '${escapeHtml(t.title).replace(/'/g, '&#39;')}', '${dueAttr}')" title="締切を編集">📅</button>
             </div>`;
         }),
         ...doneTasks.map(t => `
             <div class="list-item" style="gap:6px; opacity:0.5;" id="gtask-item-${t.id}">
-                <div class="checkbox-custom" style="background:var(--accent); border-color:var(--accent); pointer-events:none; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;">✓</div>
+                <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}', true)" style="background:var(--accent); border-color:var(--accent); cursor:pointer; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;" title="未完了に戻す">✓</div>
                 <div class="li-text" style="flex:1; text-decoration:line-through; color:var(--text-muted);">${escapeHtml(t.title)}</div>
             </div>
         `)
@@ -990,29 +990,46 @@ window.submitTaskDue = () => {
     }).catch(() => showToast('締切の更新に失敗しました', true));
 };
 
-window.toggleGoogleTask = async (taskId, listName) => {
+window.toggleGoogleTask = async (taskId, listName, currentlyCompleted = false) => {
+    const newState = !currentlyCompleted;
     const item = $(`#gtask-item-${taskId}`);
     if (item) {
         item.classList.add('task-syncing');
-        item.style.opacity = '0.5';
         const cb = item.querySelector('.checkbox-custom');
-        if (cb) {
-            cb.style.background = 'var(--accent)';
-            cb.style.borderColor = 'var(--accent)';
-            cb.style.color = '#fff';
-            cb.style.fontSize = '0.7rem';
-            cb.textContent = '✓';
-            cb.onclick = null;
+        if (newState) {
+            item.style.opacity = '0.5';
+            if (cb) {
+                cb.style.background = 'var(--accent)';
+                cb.style.borderColor = 'var(--accent)';
+                cb.style.color = '#fff';
+                cb.style.fontSize = '0.7rem';
+                cb.textContent = '✓';
+                cb.onclick = null;
+            }
+            const text = item.querySelector('.li-text');
+            if (text) text.style.textDecoration = 'line-through';
+        } else {
+            item.style.opacity = '1';
+            if (cb) {
+                cb.style.background = '';
+                cb.style.borderColor = '';
+                cb.style.color = '';
+                cb.style.fontSize = '';
+                cb.textContent = '';
+            }
+            const text = item.querySelector('.li-text');
+            if (text) {
+                text.style.textDecoration = '';
+                text.style.color = '';
+            }
         }
-        const text = item.querySelector('.li-text');
-        if (text) text.style.textDecoration = 'line-through';
     }
     try {
         await apiFetch('/api/google_tasks_action', {
             method: 'POST',
-            body: JSON.stringify({ action: 'toggle', task_id: taskId, completed: true, list_name: listName })
+            body: JSON.stringify({ action: 'toggle', task_id: taskId, completed: newState, list_name: listName })
         });
-        showToast('完了にしました！');
+        showToast(newState ? '完了にしました！' : '未完了に戻しました');
         loadDashboard();
     } catch (e) {
         showToast('更新に失敗しました', true);
@@ -5600,6 +5617,74 @@ window.removeHoldingFromAction = async () => {
         }
     } catch (e) {
         showToast('削除失敗: ' + (e.message || e), true);
+    }
+};
+
+window.openPortfolioEditFromAction = () => {
+    const code = _holdingActionCode;
+    if (!code) return;
+    const holding = (_investHoldingsCache || []).find(h => h.code === code);
+    if (!holding) {
+        showToast('保有銘柄情報が見つかりません', true);
+        return;
+    }
+    window.closeHoldingActionModal();
+    window.openPortfolioEditModal(holding);
+};
+
+window.openPortfolioEditModal = (holding) => {
+    if (!holding || !holding.code) return;
+    const set = (id, value) => { const el = $('#'+id); if (el) el.value = value == null ? '' : value; };
+    set('portfolio-edit-ticker', holding.code);
+    set('portfolio-edit-name', holding.name || '');
+    set('portfolio-edit-sector', holding.sector || '');
+    set('portfolio-edit-shares', holding.shares != null ? holding.shares : '');
+    set('portfolio-edit-cost', holding.avg_cost != null ? holding.avg_cost : '');
+    set('portfolio-edit-currency', holding.currency || '');
+    set('portfolio-edit-notes', holding.notes || '');
+    const modal = $('#invest-portfolio-edit-modal');
+    if (modal) {
+        modal.dataset.code = holding.code;
+        modal.classList.remove('hidden');
+    }
+};
+
+window.closePortfolioEditModal = () => $('#invest-portfolio-edit-modal')?.classList.add('hidden');
+
+window.submitPortfolioEdit = async () => {
+    const modal = $('#invest-portfolio-edit-modal');
+    const code = modal?.dataset?.code;
+    if (!code) {
+        showToast('対象銘柄が不明です', true);
+        return;
+    }
+    const sharesStr = $('#portfolio-edit-shares')?.value?.trim();
+    const costStr = $('#portfolio-edit-cost')?.value?.trim();
+    const body = { code };
+    if (sharesStr) body.shares = parseFloat(sharesStr);
+    if (costStr) body.avg_cost = parseFloat(costStr);
+    const name = $('#portfolio-edit-name')?.value?.trim();
+    const sector = $('#portfolio-edit-sector')?.value?.trim();
+    const currency = $('#portfolio-edit-currency')?.value?.trim();
+    const notes = $('#portfolio-edit-notes')?.value?.trim();
+    if (name) body.name = name;
+    if (sector) body.sector = sector;
+    if (currency) body.currency = currency;
+    if (notes) body.notes = notes;
+    try {
+        const data = await apiFetch('/api/investment/portfolio/edit', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        if (data && data.ok) {
+            showToast(`${code} を更新しました`);
+            window.closePortfolioEditModal();
+            window.loadPortfolio();
+        } else {
+            showToast(data?.error || '更新失敗', true);
+        }
+    } catch (e) {
+        showToast('更新失敗: ' + (e.message || e), true);
     }
 };
 

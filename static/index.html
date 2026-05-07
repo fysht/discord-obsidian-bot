@@ -300,21 +300,6 @@
                             </details>
                         </div>
                     </details>
-                    <div class="card diary-card">
-                        <div class="card-header">
-                            <span class="card-icon">📒</span>
-                            <span class="card-title">観察日記</span>
-                        </div>
-                        <div id="dash-alter-log" class="card-body diary-content"></div>
-                    </div>
-                    <div class="card journal-card">
-                        <div class="card-header">
-                            <span class="card-icon">📔</span>
-                            <span class="card-title">今日の日記</span>
-                            <button class="mini-link" onclick="openDailyJournalEditor()">編集</button>
-                        </div>
-                        <div id="dash-daily-journal" class="card-body diary-content"></div>
-                    </div>
                     <div class="card summary-card">
                         <div class="card-header">
                             <span class="card-icon">📅</span>
@@ -324,6 +309,21 @@
                         </div>
                         <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
                         <div id="dash-daily-summary" class="card-body diary-content"></div>
+                    </div>
+                    <div class="card journal-card">
+                        <div class="card-header">
+                            <span class="card-icon">📔</span>
+                            <span class="card-title">今日の日記</span>
+                            <button class="mini-link" onclick="openDailyJournalEditor()">編集</button>
+                        </div>
+                        <div id="dash-daily-journal" class="card-body diary-content"></div>
+                    </div>
+                    <div class="card diary-card">
+                        <div class="card-header">
+                            <span class="card-icon">📒</span>
+                            <span class="card-title">観察日記</span>
+                        </div>
+                        <div id="dash-alter-log" class="card-body diary-content"></div>
                     </div>
                     <div class="card next-actions-card">
                         <div class="card-header">
@@ -440,9 +440,9 @@
                                 <input type="text" id="invest-ticker-input" class="modern-input" style="flex:1;padding:10px;font-size:0.9rem;" placeholder="例: 7203 / AAPL">
                                 <button class="mini-link" onclick="openHoldingPicker('analysis')" title="保有銘柄から選ぶ">📂 保有から</button>
                             </div>
-                            <div class="action-chips" style="padding:0;margin-bottom:6px;flex-wrap:wrap;">
-                                <button class="chip-btn special" onclick="runStockSnapshot()">📷 スナップショット</button>
-                                <button class="chip-btn special" onclick="runStockAudit()">🎯 憲法審査</button>
+                            <div class="action-chips invest-action-grid" style="padding:0;margin-bottom:6px;">
+                                <button class="chip-btn" onclick="runStockSnapshot()">📷 スナップショット</button>
+                                <button class="chip-btn" onclick="runStockAudit()">🎯 憲法審査</button>
                                 <button class="chip-btn" onclick="runEarningsSchedule()">📅 決算予定</button>
                                 <button class="chip-btn" onclick="runEarningsDocuments()">📑 決算資料</button>
                                 <button class="chip-btn" onclick="runPeerComparison()">🔬 同業比較</button>
@@ -638,7 +638,8 @@
             </div>
             <div class="modal-actions" style="margin-top:14px;">
                 <button class="modal-btn cancel" onclick="closeHoldingActionModal()">閉じる</button>
-                <button class="modal-btn cancel" id="invest-holding-action-remove" onclick="removeHoldingFromAction()" style="margin-left:auto;color:#ff6b6b;">🗑 削除</button>
+                <button class="modal-btn cancel" id="invest-holding-action-edit" onclick="openPortfolioEditFromAction()" style="margin-left:auto;">✏️ 編集</button>
+                <button class="modal-btn cancel" id="invest-holding-action-remove" onclick="removeHoldingFromAction()" style="color:#ff6b6b;">🗑 削除</button>
             </div>
         </div>
     </div>
@@ -662,6 +663,29 @@
             <div class="modal-actions" style="margin-top:16px;">
                 <button class="modal-btn cancel" onclick="closePortfolioAddModal()">キャンセル</button>
                 <button class="modal-btn submit" onclick="submitPortfolioAdd()">追加</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== PORTFOLIO EDIT MODAL ========== -->
+    <div id="invest-portfolio-edit-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:520px;">
+            <h3 style="margin-top:0;">✏️ 保有銘柄を編集</h3>
+            <p style="font-size:0.78rem;color:var(--text-muted);margin:-6px 0 12px;">
+                ティッカーは変更できません。変更したい場合は削除して追加してください。
+            </p>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <input type="text" id="portfolio-edit-ticker" class="modern-input" placeholder="ティッカー" readonly style="opacity:0.6;">
+                <input type="text" id="portfolio-edit-name" class="modern-input" placeholder="銘柄名 (任意)">
+                <input type="text" id="portfolio-edit-sector" class="modern-input" placeholder="セクター (任意)">
+                <input type="number" step="any" min="0" id="portfolio-edit-shares" class="modern-input" placeholder="株数">
+                <input type="number" step="any" min="0" id="portfolio-edit-cost" class="modern-input" placeholder="平均取得単価">
+                <input type="text" id="portfolio-edit-currency" class="modern-input" placeholder="通貨 (例: JPY / USD)">
+                <textarea id="portfolio-edit-notes" class="modern-input" placeholder="メモ (任意)" style="min-height:60px;"></textarea>
+            </div>
+            <div class="modal-actions" style="margin-top:16px;">
+                <button class="modal-btn cancel" onclick="closePortfolioEditModal()">キャンセル</button>
+                <button class="modal-btn submit" onclick="submitPortfolioEdit()">保存</button>
             </div>
         </div>
     </div>

@@ -3004,6 +3004,74 @@ async def _save_daily_summary_to_obsidian(date_str: str, summary_md: str) -> boo
         return False
 
 
+async def _save_manager_qa_to_obsidian(date_str: str) -> bool:
+    """その日の質問と回答ペアを `## 🤝 Manager Q&A` セクションへ書き出す。
+    answer が空の質問はスキップする。質問が0件ならセクションを作らない。"""
+    import re as _re
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return False
+
+    qa_items = await get_questions_by_date(date_str, scope='summary')
+    answered = [q for q in qa_items if (q.get("answer") or "").strip()]
+    if not answered:
+        return False
+
+    lines = []
+    for q in answered:
+        question = (q.get("question") or "").strip()
+        answer = (q.get("answer") or "").strip()
+        if not question or not answer:
+            continue
+        lines.append(f"- **Q:** {question}")
+        ans_lines = answer.splitlines()
+        if not ans_lines:
+            ans_lines = [answer]
+        lines.append(f"  - **A:** {ans_lines[0]}")
+        for extra in ans_lines[1:]:
+            if extra.strip():
+                lines.append(f"    {extra}")
+    if not lines:
+        return False
+    qa_text = "\n".join(lines)
+
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        if not folder_id:
+            folder_id = await chat_service.drive_service.create_folder(
+                service, chat_service.drive_folder_id, "DailyNotes"
+            )
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date_str}.md")
+        if f_id:
+            content = await chat_service.drive_service.read_text_file(service, f_id)
+        else:
+            content = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n"
+
+        section_header = "## 🤝 Manager Q&A"
+        replacement = f"{section_header}\n{qa_text}"
+        pattern = _re.compile(rf"{_re.escape(section_header)}\n.*?(?=\n## |\Z)", _re.DOTALL)
+        if pattern.search(content):
+            new_content = pattern.sub(replacement, content, count=1)
+        else:
+            from utils.obsidian_utils import update_section
+            new_content = update_section(content, qa_text, section_header)
+
+        if f_id:
+            await chat_service.drive_service.update_text(service, f_id, new_content)
+        else:
+            await chat_service.drive_service.upload_text(
+                service, folder_id, f"{date_str}.md", new_content
+            )
+        return True
+    except Exception as e:
+        logging.error(f"_save_manager_qa_to_obsidian error: {e}")
+        return False
+
+
 class DailySummaryUpdate(BaseModel):
     text: str
     date: Optional[str] = None
@@ -3016,6 +3084,7 @@ async def daily_summary_set(req: DailySummaryUpdate):
     try:
         saved = await _save_daily_summary_to_obsidian(date_str, req.text or "")
         if saved:
+            await _save_manager_qa_to_obsidian(date_str)
             await resolve_questions(date_str, scope='summary')
             return {"ok": True, "saved": True, "date": date_str}
         raise HTTPException(status_code=500, detail="保存に失敗しました")
@@ -3102,6 +3171,7 @@ async def daily_summary_generate(req: DailySummaryGenerateRequest):
     if summary and will_finalize:
         saved = await _save_daily_summary_to_obsidian(date_str, summary)
         if saved:
+            await _save_manager_qa_to_obsidian(date_str)
             await resolve_questions(date_str, scope='summary')
 
     return {
@@ -3307,6 +3377,16 @@ class PortfolioRemoveRequest(BaseModel):
     shares: Optional[float] = None  # None なら全数売却
 
 
+class PortfolioEditRequest(BaseModel):
+    code: str
+    shares: Optional[float] = None
+    avg_cost: Optional[float] = None
+    name: Optional[str] = None
+    sector: Optional[str] = None
+    currency: Optional[str] = None
+    notes: Optional[str] = None
+
+
 @router.get("/investment/portfolio", dependencies=[Depends(verify_api_key)])
 async def investment_portfolio_list():
     cog = _get_investment_cog()
@@ -3323,6 +3403,14 @@ async def investment_portfolio_add(req: PortfolioAddRequest):
 async def investment_portfolio_remove(req: PortfolioRemoveRequest):
     cog = _get_investment_cog()
     return await cog.portfolio_remove(req.code, shares=req.shares)
+
+
+@router.post("/investment/portfolio/edit", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_edit(req: PortfolioEditRequest):
+    cog = _get_investment_cog()
+    payload = req.dict(exclude_none=True)
+    code = payload.pop("code")
+    return await cog.portfolio_update(code, **payload)
 
 
 @router.get("/investment/portfolio/transactions", dependencies=[Depends(verify_api_key)])

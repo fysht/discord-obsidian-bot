@@ -37,8 +37,9 @@ import json
 import asyncio
 import logging
 import datetime
+import random
 
-from discord.ext import commands
+from discord.ext import commands, tasks
 from google.genai import types
 
 from config import JST
@@ -198,6 +199,164 @@ class InvestmentCog(commands.Cog):
 
     async def cog_load(self):
         asyncio.create_task(self._ensure_constitution_exists())
+        # 自動実行ループ群（環境変数 INVESTMENT_AUTO_DISABLE=1 で全停止）
+        if os.getenv("INVESTMENT_AUTO_DISABLE", "0") != "1":
+            for task in (
+                self.auto_market_sentiment_task,
+                self.auto_alerts_and_earnings_task,
+                self.auto_news_sentiment_task,
+            ):
+                try:
+                    task.start()
+                except RuntimeError:
+                    pass
+
+    def cog_unload(self):
+        for task in (
+            self.auto_market_sentiment_task,
+            self.auto_alerts_and_earnings_task,
+            self.auto_news_sentiment_task,
+        ):
+            try:
+                task.cancel()
+            except Exception:
+                pass
+
+    # ==========================================================
+    # 自動実行ヘルパー
+    # ==========================================================
+
+    async def _notify_routine(self, body: str):
+        """投資レポートをユーザーへ通知する。PartnerCog経由でDiscord/PWAに届ける。"""
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog or not body:
+            return
+        instruction = (
+            "次の投資レポートをユーザーへ優しいタメ口で届けてください。"
+            "前置きや改変はせず、本文をそのまま送ってください。\n\n" + body
+        )
+        try:
+            await partner_cog.generate_and_send_routine_message("", instruction)
+        except Exception as e:
+            logging.error(f"InvestmentCog notify error: {e}")
+
+    @tasks.loop(time=datetime.time(hour=6, minute=30, tzinfo=JST))
+    async def auto_market_sentiment_task(self):
+        """毎朝 06:30 (JST) に米国市場クローズ後の地合いを取得して通知する。"""
+        await asyncio.sleep(random.randint(0, 180))
+        try:
+            result = await self.run_market_sentiment()
+        except Exception:
+            logging.exception("auto_market_sentiment_task failed")
+            return
+        if not result.get("ok"):
+            return
+        report = (result.get("report") or "").strip()
+        if not report:
+            return
+        header = "🌅 今朝の市場の地合い"
+        await self._notify_routine(f"{header}\n\n{report}")
+
+    @auto_market_sentiment_task.before_loop
+    async def _before_auto_market_sentiment(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(time=datetime.time(hour=7, minute=0, tzinfo=JST))
+    async def auto_alerts_and_earnings_task(self):
+        """毎朝 07:00 (JST) に価格アラートをチェックし、保有銘柄の当日決算予定も通知する。"""
+        await asyncio.sleep(random.randint(0, 180))
+        lines = []
+
+        # 1) 価格アラート
+        try:
+            alerts_result = await self.alerts_check_now()
+            hits = alerts_result.get("hits") or []
+            if hits:
+                lines.append("🔔 価格アラート")
+                for h in hits:
+                    msg = h.get("message") or "(詳細不明)"
+                    lines.append(f"- {h.get('ticker', '?')}: {msg}")
+        except Exception:
+            logging.exception("auto alerts_check failed")
+
+        # 2) 保有銘柄の当日決算
+        try:
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            holdings = await self._read_json_file(
+                PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
+            )
+            today_earnings = []
+            for h in holdings:
+                code = h.get("code")
+                if not code:
+                    continue
+                try:
+                    res = await self.run_earnings_schedule(code, register_calendar=False)
+                except Exception:
+                    logging.exception(f"earnings_schedule failed for {code}")
+                    continue
+                if not res.get("ok"):
+                    continue
+                ed = (res.get("data") or {}).get("next_earnings_date") or res.get("earnings_date")
+                if ed and ed.startswith(today):
+                    company = (res.get("data") or {}).get("company_name") or code
+                    today_earnings.append(f"- {company} ({code})")
+                await asyncio.sleep(2)
+            if today_earnings:
+                lines.append("📊 本日の決算予定（保有銘柄）")
+                lines.extend(today_earnings)
+        except Exception:
+            logging.exception("auto today earnings failed")
+
+        if lines:
+            await self._notify_routine("\n".join(lines))
+
+    @auto_alerts_and_earnings_task.before_loop
+    async def _before_auto_alerts_and_earnings(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(time=datetime.time(hour=8, minute=30, tzinfo=JST))
+    async def auto_news_sentiment_task(self):
+        """毎朝 08:30 (JST) に保有銘柄のニュースセンチメントを順次取得して通知する。"""
+        await asyncio.sleep(random.randint(0, 180))
+        try:
+            holdings = await self._read_json_file(
+                PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
+            )
+        except Exception:
+            logging.exception("auto news_sentiment: holdings read failed")
+            return
+        if not holdings:
+            return
+
+        sections = []
+        for h in holdings:
+            code = h.get("code")
+            if not code:
+                continue
+            try:
+                res = await self.run_news_sentiment(code)
+            except Exception:
+                logging.exception(f"run_news_sentiment failed for {code}")
+                continue
+            if not res.get("ok"):
+                continue
+            report = (res.get("report") or "").strip()
+            if not report:
+                continue
+            head = (res.get("name") or h.get("name") or code)
+            snippet = report.splitlines()
+            short = "\n".join(snippet[:8])  # 長すぎ防止に先頭8行
+            sections.append(f"📰 {head} ({code})\n{short}")
+            await asyncio.sleep(2)
+
+        if sections:
+            body = "📰 保有銘柄ニュースセンチメント（朝刊）\n\n" + "\n\n".join(sections)
+            await self._notify_routine(body)
+
+    @auto_news_sentiment_task.before_loop
+    async def _before_auto_news_sentiment(self):
+        await self.bot.wait_until_ready()
 
     # ==========================================================
     # Driveフォルダ・ファイル管理ヘルパー
@@ -1002,6 +1161,59 @@ class InvestmentCog(commands.Cog):
                 "code": code,
                 "shares": sold_shares,
                 "price": existing.get("avg_cost"),
+            },
+        )
+        return {"ok": True, "holdings": holdings}
+
+    async def portfolio_update(self, code: str, **fields) -> dict:
+        """既存保有銘柄を直接編集する（株数・平均取得単価などを上書き）。"""
+        holdings = await self._read_json_file(
+            PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
+        )
+        idx = next(
+            (i for i, h in enumerate(holdings) if h.get("code") == code),
+            None,
+        )
+        if idx is None:
+            return {"ok": False, "error": f"{code} は保有していません"}
+
+        existing = holdings[idx]
+        now_iso = datetime.datetime.now(JST).isoformat()
+
+        if "shares" in fields and fields["shares"] is not None:
+            try:
+                new_shares = float(fields["shares"])
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "shares は数値を指定してください"}
+            if new_shares <= 0:
+                return {"ok": False, "error": "shares は正の値が必要です"}
+            existing["shares"] = new_shares
+
+        if "avg_cost" in fields and fields["avg_cost"] is not None:
+            try:
+                new_cost = float(fields["avg_cost"])
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "avg_cost は数値を指定してください"}
+            if new_cost <= 0:
+                return {"ok": False, "error": "avg_cost は正の値が必要です"}
+            existing["avg_cost"] = round(new_cost, 4)
+
+        for key in ("name", "sector", "currency", "notes"):
+            if key in fields and fields[key] is not None:
+                existing[key] = fields[key]
+
+        existing["updated_at"] = now_iso
+        await self._write_json_file(PORTFOLIO_FOLDER, HOLDINGS_FILE, holdings)
+        await self._append_jsonl(
+            PORTFOLIO_FOLDER,
+            TRANSACTIONS_FILE,
+            {
+                "ts": now_iso,
+                "action": "update",
+                "code": code,
+                "shares": existing.get("shares"),
+                "price": existing.get("avg_cost"),
+                "notes": fields.get("notes") or "",
             },
         )
         return {"ok": True, "holdings": holdings}

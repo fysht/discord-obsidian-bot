@@ -355,6 +355,8 @@ details.card > summary > .card-header { border-bottom: none; }
 .action-chips { display: flex; gap: 10px; padding: 0 16px; width: max-content; }
 .chip-btn { padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-glass); color: #fff; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
 .chip-btn.special { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.action-chips.invest-action-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; padding: 0; width: auto; }
+.action-chips.invest-action-grid .chip-btn { white-space: normal; text-align: center; padding: 8px 10px; }
 
 #chat-form { width: 100%; }
 .chat-input-area {

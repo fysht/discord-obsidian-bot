@@ -7,18 +7,20 @@ import re
 SECTION_ORDER = [
     # --- 1. Plan (今日やること) ---
     "## 🎯 MIT",  # 今日の最重要タスク (PartnerCog)
-    "## ⏱ Daily Timeline",  # 全データ統合の時系列ビュー (DailyOrganizeCog)
+    "## ⏱ Daily Timeline",  # 客観データを時系列で並べたビュー (DailyOrganizeCog)
     # --- 2. Execution (リアルタイム記録) ---
     "## 🪟 Lifelog",   # 行動記録 (PartnerCog / PWA)
     "## 🎯 Tasks",     # LLR風タスク＆時間記録 (PartnerCog)
     "## 💬 Timeline",  # 日常のつぶやき・メモ (PartnerCog)
     "## 🤔 Thought Reflection",  # 壁打ち (PartnerCog)
-    # --- 3. Reflection (1日の振り返り) ---
-    "## 📔 Daily Journal",  # Lifelog + 客観データから生成する振り返り (DailyOrganizeCog)
-    "## 💡 Insights & Thoughts",  # 客観的な分析 (DailyOrganizeCog)
+    # --- 3. Reflection (1日の振り返り)
+    # アプリのログタブ並び（デイリーサマリー → 今日の日記 → 観察日記）と一致
+    "## 📅 Daily Summary",  # 客観総括 (routes.py)
+    "## 🤝 Manager Q&A",   # マネージャー質問への回答 (DailySummaryCog)
+    "## 📔 Daily Journal",  # 主観の日記 (DailyOrganizeCog)
+    "## 🪞 Alter Log",     # 忖度ゼロのメタ観察 (DailyOrganizeCog)
+    "## 💡 Insights & Thoughts",  # 派生分析 (DailyOrganizeCog)
     "## 🚀 Next Actions",  # 明日のアクション (DailyOrganizeCog)
-    "## 📅 Daily Summary",  # アプリ表示と同一の統合ダイジェスト (routes.py)
-    "## 🪞 Alter Log",  # 忖度ゼロの客観的プロファイリング (DailyOrganizeCog)
     # --- 4. Input & Information (インプット・情報収集) ---
     "## 📖 Reading Log",  # 読書メモ (PartnerCog)
     "## 🍳 Recipes",  # レシピクリップ (WebClipService)

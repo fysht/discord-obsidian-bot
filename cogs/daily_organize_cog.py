@@ -220,13 +220,113 @@ class DailyOrganizeCog(commands.Cog):
             )
 
 
+    # 時間帯区分（HH:MM, 区分名）。終端は次の区分の開始時刻。
+    _PERIOD_BUCKETS = [
+        ("00:00", "06:00", "早朝"),
+        ("06:00", "11:00", "午前"),
+        ("11:00", "13:00", "昼"),
+        ("13:00", "17:00", "午後"),
+        ("17:00", "19:00", "夕方"),
+        ("19:00", "24:00", "夜"),
+    ]
+
+    async def _summarize_user_messages_per_period(self, date_str: str) -> list:
+        """ユーザー発言を時間帯ごとに集約して Gemini で1〜3行に要約する。
+        会話原文は ## 💬 Timeline セクションに保存されるためここでは要約のみ作る。
+        戻り値: [(start_HHMM, end_HHMM, summary_text), ...] （発言0件の時間帯は除外）
+        """
+        try:
+            history = await get_history(limit=500)
+        except Exception as e:
+            logging.error(f"timeline: history fetch error: {e}")
+            return []
+
+        # 時間帯別にユーザー発言を集める
+        buckets = {b[2]: [] for b in self._PERIOD_BUCKETS}
+        for m in history:
+            ts = m.get("timestamp") or ""
+            if not ts.startswith(date_str):
+                continue
+            if m.get("role") != "user":
+                continue
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            try:
+                dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=JST)
+                hhmm = dt.astimezone(JST).strftime("%H:%M")
+            except Exception:
+                continue
+            for start, end, name in self._PERIOD_BUCKETS:
+                if start <= hhmm < end:
+                    buckets[name].append((hhmm, content))
+                    break
+
+        results = []
+        for start, end, name in self._PERIOD_BUCKETS:
+            msgs = buckets.get(name, [])
+            if not msgs:
+                continue
+            joined = "\n".join(f"[{t}] {c}" for t, c in msgs)
+            summary = await self._summarize_period_messages(name, joined)
+            if not summary:
+                continue
+            results.append((start, end, summary))
+        return results
+
+    async def _summarize_period_messages(self, period_name: str, joined: str) -> str:
+        """時間帯のユーザー発言テキストから1〜3行の客観的トピック要約を作る。
+        Gemini が使えない場合は最初の発言を短縮して返す。"""
+        if not self.gemini_client:
+            first = joined.splitlines()[0] if joined.splitlines() else joined
+            first = first.split("] ", 1)[-1]
+            return first[:60]
+        prompt = (
+            f"次は{period_name}の時間帯にユーザーが送信したチャット発言です。\n"
+            "発言原文は別に保存されているので、ここでは要約だけ作ってください。\n"
+            "次のルールで1〜3行のmarkdown箇条書き内に収まる短いトピック要約だけを書きます。\n"
+            "- 各行は「・」で始め、20文字以内\n"
+            "- 「投資の相談」「夕食メニュー」のようなトピックを抽出する\n"
+            "- 感情語や評価語を含めず、客観的なトピックのみ\n"
+            "- 同種の話題はまとめて1行\n"
+            "- 説明や前置きは書かず、箇条書きだけを返す\n\n"
+            f"--- 発言ログ ---\n{joined}\n--- 終わり ---"
+        )
+        try:
+            response = await self.gemini_client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+            )
+            text = (response.text or "").strip()
+        except Exception as e:
+            logging.error(f"timeline: summary error ({period_name}): {e}")
+            return ""
+        # 最大3行に制限し、・/-/数字始まりの行のみ拾う
+        bullets = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            stripped = line.lstrip("・-*0123456789.)） ").strip()
+            if not stripped:
+                continue
+            bullets.append(stripped)
+            if len(bullets) >= 3:
+                break
+        if not bullets:
+            return ""
+        return " / ".join(bullets)
+
     async def _build_integrated_timeline(self, date_str: str, location_log_text: str) -> str:
-        """カレンダー予定・チャット会話・睡眠・歩数・ロケーションログを統合し、
-        時系列順のmarkdownを返す。既存の各セクション記述は維持される（このメソッドは追加生成のみ）。
+        """客観データ（睡眠・天気・カレンダー・ライフログ・ロケーション）と
+        ユーザー発言の時間帯要約を統合し、時系列順のmarkdownを返す。
+        会話原文は ## 💬 Timeline セクションに別途保存されるためここには含めない。
         """
         events = []  # list[(time_str_HHMM, icon, line)]
 
-        # --- 1) 睡眠データ（起床ポイント） ---
+        # --- 1) 睡眠データ（起床ポイント・活動量サマリ） ---
         try:
             fitbit_cog = self.bot.get_cog("FitbitCog")
             if fitbit_cog and getattr(fitbit_cog, "fitbit_service", None):
@@ -245,7 +345,6 @@ class DailyOrganizeCog(commands.Cog):
                         sleep_text = "N/A"
                     steps = stats.get("steps", 0)
                     rhr = stats.get("resting_heart_rate", "N/A")
-                    # 起床は時刻不明だが先頭に置きたいので 06:00 仮置き
                     events.append((
                         "06:00",
                         "🌙",
@@ -260,7 +359,22 @@ class DailyOrganizeCog(commands.Cog):
         except Exception as e:
             logging.error(f"timeline: fitbit fetch error: {e}")
 
-        # --- 2) カレンダー予定 ---
+        # --- 2) 天気（朝・昼・夜の概況） ---
+        try:
+            if self.info_service:
+                weather_res = await self.info_service.get_weather()
+                summary = weather_res.get("summary")
+                if summary and summary != "取得失敗":
+                    max_t = weather_res.get("max_temp", "")
+                    min_t = weather_res.get("min_temp", "")
+                    detail = summary
+                    if max_t and min_t:
+                        detail = f"{summary} / 最高{max_t}・最低{min_t}"
+                    events.append(("07:00", "🌤", detail))
+        except Exception as e:
+            logging.error(f"timeline: weather fetch error: {e}")
+
+        # --- 3) カレンダー予定 ---
         try:
             cal_service = getattr(self.bot, "calendar_service", None)
             if cal_service and hasattr(cal_service, "get_raw_events_for_date"):
@@ -272,31 +386,6 @@ class DailyOrganizeCog(commands.Cog):
                     events.append((sort_key, "📅", f"{t} {summary}"))
         except Exception as e:
             logging.error(f"timeline: calendar fetch error: {e}")
-
-        # --- 3) チャット会話（マネージャーとの会話） ---
-        try:
-            history = await get_history(limit=500)
-            for m in history:
-                ts = m.get("timestamp") or ""
-                if not ts.startswith(date_str):
-                    continue
-                try:
-                    dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=JST)
-                    hhmm = dt.astimezone(JST).strftime("%H:%M")
-                except Exception:
-                    hhmm = ts[11:16] if len(ts) >= 16 else "00:00"
-                role = m.get("role")
-                tag = "🧑" if role == "user" else "🤖"
-                content = (m.get("content") or "").replace("\n", " ").strip()
-                if len(content) > 80:
-                    content = content[:77] + "…"
-                if not content:
-                    continue
-                events.append((hhmm, tag, content))
-        except Exception as e:
-            logging.error(f"timeline: history fetch error: {e}")
 
         # --- 4) ロケーションログ（行単位で時刻抽出） ---
         try:
@@ -312,8 +401,7 @@ class DailyOrganizeCog(commands.Cog):
         except Exception as e:
             logging.error(f"timeline: location parse error: {e}")
 
-        # --- 5) ライフログ（タスク開始/終了など Lifelog セクションがあれば取り込み） ---
-        # 既存ノートの「## 🪟 Lifelog」内の時刻付き行を追加
+        # --- 5) ライフログ（既存 Lifelog / Tasks セクションから時刻付き行を取り込み） ---
         try:
             service = self.drive_service.get_service()
             if service:
@@ -329,7 +417,6 @@ class DailyOrganizeCog(commands.Cog):
                         for sec_header, icon in [
                             ("## 🪟 Lifelog", "🪟"),
                             ("## 🎯 Tasks", "🎯"),
-                            ("## 💬 Timeline", "💬"),
                         ]:
                             mm = re.search(
                                 rf"{re.escape(sec_header)}\n(.*?)(?=\n## |\Z)",
@@ -350,11 +437,19 @@ class DailyOrganizeCog(commands.Cog):
         except Exception as e:
             logging.error(f"timeline: lifelog re-import error: {e}")
 
+        # --- 6) ユーザー発言の時間帯別要約（会話原文ではなくトピックのみ） ---
+        try:
+            period_summaries = await self._summarize_user_messages_per_period(date_str)
+            for start, end, summary in period_summaries:
+                events.append((start, "💬", f"({start}-{end}) {summary}"))
+        except Exception as e:
+            logging.error(f"timeline: user summary error: {e}")
+
         if not events:
             return ""
 
         events.sort(key=lambda x: x[0])
-        lines = [f"- `{t}` {icon} {text}" for t, icon, text in events]
+        lines = [f"- {t} {icon} {text}" for t, icon, text in events]
         return "\n".join(lines)
 
     @daily_organize_task.before_loop
