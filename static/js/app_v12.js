@@ -676,7 +676,7 @@ async function loadDashboard() {
                     return escapeHtml(line) + '<br>';
                 }).join('');
             } else {
-                journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません。</div>';
+                journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません</div>';
             }
         }
 
@@ -697,7 +697,7 @@ async function loadDashboard() {
                     return `<div class="list-item">${escapeHtml(clean)}</div>`;
                 }).join('');
             } else {
-                naEl.innerHTML = '<div class="loading-placeholder">次のアクションはまだ生成されていません。</div>';
+                naEl.innerHTML = '<div class="loading-placeholder">次のアクションはまだ生成されていません</div>';
             }
         }
 
@@ -724,7 +724,7 @@ async function loadDashboard() {
             }
         } else {
             if (mitBanner) mitBanner.classList.add('hidden');
-            if (mitScheduleEl) mitScheduleEl.innerHTML = '<div class="loading-placeholder">MITはまだ設定されていません。「設定」ボタンから登録できます。</div>';
+            if (mitScheduleEl) mitScheduleEl.innerHTML = '<div class="loading-placeholder">MITはまだ設定されていません。「設定」ボタンから登録できます</div>';
         }
 
         // 「書籍＆ナレッジ」のテキストを「書籍」に置換
@@ -3514,7 +3514,7 @@ async function loadEnglishPhrases() {
     try {
         const data = await apiFetch('/api/english_phrases');
         if (!data.phrases || data.phrases.length === 0) {
-            el.innerHTML = '<div class="loading-placeholder" style="font-size:0.8rem;">フレーズはまだありません。<br>メッセージを長押し → 📚 で保存できます。</div>';
+            el.innerHTML = '<div class="loading-placeholder">フレーズはまだありません<br>メッセージを長押し → 📚 で保存できます</div>';
             return;
         }
         el.innerHTML = data.phrases.map(p => {
@@ -3559,7 +3559,7 @@ window.openCollectionOverlay = async () => {
         const data = await apiFetch('/api/messages/collections');
         const labels = data.collections || [];
         if (!labels.length) {
-            tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--text-muted);">コレクションはまだありません</span>';
+            tabsEl.innerHTML = '<div class="loading-placeholder">コレクションはまだありません</div>';
             $('#collection-results').innerHTML = '<p class="search-hint">メッセージを長押し → 🏷 で保存できます</p>';
             return;
         }
@@ -5658,6 +5658,8 @@ window.submitPortfolioEdit = async () => {
         showToast('対象銘柄が不明です', true);
         return;
     }
+    const btn = document.querySelector('#invest-portfolio-edit-modal .modal-btn.submit');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
     const sharesStr = $('#portfolio-edit-shares')?.value?.trim();
     const costStr = $('#portfolio-edit-cost')?.value?.trim();
     const body = { code };
@@ -5685,6 +5687,8 @@ window.submitPortfolioEdit = async () => {
         }
     } catch (e) {
         showToast('更新失敗: ' + (e.message || e), true);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '保存'; }
     }
 };
 
@@ -5705,6 +5709,8 @@ window.submitPortfolioAdd = async () => {
         showToast('ティッカー・株数・取得単価は必須です', true);
         return;
     }
+    const btn = document.querySelector('#invest-portfolio-modal .modal-btn.submit');
+    if (btn) { btn.disabled = true; btn.textContent = '追加中…'; }
     const body = {
         ticker,
         shares: parseFloat(sharesStr),
@@ -5725,6 +5731,8 @@ window.submitPortfolioAdd = async () => {
         }
     } catch (e) {
         showToast('追加失敗: ' + (e.message || e), true);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '追加'; }
     }
 };
 
