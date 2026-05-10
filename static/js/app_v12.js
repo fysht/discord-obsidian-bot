@@ -660,7 +660,7 @@ async function loadDashboard() {
         }
         
         const diaryEl = $('#dash-alter-log');
-        if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます。').replace(/\n/g, '<br>');
+        if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます').replace(/\n/g, '<br>');
 
         // 今日の日記
         const journalEl = $('#dash-daily-journal');
@@ -5459,7 +5459,7 @@ window.loadPortfolio = async () => {
         const holdings = data.holdings || [];
         _investHoldingsCache = holdings;
         if (!holdings.length) {
-            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。「追加」から登録してください。</div>';
+            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。「追加」から登録してください</div>';
             return;
         }
         listEl.innerHTML = holdings.map(h => {
@@ -5504,7 +5504,7 @@ window.openHoldingPicker = async (target) => {
         }
         const holdings = _investHoldingsCache;
         if (!holdings.length) {
-            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。ポートフォリオから追加してください。</div>';
+            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。ポートフォリオから追加してください</div>';
             return;
         }
         listEl.innerHTML = holdings.map(h => {
@@ -5859,7 +5859,7 @@ window.loadAlertsList = async () => {
         }
         const rules = data.rules || [];
         if (!rules.length) {
-            listEl.innerHTML = '<div class="invest-empty">アラートがまだありません。「追加」から登録してください。</div>';
+            listEl.innerHTML = '<div class="invest-empty">アラートがまだありません。「追加」から登録してください</div>';
             return;
         }
         listEl.innerHTML = rules.map(r => {

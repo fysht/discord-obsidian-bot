@@ -535,7 +535,7 @@ async def dashboard():
                     logging.debug(f"yesterday content fetch failed: {e}")
 
     if not alter_log:
-        alter_log = "本日の観察ログはまだ生成されていません。"
+        alter_log = "本日の観察ログはまだ生成されていません"
 
     g_calendar = []
     if hasattr(chat_service, "calendar_service") and chat_service.calendar_service:
