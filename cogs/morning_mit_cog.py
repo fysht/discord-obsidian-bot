@@ -34,6 +34,7 @@ class MorningMitCog(commands.Cog):
         try:
             from api.database import add_daily_question, get_questions_by_date
             from api.notification_service import send_push
+            from services import cost_meter_service
         except Exception as e:
             logging.error(f"MorningMitCog import error: {e}")
             return
@@ -45,6 +46,33 @@ class MorningMitCog(commands.Cog):
         if existing:
             logging.info("MorningMitCog: 朝の MIT 候補は既に登録済み")
             return
+
+        # コスト閾値を超過している場合は AI 呼び出しをスキップ（頻度調整）
+        try:
+            if await cost_meter_service.should_throttle_heavy_tasks():
+                logging.info("MorningMitCog: 月額API閾値を超過しているため当日の AI 候補生成をスキップ")
+                # カレンダー予定のみの簡易候補にフォールバック
+                fallback = await self._build_calendar_only_candidates(today_str)
+                if fallback:
+                    import json as _json
+                    context_payload = _json.dumps({"candidates": fallback, "throttled": True}, ensure_ascii=False)
+                    await add_daily_question(
+                        today_str,
+                        "今朝のMIT候補（コスト節約モード）。カレンダーから自動抽出した予定だよ。",
+                        scope='morning_mit',
+                        context=context_payload,
+                    )
+                    try:
+                        await send_push(
+                            title="☀️ 今朝のMIT候補（節約モード）",
+                            body="月額閾値を超えているため AI 推論はスキップ。カレンダー予定を候補として置いておいたよ。",
+                            url="/?openMorningMit=1",
+                        )
+                    except Exception:
+                        pass
+                return
+        except Exception as e:
+            logging.debug(f"MorningMitCog: throttle check failed: {e}")
 
         candidates = await self._build_mit_candidates(today_str)
         if not candidates:
@@ -69,6 +97,25 @@ class MorningMitCog(commands.Cog):
             )
         except Exception as e:
             logging.error(f"MorningMitCog: push送信エラー: {e}")
+
+    async def _build_calendar_only_candidates(self, date_str: str) -> list[str]:
+        """AI を使わず、カレンダー予定のタイトルだけから MIT 候補 3 件を作る（節約モード用）。"""
+        cal_service = getattr(self.bot, "calendar_service", None)
+        if not cal_service or not hasattr(cal_service, "get_raw_events_for_date"):
+            return []
+        try:
+            events = await cal_service.get_raw_events_for_date(date_str)
+        except Exception:
+            return []
+        cands = []
+        for ev in events or []:
+            title = (ev.get("summary") or "").strip()
+            if not title or title == "(タイトルなし)":
+                continue
+            cands.append(title[:60])
+            if len(cands) >= 3:
+                break
+        return cands
 
     async def _build_mit_candidates(self, date_str: str) -> list[str]:
         """Google Calendar・前日 MIT 進捗・直近会話を元に Gemini に MIT 候補 3 件を提案させる。"""

@@ -140,13 +140,142 @@ if (settingsBtn) {
 }
 
 window.openSettingsMenu = () => {
-    const choice = prompt(
-        '設定メニュー（番号を入力）:\n\n1. 通知ステータスを確認\n2. 通知テスト送信\n3. 通知の購読を再登録\n\nキャンセルで閉じる',
-        '1'
-    );
-    if (choice === '1') return checkNotificationStatus();
-    if (choice === '2') return testPushNotification();
-    if (choice === '3') return resubscribePush();
+    openSettingsModal();
+};
+
+// ----- 設定モーダル（コストメーター含む） -----
+window.openSettingsModal = async () => {
+    let modal = $('#settings-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="settings-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:560px;max-height:90vh;overflow-y:auto;">
+                    <h3 style="margin-top:0;">⚙️ 設定</h3>
+
+                    <!-- 通知 -->
+                    <details open style="margin-bottom:10px;">
+                        <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">🔔 通知</summary>
+                        <div style="display:flex;flex-direction:column;gap:6px;padding:8px 0 4px;">
+                            <button class="modal-btn cancel" onclick="checkNotificationStatus()">通知ステータスを確認</button>
+                            <button class="modal-btn cancel" onclick="testPushNotification()">通知テスト送信</button>
+                            <button class="modal-btn cancel" onclick="resubscribePush()">購読を再登録</button>
+                        </div>
+                    </details>
+
+                    <!-- コストメーター -->
+                    <details open style="margin-bottom:10px;">
+                        <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">💰 運用コスト</summary>
+                        <div id="cost-meter-body" style="padding:8px 0;">
+                            <div class="loading-placeholder">読み込み中。</div>
+                        </div>
+                    </details>
+
+                    <div class="modal-actions" style="margin-top:14px;">
+                        <button class="modal-btn cancel" onclick="closeSettingsModal()">閉じる</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#settings-modal');
+    }
+    modal.classList.remove('hidden');
+    loadCostMeter();
+};
+
+window.closeSettingsModal = () => {
+    $('#settings-modal')?.classList.add('hidden');
+};
+
+window.loadCostMeter = async () => {
+    const body = $('#cost-meter-body');
+    if (!body) return;
+    body.innerHTML = '<div class="loading-placeholder">読み込み中。</div>';
+    try {
+        const [s, settings] = await Promise.all([
+            apiFetch('/api/cost_summary?days=30'),
+            apiFetch('/api/cost_settings'),
+        ]);
+        const monthlyTotal = s.this_month_jpy || 0;
+        const threshold = s.monthly_threshold_jpy || 0;
+        const infra = s.infra_cost_jpy_per_month || 0;
+        const ratio = threshold > 0 ? Math.min(100, (monthlyTotal / threshold) * 100) : 0;
+        const barColor = ratio >= 100 ? '#ff6b6b' : ratio >= 70 ? '#ffd454' : 'var(--accent)';
+
+        const topModels = (s.by_model || []).slice(0, 5).map(m => `
+            <div style="display:flex;justify-content:space-between;gap:6px;font-size:0.82rem;padding:2px 0;border-bottom:1px solid var(--border-glass);">
+                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(m.model)}</span>
+                <span style="color:var(--text-muted);font-size:0.76rem;">${(m.in_tokens / 1000).toFixed(1)}k in / ${(m.out_tokens / 1000).toFixed(1)}k out</span>
+                <span style="color:var(--text-primary);font-weight:600;">¥${m.jpy.toFixed(1)}</span>
+            </div>
+        `).join('');
+
+        const daysBars = (s.by_day || []).slice(-7).map(d => `
+            <div style="display:flex;justify-content:space-between;font-size:0.76rem;color:var(--text-muted);padding:1px 0;">
+                <span>${escapeHtml(d.date.slice(5))}</span>
+                <span>¥${d.jpy.toFixed(1)}</span>
+            </div>
+        `).join('');
+
+        body.innerHTML = `
+            <div style="margin-bottom:10px;">
+                <div style="font-size:0.78rem;color:var(--text-muted);">今月のAPIコスト（概算）</div>
+                <div style="display:flex;align-items:baseline;gap:8px;">
+                    <span style="font-size:1.6rem;font-weight:700;color:${barColor};">¥${monthlyTotal.toFixed(0)}</span>
+                    <span style="font-size:0.78rem;color:var(--text-muted);">/ 月額閾値 ¥${threshold.toFixed(0)}</span>
+                </div>
+                <div style="background:rgba(255,255,255,0.08);height:8px;border-radius:4px;overflow:hidden;margin-top:4px;">
+                    <div style="background:${barColor};height:100%;width:${ratio}%;transition:width 0.3s;"></div>
+                </div>
+                <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">
+                    入力 ${(s.this_month_in_tokens / 1000).toFixed(1)}k tokens / 出力 ${(s.this_month_out_tokens / 1000).toFixed(1)}k tokens
+                    ${infra > 0 ? ` ・ インフラ固定費 ¥${infra.toFixed(0)} を加えると合計 ¥${(monthlyTotal + infra).toFixed(0)}` : ''}
+                </div>
+            </div>
+
+            <div style="font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-top:14px;margin-bottom:4px;">📊 モデル別（直近30日）</div>
+            ${topModels || '<div class="loading-placeholder">記録なし。</div>'}
+
+            <div style="font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-top:14px;margin-bottom:4px;">📅 直近7日</div>
+            ${daysBars || '<div class="loading-placeholder">記録なし。</div>'}
+
+            <div style="font-size:0.78rem;font-weight:700;color:var(--text-secondary);margin-top:14px;margin-bottom:6px;">⚙️ 設定</div>
+            <label style="font-size:0.78rem;color:var(--text-muted);">月額閾値 (円)</label>
+            <input id="cost-threshold-input" type="number" class="modern-input" value="${settings.monthly_threshold_jpy || 3000}" style="margin-bottom:6px;">
+
+            <label style="font-size:0.78rem;color:var(--text-muted);">USD→JPY レート</label>
+            <input id="cost-rate-input" type="number" step="0.1" class="modern-input" value="${settings.usd_jpy_rate || 150}" style="margin-bottom:6px;">
+
+            <label style="font-size:0.78rem;color:var(--text-muted);">インフラ固定費 (円/月)</label>
+            <input id="cost-infra-input" type="number" class="modern-input" value="${settings.infra_cost_jpy_per_month || 0}" style="margin-bottom:8px;">
+
+            <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;margin-bottom:10px;">
+                <input id="cost-downgrade-toggle" type="checkbox" ${settings.auto_downgrade_to_flash ? 'checked' : ''}>
+                月額閾値の70%超過時に pro モデルを自動で flash に格下げする
+            </label>
+
+            <button class="modal-btn submit" style="width:100%;" onclick="saveCostSettings()">設定を保存</button>
+        `;
+    } catch (e) {
+        body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+    }
+};
+
+window.saveCostSettings = async () => {
+    const payload = {
+        monthly_threshold_jpy: parseFloat($('#cost-threshold-input')?.value || 3000),
+        usd_jpy_rate: parseFloat($('#cost-rate-input')?.value || 150),
+        infra_cost_jpy_per_month: parseFloat($('#cost-infra-input')?.value || 0),
+        auto_downgrade_to_flash: !!$('#cost-downgrade-toggle')?.checked,
+    };
+    try {
+        await apiFetch('/api/cost_settings', { method: 'POST', body: JSON.stringify(payload) });
+        showToast('設定を保存しました');
+        loadCostMeter();
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
 };
 
 window.resubscribePush = async () => {
@@ -2606,11 +2735,14 @@ function initMain() {
 
     // 朝の MIT 提案: プッシュ通知から起動された場合（?openMorningMit=1）はモーダルを開く
     const wantMorningMit = params.get('openMorningMit') === '1';
+    // 設定: ?openSettings=1 で設定モーダルを開く（コスト超過アラートからの遷移）
+    const wantSettings = params.get('openSettings') === '1';
     if (apiKey) {
-        // URL 起動時は自動表示、それ以外は静かにチェックだけ
         setTimeout(() => { checkMorningMit(wantMorningMit); }, 800);
-        if (wantMorningMit) {
-            // URL からパラメータを消す
+        if (wantSettings) {
+            setTimeout(() => openSettingsModal(), 600);
+        }
+        if (wantMorningMit || wantSettings) {
             window.history.replaceState({}, '', '/');
         }
     }

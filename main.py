@@ -19,6 +19,56 @@ logging.basicConfig(level=logging.INFO, format=log_format)
 load_dotenv()
 
 
+def _install_gemini_usage_tracker(client) -> None:
+    """genai.Client.aio.models.generate_content をラップしてトークン数を SQLite に記録する。
+    既存の全呼び出しを変更せず、レスポンスの usage_metadata から自動的に計上する。"""
+    try:
+        aio_models = client.aio.models
+    except AttributeError:
+        return
+    if getattr(aio_models, "_usage_tracked", False):
+        return
+
+    original = aio_models.generate_content
+
+    async def tracked(*args, **kwargs):
+        # ---- 自動格下げ: pro 系を要求していて閾値超過の設定なら flash に差し替える ----
+        try:
+            from services import cost_meter_service
+            should_downgrade = await cost_meter_service.should_downgrade_pro_to_flash()
+            requested = kwargs.get("model") or (args[0] if args else "")
+            if requested and should_downgrade:
+                new_model = cost_meter_service.downgrade_model_if_needed(str(requested), True)
+                if new_model != requested:
+                    logging.info(f"Cost auto-downgrade: {requested} → {new_model}")
+                    if "model" in kwargs:
+                        kwargs["model"] = new_model
+                    elif args:
+                        args = (new_model,) + args[1:]
+        except Exception as e:
+            logging.debug(f"auto-downgrade check failed: {e}")
+
+        response = await original(*args, **kwargs)
+        try:
+            from api.database import record_api_usage
+            model = kwargs.get("model") or (args[0] if args else "") or ""
+            meta = getattr(response, "usage_metadata", None)
+            in_tokens = getattr(meta, "prompt_token_count", 0) or 0
+            out_tokens = getattr(meta, "candidates_token_count", 0) or 0
+            if not in_tokens and not out_tokens:
+                total = getattr(meta, "total_token_count", 0) or 0
+                if total:
+                    out_tokens = total
+            await record_api_usage(str(model), int(in_tokens), int(out_tokens), source="generate_content")
+        except Exception as e:
+            logging.debug(f"usage record failed: {e}")
+        return response
+
+    aio_models.generate_content = tracked
+    aio_models._usage_tracked = True
+    logging.info("Geminiトークン計測+自動格下げフックを有効化しました")
+
+
 def _validate_required_env() -> None:
     """起動時に必須環境変数の存在を検証する。欠落していれば終了。"""
     required = ["PWA_API_KEY", "PWA_PASSWORD"]
@@ -80,6 +130,10 @@ class MyBot(commands.Bot):
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
             self.gemini_client = genai.Client(api_key=api_key)
+            try:
+                _install_gemini_usage_tracker(self.gemini_client)
+            except Exception as e:
+                logging.warning(f"Geminiトークン計測の組み込みに失敗: {e}")
         else:
             self.gemini_client = None
             logging.warning("GEMINI_API_KEYが設定されていません。")

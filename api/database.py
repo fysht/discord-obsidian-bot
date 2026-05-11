@@ -103,6 +103,35 @@ async def init_db():
             )
         """)
 
+        # API 使用量ログ（コストメーター用）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS api_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                model TEXT NOT NULL,
+                source TEXT DEFAULT '',
+                in_tokens INTEGER DEFAULT 0,
+                out_tokens INTEGER DEFAULT 0,
+                request_count INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_usage_date ON api_usage(date)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_api_usage_model ON api_usage(model)"
+        )
+
+        # アプリ全体の設定（key-value）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
             "ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''",
@@ -547,3 +576,74 @@ async def delete_daily_question(qid: int) -> bool:
         cursor = await db.execute("DELETE FROM daily_questions WHERE id = ?", (qid,))
         await db.commit()
         return cursor.rowcount > 0
+
+
+# --- API Usage (コストメーター) ---
+
+async def record_api_usage(model: str, in_tokens: int, out_tokens: int, source: str = "") -> None:
+    """Gemini API 呼び出し 1 回分の使用量を記録する。"""
+    if not model:
+        return
+    in_tokens = max(0, int(in_tokens or 0))
+    out_tokens = max(0, int(out_tokens or 0))
+    if in_tokens == 0 and out_tokens == 0:
+        return  # メタ情報が無い呼び出しは記録しない（誤計測を避ける）
+    now = datetime.datetime.now(JST)
+    date_str = now.strftime("%Y-%m-%d")
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO api_usage (date, model, source, in_tokens, out_tokens, request_count, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, ?)",
+            (date_str, model, source or "", in_tokens, out_tokens, now.isoformat()),
+        )
+        await db.commit()
+
+
+async def get_api_usage_by_day(start_date: str, end_date: str) -> list[dict]:
+    """[start_date, end_date] 範囲を日付×モデル単位で集計して返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT date, model, SUM(in_tokens) AS in_tokens, SUM(out_tokens) AS out_tokens, "
+            "SUM(request_count) AS request_count "
+            "FROM api_usage WHERE date BETWEEN ? AND ? "
+            "GROUP BY date, model ORDER BY date ASC",
+            (start_date, end_date),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_api_usage_by_model(start_date: str, end_date: str) -> list[dict]:
+    """[start_date, end_date] 範囲をモデル単位で集計して返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT model, SUM(in_tokens) AS in_tokens, SUM(out_tokens) AS out_tokens, "
+            "SUM(request_count) AS request_count "
+            "FROM api_usage WHERE date BETWEEN ? AND ? "
+            "GROUP BY model ORDER BY SUM(out_tokens) DESC",
+            (start_date, end_date),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- App Settings (key-value) ---
+
+async def get_app_setting(key: str, default: str = "") -> str:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else default
+
+
+async def set_app_setting(key: str, value: str) -> None:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            (key, value, now),
+        )
+        await db.commit()

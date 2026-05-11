@@ -28,6 +28,15 @@ class WeeklyReviewCog(commands.Cog):
         if now.weekday() != 6:
             return
 
+        # 月額閾値を超過していれば週次レビューをスキップ（頻度調整）
+        try:
+            from services import cost_meter_service
+            if await cost_meter_service.should_throttle_heavy_tasks():
+                logging.info("WeeklyReviewCog: 月額API閾値を超過しているため今週のレビューをスキップ")
+                return
+        except Exception as e:
+            logging.debug(f"WeeklyReviewCog: throttle check failed: {e}")
+
         await asyncio.sleep(random.randint(0, 900))
 
         service = self.drive_service.get_service()
