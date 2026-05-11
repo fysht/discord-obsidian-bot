@@ -37,12 +37,25 @@ class InfoService:
         elif location == "33/6720":
             location = "33/6620"
 
+        result = None
         try:
             result = await self._fetch_yahoo_weather(location)
-            if result and result.get("summary") not in ("取得失敗", None):
-                return result
         except Exception as e:
             logging.warning(f"Yahoo Weather fetch failed: {e}")
+            result = None
+
+        # Yahoo の hourly が空なら JMA から補完する
+        if result and result.get("summary") not in ("取得失敗", None):
+            if not result.get("hourly") and location and location.startswith("33/"):
+                try:
+                    jma = await self._fetch_jma_weather()
+                    if jma and jma.get("hourly"):
+                        result["hourly"] = jma["hourly"]
+                        result["slots"] = jma["hourly"]
+                        logging.info("Yahoo hourly が空のため JMA から補完しました")
+                except Exception as e:
+                    logging.debug(f"JMA hourly 補完失敗: {e}")
+            return result
 
         # JMAフォールバックは岡山専用
         if location and location.startswith("33/"):
@@ -223,14 +236,21 @@ class InfoService:
         return daily if daily else None
 
     def _extract_yahoo_hourly(self, doc, today_date, now):
-        """Yahoo!天気ページから時間別予報を抽出"""
+        """Yahoo!天気ページから時間別予報を抽出。
+        【修正点】
+        - 過去時刻の厳密フィルタを撤廃（現在時刻の手前 1 時間まで許容）。深夜アクセス時に空になる問題への対応。
+        - CSS セレクタを拡充し、新しい DOM 構造（クラス名変更）にも追従。
+        - 1 件も取れなかった場合は正規表現フォールバックを呼ぶ。
+        """
         hourly = []
+        cutoff = now - datetime.timedelta(hours=1)
 
-        # 時間別予報テーブルを探す
-        rows = doc.cssselect('table.yjw_table tr, .hourlyForecast tr, .forecastHour tr, .yjSt_hour tr')
-        if not rows:
-            # フォールバック: 時間+気温パターンを全文から探す
-            return self._extract_hourly_fallback(doc, today_date, now)
+        # 時間別予報テーブルを広めに探す（旧/新セレクタを併用）
+        rows = doc.cssselect(
+            'table.yjw_table tr, .hourlyForecast tr, .forecastHour tr, .yjSt_hour tr, '
+            'table.forecast_table tr, .hourly-detail tr, .forecast-hourly tr, '
+            'section[data-cy*="hourly"] tr, table tr'
+        )
 
         for row in rows:
             cells = row.cssselect('td, th')
@@ -244,7 +264,11 @@ class InfoService:
 
             hour = int(time_match.group(1))
             dt = datetime.datetime(today_date.year, today_date.month, today_date.day, hour, tzinfo=JST)
-            if dt <= now:
+            # 24 時間未満の翌日扱い（深夜帯）
+            if dt < cutoff and hour < 6:
+                dt = dt + datetime.timedelta(days=1)
+            # 完全に過去（前日）はスキップ。直近 1 時間以内は表示する
+            if dt < cutoff:
                 continue
 
             temp = "--"
@@ -279,27 +303,42 @@ class InfoService:
                 "weather": self._shorten_weather(weather_text),
             })
 
+        # 何も取れなかった場合は正規表現フォールバック
+        if not hourly:
+            hourly = self._extract_hourly_fallback(doc, today_date, now)
+
         return hourly
 
     def _extract_hourly_fallback(self, doc, today_date, now):
-        """フォールバック: 時間別データを正規表現で抽出"""
+        """フォールバック: 時間別データを正規表現で抽出。
+        Yahoo HTML 構造が変わっても全文から `N時` / `X℃` / `Y%` パターンを拾う。"""
         full_text = doc.text_content()
-        # "N時 X℃" パターンを探す
-        matches = re.findall(r'(\d{1,2})時\D{0,20}(-?\d+)℃', full_text)
+        cutoff = now - datetime.timedelta(hours=1)
+        # "N時 ... X℃" パターン（広めに探す）
+        matches = re.findall(r'(\d{1,2})時[^℃\n]{0,60}(-?\d+)℃[^%\n]{0,30}(?:(\d+)%)?', full_text)
+        seen = set()
         hourly = []
-        for hour_str, temp_str in matches[:12]:
+        for hour_str, temp_str, pop_str in matches:
             hour = int(hour_str)
-            dt = datetime.datetime(today_date.year, today_date.month, today_date.day, hour, tzinfo=JST)
-            if dt <= now:
+            if hour in seen:
                 continue
+            seen.add(hour)
+            dt = datetime.datetime(today_date.year, today_date.month, today_date.day, hour, tzinfo=JST)
+            if dt < cutoff and hour < 6:
+                dt = dt + datetime.timedelta(days=1)
+            if dt < cutoff:
+                continue
+            day_label = "今日" if dt.date() == today_date else "明日"
             hourly.append({
                 "time": f"{hour}時",
-                "day": "今日",
+                "day": day_label,
                 "icon": "🌤️",
-                "pop": "--",
+                "pop": f"{pop_str}%" if pop_str else "--",
                 "temp": temp_str,
                 "weather": "不明",
             })
+            if len(hourly) >= 24:
+                break
         return hourly
 
     def _extract_weather_text_from_node(self, node):
@@ -423,8 +462,9 @@ class InfoService:
                     "min_temp": get_temp(i * 2),
                 })
 
-            # 時間別
+            # 時間別: 過去スロットも次スロットがまだ将来なら表示（深夜帯対策）
             hourly = []
+            cutoff_jma = now - datetime.timedelta(hours=1)
             for i in range(len(pops)):
                 if i >= len(times_pop):
                     break
@@ -433,7 +473,7 @@ class InfoService:
                     next_dt = datetime.datetime.fromisoformat(times_pop[i + 1])
                 else:
                     next_dt = dt + datetime.timedelta(hours=6)
-                if next_dt <= now:
+                if next_dt < cutoff_jma:
                     continue
 
                 slot_date = dt.date()

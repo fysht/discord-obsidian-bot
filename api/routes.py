@@ -3314,6 +3314,37 @@ async def daily_questions_delete(qid: int):
 
 
 # ============================================================
+# Lifelog activity (Bot の log_life_activity と同形式で記録)
+# ============================================================
+
+class LifelogActivityRequest(BaseModel):
+    activity_name: str
+    status: str  # 'start' / 'end'
+
+
+@router.post("/lifelog_activity", dependencies=[Depends(verify_api_key)])
+async def lifelog_activity(req: LifelogActivityRequest):
+    """`- HH:MM ▶ 活動名` 開始 → `- HH:MM - HH:MM 活動名` 終了 の標準形で記録。
+    瞑想など、開始-終了がある活動を Bot の log_life_activity と統一フォーマットで残すための API。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジン未初期化")
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="PartnerCog 未ロード")
+    status = req.status.strip().lower()
+    if status not in ("start", "end"):
+        return {"ok": False, "error": "status は 'start' か 'end'"}
+    try:
+        msg = await partner_cog._log_life_activity_to_obsidian(req.activity_name, status)
+        return {"ok": True, "message": msg}
+    except Exception as e:
+        logging.error(f"lifelog_activity error: {e}")
+        return {"ok": False, "error": "保存失敗"}
+
+
+# ============================================================
 # 朝のマネージャー MIT 提案 (morning_mit)
 # ============================================================
 

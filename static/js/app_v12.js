@@ -4022,9 +4022,9 @@ window.startMeditation = () => {
     }, 1000);
     // 画面が消えないよう Wake Lock を取得
     _requestMedWakeLock();
-    // ライフログに開始記録（開始時刻つき）
-    const hm = _formatHM(_medState.startAt);
-    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想開始 ${hm}（${min}分）` }) }).catch(() => {});
+    // ライフログに開始記録（Bot の log_life_activity と同じレンジ形式）
+    _medState.activityName = `瞑想（${min}分）`;
+    apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: _medState.activityName, status: 'start' }) }).catch(() => {});
 };
 
 function _updateMedDisplay() {
@@ -4044,12 +4044,9 @@ function _finishMeditation(min) {
     if (doneEl) doneEl.textContent = msg;
     // 終了をバイブで知らせる
     _vibrateMedDone();
-    // ライフログに終了記録（開始・終了時刻つき）
-    const endAt = new Date();
-    const startHm = _medState.startAt ? _formatHM(_medState.startAt) : '';
-    const endHm = _formatHM(endAt);
-    const timeRange = startHm ? `${startHm}〜${endHm}` : endHm;
-    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想終了 ${timeRange}（${min}分・完了）` }) }).catch(() => {});
+    // 開始ログを終了レンジ形式に更新（- HH:MM ▶ X → - HH:MM - HH:MM X）
+    const activityName = _medState.activityName || `瞑想（${min}分）`;
+    apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: activityName, status: 'end' }) }).catch(() => {});
     _releaseMedWakeLock();
     showToast(`🧘 ${msg}`);
 }
@@ -4058,12 +4055,9 @@ window.stopMeditation = () => {
     if (_medState.interval) { clearInterval(_medState.interval); _medState.interval = null; }
     const elapsed = Math.max(0, _medState.total - _medState.remaining);
     const min = Math.round(elapsed / 60);
-    if (min > 0) {
-        const endAt = new Date();
-        const startHm = _medState.startAt ? _formatHM(_medState.startAt) : '';
-        const endHm = _formatHM(endAt);
-        const timeRange = startHm ? `${startHm}〜${endHm}` : endHm;
-        apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想終了 ${timeRange}（${min}分・中断）` }) }).catch(() => {});
+    if (min > 0 && _medState.activityName) {
+        // 中断時もレンジ形式で終了記録（開始ログが残っている）
+        apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: _medState.activityName, status: 'end' }) }).catch(() => {});
     }
     _releaseMedWakeLock();
     $('#meditation-modal')?.classList.add('hidden');
