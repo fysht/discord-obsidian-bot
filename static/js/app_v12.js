@@ -805,6 +805,11 @@ async function loadDashboard() {
         }
 
         loadHabits();
+        loadMeals();
+        _installMealImageListener();
+        loadExpenses();
+        _installExpenseImageListener();
+        loadGmailInbox(currentGmailState);
 
         const sleepEl = $('#dash-sleep');
         if (sleepEl) {
@@ -2737,12 +2742,21 @@ function initMain() {
     const wantMorningMit = params.get('openMorningMit') === '1';
     // 設定: ?openSettings=1 で設定モーダルを開く（コスト超過アラートからの遷移）
     const wantSettings = params.get('openSettings') === '1';
+    // メール: ?openInbox=1 でログタブを開き、メールカードへスクロール
+    const wantInbox = params.get('openInbox') === '1';
     if (apiKey) {
         setTimeout(() => { checkMorningMit(wantMorningMit); }, 800);
         if (wantSettings) {
             setTimeout(() => openSettingsModal(), 600);
         }
-        if (wantMorningMit || wantSettings) {
+        if (wantInbox) {
+            setTimeout(() => {
+                switchTab('log');
+                const card = $('#dash-gmail-list');
+                if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }, 700);
+        }
+        if (wantMorningMit || wantSettings || wantInbox) {
             window.history.replaceState({}, '', '/');
         }
     }
@@ -3946,6 +3960,767 @@ window.saveMitFromModal = async () => {
     } finally {
         btn.textContent = '保存';
         btn.disabled = false;
+    }
+};
+
+// ===========================================================
+// 食事ログ (Meal log)
+// ===========================================================
+
+let _pendingMealAnalysis = null;
+
+// ダッシュボードに今日の食事一覧を表示
+window.loadMeals = async () => {
+    const listEl = $('#dash-meals-list');
+    const sumEl = $('#dash-meals-summary');
+    if (!listEl) return;
+    try {
+        const data = await apiFetch('/api/meals');
+        const meals = data.meals || [];
+        const total = data.total || {};
+
+        if (sumEl) {
+            if (meals.length) {
+                sumEl.innerHTML =
+                    `本日合計 <b style="color:var(--text-primary);">${total.calories || 0}kcal</b> ` +
+                    `(P${total.protein_g || 0} / F${total.fat_g || 0} / C${total.carbs_g || 0})`;
+            } else {
+                sumEl.innerHTML = '本日の記録はまだありません。';
+            }
+        }
+
+        if (!meals.length) {
+            listEl.innerHTML = '<div class="loading-placeholder">食事が記録されていません。<span class="muted-hint">「📷 写真」または「✏️ 手動」から追加。</span></div>';
+            return;
+        }
+
+        listEl.innerHTML = meals.map(m => {
+            const memoSafe = escapeHtml(m.memo || '');
+            const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
+            const adviceHtml = m.advice ? `<div style="font-size:0.74rem;color:var(--accent);margin-top:2px;">💬 ${escapeHtml(m.advice)}</div>` : '';
+            return `
+                <div class="invest-row" style="cursor:default;padding:10px 18px;border-bottom:1px solid var(--border-glass);">
+                    <div class="row-main" style="flex:1;">
+                        <div class="row-title">${escapeHtml(m.time)} ${escapeHtml(m.name)}</div>
+                        <div class="row-sub" style="font-size:0.78rem;color:var(--text-secondary);">
+                            ${m.calories || 0}kcal ・ P${m.protein_g || 0} / F${m.fat_g || 0} / C${m.carbs_g || 0}
+                        </div>
+                        ${memoHtml}${adviceHtml}
+                    </div>
+                    <div class="row-actions" style="display:flex;gap:6px;">
+                        <button class="mini-link" onclick="openMealManualModal(${m.id})">編集</button>
+                        <button class="mini-link" onclick="deleteMeal(${m.id})" style="color:#ff6b6b;">削除</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch {
+        listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
+    }
+};
+
+// 写真撮影 → Vision で解析 → 編集モーダル
+window.openMealCaptureModal = () => {
+    const input = $('#meal-image-input');
+    if (!input) return;
+    input.value = '';
+    input.click();
+};
+
+// 食事画像 input の change ハンドラ（モーダル初回オープン時に登録）
+let _mealImageListenerInstalled = false;
+function _installMealImageListener() {
+    if (_mealImageListenerInstalled) return;
+    const input = $('#meal-image-input');
+    if (!input) return;
+    input.addEventListener('change', async () => {
+        const file = (input.files || [])[0];
+        if (!file) return;
+        showToast('📷 食事を解析中…（数秒）');
+        try {
+            const base64 = await _fileToBase64(file);
+            const res = await apiFetch('/api/meals/analyze', {
+                method: 'POST',
+                body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
+            });
+            if (!res || !res.ok) {
+                showToast('解析に失敗しました', true);
+                return;
+            }
+            _pendingMealAnalysis = res.result || {};
+            openMealManualModal(null, _pendingMealAnalysis);
+        } catch (e) {
+            showToast('解析に失敗しました', true);
+        } finally {
+            input.value = '';
+        }
+    });
+    _mealImageListenerInstalled = true;
+}
+
+// 手動入力 / 編集モーダル
+// id=null & seed=オブジェクト で「写真解析結果からの新規」モード
+window.openMealManualModal = async (id = null, seed = null) => {
+    let modal = $('#meal-edit-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="meal-edit-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:520px;max-height:90vh;overflow-y:auto;">
+                    <h3 id="meal-edit-title" style="margin-top:0;">🍽 食事を記録</h3>
+                    <p id="meal-edit-confidence" style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 8px;"></p>
+
+                    <label style="font-size:0.78rem;color:var(--text-muted);">料理名</label>
+                    <input id="meal-name" class="modern-input" style="margin-bottom:8px;" placeholder="例: 唐揚げ定食">
+
+                    <div style="display:flex;gap:8px;margin-bottom:8px;">
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">時刻</label>
+                            <input id="meal-time" type="time" class="modern-input">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">区分</label>
+                            <select id="meal-type" class="modern-input">
+                                <option value="">未指定</option>
+                                <option value="breakfast">朝食</option>
+                                <option value="lunch">昼食</option>
+                                <option value="dinner">夕食</option>
+                                <option value="snack">間食</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div style="display:flex;gap:6px;margin-bottom:8px;">
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">カロリー(kcal)</label>
+                            <input id="meal-kcal" type="number" min="0" class="modern-input">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">P (g)</label>
+                            <input id="meal-p" type="number" step="0.1" min="0" class="modern-input">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">F (g)</label>
+                            <input id="meal-f" type="number" step="0.1" min="0" class="modern-input">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">C (g)</label>
+                            <input id="meal-c" type="number" step="0.1" min="0" class="modern-input">
+                        </div>
+                    </div>
+
+                    <label style="font-size:0.78rem;color:var(--text-muted);">メモ（任意）</label>
+                    <textarea id="meal-memo" class="modern-input" rows="2" style="font-family:inherit;margin-bottom:8px;"></textarea>
+
+                    <div class="modal-actions" style="margin-top:10px;">
+                        <button class="modal-btn cancel" onclick="closeMealEditModal()">キャンセル</button>
+                        <button class="modal-btn submit" id="meal-save-btn" onclick="saveMealFromModal()">保存</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#meal-edit-modal');
+    }
+
+    // 値を流し込む
+    const titleEl = $('#meal-edit-title');
+    const confEl = $('#meal-edit-confidence');
+    const saveBtn = $('#meal-save-btn');
+    saveBtn.dataset.mealId = id || '';
+
+    let m = {};
+    if (id) {
+        // 既存編集 → サーバから取得して反映
+        try {
+            const data = await apiFetch('/api/meals');
+            m = (data.meals || []).find(x => x.id === id) || {};
+            titleEl.textContent = '🍽 食事を編集';
+            confEl.textContent = '';
+        } catch {
+            m = {};
+        }
+    } else {
+        const now = new Date();
+        m = seed ? { ...seed } : {};
+        // 解析結果のフィールド名揺れ吸収
+        m.time = m.time || `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        if (seed) {
+            titleEl.textContent = '🍽 解析結果を確認';
+            confEl.textContent = seed.confidence ? `信頼度: ${seed.confidence}` : '';
+        } else {
+            titleEl.textContent = '🍽 食事を記録';
+            confEl.textContent = '';
+        }
+    }
+
+    $('#meal-name').value = m.name || '';
+    $('#meal-time').value = m.time || '';
+    $('#meal-type').value = m.meal_type || '';
+    $('#meal-kcal').value = m.calories ?? '';
+    $('#meal-p').value = m.protein_g ?? '';
+    $('#meal-f').value = m.fat_g ?? '';
+    $('#meal-c').value = m.carbs_g ?? '';
+    $('#meal-memo').value = m.memo || '';
+
+    modal.classList.remove('hidden');
+};
+
+window.closeMealEditModal = () => {
+    $('#meal-edit-modal')?.classList.add('hidden');
+    _pendingMealAnalysis = null;
+};
+
+window.saveMealFromModal = async () => {
+    const btn = $('#meal-save-btn');
+    const id = btn?.dataset.mealId ? parseInt(btn.dataset.mealId, 10) : null;
+    const payload = {
+        name: ($('#meal-name')?.value || '').trim(),
+        time: $('#meal-time')?.value || '',
+        meal_type: $('#meal-type')?.value || '',
+        calories: parseInt($('#meal-kcal')?.value || '0', 10) || 0,
+        protein_g: parseFloat($('#meal-p')?.value || '0') || 0,
+        fat_g: parseFloat($('#meal-f')?.value || '0') || 0,
+        carbs_g: parseFloat($('#meal-c')?.value || '0') || 0,
+        memo: ($('#meal-memo')?.value || '').trim(),
+    };
+    if (!payload.name) { showToast('料理名を入力してください', true); return; }
+    try {
+        if (id) {
+            await apiFetch(`/api/meals/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+            showToast('食事を更新しました');
+        } else {
+            await apiFetch('/api/meals', { method: 'POST', body: JSON.stringify(payload) });
+            showToast('食事を記録しました');
+        }
+        closeMealEditModal();
+        loadMeals();
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
+};
+
+window.deleteMeal = async (id) => {
+    if (!confirm('この食事ログを削除しますか？')) return;
+    try {
+        await apiFetch(`/api/meals/${id}`, { method: 'DELETE' });
+        showToast('削除しました');
+        loadMeals();
+    } catch {
+        showToast('削除に失敗しました', true);
+    }
+};
+
+window.requestMealAdvice = async () => {
+    showToast('💬 マネージャーが分析中…');
+    try {
+        const res = await apiFetch('/api/meals/advice', { method: 'POST' });
+        if (!res || !res.ok) {
+            showToast(res?.error || 'アドバイス取得に失敗しました', true);
+            return;
+        }
+        const advice = res.advice || '（アドバイス無し）';
+        // アドバイスを設定モーダルライクに表示
+        let modal = $('#meal-advice-modal');
+        if (!modal) {
+            const wrap = document.createElement('div');
+            wrap.innerHTML = `
+                <div id="meal-advice-modal" class="modal-overlay hidden">
+                    <div class="modal-card" style="max-width:520px;">
+                        <h3 style="margin-top:0;">💬 今日の栄養アドバイス</h3>
+                        <div id="meal-advice-body" style="white-space:pre-wrap;font-size:0.88rem;line-height:1.7;color:var(--text-primary);"></div>
+                        <div class="modal-actions" style="margin-top:14px;">
+                            <button class="modal-btn cancel" onclick="$('#meal-advice-modal')?.classList.add('hidden')">閉じる</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(wrap.firstElementChild);
+            modal = $('#meal-advice-modal');
+        }
+        $('#meal-advice-body').textContent = advice;
+        modal.classList.remove('hidden');
+    } catch {
+        showToast('アドバイス取得に失敗しました', true);
+    }
+};
+
+// ===========================================================
+// Gmail インボックス
+// ===========================================================
+
+let currentGmailState = 'pending';
+const GMAIL_STATE_LABELS = {
+    pending: '📬 未処理',
+    archived: '✅ 既読',
+    trashed: '🗑 ゴミ箱',
+    all: '📁 全て',
+};
+
+window.toggleGmailState = () => {
+    const order = ['pending', 'archived', 'trashed', 'all'];
+    const idx = order.indexOf(currentGmailState);
+    currentGmailState = order[(idx + 1) % order.length];
+    const btn = $('#gmail-state-toggle');
+    if (btn) btn.textContent = GMAIL_STATE_LABELS[currentGmailState];
+    loadGmailInbox(currentGmailState);
+};
+
+window.loadGmailInbox = async (state = 'pending') => {
+    currentGmailState = state || 'pending';
+    const btn = $('#gmail-state-toggle');
+    if (btn) btn.textContent = GMAIL_STATE_LABELS[currentGmailState] || '📬 未処理';
+    const listEl = $('#dash-gmail-list');
+    if (!listEl) return;
+    try {
+        const data = await apiFetch(`/api/gmail/inbox?state=${encodeURIComponent(currentGmailState)}&limit=50`);
+        const items = data.items || [];
+        if (!items.length) {
+            const empty = currentGmailState === 'pending'
+                ? '新着メールはありません。'
+                : '該当するメールはありません。';
+            listEl.innerHTML = `<div class="loading-placeholder">${empty}<span class="muted-hint">「📥 取り込み」で Gmail を再ポーリングできます。</span></div>`;
+            return;
+        }
+        listEl.innerHTML = items.map(m => {
+            const importanceColor = m.importance === 'high' ? '#ff6b6b'
+                : m.importance === 'low' ? 'var(--text-muted)' : 'var(--accent)';
+            const importanceLabel = m.importance === 'high' ? '🔴 重要'
+                : m.importance === 'low' ? '🟢 軽め' : '🟡 通常';
+            const fromShort = escapeHtml((m.from_addr || '').split('<')[0].trim().slice(0, 32));
+            const subjectSafe = escapeHtml(m.subject || '(件名なし)');
+            const summarySafe = escapeHtml(m.summary || m.snippet || '');
+            const received = m.received_at ? escapeHtml(m.received_at.replace('T', ' ').slice(5, 16)) : '';
+            const idAttr = escapeHtml(m.id);
+            const threadAttr = escapeHtml(m.thread_id || '');
+            const savedBadge = m.saved_drive_id
+                ? '<span style="background:rgba(0,186,152,0.18);color:var(--accent);font-size:0.7rem;padding:1px 6px;border-radius:8px;margin-left:6px;">📌 保存済み</span>'
+                : '';
+            const saveBtn = m.saved_drive_id
+                ? `<button class="mini-link" onclick="openSavedEmail('${escapeHtml(m.saved_drive_id)}')" title="保存先を開く" style="color:var(--accent);">📂 保存先</button>`
+                : `<button class="mini-link" onclick="saveGmailToObsidian('${idAttr}')" title="重要メールとして保存">📌 保存</button>`;
+            const actions = currentGmailState === 'pending'
+                ? `
+                    ${saveBtn}
+                    <button class="mini-link" onclick="markGmailRead('${idAttr}')" title="既読 / アーカイブ">📥 アーカイブ</button>
+                    <button class="mini-link" onclick="trashGmail('${idAttr}')" title="ゴミ箱へ" style="color:#ff6b6b;">🗑 ゴミ箱</button>
+                `
+                : `${saveBtn}`;
+            return `
+                <div class="invest-row" style="cursor:default;padding:10px 18px;border-bottom:1px solid var(--border-glass);align-items:flex-start;">
+                    <div class="row-main" style="flex:1;min-width:0;">
+                        <div class="row-title" style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">
+                            <span style="font-size:0.74rem;color:${importanceColor};font-weight:600;flex-shrink:0;">${importanceLabel}</span>
+                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${subjectSafe}</span>
+                            ${savedBadge}
+                        </div>
+                        <div class="row-sub" style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">
+                            ${fromShort} ・ ${received}
+                        </div>
+                        <div style="font-size:0.8rem;color:var(--text-primary);margin-top:4px;line-height:1.5;white-space:pre-wrap;">
+                            ${summarySafe}
+                        </div>
+                    </div>
+                    <div class="row-actions" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
+                        ${actions}
+                        <button class="mini-link" onclick="openGmail('${idAttr}', '${threadAttr}')" title="Gmail で開く">↗ Gmail</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch {
+        listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
+    }
+};
+
+window.refreshGmailServer = async () => {
+    showToast('📥 Gmail を再ポーリング中…');
+    try {
+        const res = await apiFetch('/api/gmail/refresh', { method: 'POST' });
+        if (res && res.ok) {
+            showToast('取り込みが完了しました');
+            loadGmailInbox(currentGmailState);
+        } else {
+            showToast(res?.error || '取り込みに失敗しました', true);
+        }
+    } catch {
+        showToast('取り込みに失敗しました', true);
+    }
+};
+
+window.markGmailRead = async (id) => {
+    try {
+        await apiFetch(`/api/gmail/${encodeURIComponent(id)}/read`, { method: 'POST' });
+        showToast('アーカイブしました');
+        loadGmailInbox(currentGmailState);
+    } catch {
+        showToast('アーカイブに失敗しました', true);
+    }
+};
+
+window.trashGmail = async (id) => {
+    if (!confirm('このメールをゴミ箱に移動しますか？（Gmail 側にも反映されます）')) return;
+    try {
+        await apiFetch(`/api/gmail/${encodeURIComponent(id)}/trash`, { method: 'POST' });
+        showToast('ゴミ箱に移動しました');
+        loadGmailInbox(currentGmailState);
+    } catch {
+        showToast('削除に失敗しました', true);
+    }
+};
+
+window.openGmail = (id, threadId = '') => {
+    if (!id && !threadId) return;
+    // Gmail のディープリンクは thread_id ベースの方が確実に該当スレッドへ飛ぶ
+    const target = threadId || id;
+    window.open(`https://mail.google.com/mail/u/0/#all/${encodeURIComponent(target)}`, '_blank', 'noopener');
+};
+
+window.saveGmailToObsidian = async (id) => {
+    if (!id) return;
+    showToast('📌 Obsidian (Drive) に保存中…');
+    try {
+        const res = await apiFetch(`/api/gmail/${encodeURIComponent(id)}/save`, { method: 'POST' });
+        if (res && res.ok) {
+            showToast(res.already_saved ? 'すでに保存済みです' : '保存しました');
+            loadGmailInbox(currentGmailState);
+        } else {
+            showToast(res?.error || '保存に失敗しました', true);
+        }
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
+};
+
+window.openSavedEmail = (driveId) => {
+    if (!driveId) return;
+    window.open(`https://drive.google.com/file/d/${encodeURIComponent(driveId)}/view`, '_blank', 'noopener');
+};
+
+// ===========================================================
+// 支出メモ (Expenses)
+// ===========================================================
+
+let _pendingReceiptAnalysis = null;
+let _pendingReceiptDriveId = '';
+let _pendingReceiptBase64 = null;
+let _pendingReceiptMime = '';
+let _expenseCurrentYear = null;
+let _expenseCurrentMonth = null;
+const EXPENSE_CATEGORIES_FALLBACK = ['食費','交通費','娯楽','衣服','家電','医療','教育','通信','光熱費','投資','その他'];
+
+window.loadExpenses = async (year = null, month = null) => {
+    const listEl = $('#dash-expense-list');
+    const sumEl = $('#dash-expense-summary');
+    if (!listEl) return;
+    try {
+        const qs = year && month ? `?year=${year}&month=${month}` : '';
+        const data = await apiFetch('/api/expenses' + qs);
+        _expenseCurrentYear = data.year;
+        _expenseCurrentMonth = data.month;
+        const expenses = data.expenses || [];
+        const total = data.total || 0;
+        const threshold = data.large_threshold || 5000;
+
+        if (sumEl) {
+            const byCat = (data.by_category || []).slice(0, 6).map(c =>
+                `<span style="font-size:0.74rem;color:var(--text-muted);margin-right:6px;">${escapeHtml(c.category)} ¥${c.amount.toLocaleString()}</span>`
+            ).join('');
+            sumEl.innerHTML = `
+                <div style="display:flex;justify-content:space-between;align-items:baseline;">
+                    <span style="font-size:0.78rem;color:var(--text-muted);">${data.year}年${data.month}月 合計</span>
+                    <span style="font-size:1.2rem;font-weight:700;color:var(--text-primary);">¥${total.toLocaleString()}</span>
+                </div>
+                <div style="margin-top:4px;">${byCat}</div>
+                <div style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">大きな支出の閾値: ¥${threshold.toLocaleString()}</div>
+            `;
+        }
+
+        if (!expenses.length) {
+            listEl.innerHTML = '<div class="loading-placeholder">記録された支出はまだありません。<span class="muted-hint">「📷 レシート」または「✏️ 手動」から追加。</span></div>';
+            return;
+        }
+
+        listEl.innerHTML = expenses.map(e => {
+            const bigBadge = e.is_large ? '<span style="background:rgba(255,107,107,0.15);color:#ff6b6b;font-size:0.7rem;padding:1px 6px;border-radius:8px;margin-left:6px;">大きな支出</span>' : '';
+            const memoSafe = escapeHtml(e.memo || '');
+            const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
+            const pmSafe = e.payment_method ? escapeHtml(e.payment_method) : '';
+            const receiptBtn = e.receipt_drive_id
+                ? `<button class="mini-link" onclick="viewReceipt('${escapeHtml(e.receipt_drive_id)}')" title="レシート表示">📷</button>`
+                : '';
+            return `
+                <div class="invest-row" style="cursor:default;padding:10px 18px;border-bottom:1px solid var(--border-glass);">
+                    <div class="row-main" style="flex:1;">
+                        <div class="row-title">
+                            ¥${e.amount.toLocaleString()} ${escapeHtml(e.vendor || e.category)}${bigBadge}
+                        </div>
+                        <div class="row-sub" style="font-size:0.78rem;color:var(--text-secondary);">
+                            ${escapeHtml(e.date)} ・ ${escapeHtml(e.category)}${pmSafe ? ' ・ ' + pmSafe : ''}
+                        </div>
+                        ${memoHtml}
+                    </div>
+                    <div class="row-actions" style="display:flex;gap:6px;">
+                        ${receiptBtn}
+                        <button class="mini-link" onclick="openExpenseManualModal(${e.id})">編集</button>
+                        <button class="mini-link" onclick="deleteExpense(${e.id})" style="color:#ff6b6b;">削除</button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch {
+        listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
+    }
+};
+
+window.openExpenseCaptureModal = () => {
+    const input = $('#expense-image-input');
+    if (!input) return;
+    input.value = '';
+    input.click();
+};
+
+let _expenseImageListenerInstalled = false;
+function _installExpenseImageListener() {
+    if (_expenseImageListenerInstalled) return;
+    const input = $('#expense-image-input');
+    if (!input) return;
+    input.addEventListener('change', async () => {
+        const file = (input.files || [])[0];
+        if (!file) return;
+        showToast('🧾 レシートを解析中…');
+        try {
+            const base64 = await _fileToBase64(file);
+            _pendingReceiptBase64 = base64;
+            _pendingReceiptMime = file.type || 'image/jpeg';
+            _pendingReceiptDriveId = '';
+            const res = await apiFetch('/api/expenses/analyze', {
+                method: 'POST',
+                body: JSON.stringify({ image_base64: base64, mime_type: _pendingReceiptMime }),
+            });
+            if (!res || !res.ok) {
+                showToast('解析に失敗しました', true);
+                return;
+            }
+            _pendingReceiptAnalysis = res.result || {};
+            openExpenseManualModal(null, _pendingReceiptAnalysis);
+        } catch (e) {
+            showToast('解析に失敗しました', true);
+        } finally {
+            input.value = '';
+        }
+    });
+    _expenseImageListenerInstalled = true;
+}
+
+window.openExpenseManualModal = async (id = null, seed = null) => {
+    let modal = $('#expense-edit-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="expense-edit-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:520px;max-height:90vh;overflow-y:auto;">
+                    <h3 id="expense-edit-title" style="margin-top:0;">💴 支出を記録</h3>
+                    <p id="expense-edit-confidence" style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 8px;"></p>
+
+                    <div style="display:flex;gap:8px;margin-bottom:8px;">
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">日付</label>
+                            <input id="exp-date" type="date" class="modern-input">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">金額 (円)</label>
+                            <input id="exp-amount" type="number" min="0" class="modern-input">
+                        </div>
+                    </div>
+
+                    <label style="font-size:0.78rem;color:var(--text-muted);">店名 / 内容</label>
+                    <input id="exp-vendor" class="modern-input" style="margin-bottom:8px;" placeholder="例: イオン">
+
+                    <div style="display:flex;gap:8px;margin-bottom:8px;">
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">カテゴリ</label>
+                            <select id="exp-category" class="modern-input"></select>
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">支払方法</label>
+                            <select id="exp-payment" class="modern-input">
+                                <option value="">未指定</option>
+                                <option value="現金">現金</option>
+                                <option value="クレジット">クレジット</option>
+                                <option value="電子マネー">電子マネー</option>
+                                <option value="QR">QR</option>
+                                <option value="銀行振込">銀行振込</option>
+                                <option value="不明">不明</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <label style="font-size:0.78rem;color:var(--text-muted);">メモ（任意）</label>
+                    <textarea id="exp-memo" class="modern-input" rows="2" style="font-family:inherit;margin-bottom:6px;"></textarea>
+
+                    <div id="exp-receipt-hint" style="font-size:0.74rem;color:var(--text-muted);margin-bottom:8px;"></div>
+
+                    <div class="modal-actions" style="margin-top:10px;">
+                        <button class="modal-btn cancel" onclick="closeExpenseEditModal()">キャンセル</button>
+                        <button class="modal-btn submit" id="exp-save-btn" onclick="saveExpenseFromModal()">保存</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#expense-edit-modal');
+    }
+
+    // カテゴリの選択肢を埋める（サーバから取得済みのカテゴリリストを使う）
+    const catEl = $('#exp-category');
+    if (catEl && !catEl.options.length) {
+        EXPENSE_CATEGORIES_FALLBACK.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c; opt.textContent = c;
+            catEl.appendChild(opt);
+        });
+    }
+
+    const titleEl = $('#expense-edit-title');
+    const confEl = $('#expense-edit-confidence');
+    const saveBtn = $('#exp-save-btn');
+    saveBtn.dataset.expenseId = id || '';
+
+    let e = {};
+    if (id) {
+        try {
+            const data = await apiFetch('/api/expenses');
+            e = (data.expenses || []).find(x => x.id === id) || {};
+            titleEl.textContent = '💴 支出を編集';
+            confEl.textContent = '';
+        } catch { e = {}; }
+    } else {
+        const now = new Date();
+        e = seed ? { ...seed } : {};
+        e.date = e.date || now.toISOString().slice(0, 10);
+        if (seed) {
+            titleEl.textContent = '💴 レシート解析結果を確認';
+            confEl.textContent = seed.confidence ? `信頼度: ${seed.confidence}` : '';
+        } else {
+            titleEl.textContent = '💴 支出を記録';
+            confEl.textContent = '';
+        }
+    }
+
+    $('#exp-date').value = e.date || '';
+    $('#exp-amount').value = e.amount ?? '';
+    $('#exp-vendor').value = e.vendor || '';
+    $('#exp-category').value = e.category || 'その他';
+    $('#exp-payment').value = e.payment_method || '';
+    $('#exp-memo').value = e.memo || '';
+
+    const hintEl = $('#exp-receipt-hint');
+    if (hintEl) {
+        if (_pendingReceiptBase64 && !id) {
+            hintEl.textContent = '🧾 撮影したレシート画像も保存時に Drive へアップロードされます。';
+        } else if (e.receipt_drive_id) {
+            hintEl.textContent = '🧾 既にレシート画像が保存されています。';
+        } else {
+            hintEl.textContent = '';
+        }
+    }
+
+    modal.classList.remove('hidden');
+};
+
+window.closeExpenseEditModal = () => {
+    $('#expense-edit-modal')?.classList.add('hidden');
+    _pendingReceiptAnalysis = null;
+    _pendingReceiptBase64 = null;
+    _pendingReceiptMime = '';
+    _pendingReceiptDriveId = '';
+};
+
+window.saveExpenseFromModal = async () => {
+    const btn = $('#exp-save-btn');
+    const id = btn?.dataset.expenseId ? parseInt(btn.dataset.expenseId, 10) : null;
+    const amount = parseInt($('#exp-amount')?.value || '0', 10) || 0;
+    if (amount <= 0) { showToast('金額を入力してください', true); return; }
+
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+        let receiptDriveId = _pendingReceiptDriveId;
+        // 新規 + レシート画像があれば Drive にアップロード
+        if (!id && _pendingReceiptBase64 && !receiptDriveId) {
+            try {
+                const up = await apiFetch('/api/expenses/receipt_upload', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        image_base64: _pendingReceiptBase64,
+                        mime_type: _pendingReceiptMime || 'image/jpeg',
+                        date: $('#exp-date')?.value || '',
+                    }),
+                });
+                if (up && up.ok) receiptDriveId = up.drive_id || '';
+            } catch {}
+        }
+
+        const payload = {
+            amount,
+            date: $('#exp-date')?.value || '',
+            vendor: ($('#exp-vendor')?.value || '').trim(),
+            category: $('#exp-category')?.value || 'その他',
+            payment_method: $('#exp-payment')?.value || '',
+            memo: ($('#exp-memo')?.value || '').trim(),
+        };
+        if (id) {
+            await apiFetch(`/api/expenses/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+            showToast('支出を更新しました');
+        } else {
+            payload.receipt_drive_id = receiptDriveId || '';
+            const res = await apiFetch('/api/expenses', { method: 'POST', body: JSON.stringify(payload) });
+            if (res?.is_large) {
+                showToast(`💴 大きな支出として記録 (¥${amount.toLocaleString()})`);
+            } else {
+                showToast('支出を記録しました');
+            }
+        }
+        closeExpenseEditModal();
+        loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
+    } catch {
+        showToast('保存に失敗しました', true);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '保存';
+    }
+};
+
+window.deleteExpense = async (id) => {
+    if (!confirm('この支出を削除しますか？')) return;
+    try {
+        await apiFetch(`/api/expenses/${id}`, { method: 'DELETE' });
+        showToast('削除しました');
+        loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
+    } catch {
+        showToast('削除に失敗しました', true);
+    }
+};
+
+window.viewReceipt = (driveId) => {
+    if (!driveId) return;
+    window.open(`https://drive.google.com/file/d/${encodeURIComponent(driveId)}/view`, '_blank', 'noopener');
+};
+
+window.openExpenseThresholdEditor = async () => {
+    try {
+        const cur = await apiFetch('/api/expenses/threshold');
+        const current = cur?.threshold_jpy || 5000;
+        const next = prompt('大きな支出の閾値（円）を入力してください。この金額以上のときに通知＆ライフログ追記されます。', String(current));
+        if (next === null) return;
+        const v = parseInt(String(next).replace(/[^\d]/g, ''), 10);
+        if (isNaN(v) || v < 0) { showToast('正の整数を入力してください', true); return; }
+        await apiFetch('/api/expenses/threshold', { method: 'POST', body: JSON.stringify({ threshold_jpy: v }) });
+        showToast(`閾値を ¥${v.toLocaleString()} に変更しました`);
+        loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
+    } catch {
+        showToast('閾値の更新に失敗しました', true);
     }
 };
 

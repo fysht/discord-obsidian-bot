@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=47">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=50">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -300,6 +300,46 @@
                             </details>
                         </div>
                     </details>
+                    <!-- メール (Gmail インボックス) -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-icon">📧</span>
+                            <span class="card-title">メール</span>
+                            <button class="mini-link" onclick="loadGmailInbox(currentGmailState)" title="更新">🔄 更新</button>
+                            <button class="mini-link" onclick="refreshGmailServer()" title="新着取り込み">📥 取り込み</button>
+                            <button class="mini-link" onclick="toggleGmailState()" id="gmail-state-toggle" title="表示中の状態を切替">📬 未処理</button>
+                        </div>
+                        <div id="dash-gmail-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                    </div>
+
+                    <!-- 食事ログ -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-icon">🍽</span>
+                            <span class="card-title">食事ログ</span>
+                            <button class="mini-link" onclick="openMealCaptureModal()" title="写真から記録">📷 写真</button>
+                            <button class="mini-link" onclick="openMealManualModal()" title="手動で記録">✏️ 手動</button>
+                            <button class="mini-link" onclick="requestMealAdvice()" title="マネージャーの栄養アドバイス">💬 助言</button>
+                        </div>
+                        <div id="dash-meals-summary" class="card-body" style="border-bottom:1px solid var(--border-glass);padding:8px 18px;font-size:0.78rem;color:var(--text-muted);"></div>
+                        <div id="dash-meals-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <input type="file" id="meal-image-input" accept="image/*" capture="environment" style="display:none;">
+                    </div>
+
+                    <!-- 大きな支出メモ -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-icon">💴</span>
+                            <span class="card-title">支出メモ</span>
+                            <button class="mini-link" onclick="openExpenseCaptureModal()" title="レシートから記録">📷 レシート</button>
+                            <button class="mini-link" onclick="openExpenseManualModal()" title="手動で記録">✏️ 手動</button>
+                            <button class="mini-link" onclick="openExpenseThresholdEditor()" title="大きな支出の閾値設定">⚙️ 閾値</button>
+                        </div>
+                        <div id="dash-expense-summary" class="card-body" style="border-bottom:1px solid var(--border-glass);padding:10px 18px;"></div>
+                        <div id="dash-expense-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <input type="file" id="expense-image-input" accept="image/*" capture="environment" style="display:none;">
+                    </div>
+
                     <div class="card summary-card">
                         <div class="card-header">
                             <span class="card-icon">📅</span>
@@ -1404,6 +1444,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=52"></script>
+    <script src="/static/js/app_v12.js?v=56"></script>
 </body>
 </html>

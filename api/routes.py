@@ -2841,7 +2841,32 @@ async def _collect_daily_context(date_str: str) -> dict:
         "fitbit": "",
         "chat_log": "",
         "mit": "",
+        "meals": "",
     }
+
+    # 食事ログ（栄養アドバイス用）
+    try:
+        from api.database import get_meals_by_date
+        meals = await get_meals_by_date(date_str)
+        if meals:
+            meal_lines = []
+            total = {"calories": 0, "protein_g": 0, "fat_g": 0, "carbs_g": 0}
+            for m in meals:
+                meal_lines.append(
+                    f"- {m['time']} {m['name']}: {m['calories']}kcal "
+                    f"(P{m['protein_g']:.0f}/F{m['fat_g']:.0f}/C{m['carbs_g']:.0f})"
+                )
+                total["calories"] += m["calories"] or 0
+                total["protein_g"] += m["protein_g"] or 0
+                total["fat_g"] += m["fat_g"] or 0
+                total["carbs_g"] += m["carbs_g"] or 0
+            meal_lines.append(
+                f"\n当日合計: {total['calories']}kcal "
+                f"(P{total['protein_g']:.0f}/F{total['fat_g']:.0f}/C{total['carbs_g']:.0f})"
+            )
+            ctx["meals"] = "\n".join(meal_lines)
+    except Exception as e:
+        logging.debug(f"summary meals error: {e}")
 
     # MIT セクション（達成状況含む）を Daily Note から抽出
     if chat_service and chat_service.drive_service:
@@ -2952,6 +2977,8 @@ def _format_daily_summary_context(ctx: dict) -> str:
         parts.append(f"## カレンダー予定\n{ctx['calendar']}")
     if ctx.get("lifelog"):
         parts.append(f"## ライフログ\n{ctx['lifelog']}")
+    if ctx.get("meals"):
+        parts.append(f"## 食事（栄養観点で1〜2行コメントを必ず入れる）\n{ctx['meals']}")
     if ctx.get("location"):
         parts.append(f"## 移動履歴\n{ctx['location']}")
     if ctx.get("fitbit"):
@@ -3360,6 +3387,632 @@ async def cost_settings_set(req: CostSettingsRequest):
     from services import cost_meter_service
     payload = {k: v for k, v in req.model_dump().items() if v is not None}
     return await cost_meter_service.update_settings(payload)
+
+
+# ============================================================
+# Gmail インボックス (要約一覧 + 削除/既読操作)
+# ============================================================
+
+@router.get("/gmail/inbox", dependencies=[Depends(verify_api_key)])
+async def gmail_inbox(state: str = "pending", limit: int = 50):
+    """`state` は pending / archived / trashed / all。"""
+    from api.database import gmail_list, gmail_count_unnotified_high
+    state = state.strip().lower() if state else "pending"
+    if state not in ("pending", "archived", "trashed", "all"):
+        state = "pending"
+    rows = await gmail_list(state=state, limit=max(1, min(int(limit or 50), 200)))
+    return {
+        "state": state,
+        "items": rows,
+        "high_pending_count": await gmail_count_unnotified_high(),
+    }
+
+
+@router.post("/gmail/{message_id}/read", dependencies=[Depends(verify_api_key)])
+async def gmail_mark_read(message_id: str):
+    """Gmail 側で既読化し、DB の state を 'archived' に。"""
+    from api import app
+    from api.database import gmail_update
+    bot = getattr(app.state, "bot", None)
+    gmail = getattr(bot, "gmail_service", None) if bot else None
+    if not gmail:
+        raise HTTPException(status_code=503, detail="Gmail未接続")
+    ok = await gmail.mark_as_read(message_id)
+    if ok:
+        await gmail_update(message_id, state="archived")
+    return {"ok": ok}
+
+
+@router.post("/gmail/{message_id}/trash", dependencies=[Depends(verify_api_key)])
+async def gmail_trash(message_id: str):
+    """Gmail でゴミ箱に移動し、DB の state を 'trashed' に。"""
+    from api import app
+    from api.database import gmail_update
+    bot = getattr(app.state, "bot", None)
+    gmail = getattr(bot, "gmail_service", None) if bot else None
+    if not gmail:
+        raise HTTPException(status_code=503, detail="Gmail未接続")
+    ok = await gmail.trash(message_id)
+    if ok:
+        await gmail_update(message_id, state="trashed")
+    return {"ok": ok}
+
+
+@router.post("/gmail/{message_id}/save", dependencies=[Depends(verify_api_key)])
+async def gmail_save_to_obsidian(message_id: str):
+    """重要メールを Google Drive (Obsidian) の `Emails/{YYYY-MM}/` に Markdown として保存。"""
+    from api import app
+    from api.database import gmail_get, gmail_update
+    bot = getattr(app.state, "bot", None)
+    chat_service = getattr(app.state, "chat_service", None)
+    gmail = getattr(bot, "gmail_service", None) if bot else None
+    if not gmail or not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="Gmail / Drive未接続")
+
+    record = await gmail_get(message_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="DBに該当メールがありません")
+
+    # 既存保存済みならスキップ（再保存はしない）
+    if record.get("saved_drive_id"):
+        return {"ok": True, "drive_id": record["saved_drive_id"], "already_saved": True}
+
+    # Gmail から本文を取り直す（DB には先頭プレビューしか保存していないため）
+    full = await gmail.get_message(message_id)
+    body_excerpt = ((full or {}).get("body") or "")[:5000]
+
+    received_at = record.get("received_at") or datetime.datetime.now(JST).isoformat()
+    try:
+        date_part = received_at[:10] if len(received_at) >= 10 else datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        month_part = date_part[:7]
+    except Exception:
+        date_part = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        month_part = date_part[:7]
+
+    subject = (record.get("subject") or "(件名なし)")
+    safe_subject = "".join(c if c.isalnum() or c in " 　-_.()[]" else "_" for c in subject)[:80].strip().replace(" ", "_") or "email"
+    file_name = f"{date_part}_{safe_subject}.md"
+
+    importance = record.get("importance") or "medium"
+    summary = record.get("summary") or ""
+    from_addr = record.get("from_addr") or ""
+
+    md_body = (
+        "---\n"
+        f"title: {subject}\n"
+        f"from: {from_addr}\n"
+        f"date: {received_at}\n"
+        f"importance: {importance}\n"
+        f"gmail_id: {message_id}\n"
+        f"gmail_thread_id: {record.get('thread_id', '')}\n"
+        "tags: [email]\n"
+        "---\n\n"
+        f"# {subject}\n\n"
+        f"- **差出人**: {from_addr}\n"
+        f"- **受信日時**: {received_at}\n"
+        f"- **重要度**: {importance}\n"
+        f"- **Gmail で開く**: https://mail.google.com/mail/u/0/#all/{record.get('thread_id', '') or message_id}\n\n"
+        "## マネージャー要約\n"
+        f"{summary or '（要約なし）'}\n\n"
+        "## 本文（抜粋）\n"
+        "```\n"
+        f"{body_excerpt}\n"
+        "```\n"
+    )
+
+    try:
+        service = chat_service.drive_service.get_service()
+        if not service:
+            return {"ok": False, "error": "Drive未接続"}
+        root = chat_service.drive_folder_id
+        emails_folder = await chat_service.drive_service.find_file(service, root, "Emails")
+        if not emails_folder:
+            emails_folder = await chat_service.drive_service.create_folder(service, root, "Emails")
+        month_folder = await chat_service.drive_service.find_file(service, emails_folder, month_part)
+        if not month_folder:
+            month_folder = await chat_service.drive_service.create_folder(service, emails_folder, month_part)
+
+        drive_id = await chat_service.drive_service.upload_text(
+            service, month_folder, file_name, md_body
+        )
+        if not drive_id:
+            return {"ok": False, "error": "Drive 書き込みに失敗"}
+        await gmail_update(
+            message_id,
+            saved_drive_id=drive_id,
+            saved_at=datetime.datetime.now(JST).isoformat(),
+        )
+        return {"ok": True, "drive_id": drive_id, "file_name": file_name}
+    except Exception as e:
+        logging.error(f"gmail_save_to_obsidian error: {e}")
+        return {"ok": False, "error": "保存に失敗しました"}
+
+
+@router.post("/gmail/refresh", dependencies=[Depends(verify_api_key)])
+async def gmail_refresh():
+    """ユーザー操作による手動ポーリング起動。新着の取り込みを即時実行。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Bot未起動")
+    cog = bot.get_cog("GmailWatchCog")
+    if not cog:
+        return {"ok": False, "error": "GmailWatchCog 未ロード"}
+    try:
+        await cog._run()
+        return {"ok": True}
+    except Exception as e:
+        logging.error(f"gmail_refresh error: {e}")
+        return {"ok": False, "error": "ポーリングに失敗しました"}
+
+
+# ============================================================
+# 支出ログ (Expenses) ＋ レシート Vision 解析
+# ============================================================
+
+EXPENSE_CATEGORIES = ["食費", "交通費", "娯楽", "衣服", "家電", "医療", "教育", "通信", "光熱費", "投資", "その他"]
+SETTING_EXPENSE_LARGE_THRESHOLD = "expense_large_threshold_jpy"
+DEFAULT_LARGE_THRESHOLD_JPY = 5000
+
+
+async def _get_large_threshold() -> int:
+    from api.database import get_app_setting
+    raw = await get_app_setting(SETTING_EXPENSE_LARGE_THRESHOLD, str(DEFAULT_LARGE_THRESHOLD_JPY))
+    try:
+        v = int(float(raw))
+        return v if v > 0 else DEFAULT_LARGE_THRESHOLD_JPY
+    except (TypeError, ValueError):
+        return DEFAULT_LARGE_THRESHOLD_JPY
+
+
+class ReceiptAnalyzeRequest(BaseModel):
+    image_base64: str
+    mime_type: str = "image/jpeg"
+
+
+@router.post("/expenses/analyze", dependencies=[Depends(verify_api_key)])
+async def expenses_analyze(req: ReceiptAnalyzeRequest):
+    """レシート写真から日付・店名・合計金額・支払方法を Gemini Vision で抽出（保存はしない）。"""
+    import base64
+    from google.genai import types as _gt
+    from api import app
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    prompt = (
+        "このレシート画像を読み取り、必ず以下の JSON 形式だけを返してください。前置きや説明は禁止。\n\n"
+        "{\n"
+        '  "date": "YYYY-MM-DD（読み取れなければ空文字）",\n'
+        '  "vendor": "店名（読み取れた文字を最大40文字。空可）",\n'
+        '  "amount": 合計金額(int, 円。税込み合計を優先),\n'
+        '  "category": "食費 / 交通費 / 娯楽 / 衣服 / 家電 / 医療 / 教育 / 通信 / 光熱費 / 投資 / その他 のいずれか",\n'
+        '  "payment_method": "現金 / クレジット / 電子マネー / QR / 不明 のいずれか",\n'
+        '  "memo": "備考（主な購入品 1〜2 個。空可）",\n'
+        '  "confidence": "high / medium / low"\n'
+        "}\n"
+        "amount は数字のみ。レシート以外の画像なら confidence='low' で空相当の値を入れる。"
+    )
+
+    try:
+        image_bytes = base64.b64decode(req.image_base64)
+        image_part = _gt.Part.from_bytes(data=image_bytes, mime_type=req.mime_type)
+        text_part = _gt.Part.from_text(text=prompt)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=_gt.Content(role="user", parts=[image_part, text_part]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        return {"ok": True, "result": json.loads(response.text)}
+    except Exception as e:
+        logging.error(f"expenses_analyze error: {e}")
+        raise HTTPException(status_code=500, detail=f"解析失敗: {str(e)}")
+
+
+class ReceiptUploadRequest(BaseModel):
+    image_base64: str
+    mime_type: str = "image/jpeg"
+    date: Optional[str] = None  # ファイル名用 (YYYY-MM)
+
+
+@router.post("/expenses/receipt_upload", dependencies=[Depends(verify_api_key)])
+async def expenses_receipt_upload(req: ReceiptUploadRequest):
+    """レシート画像を Google Drive (`/Expenses/YYYY-MM/`) に保存して file_id を返す。"""
+    import base64
+    import tempfile
+    from api import app
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"ok": False, "error": "Drive未接続"}
+
+    date_str = req.date or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    month_str = date_str[:7] if len(date_str) >= 7 else datetime.datetime.now(JST).strftime("%Y-%m")
+    try:
+        service = chat_service.drive_service.get_service()
+        if not service:
+            return {"ok": False, "error": "Drive未接続"}
+        root = chat_service.drive_folder_id
+        expenses_folder = await chat_service.drive_service.find_file(service, root, "Expenses")
+        if not expenses_folder:
+            expenses_folder = await chat_service.drive_service.create_folder(service, root, "Expenses")
+        month_folder = await chat_service.drive_service.find_file(service, expenses_folder, month_str)
+        if not month_folder:
+            month_folder = await chat_service.drive_service.create_folder(service, expenses_folder, month_str)
+
+        # base64 → 一時ファイル → Drive
+        suffix = ".jpg" if "jpeg" in (req.mime_type or "") or "jpg" in (req.mime_type or "") else ".png"
+        timestamp = datetime.datetime.now(JST).strftime("%Y%m%d_%H%M%S")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tf:
+            tf.write(base64.b64decode(req.image_base64))
+            tmp_path = tf.name
+        try:
+            file_id = await chat_service.drive_service.upload_file(
+                service, month_folder, f"receipt_{timestamp}{suffix}", tmp_path, mime_type=req.mime_type or "image/jpeg"
+            )
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+        return {"ok": True, "drive_id": file_id}
+    except Exception as e:
+        logging.error(f"expenses_receipt_upload error: {e}")
+        return {"ok": False, "error": "アップロード失敗"}
+
+
+class ExpenseSaveRequest(BaseModel):
+    amount: int
+    date: Optional[str] = None
+    category: str = "その他"
+    vendor: str = ""
+    payment_method: str = ""
+    memo: str = ""
+    receipt_drive_id: str = ""
+
+
+@router.post("/expenses", dependencies=[Depends(verify_api_key)])
+async def expenses_save(req: ExpenseSaveRequest):
+    """支出を保存。閾値超過なら is_large=1 を立て、Lifelog 追記と通知を実行。"""
+    from api import app
+    from api.database import add_expense
+
+    now = datetime.datetime.now(JST)
+    date = req.date or now.strftime("%Y-%m-%d")
+    threshold = await _get_large_threshold()
+    is_large = req.amount >= threshold
+
+    expense_id = await add_expense(
+        date=date, amount=req.amount, category=req.category, vendor=req.vendor,
+        payment_method=req.payment_method, memo=req.memo,
+        receipt_drive_id=req.receipt_drive_id, is_large=is_large,
+    )
+
+    # 大きな支出だけ Lifelog と通知（小さなものはノイズになるので除外）
+    if is_large:
+        try:
+            bot = getattr(app.state, "bot", None)
+            partner_cog = bot.get_cog("PartnerCog") if bot else None
+            if partner_cog and date == now.strftime("%Y-%m-%d"):
+                note_content = await partner_cog._get_todays_obsidian_note()
+                if not note_content:
+                    note_content = f"# Daily Note {date}\n"
+                time_str = now.strftime("%H:%M")
+                vendor_str = req.vendor or req.category or "支出"
+                line = f"- {time_str} 💴 大きな支出: {vendor_str} ¥{req.amount:,}"
+                if req.memo:
+                    line += f"（{req.memo}）"
+                from utils.obsidian_utils import update_section
+                updated = update_section(note_content, line, "## 🪟 Lifelog")
+                await partner_cog._save_todays_obsidian_note(updated)
+        except Exception as e:
+            logging.debug(f"expenses_save lifelog append failed: {e}")
+
+        try:
+            await notification_service.send_push(
+                title="💴 大きな支出を記録",
+                body=f"¥{req.amount:,}（{req.vendor or req.category}）。閾値 ¥{threshold:,} を超えました。",
+                url="/?openExpenses=1",
+            )
+        except Exception:
+            pass
+
+    return {"ok": True, "id": expense_id, "is_large": is_large, "threshold": threshold}
+
+
+@router.get("/expenses", dependencies=[Depends(verify_api_key)])
+async def expenses_list(year: Optional[int] = None, month: Optional[int] = None):
+    """指定月（既定: 今月）の支出一覧と集計を返す。"""
+    from api.database import get_expenses_by_range
+    import calendar as _cal
+    now = datetime.datetime.now(JST)
+    y = year or now.year
+    m = month or now.month
+    days_in_month = _cal.monthrange(y, m)[1]
+    start = f"{y:04d}-{m:02d}-01"
+    end = f"{y:04d}-{m:02d}-{days_in_month:02d}"
+    rows = await get_expenses_by_range(start, end)
+
+    total = sum(r["amount"] for r in rows)
+    by_category: dict[str, int] = {}
+    for r in rows:
+        c = r["category"] or "その他"
+        by_category[c] = by_category.get(c, 0) + r["amount"]
+    by_category_list = sorted(
+        [{"category": k, "amount": v} for k, v in by_category.items()],
+        key=lambda x: x["amount"], reverse=True,
+    )
+    threshold = await _get_large_threshold()
+    return {
+        "year": y, "month": m,
+        "start": start, "end": end,
+        "expenses": rows,
+        "total": total,
+        "by_category": by_category_list,
+        "large_threshold": threshold,
+        "categories": EXPENSE_CATEGORIES,
+    }
+
+
+class ExpensePatchRequest(BaseModel):
+    date: Optional[str] = None
+    amount: Optional[int] = None
+    category: Optional[str] = None
+    vendor: Optional[str] = None
+    payment_method: Optional[str] = None
+    memo: Optional[str] = None
+
+
+@router.patch("/expenses/{expense_id}", dependencies=[Depends(verify_api_key)])
+async def expenses_patch(expense_id: int, req: ExpensePatchRequest):
+    from api.database import update_expense
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "amount" in fields:
+        # 金額変更時は is_large フラグも再計算
+        threshold = await _get_large_threshold()
+        fields["is_large"] = fields["amount"] >= threshold
+    ok = await update_expense(expense_id, fields)
+    if not ok:
+        raise HTTPException(status_code=404, detail="支出が見つかりません")
+    return {"ok": True}
+
+
+@router.delete("/expenses/{expense_id}", dependencies=[Depends(verify_api_key)])
+async def expenses_delete(expense_id: int):
+    from api.database import delete_expense
+    ok = await delete_expense(expense_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="支出が見つかりません")
+    return {"ok": True}
+
+
+class ExpenseThresholdRequest(BaseModel):
+    threshold_jpy: int
+
+
+@router.get("/expenses/threshold", dependencies=[Depends(verify_api_key)])
+async def expenses_threshold_get():
+    return {"threshold_jpy": await _get_large_threshold()}
+
+
+@router.post("/expenses/threshold", dependencies=[Depends(verify_api_key)])
+async def expenses_threshold_set(req: ExpenseThresholdRequest):
+    from api.database import set_app_setting
+    v = max(0, int(req.threshold_jpy or 0))
+    await set_app_setting(SETTING_EXPENSE_LARGE_THRESHOLD, str(v))
+    return {"ok": True, "threshold_jpy": v}
+
+
+# ============================================================
+# 食事ログ (Meal log) ＋ Gemini Vision による解析
+# ============================================================
+
+class MealAnalyzeRequest(BaseModel):
+    image_base64: str
+    mime_type: str = "image/jpeg"
+    hint: str = ""
+
+
+@router.post("/meals/analyze", dependencies=[Depends(verify_api_key)])
+async def meals_analyze(req: MealAnalyzeRequest):
+    """食事の写真から料理名・推定カロリー・PFC を抽出（保存はしない）。"""
+    import base64
+    from google.genai import types as _gt
+    from api import app
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    hint_text = f"\n補足: {req.hint}" if req.hint else ""
+    prompt = (
+        "この食事の写真から栄養情報を推定し、必ず以下の JSON 形式だけを返してください。\n"
+        f"前置きや説明は禁止。{hint_text}\n\n"
+        "{\n"
+        '  "name": "料理名（複数なら『+』でつなぐ。例: 唐揚げ定食 + 味噌汁）",\n'
+        '  "meal_type": "breakfast / lunch / dinner / snack のいずれか（時間帯がわからなければ best effort）",\n'
+        '  "calories": 推定カロリー(kcal, int),\n'
+        '  "protein_g": タンパク質(g, number),\n'
+        '  "fat_g": 脂質(g, number),\n'
+        '  "carbs_g": 炭水化物(g, number),\n'
+        '  "confidence": "high / medium / low",\n'
+        '  "memo": "気づいたこと（量が多い・野菜が少ない 等）を1〜2行"\n'
+        "}\n"
+        "推定根拠が乏しいときは confidence='low' とし、数値は控えめに。"
+    )
+
+    try:
+        image_bytes = base64.b64decode(req.image_base64)
+        image_part = _gt.Part.from_bytes(data=image_bytes, mime_type=req.mime_type)
+        text_part = _gt.Part.from_text(text=prompt)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=_gt.Content(role="user", parts=[image_part, text_part]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        data = json.loads(response.text)
+        return {"ok": True, "result": data}
+    except Exception as e:
+        logging.error(f"meals_analyze error: {e}")
+        raise HTTPException(status_code=500, detail=f"解析失敗: {str(e)}")
+
+
+class MealSaveRequest(BaseModel):
+    name: str
+    time: Optional[str] = None  # HH:MM。未指定なら現在時刻
+    date: Optional[str] = None  # YYYY-MM-DD。未指定なら今日
+    meal_type: str = ""
+    calories: int = 0
+    protein_g: float = 0.0
+    fat_g: float = 0.0
+    carbs_g: float = 0.0
+    memo: str = ""
+    image_drive_id: str = ""
+
+
+@router.post("/meals", dependencies=[Depends(verify_api_key)])
+async def meals_save(req: MealSaveRequest):
+    """食事ログを保存。Lifelog にも `- HH:MM 🍽 ...` で追記する。"""
+    from api import app
+    from api.database import add_meal
+
+    now = datetime.datetime.now(JST)
+    date = req.date or now.strftime("%Y-%m-%d")
+    time = req.time or now.strftime("%H:%M")
+    name = (req.name or "").strip() or "食事"
+
+    meal_id = await add_meal(
+        date=date, time=time, name=name,
+        meal_type=(req.meal_type or "").strip(),
+        calories=req.calories,
+        protein_g=req.protein_g, fat_g=req.fat_g, carbs_g=req.carbs_g,
+        memo=req.memo or "",
+        image_drive_id=req.image_drive_id or "",
+    )
+
+    # Lifelog に追記（今日分のみ）
+    try:
+        if date == now.strftime("%Y-%m-%d"):
+            chat_service = getattr(app.state, "chat_service", None)
+            bot = getattr(app.state, "bot", None)
+            partner_cog = bot.get_cog("PartnerCog") if bot else None
+            if partner_cog and chat_service and chat_service.drive_service:
+                kcal_text = f"（推定{req.calories}kcal）" if req.calories else ""
+                line = f"- {time} 🍽 {name}{kcal_text}"
+                note_content = await partner_cog._get_todays_obsidian_note()
+                if not note_content:
+                    note_content = f"# Daily Note {date}\n"
+                from utils.obsidian_utils import update_section
+                updated = update_section(note_content, line, "## 🪟 Lifelog")
+                await partner_cog._save_todays_obsidian_note(updated)
+    except Exception as e:
+        logging.debug(f"meals_save lifelog append failed: {e}")
+
+    return {"ok": True, "id": meal_id, "date": date, "time": time}
+
+
+@router.get("/meals", dependencies=[Depends(verify_api_key)])
+async def meals_list(date: str = ""):
+    from api.database import get_meals_by_date
+    if not date:
+        date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    rows = await get_meals_by_date(date)
+    # 当日合計
+    total = {
+        "calories": sum(r["calories"] or 0 for r in rows),
+        "protein_g": round(sum(r["protein_g"] or 0 for r in rows), 1),
+        "fat_g": round(sum(r["fat_g"] or 0 for r in rows), 1),
+        "carbs_g": round(sum(r["carbs_g"] or 0 for r in rows), 1),
+    }
+    return {"date": date, "meals": rows, "total": total}
+
+
+class MealPatchRequest(BaseModel):
+    date: Optional[str] = None
+    time: Optional[str] = None
+    meal_type: Optional[str] = None
+    name: Optional[str] = None
+    calories: Optional[int] = None
+    protein_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    memo: Optional[str] = None
+
+
+@router.patch("/meals/{meal_id}", dependencies=[Depends(verify_api_key)])
+async def meals_patch(meal_id: int, req: MealPatchRequest):
+    from api.database import update_meal
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    ok = await update_meal(meal_id, fields)
+    if not ok:
+        raise HTTPException(status_code=404, detail="食事が見つかりません")
+    return {"ok": True}
+
+
+@router.delete("/meals/{meal_id}", dependencies=[Depends(verify_api_key)])
+async def meals_delete(meal_id: int):
+    from api.database import delete_meal
+    ok = await delete_meal(meal_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="食事が見つかりません")
+    return {"ok": True}
+
+
+@router.post("/meals/advice", dependencies=[Depends(verify_api_key)])
+async def meals_advice(date: str = ""):
+    """指定日（既定: 今日）の食事ログを Gemini に渡し、栄養観点でのマネージャーアドバイスを返す。"""
+    from api import app
+    from api.database import get_meals_by_date
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+    if not date:
+        date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    meals = await get_meals_by_date(date)
+    if not meals:
+        return {"ok": False, "error": "食事の記録がまだありません"}
+    lines = []
+    total_kcal = total_p = total_f = total_c = 0
+    for m in meals:
+        lines.append(
+            f"- {m['time']} {m['name']}: {m['calories']}kcal "
+            f"(P{m['protein_g']}/F{m['fat_g']}/C{m['carbs_g']})"
+            + (f" — {m['memo']}" if m["memo"] else "")
+        )
+        total_kcal += m["calories"] or 0
+        total_p += m["protein_g"] or 0
+        total_f += m["fat_g"] or 0
+        total_c += m["carbs_g"] or 0
+    body = "\n".join(lines)
+    prompt = (
+        "あなたはユーザー専属のマネージャー兼栄養アドバイザーです。\n"
+        f"今日（{date}）の食事ログから、栄養バランスの観点で短くアドバイスしてください。\n\n"
+        f"## 食事ログ\n{body}\n\n"
+        f"## 当日合計\nカロリー: {total_kcal}kcal / P: {total_p:.0f}g / F: {total_f:.0f}g / C: {total_c:.0f}g\n\n"
+        "【ルール】\n"
+        "- 文体はマネージャーらしいタメ口で 3〜5 行\n"
+        "- 「足りない/多い」を 1 つだけ具体的に指摘し、明日に向けた小さな提案を 1 つ\n"
+        "- カロリー数値だけでなくPFCバランスにも触れる\n"
+        "- 否定的な強い言葉は使わず、励まし基調で\n"
+    )
+    try:
+        from google.genai import types as _gt
+        response = await bot.gemini_client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=_gt.GenerateContentConfig(),
+        )
+        advice = (response.text or "").strip()
+        return {"ok": True, "advice": advice, "total": {
+            "calories": total_kcal,
+            "protein_g": round(total_p, 1),
+            "fat_g": round(total_f, 1),
+            "carbs_g": round(total_c, 1),
+        }}
+    except Exception as e:
+        logging.error(f"meals_advice error: {e}")
+        return {"ok": False, "error": "アドバイス生成に失敗しました"}
 
 
 # ============================================================

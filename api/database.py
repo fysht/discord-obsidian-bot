@@ -132,6 +132,70 @@ async def init_db():
             )
         """)
 
+        # Gmail インボックス（要約キャッシュ + 状態管理）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS gmail_inbox (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT DEFAULT '',
+                subject TEXT DEFAULT '',
+                from_addr TEXT DEFAULT '',
+                received_at TEXT NOT NULL,
+                snippet TEXT DEFAULT '',
+                summary TEXT DEFAULT '',
+                importance TEXT DEFAULT 'medium',
+                state TEXT DEFAULT 'pending',
+                notified INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gmail_state ON gmail_inbox(state)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_gmail_received ON gmail_inbox(received_at)"
+        )
+
+        # 支出ログ（大きな支出メモ）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                category TEXT DEFAULT 'その他',
+                vendor TEXT DEFAULT '',
+                payment_method TEXT DEFAULT '',
+                memo TEXT DEFAULT '',
+                receipt_drive_id TEXT DEFAULT '',
+                is_large INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date)"
+        )
+
+        # 食事ログ
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS meals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT NOT NULL,
+                time TEXT NOT NULL,
+                meal_type TEXT DEFAULT '',
+                name TEXT NOT NULL,
+                calories INTEGER DEFAULT 0,
+                protein_g REAL DEFAULT 0,
+                fat_g REAL DEFAULT 0,
+                carbs_g REAL DEFAULT 0,
+                memo TEXT DEFAULT '',
+                image_drive_id TEXT DEFAULT '',
+                advice TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_meals_date ON meals(date)"
+        )
+
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
             "ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''",
@@ -147,6 +211,9 @@ async def init_db():
             "ALTER TABLE english_phrases ADD COLUMN attempt_count INTEGER DEFAULT 0",
             "ALTER TABLE english_phrases ADD COLUMN correct_count INTEGER DEFAULT 0",
             "ALTER TABLE english_phrases ADD COLUMN last_attempted_at TEXT DEFAULT NULL",
+            # Gmail インボックスに「Obsidian保存済み」を示す列を追加
+            "ALTER TABLE gmail_inbox ADD COLUMN saved_drive_id TEXT DEFAULT ''",
+            "ALTER TABLE gmail_inbox ADD COLUMN saved_at TEXT DEFAULT ''",
         ):
             try:
                 await db.execute(ddl)
@@ -647,3 +714,222 @@ async def set_app_setting(key: str, value: str) -> None:
             (key, value, now),
         )
         await db.commit()
+
+
+# --- Meals (食事ログ) ---
+
+async def add_meal(
+    date: str, time: str, name: str,
+    meal_type: str = "",
+    calories: int = 0,
+    protein_g: float = 0.0,
+    fat_g: float = 0.0,
+    carbs_g: float = 0.0,
+    memo: str = "",
+    image_drive_id: str = "",
+    advice: str = "",
+) -> int:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT INTO meals (date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (date, time, meal_type, name, int(calories or 0), float(protein_g or 0), float(fat_g or 0),
+             float(carbs_g or 0), memo, image_drive_id, advice, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_meals_by_date(date: str) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, created_at "
+            "FROM meals WHERE date = ? ORDER BY time ASC, id ASC",
+            (date,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def update_meal(meal_id: int, fields: dict) -> bool:
+    if not fields:
+        return False
+    allowed = {"date", "time", "meal_type", "name", "calories", "protein_g", "fat_g", "carbs_g", "memo", "advice"}
+    sets = []
+    values = []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        sets.append(f"{k} = ?")
+        values.append(v)
+    if not sets:
+        return False
+    values.append(meal_id)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            f"UPDATE meals SET {', '.join(sets)} WHERE id = ?",
+            tuple(values),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def delete_meal(meal_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("DELETE FROM meals WHERE id = ?", (meal_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# --- Expenses (大きな支出メモ) ---
+
+async def add_expense(
+    date: str, amount: int, category: str = "その他",
+    vendor: str = "", payment_method: str = "", memo: str = "",
+    receipt_drive_id: str = "", is_large: bool = False,
+) -> int:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT INTO expenses (date, amount, category, vendor, payment_method, memo, receipt_drive_id, is_large, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (date, int(amount or 0), category or "その他", vendor or "", payment_method or "",
+             memo or "", receipt_drive_id or "", 1 if is_large else 0, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_expenses_by_range(start_date: str, end_date: str) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, date, amount, category, vendor, payment_method, memo, receipt_drive_id, is_large, created_at "
+            "FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date DESC, id DESC",
+            (start_date, end_date),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def update_expense(expense_id: int, fields: dict) -> bool:
+    if not fields:
+        return False
+    allowed = {"date", "amount", "category", "vendor", "payment_method", "memo", "is_large", "receipt_drive_id"}
+    sets = []
+    values = []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        sets.append(f"{k} = ?")
+        if k == "is_large":
+            values.append(1 if v else 0)
+        else:
+            values.append(v)
+    if not sets:
+        return False
+    values.append(expense_id)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            f"UPDATE expenses SET {', '.join(sets)} WHERE id = ?",
+            tuple(values),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def delete_expense(expense_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("DELETE FROM expenses WHERE id = ?", (expense_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# --- Gmail Inbox ---
+
+async def gmail_get(message_id: str) -> dict | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM gmail_inbox WHERE id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def gmail_upsert(message: dict) -> None:
+    """Gmail メッセージを保存または更新する。要約・重要度は別途 update する想定。"""
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO gmail_inbox (id, thread_id, subject, from_addr, received_at, snippet, summary, importance, state, notified, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?) "
+            "ON CONFLICT(id) DO UPDATE SET thread_id = excluded.thread_id, subject = excluded.subject, "
+            "from_addr = excluded.from_addr, received_at = excluded.received_at, snippet = excluded.snippet",
+            (
+                message["id"],
+                message.get("thread_id", ""),
+                message.get("subject", ""),
+                message.get("from_addr", ""),
+                message.get("received_at", now),
+                message.get("snippet", ""),
+                message.get("summary", ""),
+                message.get("importance", "medium"),
+                now,
+            ),
+        )
+        await db.commit()
+
+
+async def gmail_update(message_id: str, **fields) -> bool:
+    if not fields:
+        return False
+    allowed = {"summary", "importance", "state", "notified", "subject", "from_addr", "snippet", "saved_drive_id", "saved_at"}
+    sets = []
+    values = []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        sets.append(f"{k} = ?")
+        values.append(v)
+    if not sets:
+        return False
+    values.append(message_id)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            f"UPDATE gmail_inbox SET {', '.join(sets)} WHERE id = ?",
+            tuple(values),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def gmail_list(state: str = "pending", limit: int = 50) -> list[dict]:
+    """state='pending' / 'archived' / 'trashed' / 'all' を指定して一覧取得。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if state and state != "all":
+            cursor = await db.execute(
+                "SELECT * FROM gmail_inbox WHERE state = ? "
+                "ORDER BY received_at DESC LIMIT ?",
+                (state, limit),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM gmail_inbox ORDER BY received_at DESC LIMIT ?",
+                (limit,),
+            )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def gmail_count_unnotified_high() -> int:
+    """high 重要度かつ未通知の件数（バッジ表示などに使う）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM gmail_inbox WHERE state = 'pending' AND importance = 'high'"
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0

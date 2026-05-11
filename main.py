@@ -12,6 +12,7 @@ from google import genai
 from services.google_drive_service import GoogleDriveService
 from services.google_calendar_service import GoogleCalendarService
 from services.google_tasks_service import GoogleTasksService
+from services.gmail_service import GmailService
 from services.info_service import InfoService
 
 log_format = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
@@ -122,10 +123,12 @@ class MyBot(commands.Bot):
                 self.drive_service.creds, calendar_id
             )
             self.tasks_service = GoogleTasksService(self.drive_service.creds)
+            self.gmail_service = GmailService(self.drive_service.creds)
         else:
             self.calendar_service = None
             self.tasks_service = None
-            logging.warning("Google認証情報がありません。Calendar/Tasksは無効です。")
+            self.gmail_service = None
+            logging.warning("Google認証情報がありません。Calendar/Tasks/Gmailは無効です。")
 
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
