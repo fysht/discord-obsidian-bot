@@ -62,7 +62,7 @@ def get_system_prompt(user_name: str, now_str: str, user_manual: str = "") -> st
 
 **【ツール利用のルール】**
 - 行動ロギング: 「これから〜を始める」なら `log_life_activity` の "start"、「〜終わった」なら "end" を使って。
-- 知識の保存: 「これは残しておきたい！」っていう深い洞察やアイデアがあったら、「create_permanent_note」で永久ノートにしておいて。
+- 知識の保存: 「これは残しておきたい！」っていう深い洞察やアイデアがあったら、必ず「propose_permanent_note」で『これを永久ノートにしておく？』とユーザーに確認すること。確認なしの自動保存（create_permanent_note）は禁止。
 - カレンダー/Tasks: スケジュール管理やToDo管理。君が文脈から判断して。
 - 株式投資: 株の話が出たら投資記録ツールでノートに保存。
 - 習慣: 俺が報告したら必ず「record_habit」を使ってね。
@@ -610,7 +610,8 @@ PROMPT_EARNINGS_DOCUMENTS = """
       "type": "earnings_short / 10-K / 10-Q / 8-K / annual_report / earnings_call / presentation / press_release",
       "fiscal_period": "対象会計期間",
       "published_date": "YYYY-MM-DD",
-      "url": "資料の直接URL（PDFまたはHTML）",
+      "url": "資料の直接URL（可能な限り .pdf 直リンク）",
+      "file_format": "pdf / html",
       "language": "ja / en"
     }}
   ],
@@ -620,6 +621,8 @@ PROMPT_EARNINGS_DOCUMENTS = """
 
 【ルール】
 - documents には直近6ヶ月以内に公表された資料を最大10件まで含める。
+- URL は **可能な限り PDF の直リンク（.pdf で終わる URL）を最優先**で取得すること。HTML ページ経由ではなく、レポート本体の PDF URL を返すこと。
+- file_format には "pdf" または "html" を必ず指定する。URL が .pdf で終わる場合は "pdf"、それ以外は "html"。
 - URLが取得できなかった項目は除外する（捏造禁止）。
 - type は必ず指定された値のいずれかにする。
 - source_quality: 公式IRやEDINET/EDGARから直接取れた=high、ニュース・まとめサイト経由=medium、推測=low。

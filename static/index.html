@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=44">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=45">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -305,6 +305,7 @@
                             <span class="card-icon">📅</span>
                             <span class="card-title">デイリーサマリー</span>
                             <button class="mini-link" onclick="generateDailySummary(false)">生成</button>
+                            <button class="mini-link" onclick="generateDailySummaryForDate()" title="過去日のサマリーを生成">📆 日付指定</button>
                             <button class="mini-link" onclick="openDailySummaryEditor()">編集</button>
                         </div>
                         <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
@@ -423,8 +424,8 @@
                             <span class="card-title">市場の地合い</span>
                             <button class="mini-link" onclick="runMarketSentiment()">分析する</button>
                         </div>
-                        <div id="invest-sentiment-result" class="card-body" style="font-size:0.85rem;color:var(--text-secondary);">
-                            ボタンを押すと、Google検索とGoogleファイナンスから最新の日米市場データを取得して地合いを判定します。
+                        <div id="invest-sentiment-result" class="card-body">
+                            <div class="loading-placeholder">「分析する」ボタンから最新の日米市場データを取得して地合いを判定します。</div>
                         </div>
                     </div>
 
@@ -482,18 +483,6 @@
                         </div>
                     </div>
 
-                    <!-- 投資憲法 -->
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-icon">📜</span>
-                            <span class="card-title">投資憲法</span>
-                            <button class="mini-link" onclick="openConstitutionEditor()">表示・編集</button>
-                        </div>
-                        <div class="card-body" style="font-size:0.85rem;color:var(--text-secondary);">
-                            銘柄審査の判断基準。Drive上の <code>Investment/Investment_Constitution.md</code> に保存されます。
-                        </div>
-                    </div>
-
                     <!-- ポートフォリオ -->
                     <div class="card">
                         <div class="card-header">
@@ -503,7 +492,7 @@
                             <button class="mini-link" onclick="loadPortfolio()">更新</button>
                             <button class="mini-link" onclick="runRiskAssessment()">リスク評価</button>
                         </div>
-                        <div id="invest-portfolio-list" class="card-body">読み込み中...</div>
+                        <div id="invest-portfolio-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
                     </div>
 
                     <!-- 投資日記 -->
@@ -515,7 +504,7 @@
                             <button class="mini-link" onclick="loadJournalList()">更新</button>
                             <button class="mini-link" onclick="runJournalAnalyze()">癖を分析</button>
                         </div>
-                        <div id="invest-journal-list" class="card-body">読み込み中...</div>
+                        <div id="invest-journal-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
                     </div>
 
                     <!-- アラート -->
@@ -527,7 +516,7 @@
                             <button class="mini-link" onclick="loadAlertsList()">更新</button>
                             <button class="mini-link" onclick="runAlertsCheck()">今すぐチェック</button>
                         </div>
-                        <div id="invest-alerts-list" class="card-body">読み込み中...</div>
+                        <div id="invest-alerts-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
                     </div>
 
                     <!-- 投資憲法 -->
@@ -564,7 +553,7 @@
                                 <button class="chip-btn invest-history-tab" data-cat="constitution_review" onclick="switchInvestHistory('constitution_review')">🔄 レビュー</button>
                                 <button class="chip-btn invest-history-tab" data-cat="journal" onclick="switchInvestHistory('journal')">📔 日記</button>
                             </div>
-                            <div id="invest-history-list" class="list-body">読み込み中...</div>
+                            <div id="invest-history-list" class="list-body"><div class="loading-placeholder">読み込み中。</div></div>
                         </div>
                     </div>
                 </div>
@@ -1416,6 +1405,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=49"></script>
+    <script src="/static/js/app_v12.js?v=50"></script>
 </body>
 </html>

@@ -7,11 +7,11 @@ import re
 SECTION_ORDER = [
     # --- 1. Plan (今日やること) ---
     "## 🎯 MIT",  # 今日の最重要タスク (PartnerCog)
-    "## ⏱ Daily Timeline",  # 客観データを時系列で並べたビュー (DailyOrganizeCog)
+    "## 📋 Daily Log",  # 客観データを時系列で並べたビュー (DailyOrganizeCog) ※旧名: Daily Timeline
     # --- 2. Execution (リアルタイム記録) ---
     "## 🪟 Lifelog",   # 行動記録 (PartnerCog / PWA)
     "## 🎯 Tasks",     # LLR風タスク＆時間記録 (PartnerCog)
-    "## 💬 Timeline",  # 日常のつぶやき・メモ (PartnerCog)
+    "## 💬 Chat Log",  # 日常のつぶやき・メモ (PartnerCog) ※旧名: Timeline
     "## 🤔 Thought Reflection",  # 壁打ち (PartnerCog)
     # --- 3. Reflection (1日の振り返り)
     # アプリのログタブ並び（デイリーサマリー → 今日の日記 → 観察日記）と一致
@@ -35,11 +35,35 @@ SECTION_ORDER = [
 ]
 
 
+# 旧セクション名 → 新セクション名のマイグレーションマップ
+SECTION_RENAMES = {
+    "## ⏱ Daily Timeline": "## 📋 Daily Log",
+    "## 💬 Timeline": "## 💬 Chat Log",
+}
+
+
+def migrate_legacy_sections(content: str) -> str:
+    """既存ノートの旧セクション見出しを新名に書き換える（1パス置換）。"""
+    if not content:
+        return content
+    for old, new in SECTION_RENAMES.items():
+        content = re.sub(
+            r"^" + re.escape(old) + r"\s*$",
+            new,
+            content,
+            flags=re.MULTILINE,
+        )
+    return content
+
+
 def update_section(current_content: str, text_to_add: str, section_header: str) -> str:
     """
     Obsidianのデイリーノート内で、定義された順序に基づいてセクションの内容を更新または新規追加する共通関数。
     ノート全体をパースして再構築することで、セクション間の空白行を統一し、項目内の不要な空白行を削除します。
     """
+    # 0. 旧セクション名のマイグレーション（既存ノート互換）
+    current_content = migrate_legacy_sections(current_content)
+
     # 1. フロントマターと本文を分離
     frontmatter = ""
     body = current_content

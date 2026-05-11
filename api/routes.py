@@ -142,6 +142,11 @@ class ChatRequest(BaseModel):
     message: str
     reply_to_id: Optional[int] = None
     english_mode: bool = False
+    client_msg_id: Optional[str] = None  # 二重送信防止用の冪等キー（フロントから付与）
+
+# 冪等キー → (timestamp, ChatResponse) のキャッシュ。5 秒以内の同 ID 再送は弾く
+_CHAT_IDEMPOTENCY_CACHE: dict = {}
+_CHAT_IDEMPOTENCY_WINDOW_SEC = 5.0
 
 class ChatResponse(BaseModel):
     reply: str
@@ -352,7 +357,22 @@ async def sync_link_to_obsidian(chat_service, title: str, link_type: str, url: s
 async def chat(req: ChatRequest):
     from api import app
     import re
+    import time as _time_mod
     from api.database import backup_db_to_drive
+
+    # 冪等キーによる二重送信ガード
+    if req.client_msg_id:
+        now_ts = _time_mod.time()
+        # 古いエントリを掃除
+        expired = [k for k, (ts, _) in _CHAT_IDEMPOTENCY_CACHE.items() if now_ts - ts > _CHAT_IDEMPOTENCY_WINDOW_SEC]
+        for k in expired:
+            _CHAT_IDEMPOTENCY_CACHE.pop(k, None)
+        cached = _CHAT_IDEMPOTENCY_CACHE.get(req.client_msg_id)
+        if cached and (now_ts - cached[0]) <= _CHAT_IDEMPOTENCY_WINDOW_SEC:
+            # 同じ冪等キーの再リクエスト → 前回のレスポンスをそのまま返す
+            return cached[1]
+        # 進行中のキーは仮押さえ（後でレスポンスを上書き保存）
+        _CHAT_IDEMPOTENCY_CACHE[req.client_msg_id] = (now_ts, None)
 
     url_match = re.search(r"https?://[^\s]+", req.message)
     if url_match:
@@ -370,7 +390,10 @@ async def chat(req: ChatRequest):
             reply = f"「{meta['title']}」を{type_label}としてストックし、ノートを作成しました。"
             user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
             asst_id = await notification_service.save_message_and_notify("assistant", reply)
-            return ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
+            _resp = ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
+            if req.client_msg_id:
+                _CHAT_IDEMPOTENCY_CACHE[req.client_msg_id] = (_time_mod.time(), _resp)
+            return _resp
         except Exception as e:
             logging.error(f"Link stock failed, falling back to AI: {e}")
 
@@ -437,11 +460,38 @@ async def chat(req: ChatRequest):
             name="db-backup-chat",
         )
 
-    return ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id, translation=translation)
+    _resp = ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id, translation=translation)
+    if req.client_msg_id:
+        _CHAT_IDEMPOTENCY_CACHE[req.client_msg_id] = (_time_mod.time(), _resp)
+    return _resp
 
 @router.get("/history", dependencies=[Depends(verify_api_key)])
 async def history(limit: int = 100):
     return {"messages": await get_history(limit=limit)}
+
+
+class PermanentNoteConfirmRequest(BaseModel):
+    title: str
+    content: str
+
+
+@router.post("/permanent_notes/confirm", dependencies=[Depends(verify_api_key)])
+async def permanent_notes_confirm(req: PermanentNoteConfirmRequest):
+    """ユーザーが永久ノートの確認モーダルで『保存』を押した時に呼ばれる。"""
+    from api import app
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service:
+        raise HTTPException(status_code=503, detail="ChatService 未初期化")
+    title = (req.title or "").strip()
+    content = (req.content or "").strip()
+    if not title:
+        return {"ok": False, "error": "タイトルが空です"}
+    try:
+        msg = await chat_service._create_permanent_note(title, content)
+        return {"ok": True, "message": msg}
+    except Exception as e:
+        logging.error(f"permanent_notes confirm error: {e}")
+        return {"ok": False, "error": "保存処理でエラー"}
 
 @router.get("/dashboard", dependencies=[Depends(verify_api_key)])
 async def dashboard():
@@ -2790,7 +2840,26 @@ async def _collect_daily_context(date_str: str) -> dict:
         "location": "",
         "fitbit": "",
         "chat_log": "",
+        "mit": "",
     }
+
+    # MIT セクション（達成状況含む）を Daily Note から抽出
+    if chat_service and chat_service.drive_service:
+        try:
+            service = chat_service.drive_service.get_service()
+            folder_id = await chat_service.drive_service.find_file(
+                service, chat_service.drive_folder_id, "DailyNotes"
+            )
+            if folder_id:
+                f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date_str}.md")
+                if f_id:
+                    content = await chat_service.drive_service.read_text_file(service, f_id)
+                    import re as _re
+                    mm = _re.search(r"## 🎯 MIT\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+                    if mm:
+                        ctx["mit"] = mm.group(1).strip()
+        except Exception as e:
+            logging.debug(f"summary mit error: {e}")
 
     # カレンダー予定
     if chat_service and getattr(chat_service, "calendar_service", None):
@@ -2875,6 +2944,8 @@ async def _collect_daily_context(date_str: str) -> dict:
 def _format_daily_summary_context(ctx: dict) -> str:
     """コンテキスト dict を Gemini に渡す Markdown 文字列に整形。"""
     parts = [f"# 対象日: {ctx['date']}"]
+    if ctx.get("mit"):
+        parts.append(f"## 今日のMIT（達成状況含む。- [ ] が未達、- [x] が達成）\n{ctx['mit']}")
     if ctx.get("weather"):
         parts.append(f"## 天気\n{ctx['weather']}")
     if ctx.get("calendar"):
@@ -2927,13 +2998,15 @@ async def _generate_daily_summary(date_str: str, answers: dict | None = None) ->
         "2. AI による洞察 (Insights) や明日のアクション (Next Actions) は別セクションに保存されるため、サマリー本文には含めないでください。\n"
         "3. サマリーは「朝 / 昼 / 夜」など時間帯ごとに **3〜6行程度の短いダイジェスト** にし、長くしすぎないでください。\n"
         "4. 推測ではなく事実に基づいて記述してください。\n"
-        "5. 判断に迷う点（例: 出来事の意図、感情の解釈、欠けている情報）があれば JSON の `questions` フィールドに\n"
-        "   ユーザーへの具体的な質問として列挙してください（質問数は最大 5 件）。**質問が必要な場合は推測で穴埋めせず、必ず質問してください。**\n\n"
+        "5. **MIT（最重要タスク）の進捗・達成度を必ずサマリー冒頭で 1〜2 行触れること**。未達がある場合は質問でユーザーに理由を聞いてください。\n"
+        "6. 判断に迷う点（例: 出来事の意図、感情の解釈、欠けている情報、MIT 未達の理由）があれば JSON の `questions` フィールドに\n"
+        "   ユーザーへの具体的な質問として列挙してください（質問数は最大 5 件）。**質問が必要な場合は推測で穴埋めせず、必ず質問してください。\n"
+        "   質問が 1 件でも残っているなら、ユーザーが回答するまでサマリーは保留扱いになります。**\n\n"
         "## 出力フォーマット (JSON)\n"
         "```json\n"
         "{\n"
-        "  \"summary\": \"## 朝\\n- ...\\n## 昼\\n- ...\\n## 夜\\n- ...\",\n"
-        "  \"questions\": [\"質問1\", \"質問2\"]\n"
+        "  \"summary\": \"## MIT 進捗\\n- ...\\n## 朝\\n- ...\\n## 昼\\n- ...\\n## 夜\\n- ...\",\n"
+        "  \"questions\": [\"MIT に関する質問1\", \"質問2\"]\n"
         "}\n"
         "```\n\n"
         "## 入力データ\n" + ctx_text + answer_text
@@ -3095,34 +3168,64 @@ async def daily_summary_set(req: DailySummaryUpdate):
         raise HTTPException(status_code=500, detail=f"保存に失敗しました: {e}")
 
 
-@router.get("/daily_summary", dependencies=[Depends(verify_api_key)])
-async def daily_summary_get(date: str = ""):
-    """指定日（既定: 今日）のデイリーサマリーを Obsidian から読んで返す。"""
+async def _read_summary_for_date(chat_service, date: str) -> str:
+    """指定日の Daily Note から `## 📅 Daily Summary` の本文を読み取って返す。"""
     import re as _re
-    from api import app
-    if not date:
-        date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
-    chat_service = getattr(app.state, "chat_service", None)
-    if not chat_service or not chat_service.drive_service:
-        return {"text": "", "questions": []}
     try:
         service = chat_service.drive_service.get_service()
         folder_id = await chat_service.drive_service.find_file(
             service, chat_service.drive_folder_id, "DailyNotes"
         )
-        text = ""
-        if folder_id:
-            f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date}.md")
-            if f_id:
-                content = await chat_service.drive_service.read_text_file(service, f_id)
-                m = _re.search(r"## 📅 Daily Summary\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
-                if m:
-                    text = m.group(1).strip()
-        questions = await get_questions_by_date(date, scope='summary')
-        return {"date": date, "text": text, "questions": questions}
+        if not folder_id:
+            return ""
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date}.md")
+        if not f_id:
+            return ""
+        content = await chat_service.drive_service.read_text_file(service, f_id)
+        m = _re.search(r"## 📅 Daily Summary\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+        if m:
+            return m.group(1).strip()
+    except Exception as e:
+        logging.debug(f"_read_summary_for_date error ({date}): {e}")
+    return ""
+
+
+@router.get("/daily_summary", dependencies=[Depends(verify_api_key)])
+async def daily_summary_get(date: str = ""):
+    """指定日のデイリーサマリーを返す。
+    date 未指定時は今日のものが無ければ昨日のものへ自動フォールバック。"""
+    from api import app
+    explicit_date = bool(date)
+    if not date:
+        date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"text": "", "questions": [], "fallback": False, "date": date}
+    try:
+        text = await _read_summary_for_date(chat_service, date)
+        fallback_date = None
+        # 日付未指定で今日のサマリーが無ければ、直近 7 日を遡って最新の確定済みサマリーを探す
+        if not text and not explicit_date:
+            base = datetime.datetime.strptime(date, "%Y-%m-%d").date()
+            for offset in range(1, 8):
+                prev = (base - datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
+                t = await _read_summary_for_date(chat_service, prev)
+                if t:
+                    text = t
+                    fallback_date = prev
+                    break
+        actual_date = fallback_date or date
+        questions = await get_questions_by_date(actual_date, scope='summary')
+        return {
+            "date": actual_date,
+            "requested_date": date,
+            "text": text,
+            "questions": questions,
+            "fallback": fallback_date is not None,
+        }
     except Exception as e:
         logging.debug(f"daily_summary_get error: {e}")
-        return {"text": "", "questions": []}
+        return {"text": "", "questions": [], "fallback": False, "date": date}
 
 
 class DailySummaryGenerateRequest(BaseModel):
@@ -3208,6 +3311,66 @@ async def daily_questions_delete(qid: int):
     if not ok:
         raise HTTPException(status_code=404, detail="質問が見つかりません")
     return {"status": "success"}
+
+
+# ============================================================
+# 朝のマネージャー MIT 提案 (morning_mit)
+# ============================================================
+
+@router.get("/morning_mit/pending", dependencies=[Depends(verify_api_key)])
+async def morning_mit_pending():
+    """今日の朝のMIT提案で未確定（resolved以外）のものを返す。
+    返り値: { date, qid, candidates: [str, str, str] } または { date } のみ"""
+    import json as _json
+    today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    try:
+        qs = await get_questions_by_date(today_str, scope='morning_mit')
+        unresolved = [q for q in qs if q["status"] != 'resolved']
+        if not unresolved:
+            return {"date": today_str, "qid": None, "candidates": []}
+        q = unresolved[0]
+        cands = []
+        try:
+            ctx = _json.loads(q.get("context") or "{}")
+            cands = ctx.get("candidates") or []
+        except Exception:
+            cands = []
+        return {"date": today_str, "qid": q["id"], "candidates": cands}
+    except Exception as e:
+        logging.error(f"morning_mit_pending error: {e}")
+        return {"date": today_str, "qid": None, "candidates": []}
+
+
+class MorningMitConfirmRequest(BaseModel):
+    items: list[str]
+    qid: Optional[int] = None
+
+
+@router.post("/morning_mit/confirm", dependencies=[Depends(verify_api_key)])
+async def morning_mit_confirm(req: MorningMitConfirmRequest):
+    """ユーザーが朝のMIT候補を編集して確定したものをObsidianに書き込む。"""
+    from api import app
+    today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    items = [s.strip() for s in (req.items or []) if s and s.strip()][:3]
+    if not items:
+        return {"ok": False, "error": "MIT が空です"}
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジン未初期化")
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="PartnerCog 未ロード")
+    try:
+        result_msg = await partner_cog._set_mit_to_obsidian(items)
+        # 質問を resolved に
+        try:
+            await resolve_questions(today_str, scope='morning_mit')
+        except Exception:
+            pass
+        return {"ok": True, "message": result_msg, "date": today_str}
+    except Exception as e:
+        logging.error(f"morning_mit_confirm error: {e}")
+        return {"ok": False, "error": "保存に失敗"}
 
 
 # ============================================================

@@ -160,7 +160,7 @@ class ChatService:
             except Exception:
                 pass
         append_text = f"- {time_str} {text}"
-        new_content = update_section(note_content, append_text, "## 💬 Timeline")
+        new_content = update_section(note_content, append_text, "## 💬 Chat Log")
         if f_id:
             await self.drive_service.update_text(service, f_id, new_content)
         else:
@@ -196,8 +196,11 @@ class ChatService:
                         ),
                     ),
                     types.FunctionDeclaration(
-                        name="create_permanent_note",
-                        description="深い洞察やアイデアをZettelkasten（永久ノート）として保存する。",
+                        name="propose_permanent_note",
+                        description=(
+                            "深い洞察やアイデアをZettelkasten（永久ノート）として保存することを提案する。"
+                            "即時には保存せず、ユーザーへ確認モーダルを返す。ユーザーが「保存」を押した時にだけ保存される。"
+                        ),
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
                             properties={
@@ -281,8 +284,14 @@ class ChatService:
                         tool_result = await self._save_thought_reflection(
                             fc.args.get("theme", "無題"), fc.args.get("summary", ""), fc.args.get("next_step", "")
                         )
-                    elif fc.name == "create_permanent_note":
-                        tool_result = await self._create_permanent_note(fc.args["title"], fc.args["content"])
+                    elif fc.name == "propose_permanent_note":
+                        # 即時保存せず、フロントへ確認モーダルの起動を促す ACTION を返す
+                        t = (fc.args.get("title") or "メモ").replace("|", " ").replace("=", " ")
+                        c = (fc.args.get("content") or "").replace("|", " ").replace("=", " ")
+                        tool_result = (
+                            f"[ACTION:propose_perm_note:title={t}|content={c}] "
+                            f"(この内容を永久ノートにする？内容を確認してから保存できるよ)"
+                        )
                     elif fc.name == "search_memory":
                         tool_result = await self._search_drive_notes(fc.args["keywords"])
                     elif fc.name == "propose_note":

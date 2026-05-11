@@ -177,7 +177,7 @@ class PartnerCog(commands.Cog):
         text: str,
         folder_name: str = "DailyNotes",
         file_name: str = None,
-        target_heading: str = "## 💬 Timeline",
+        target_heading: str = "## 💬 Chat Log",
     ):
         if not text:
             return
@@ -455,8 +455,11 @@ class PartnerCog(commands.Cog):
                         ),
                     ),
                     types.FunctionDeclaration(
-                        name="create_permanent_note",
-                        description="永続的なノート（知識・概念）をObsidianに作成する。",
+                        name="propose_permanent_note",
+                        description=(
+                            "永続的なノート（知識・概念）の保存をユーザーへ提案する。"
+                            "即時保存はせず、フロントで確認モーダルを出してユーザーが承認した場合のみ実際に保存される。"
+                        ),
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
                             properties={
@@ -763,9 +766,13 @@ class PartnerCog(commands.Cog):
                     args.get("summary", ""),
                     args.get("next_step", ""),
                 )
-            elif name == "create_permanent_note":
-                return await self._create_permanent_note_to_obsidian(
-                    args["title"], args["content"]
+            elif name == "propose_permanent_note":
+                # 即時保存はしない。フロントで確認モーダルを起動するための ACTION 文字列を返す
+                t = (args.get("title") or "メモ").replace("|", " ").replace("=", " ")
+                c = (args.get("content") or "").replace("|", " ").replace("=", " ")
+                return (
+                    f"[ACTION:propose_perm_note:title={t}|content={c}] "
+                    f"(この内容を永久ノートにする？確認モーダルから内容を編集して保存できるよ)"
                 )
             elif name == "search_memory":
                 return await self._search_drive_notes(args["keywords"])

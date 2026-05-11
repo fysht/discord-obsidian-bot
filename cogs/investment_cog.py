@@ -757,6 +757,19 @@ class InvestmentCog(commands.Cog):
         if not documents:
             lines.append("（取得できる資料がありませんでした）")
         else:
+            # URL末尾から file_format を確実に判定（プロンプトの返却が不正な場合のフォールバック）
+            def _format_of(url: str, declared: str) -> str:
+                if declared in ("pdf", "html"):
+                    return declared
+                return "pdf" if isinstance(url, str) and url.lower().split("?")[0].endswith(".pdf") else "html"
+
+            # PDF を先頭に並び替え
+            def _doc_sort_key(d):
+                fmt = _format_of(d.get("url", ""), d.get("file_format", ""))
+                # PDF を 0、HTML を 1 にして PDF を先頭に
+                return (0 if fmt == "pdf" else 1, d.get("published_date", ""))
+
+            documents = sorted(documents, key=_doc_sort_key)
             for doc in documents:
                 title = doc.get("title", "(無題)")
                 doc_type = doc.get("type", "")
@@ -764,9 +777,11 @@ class InvestmentCog(commands.Cog):
                 pub = doc.get("published_date", "")
                 url = doc.get("url", "")
                 lang = doc.get("language", "")
-                lines.append(f"### {title}")
+                fmt = _format_of(url, doc.get("file_format", ""))
+                badge = "📄 PDF" if fmt == "pdf" else "🔗 HTML"
+                lines.append(f"### {badge} {title}")
                 lines.append(
-                    f"- 種別: {doc_type} / 会計期間: {period} / 公表日: {pub} / 言語: {lang}"
+                    f"- 種別: {doc_type} / 形式: {fmt} / 会計期間: {period} / 公表日: {pub} / 言語: {lang}"
                 )
                 lines.append(f"- URL: {url}")
                 lines.append("")

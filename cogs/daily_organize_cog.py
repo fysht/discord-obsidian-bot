@@ -177,14 +177,15 @@ class DailyOrganizeCog(commands.Cog):
         content = update_frontmatter(content, updates_fm)
 
         if data.get("timeline"):
-            # タイムラインは毎晩再生成して全置換するため、既存セクションを除去してから挿入
+            # Daily Log（旧 Daily Timeline）は毎晩再生成して全置換するため、既存セクションを除去してから挿入
+            # 旧見出しが残っていた場合も合わせて掃除する
             content = re.sub(
-                r"## ⏱ Daily Timeline\n.*?(?=\n## |\Z)",
+                r"##\s*(?:⏱\s*Daily Timeline|📋\s*Daily Log)\n.*?(?=\n## |\Z)",
                 "",
                 content,
                 flags=re.DOTALL,
             )
-            content = update_section(content, data["timeline"], "## ⏱ Daily Timeline")
+            content = update_section(content, data["timeline"], "## 📋 Daily Log")
         if data.get("journal"):
             content = update_section(content, data["journal"], "## 📔 Daily Journal")
         # events は Lifelog（ユーザーが log_life_activity で記録する事実）に集約。
@@ -232,8 +233,9 @@ class DailyOrganizeCog(commands.Cog):
 
     async def _summarize_user_messages_per_period(self, date_str: str) -> list:
         """ユーザー発言を時間帯ごとに集約して Gemini で1〜3行に要約する。
-        会話原文は ## 💬 Timeline セクションに保存されるためここでは要約のみ作る。
-        戻り値: [(start_HHMM, end_HHMM, summary_text), ...] （発言0件の時間帯は除外）
+        会話原文は ## 💬 Chat Log セクションに保存されるためここでは要約のみ作る。
+        戻り値: [(start_HHMM, end_HHMM, bullets_list), ...]
+        bullets_list は「だ・である」調の短い箇条書き（時間帯ラベル不要）。
         """
         try:
             history = await get_history(limit=500)
@@ -270,14 +272,14 @@ class DailyOrganizeCog(commands.Cog):
             if not msgs:
                 continue
             joined = "\n".join(f"[{t}] {c}" for t, c in msgs)
-            summary = await self._summarize_period_messages(name, joined)
-            if not summary:
+            bullets = await self._summarize_period_messages(name, joined)
+            if not bullets:
                 continue
-            results.append((start, end, summary))
+            results.append((start, end, bullets))
         return results
 
     async def _summarize_period_messages(self, period_name: str, joined: str) -> str:
-        """時間帯のユーザー発言テキストから1〜3行の客観的トピック要約を作る。
+        """時間帯のユーザー発言テキストから1〜3行の客観的トピック要約を「だ・である」調で作る。
         Gemini が使えない場合は最初の発言を短縮して返す。"""
         if not self.gemini_client:
             first = joined.splitlines()[0] if joined.splitlines() else joined
@@ -286,10 +288,12 @@ class DailyOrganizeCog(commands.Cog):
         prompt = (
             f"次は{period_name}の時間帯にユーザーが送信したチャット発言です。\n"
             "発言原文は別に保存されているので、ここでは要約だけ作ってください。\n"
-            "次のルールで1〜3行のmarkdown箇条書き内に収まる短いトピック要約だけを書きます。\n"
-            "- 各行は「・」で始め、20文字以内\n"
-            "- 「投資の相談」「夕食メニュー」のようなトピックを抽出する\n"
-            "- 感情語や評価語を含めず、客観的なトピックのみ\n"
+            "次のルールで1〜3行のmarkdown箇条書き内に収まる短い行動・話題の要約を書きます。\n"
+            "- 各行は「- 」で始め、30文字程度に収める\n"
+            "- 文体は必ず「だ・である」調（『〜した』『〜だ』『〜である』など）。タメ口や敬語は禁止\n"
+            "- 体言止め（『投資の相談』『夕食メニュー』など名詞だけで終わる形）は禁止\n"
+            "- 朝/昼/夜などの時間帯ラベルを文中に含めない\n"
+            "- 感情語や評価語を含めず、客観的事実のみ\n"
             "- 同種の話題はまとめて1行\n"
             "- 説明や前置きは書かず、箇条書きだけを返す\n\n"
             f"--- 発言ログ ---\n{joined}\n--- 終わり ---"
@@ -315,14 +319,12 @@ class DailyOrganizeCog(commands.Cog):
             bullets.append(stripped)
             if len(bullets) >= 3:
                 break
-        if not bullets:
-            return ""
-        return " / ".join(bullets)
+        return bullets
 
     async def _build_integrated_timeline(self, date_str: str, location_log_text: str) -> str:
         """客観データ（睡眠・天気・カレンダー・ライフログ・ロケーション）と
         ユーザー発言の時間帯要約を統合し、時系列順のmarkdownを返す。
-        会話原文は ## 💬 Timeline セクションに別途保存されるためここには含めない。
+        会話原文は ## 💬 Chat Log セクションに別途保存されるためここには含めない。
         """
         events = []  # list[(time_str_HHMM, icon, line)]
 
@@ -437,19 +439,25 @@ class DailyOrganizeCog(commands.Cog):
         except Exception as e:
             logging.error(f"timeline: lifelog re-import error: {e}")
 
-        # --- 6) ユーザー発言の時間帯別要約（会話原文ではなくトピックのみ） ---
+        # --- 6) ユーザー発言の時間帯別要約（タイムラインの下に別ブロックで配置） ---
+        period_bullets = []
         try:
             period_summaries = await self._summarize_user_messages_per_period(date_str)
-            for start, end, summary in period_summaries:
-                events.append((start, "💬", f"({start}-{end}) {summary}"))
+            # 時系列順（早朝→夜）にフラット化。朝/昼/夜などのラベルは付けない
+            for _start, _end, bullets in period_summaries:
+                for b in bullets:
+                    period_bullets.append(b)
         except Exception as e:
             logging.error(f"timeline: user summary error: {e}")
 
-        if not events:
+        if not events and not period_bullets:
             return ""
 
         events.sort(key=lambda x: x[0])
         lines = [f"- {t} {icon} {text}" for t, icon, text in events]
+        if period_bullets:
+            # タイムラインの直下に、時間帯ラベルを付けずに「だ・である」調の箇条書きを並べる
+            lines.extend(f"- {b}" for b in period_bullets)
         return "\n".join(lines)
 
     @daily_organize_task.before_loop

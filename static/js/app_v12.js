@@ -217,12 +217,37 @@ if (sendBtn) {
 }
 
 let _chatAbortCtrl = null;
+let _isComposing = false;
+let _lastSubmitAt = 0;
+let _lastSubmitMsg = '';
+
+// IME（日本語変換）中は Enter で送信させない
+if (messageInput) {
+    messageInput.addEventListener('compositionstart', () => { _isComposing = true; });
+    messageInput.addEventListener('compositionend',   () => { _isComposing = false; });
+    messageInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && (e.isComposing || _isComposing)) {
+            // IME 変換確定の Enter はフォーム送信に伝播させない
+            e.stopPropagation();
+        }
+    });
+}
+
 if (chatForm) {
     chatForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         if (isChatSending) return;
         const msg = messageInput.value.trim();
         if (!msg) return;
+
+        // 同一メッセージの 1.5 秒以内の連投は無視（IME 起因の二重送信ガード）
+        const now = Date.now();
+        if (msg === _lastSubmitMsg && (now - _lastSubmitAt) < 1500) return;
+        _lastSubmitAt = now;
+        _lastSubmitMsg = msg;
+
+        // 冪等キー（同じ ID のリクエストはサーバ側で 5 秒以内なら無視）
+        const clientMsgId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `c-${now}-${Math.random().toString(36).slice(2)}`;
 
         isChatSending = true;
         sendBtn.style.opacity = '0.5';
@@ -240,7 +265,7 @@ if (chatForm) {
         try {
             const data = await apiFetch('/api/chat', {
                 method: 'POST',
-                body: JSON.stringify({ message: msg, reply_to_id: replyTo, english_mode: _isEnglishMode }),
+                body: JSON.stringify({ message: msg, reply_to_id: replyTo, english_mode: _isEnglishMode, client_msg_id: clientMsgId }),
                 signal: _chatAbortCtrl.signal,
             });
             if (userEl && data.user_message_id) userEl.dataset.msgId = String(data.user_message_id);
@@ -389,6 +414,7 @@ function describeAction(payload) {
         case 'mit_set':      return `🎯 今日のMITを登録 (${(args.items || '').split(',').filter(Boolean).length}件)`;
         case 'mit_rollover': return `📤 未達MITを翌日へ繰越`;
         case 'note_create':  return `📝 ノートに保存: ${args.title || ''}`;
+        case 'propose_perm_note': return `📌 永久ノートにする: ${args.title || ''}`;
         default:             return `▶ ${action} を実行`;
     }
 }
@@ -449,8 +475,12 @@ window.executeAction = async function(encodedPayload, btn) {
                 action_items: [],
             };
             await openNoteSaveModal();
-            // モーダルを開いたらアクションボタン側は閉じる扱い（実行扱い）
             if (btn) { btn.textContent = '保存モーダルを開いた ✓'; btn.classList.add('done'); }
+            return;
+        } else if (action === 'propose_perm_note') {
+            // 永久ノートの確認モーダルを開く
+            window.openPermanentNoteConfirmModal(args.title || '', args.content || '');
+            if (btn) { btn.textContent = '確認モーダルを開いた ✓'; btn.classList.add('done'); }
             return;
         } else {
             showToast('未対応のアクションです', true);
@@ -472,9 +502,37 @@ function renderWeather(w, weatherEl) {
             <span class="temp-min">↓${w.min_temp}℃</span>
         </div>`;
     }
-    // 3日間サマリー行
+    // 時間別予報を先に表示（今日のものを優先）
+    const slots = w.hourly || w.slots || [];
+    if (slots.length > 0) {
+        html += `<div class="weather-section-label">⏰ 時間別予報</div>`;
+        html += `<div class="weather-slots">`;
+        let lastDay = '';
+        slots.forEach(s => {
+            if (s.day && s.day !== lastDay) {
+                html += `<div class="weather-day-label">${escapeHtml(s.day)}</div>`;
+                lastDay = s.day;
+            }
+            const popText = s.pop ? (String(s.pop).includes('%') ? s.pop : `${s.pop}%`) : '';
+            const tempText = (s.temp ?? '') !== '' ? `${s.temp}℃` : '';
+            html += `
+                <div class="weather-slot">
+                    <div class="ws-time">${escapeHtml(s.time || '')}</div>
+                    <div class="ws-icon">${s.icon || ''}</div>
+                    <div class="ws-weather">${escapeHtml(s.weather || '')}</div>
+                    <div class="ws-pop" title="降水確率">${escapeHtml(popText)}</div>
+                    <div class="ws-temp" title="気温">${escapeHtml(tempText)}</div>
+                </div>
+            `;
+        });
+        html += `</div>`;
+    } else {
+        html += `<div class="loading-placeholder">時間別予報の取得に失敗しました。</div>`;
+    }
+    // 5日先サマリー行（時間別の下に置く）
     if (w.daily && w.daily.length > 0) {
-        html += `<div style="display:flex; gap:6px; margin:10px 0 4px; overflow-x:auto; padding-bottom:4px;">`;
+        html += `<div class="weather-section-label">📅 数日先</div>`;
+        html += `<div style="display:flex; gap:6px; margin:6px 0 4px; overflow-x:auto; padding-bottom:4px;">`;
         w.daily.forEach(d => {
             html += `
                 <div style="flex:1; min-width:60px; display:flex; flex-direction:column; align-items:center; gap:3px; background:rgba(255,255,255,0.05); border-radius:8px; padding:8px 4px; font-size:0.75rem;">
@@ -486,28 +544,6 @@ function renderWeather(w, weatherEl) {
                         <span style="color:#74c0fc;">↓${d.min_temp !== undefined ? d.min_temp : '--'}</span>
                     </div>
                     ${d.pop ? `<div style="color:var(--text-muted);">☂${escapeHtml(d.pop)}</div>` : ''}
-                </div>
-            `;
-        });
-        html += `</div>`;
-    }
-    // 時間別
-    const slots = w.hourly || w.slots || [];
-    if (slots.length > 0) {
-        html += `<div class="weather-slots">`;
-        let lastDay = '';
-        slots.forEach(s => {
-            if (s.day && s.day !== lastDay) {
-                html += `<div class="weather-day-label">${escapeHtml(s.day)}</div>`;
-                lastDay = s.day;
-            }
-            html += `
-                <div class="weather-slot">
-                    <div class="ws-time">${escapeHtml(s.time || '')}</div>
-                    <div class="ws-icon">${s.icon || ''}</div>
-                    <div class="ws-weather">${escapeHtml(s.weather || '')}</div>
-                    <div class="ws-pop">${escapeHtml(s.pop || '')}</div>
-                    <div class="ws-temp">${escapeHtml(String(s.temp ?? ''))}℃</div>
                 </div>
             `;
         });
@@ -636,7 +672,7 @@ async function loadDashboard() {
                         ${inner}
                     </div>
                 `;
-            }).join('') : '<div class="loading-placeholder">ログはありません</div>';
+            }).join('') : '<div class="loading-placeholder">ログはまだありません。</div>';
         }
 
         loadHabits();
@@ -724,7 +760,7 @@ async function loadDashboard() {
             }
         } else {
             if (mitBanner) mitBanner.classList.add('hidden');
-            if (mitScheduleEl) mitScheduleEl.innerHTML = '<div class="loading-placeholder">MITはまだ設定されていません。「設定」ボタンから登録できます</div>';
+            if (mitScheduleEl) mitScheduleEl.innerHTML = '<div class="loading-placeholder">MITはまだ設定されていません。「設定」ボタンから登録できます。</div>';
         }
 
         // 「書籍＆ナレッジ」のテキストを「書籍」に置換
@@ -2568,6 +2604,17 @@ function initMain() {
     const sharedText = params.get('text') || '';
     const sharedTitle = params.get('title') || '';
 
+    // 朝の MIT 提案: プッシュ通知から起動された場合（?openMorningMit=1）はモーダルを開く
+    const wantMorningMit = params.get('openMorningMit') === '1';
+    if (apiKey) {
+        // URL 起動時は自動表示、それ以外は静かにチェックだけ
+        setTimeout(() => { checkMorningMit(wantMorningMit); }, 800);
+        if (wantMorningMit) {
+            // URL からパラメータを消す
+            window.history.replaceState({}, '', '/');
+        }
+    }
+
     const urlToStock = sharedUrl || (sharedText ? (sharedText.match(/https?:\/\/[^\s]+/) || [''])[0] : '');
     if (urlToStock && apiKey) {
         window.history.replaceState({}, '', '/');
@@ -3514,7 +3561,7 @@ async function loadEnglishPhrases() {
     try {
         const data = await apiFetch('/api/english_phrases');
         if (!data.phrases || data.phrases.length === 0) {
-            el.innerHTML = '<div class="loading-placeholder">フレーズはまだありません<br>メッセージを長押し → 📚 で保存できます</div>';
+            el.innerHTML = '<div class="loading-placeholder">フレーズはまだありません。<span class="muted-hint">メッセージを長押し → 📚 で保存できます。</span></div>';
             return;
         }
         el.innerHTML = data.phrases.map(p => {
@@ -3770,8 +3817,176 @@ window.saveMitFromModal = async () => {
     }
 };
 
+// ----- 朝のマネージャー MIT 提案モーダル -----
+let _morningMitQid = null;
+
+window.checkMorningMit = async (autoOpen = false) => {
+    try {
+        const res = await apiFetch('/api/morning_mit/pending');
+        if (!res || !res.candidates || res.candidates.length === 0) return false;
+        _morningMitQid = res.qid;
+        if (autoOpen) {
+            window.openMorningMitModal(res.candidates);
+        }
+        return true;
+    } catch {
+        return false;
+    }
+};
+
+window.openMorningMitModal = (candidates) => {
+    let modal = $('#morning-mit-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="morning-mit-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:520px;">
+                    <h3 style="margin-top:0;">☀️ 今朝のMIT候補</h3>
+                    <p style="font-size:0.8rem;color:var(--text-muted);margin:-4px 0 12px;">カレンダー予定と昨日の進捗から提案。編集して「確定」を押すと今日のMITになります。</p>
+                    <div id="morning-mit-inputs"></div>
+                    <div class="modal-actions" style="margin-top:14px;">
+                        <button class="modal-btn cancel" onclick="closeMorningMitModal()">あとで</button>
+                        <button class="modal-btn submit" onclick="confirmMorningMit()">確定</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#morning-mit-modal');
+    }
+    const inputsEl = $('#morning-mit-inputs');
+    const padded = [...(candidates || []), '', '', ''].slice(0, 3);
+    inputsEl.innerHTML = padded.map((c, i) => `
+        <label style="font-size:0.78rem;color:var(--text-muted);">MIT ${i + 1}</label>
+        <input class="modern-input morning-mit-input" style="margin-bottom:8px;" value="${(c || '').replace(/"/g, '&quot;')}" placeholder="MIT を入力">
+    `).join('');
+    modal.classList.remove('hidden');
+};
+
+window.closeMorningMitModal = () => {
+    $('#morning-mit-modal')?.classList.add('hidden');
+};
+
+window.confirmMorningMit = async () => {
+    const inputs = document.querySelectorAll('.morning-mit-input');
+    const items = Array.from(inputs).map(i => i.value.trim()).filter(Boolean);
+    if (!items.length) { showToast('MIT を 1 件以上入力してください', true); return; }
+    try {
+        const res = await apiFetch('/api/morning_mit/confirm', {
+            method: 'POST',
+            body: JSON.stringify({ items, qid: _morningMitQid })
+        });
+        if (res && res.ok) {
+            showToast('今日のMITを登録しました');
+            closeMorningMitModal();
+            if (typeof loadDashboard === 'function') loadDashboard();
+        } else {
+            showToast((res && res.error) || '保存に失敗しました', true);
+        }
+    } catch {
+        showToast('保存に失敗しました', true);
+    }
+};
+
+// ----- 永久ノート確認モーダル（AI 提案を承認制で保存） -----
+window.openPermanentNoteConfirmModal = (title, content) => {
+    let modal = $('#perm-note-confirm-modal');
+    if (!modal) {
+        // 動的にモーダルを生成
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="perm-note-confirm-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:560px;">
+                    <h3 style="margin-top:0;">📌 永久ノートに保存しますか？</h3>
+                    <p style="font-size:0.8rem;color:var(--text-muted);margin:-4px 0 12px;">内容を編集してから保存できます。</p>
+                    <label style="font-size:0.78rem;color:var(--text-muted);">タイトル</label>
+                    <input id="perm-note-title-input" class="modern-input" style="margin-bottom:10px;" />
+                    <label style="font-size:0.78rem;color:var(--text-muted);">本文</label>
+                    <textarea id="perm-note-content-input" class="modern-input" style="min-height:180px;font-family:inherit;"></textarea>
+                    <div class="modal-actions" style="margin-top:14px;">
+                        <button class="modal-btn cancel" onclick="closePermNoteConfirmModal()">却下</button>
+                        <button class="modal-btn submit" onclick="confirmPermNoteSave()">保存</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#perm-note-confirm-modal');
+    }
+    $('#perm-note-title-input').value = title || '';
+    $('#perm-note-content-input').value = content || '';
+    modal.classList.remove('hidden');
+};
+
+window.closePermNoteConfirmModal = () => {
+    $('#perm-note-confirm-modal')?.classList.add('hidden');
+};
+
+window.confirmPermNoteSave = async () => {
+    const title = ($('#perm-note-title-input')?.value || '').trim();
+    const content = ($('#perm-note-content-input')?.value || '').trim();
+    if (!title) { showToast('タイトルを入力してください', true); return; }
+    try {
+        const res = await apiFetch('/api/permanent_notes/confirm', {
+            method: 'POST',
+            body: JSON.stringify({ title, content })
+        });
+        if (res && res.ok) {
+            showToast('永久ノートを保存しました');
+            closePermNoteConfirmModal();
+        } else {
+            showToast((res && res.error) || '保存に失敗しました', true);
+        }
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    }
+};
+
 // ----- 瞑想タイマー -----
-let _medState = { interval: null, remaining: 0, total: 0 };
+let _medState = { interval: null, remaining: 0, total: 0, startAt: null, wakeLock: null };
+
+function _formatHM(dt) {
+    return `${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}`;
+}
+
+async function _requestMedWakeLock() {
+    try {
+        if ('wakeLock' in navigator) {
+            _medState.wakeLock = await navigator.wakeLock.request('screen');
+            // タブ復帰時に再取得
+            document.addEventListener('visibilitychange', _reacquireMedWakeLock);
+        }
+    } catch (e) {
+        console.warn('Wake Lock 取得に失敗:', e);
+    }
+}
+
+async function _reacquireMedWakeLock() {
+    if (document.visibilityState === 'visible' && _medState.interval && !_medState.wakeLock) {
+        try {
+            _medState.wakeLock = await navigator.wakeLock.request('screen');
+        } catch {}
+    }
+}
+
+async function _releaseMedWakeLock() {
+    try {
+        if (_medState.wakeLock) {
+            await _medState.wakeLock.release();
+        }
+    } catch {}
+    _medState.wakeLock = null;
+    document.removeEventListener('visibilitychange', _reacquireMedWakeLock);
+}
+
+function _vibrateMedDone() {
+    try {
+        if (navigator.vibrate) {
+            // 終了パターン: 短-短-長
+            navigator.vibrate([300, 150, 300, 150, 600]);
+        }
+    } catch {}
+}
 
 window.openMeditationModal = () => {
     const modal = $('#meditation-modal');
@@ -3796,6 +4011,7 @@ window.startMeditation = () => {
     localStorage.setItem('med_last_minutes', String(min));
     _medState.total = min * 60;
     _medState.remaining = min * 60;
+    _medState.startAt = new Date();
     $('#med-step-setup').style.display = 'none';
     $('#med-step-timer').style.display = '';
     _updateMedDisplay();
@@ -3804,8 +4020,11 @@ window.startMeditation = () => {
         _updateMedDisplay();
         if (_medState.remaining <= 0) _finishMeditation(min);
     }, 1000);
-    // ライフログに開始記録
-    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想開始（${min}分）` }) }).catch(() => {});
+    // 画面が消えないよう Wake Lock を取得
+    _requestMedWakeLock();
+    // ライフログに開始記録（開始時刻つき）
+    const hm = _formatHM(_medState.startAt);
+    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想開始 ${hm}（${min}分）` }) }).catch(() => {});
 };
 
 function _updateMedDisplay() {
@@ -3823,8 +4042,15 @@ function _finishMeditation(min) {
     const msg = `${ min }分間の瞑想を完了しました。`;
     const doneEl = $('#med-done-msg');
     if (doneEl) doneEl.textContent = msg;
-    // ライフログに完了記録
-    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想完了（${min}分）` }) }).catch(() => {});
+    // 終了をバイブで知らせる
+    _vibrateMedDone();
+    // ライフログに終了記録（開始・終了時刻つき）
+    const endAt = new Date();
+    const startHm = _medState.startAt ? _formatHM(_medState.startAt) : '';
+    const endHm = _formatHM(endAt);
+    const timeRange = startHm ? `${startHm}〜${endHm}` : endHm;
+    apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想終了 ${timeRange}（${min}分・完了）` }) }).catch(() => {});
+    _releaseMedWakeLock();
     showToast(`🧘 ${msg}`);
 }
 
@@ -3833,8 +4059,13 @@ window.stopMeditation = () => {
     const elapsed = Math.max(0, _medState.total - _medState.remaining);
     const min = Math.round(elapsed / 60);
     if (min > 0) {
-        apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想終了（${min}分）` }) }).catch(() => {});
+        const endAt = new Date();
+        const startHm = _medState.startAt ? _formatHM(_medState.startAt) : '';
+        const endHm = _formatHM(endAt);
+        const timeRange = startHm ? `${startHm}〜${endHm}` : endHm;
+        apiFetch('/api/task_action', { method: 'POST', body: JSON.stringify({ action: 'create', new_text: `瞑想終了 ${timeRange}（${min}分・中断）` }) }).catch(() => {});
     }
+    _releaseMedWakeLock();
     $('#meditation-modal')?.classList.add('hidden');
 };
 
@@ -4351,9 +4582,14 @@ function renderDailySummaryCard(data) {
     if (!tEl || !qEl) return;
     const text = (data && data.text) || '';
     const questions = ((data && data.questions) || []).filter(q => q.status !== 'resolved');
+    const displayDate = (data && data.date) || '';
+    const isFallback = !!(data && data.fallback);
 
     if (text) {
-        // 軽量 Markdown レンダリング: 改行、見出し、箇条書き
+        // 直近確定済みサマリーの日付ラベル（昨日分を表示している場合に明示）
+        const dateLabel = displayDate
+            ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;">📅 ${escapeHtml(displayDate)} の振り返り${isFallback ? '（最新の確定分）' : ''}</div>`
+            : '';
         const html = text
             .split('\n')
             .map(line => {
@@ -4363,9 +4599,9 @@ function renderDailySummaryCard(data) {
                 return `<div style="font-size:0.88rem;line-height:1.6;">${escapeHtml(line)}</div>`;
             })
             .join('');
-        tEl.innerHTML = html;
+        tEl.innerHTML = dateLabel + html;
     } else {
-        tEl.innerHTML = '<div class="loading-placeholder">「生成」を押してデイリーサマリーを作成します</div>';
+        tEl.innerHTML = '<div class="loading-placeholder">「生成」を押してデイリーサマリーを作成します。</div>';
     }
 
     if (!questions.length) {
@@ -4409,28 +4645,48 @@ window.toggleSummaryQuestions = () => {
     loadDailySummary();
 };
 
-window.generateDailySummary = async (finalize) => {
+window.generateDailySummary = async (finalize, date) => {
     if (_dailySummaryGenerating) return;
     _dailySummaryGenerating = true;
     const tEl = $('#dash-daily-summary');
-    if (tEl) tEl.innerHTML = '<div class="loading-placeholder">サマリーを生成中…（少し時間がかかります）</div>';
+    const dateLabel = date ? `（${date}）` : '';
+    if (tEl) tEl.innerHTML = `<div class="loading-placeholder">サマリーを生成中${dateLabel}…（少し時間がかかります）</div>`;
     try {
+        const body = { finalize: !!finalize };
+        if (date) body.date = date;
         const result = await apiFetch('/api/daily_summary/generate', {
             method: 'POST',
-            body: JSON.stringify({ finalize: !!finalize }),
+            body: JSON.stringify(body),
         });
         renderDailySummaryCard({ date: result.date, text: result.summary, questions: result.questions });
         if (result.saved) {
             showToast('Obsidianに保存しました');
         } else if (result.questions && result.questions.length) {
             showToast('未確定の質問があります。回答すると確定保存されます。');
+        } else if (!result.summary) {
+            showToast('対象日のデータが見つかりませんでした', true);
         }
     } catch (e) {
-        if (tEl) tEl.innerHTML = '<div class="loading-placeholder">生成に失敗しました</div>';
+        if (tEl) tEl.innerHTML = '<div class="loading-placeholder">生成に失敗しました。</div>';
         showToast('生成に失敗しました', true);
     } finally {
         _dailySummaryGenerating = false;
     }
+};
+
+// 日付を指定して過去日分のデイリーサマリーを生成
+window.generateDailySummaryForDate = async () => {
+    const today = new Date();
+    const ymd = today.toISOString().slice(0, 10);
+    let date = prompt('生成する日付を YYYY-MM-DD で入力してください（例: 2026-05-10）', ymd);
+    if (!date) return;
+    date = String(date).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        showToast('日付形式が不正です。YYYY-MM-DD で入力してください', true);
+        return;
+    }
+    // マネージャー質問への回答が必要な場合はサマリーを保留する仕様のため finalize=false
+    await generateDailySummary(false, date);
 };
 
 window.saveSummaryAnswer = async (qid) => {
@@ -5459,7 +5715,7 @@ window.loadPortfolio = async () => {
         const holdings = data.holdings || [];
         _investHoldingsCache = holdings;
         if (!holdings.length) {
-            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。「追加」から登録してください</div>';
+            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。「追加」から登録してください。</div>';
             return;
         }
         listEl.innerHTML = holdings.map(h => {
@@ -5859,7 +6115,7 @@ window.loadAlertsList = async () => {
         }
         const rules = data.rules || [];
         if (!rules.length) {
-            listEl.innerHTML = '<div class="invest-empty">アラートがまだありません。「追加」から登録してください</div>';
+            listEl.innerHTML = '<div class="invest-empty">アラートがまだありません。「追加」から登録してください。</div>';
             return;
         }
         listEl.innerHTML = rules.map(r => {
