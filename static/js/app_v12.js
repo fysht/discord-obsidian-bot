@@ -1089,6 +1089,37 @@ function initTaskSortable(container, listName) {
     });
 }
 
+function _getPortfolioOrder() {
+    try { return JSON.parse(localStorage.getItem('portfolio_order') || '[]'); } catch { return []; }
+}
+
+function initPortfolioSortable(container) {
+    if (!window.Sortable) {
+        setTimeout(() => initPortfolioSortable(container), 200);
+        return;
+    }
+    if (container._sortable) {
+        try { container._sortable.destroy(); } catch {}
+    }
+    container._sortable = window.Sortable.create(container, {
+        handle: '.portfolio-handle',
+        animation: 150,
+        delay: 200,
+        delayOnTouchOnly: true,
+        touchStartThreshold: 5,
+        fallbackTolerance: 3,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        dragClass: 'sortable-drag',
+        onEnd: () => {
+            const items = Array.from(container.querySelectorAll('.invest-row[data-code]'));
+            const order = items.map(el => el.dataset.code);
+            localStorage.setItem('portfolio_order', JSON.stringify(order));
+            showToast('並び替えました');
+        },
+    });
+}
+
 // 指定リスト（仕事/プライベート/習慣）のタスクだけを軽量に再取得して再描画する。
 // initTaskSortable の onEnd と完了トグル後の再描画で使用。loadDashboard を回避してスムーズ化。
 async function loadTaskList(listName, container) {
@@ -6666,6 +6697,18 @@ window.loadPortfolio = async () => {
             listEl.innerHTML = '<div class="loading-placeholder">保有銘柄がまだありません。「追加」から登録してください。</div>';
             return;
         }
+        // 保存済み並び順を適用
+        const savedOrder = _getPortfolioOrder();
+        if (savedOrder.length) {
+            holdings.sort((a, b) => {
+                const ai = savedOrder.indexOf(a.code || '');
+                const bi = savedOrder.indexOf(b.code || '');
+                if (ai === -1 && bi === -1) return 0;
+                if (ai === -1) return 1;
+                if (bi === -1) return -1;
+                return ai - bi;
+            });
+        }
         listEl.innerHTML = holdings.map(h => {
             const ticker = escapeHtml(h.code || '?');
             const name = escapeHtml(h.name || ticker);
@@ -6675,7 +6718,8 @@ window.loadPortfolio = async () => {
             const currency = escapeHtml(h.currency || '');
             const market = escapeHtml(h.market || '');
             const meta = `${shares}株 @ ${cost} ${currency} / ${market}${sector ? ' / ' + sector : ''}`;
-            return `<div class="invest-row" style="cursor:pointer;" onclick="openHoldingActionModal('${ticker.replace(/'/g, '&#39;')}')">
+            return `<div class="invest-row" data-code="${ticker.replace(/"/g, '&quot;')}" style="cursor:pointer;" onclick="openHoldingActionModal('${ticker.replace(/'/g, '&#39;')}')">
+                <span class="portfolio-handle" onclick="event.stopPropagation();" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:10px 10px 10px 0;user-select:none;" title="長押しして並び替え">⠿</span>
                 <div class="row-main">
                     <div class="row-title">${name} (${ticker})</div>
                     <div class="row-meta">${meta}</div>
@@ -6685,6 +6729,7 @@ window.loadPortfolio = async () => {
                 </div>
             </div>`;
         }).join('');
+        initPortfolioSortable(listEl);
     } catch (e) {
         listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
         _investHoldingsCache = [];

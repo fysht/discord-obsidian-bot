@@ -204,14 +204,17 @@ details.card > summary > .card-header { border-bottom: none; }
     min-height: 50px;
     line-height: 1.55;
 }
-.card-body > .loading-placeholder,
-.card-body > .invest-empty,
-.card-body > .invest-row,
-.card-body > .news-item,
-.card-body > .habit-item,
-.card-body > .list-item,
-.card-body > .lifelog-row {
+.card-body:not(.list-body) > .loading-placeholder,
+.card-body:not(.list-body) > .invest-empty,
+.card-body:not(.list-body) > .invest-row,
+.card-body:not(.list-body) > .news-item,
+.card-body:not(.list-body) > .habit-item,
+.card-body:not(.list-body) > .list-item {
     padding-left: 0;
+    padding-right: 0;
+}
+.card-body:not(.list-body) > .lifelog-row {
+    padding-left: 6px;
     padding-right: 0;
 }
 .loading-placeholder .muted-hint, .invest-empty .muted-hint {

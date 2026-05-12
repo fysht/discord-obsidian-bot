@@ -29,6 +29,8 @@ class FitbitService:
         self.access_token_expires_at = None
         self.session = None
         self._refresh_lock = asyncio.Lock()
+        # 環境変数でトークンが提供済みなら Drive からの上書きをスキップ
+        self._token_initialized = bool(initial_refresh_token)
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -84,7 +86,9 @@ class FitbitService:
             if self.access_token and self.access_token_expires_at and self.access_token_expires_at > now + datetime.timedelta(seconds=60):
                 return True
 
-            await self._load_token()
+            if not self._token_initialized:
+                self._token_initialized = True
+                await self._load_token()
             session = await self._get_session()
             url = "https://api.fitbit.com/oauth2/token"
             auth = base64.b64encode(
