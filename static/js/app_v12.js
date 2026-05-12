@@ -708,7 +708,7 @@ async function loadDashboard() {
                 // ロケーション名を天気カードタイトルに反映
                 if (data.weather.location_name) {
                     const titleEl = $('#weather-card-title');
-                    if (titleEl) titleEl.textContent = `天気 (${data.weather.location_name})`;
+                    if (titleEl) titleEl.textContent = `Yahoo!天気 (${data.weather.location_name})`;
                 }
             } else {
                 weatherEl.innerHTML = `<div class="loading-placeholder">気象データを取得できませんでした</div>`;
@@ -734,7 +734,7 @@ async function loadDashboard() {
                         renderWeather(wd, weatherEl);
                         if (wd.location_name) {
                             const titleEl = $('#weather-card-title');
-                            if (titleEl) titleEl.textContent = `天気 (${wd.location_name})`;
+                            if (titleEl) titleEl.textContent = `Yahoo!天気 (${wd.location_name})`;
                         }
                     }
                 }).catch(() => {});
@@ -4005,7 +4005,7 @@ window.loadMeals = async () => {
             const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
             const adviceHtml = m.advice ? `<div style="font-size:0.74rem;color:var(--accent);margin-top:2px;">💬 ${escapeHtml(m.advice)}</div>` : '';
             return `
-                <div class="invest-row" style="cursor:default;padding:10px 18px;border-bottom:1px solid var(--border-glass);">
+                <div class="invest-row" style="cursor:default;">
                     <div class="row-main" style="flex:1;">
                         <div class="row-title">${escapeHtml(m.time)} ${escapeHtml(m.name)}</div>
                         <div class="row-sub" style="font-size:0.78rem;color:var(--text-secondary);">
@@ -4313,17 +4313,17 @@ window.loadGmailInbox = async (state = 'pending') => {
                 `
                 : `${saveBtn}`;
             return `
-                <div class="invest-row" style="cursor:default;padding:10px 18px;border-bottom:1px solid var(--border-glass);align-items:flex-start;">
+                <div class="invest-row" style="cursor:default;align-items:flex-start;">
                     <div class="row-main" style="flex:1;min-width:0;">
                         <div class="row-title" style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">
                             <span style="font-size:0.74rem;color:${importanceColor};font-weight:600;flex-shrink:0;">${importanceLabel}</span>
                             <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${subjectSafe}</span>
                             ${savedBadge}
                         </div>
-                        <div class="row-sub" style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">
+                        <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">
                             ${fromShort} ・ ${received}
                         </div>
-                        <div style="font-size:0.8rem;color:var(--text-primary);margin-top:4px;line-height:1.5;white-space:pre-wrap;">
+                        <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:3px;line-height:1.4;">
                             ${summarySafe}
                         </div>
                     </div>
@@ -4456,7 +4456,7 @@ window.loadExpenses = async (year = null, month = null) => {
                 ? `<button class="mini-link" onclick="viewReceipt('${escapeHtml(e.receipt_drive_id)}')" title="レシート表示">📷</button>`
                 : '';
             return `
-                <div class="invest-row" style="cursor:default;padding:10px 18px;border-bottom:1px solid var(--border-glass);">
+                <div class="invest-row" style="cursor:default;">
                     <div class="row-main" style="flex:1;">
                         <div class="row-title">
                             ¥${e.amount.toLocaleString()} ${escapeHtml(e.vendor || e.category)}${bigBadge}
@@ -5259,7 +5259,7 @@ async function selectWeatherLocation(code, name) {
     const weatherEl = $('#dash-weather');
     if (weatherEl) weatherEl.innerHTML = '<div class="loading-placeholder">天気を取得中...</div>';
     const titleEl = $('#weather-card-title');
-    if (titleEl) titleEl.textContent = `天気 (${name})`;
+    if (titleEl) titleEl.textContent = `Yahoo!天気 (${name})`;
     try {
         const wd = await apiFetch(`/api/weather?location=${encodeURIComponent(code)}`);
         if (wd && wd.summary !== '取得失敗') renderWeather(wd, weatherEl);

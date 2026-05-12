@@ -204,7 +204,13 @@ details.card > summary > .card-header { border-bottom: none; }
     min-height: 50px;
     line-height: 1.55;
 }
-.card-body > .loading-placeholder, .card-body > .invest-empty {
+.card-body > .loading-placeholder,
+.card-body > .invest-empty,
+.card-body > .invest-row,
+.card-body > .news-item,
+.card-body > .habit-item,
+.card-body > .list-item,
+.card-body > .lifelog-row {
     padding-left: 0;
     padding-right: 0;
 }
