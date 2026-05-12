@@ -750,7 +750,7 @@ async function loadDashboard() {
                         <a href="${n.link}" target="_blank" class="news-text">${escapeHtml(n.title)}</a>
                     </div>
                 `).join('');
-            } else newsEl.innerHTML = '<div class="loading-placeholder">現在、ニュースはありません</div>';
+            } else newsEl.innerHTML = '<div class="loading-placeholder">ニュースの取得に失敗しました。</div>';
         }
 
         renderTaskGroup($('#dash-google-tasks-work'), data.google_tasks_work, '仕事');
@@ -765,7 +765,7 @@ async function loadDashboard() {
                         <div class="li-text">${escapeHtml(ev.summary)}</div>
                     </div>
                 `;
-            }).join('') : '<div class="loading-placeholder">予定はありません</div>';
+            }).join('') : '<div class="loading-placeholder">予定はありません。</div>';
         }
 
         const obTaskEl = $('#dash-tasks');
@@ -824,13 +824,19 @@ async function loadDashboard() {
                     </div>
                 `;
             } else {
-                sleepEl.innerHTML = '<div class="loading-placeholder">昨夜のデータがありません</div>';
+                sleepEl.innerHTML = '<div class="loading-placeholder">昨夜のデータがありません。</div>';
             }
             loadSleepTrend();
         }
         
         const diaryEl = $('#dash-alter-log');
-        if (diaryEl) diaryEl.innerHTML = (data.alter_log || '日記は順次生成されます').replace(/\n/g, '<br>');
+        if (diaryEl) {
+            if (data.alter_log) {
+                diaryEl.innerHTML = data.alter_log.replace(/\n/g, '<br>');
+            } else {
+                diaryEl.innerHTML = '<div class="loading-placeholder">観察日記はまだ生成されていません。</div>';
+            }
+        }
 
         // 今日の日記
         const journalEl = $('#dash-daily-journal');
@@ -846,7 +852,7 @@ async function loadDashboard() {
                     return escapeHtml(line) + '<br>';
                 }).join('');
             } else {
-                journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません</div>';
+                journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません。</div>';
             }
         }
 
@@ -867,7 +873,7 @@ async function loadDashboard() {
                     return `<div class="list-item">${escapeHtml(clean)}</div>`;
                 }).join('');
             } else {
-                naEl.innerHTML = '<div class="loading-placeholder">次のアクションはまだ生成されていません</div>';
+                naEl.innerHTML = '<div class="loading-placeholder">次のアクションはまだ生成されていません。</div>';
             }
         }
 
@@ -921,7 +927,7 @@ function renderTaskGroup(container, tasks, listName) {
     if (listName === '習慣') _currentHabitTasks = tasks || [];
 
     if (!tasks || tasks.length === 0) {
-        container.innerHTML = '<div class="loading-placeholder">未完了のタスクはありません</div>';
+        container.innerHTML = '<div class="loading-placeholder">タスクはありません。</div>';
         return;
     }
 
@@ -2345,7 +2351,7 @@ window.loadStockedLinks = async () => {
             if (!container) return;
             container.classList.add('stocked-list');
             if (items.length === 0) {
-                container.innerHTML = '<div class="stocked-empty">登録なし</div>';
+                container.innerHTML = '<div class="loading-placeholder">登録がありません。</div>';
                 return;
             }
             container.innerHTML = items.map(lk => {
@@ -2811,7 +2817,7 @@ async function loadHabits() {
         const container = $('#dash-habits');
         if (!container) return;
         if (!data.habits || data.habits.length === 0) {
-            container.innerHTML = '<div class="p-20 text-center text-secondary">登録された習慣はありません</div>';
+            container.innerHTML = '<div class="loading-placeholder">登録された習慣はありません。</div>';
             const wrap = $('#habit-progress-wrap');
             if (wrap) wrap.style.display = 'none';
             _activeHabitsForGantt = [];
@@ -5001,7 +5007,7 @@ window.loadFitbitAllData = async (forceRefresh = false) => {
         const data = await apiFetch(url);
         _fitbitRows = data.data || [];
         if (!_fitbitRows.length) {
-            if (tableTarget) tableTarget.innerHTML = '<div class="loading-placeholder">Fitbitデータがありません</div>';
+            if (tableTarget) tableTarget.innerHTML = '<div class="loading-placeholder">Fitbitデータがありません。</div>';
             return;
         }
         renderFitbitTable();
@@ -5502,7 +5508,7 @@ function renderDailySummaryCard(data) {
             .join('');
         tEl.innerHTML = dateLabel + html;
     } else {
-        tEl.innerHTML = '<div class="loading-placeholder">「生成」を押してデイリーサマリーを作成します。</div>';
+        tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。</div>';
     }
 
     if (!questions.length) {
@@ -5985,8 +5991,8 @@ const TUTORIAL_SLIDES = [
         body: `<p>このアプリは <b>4つのタブ</b>でできています。</p>
         <div class="tut-grid">
             <div class="tut-card"><b>💬 チャット</b><br><small>AI に何でも頼める</small></div>
-            <div class="tut-card"><b>📰 情報</b><br><small>天気・ニュース・ストック</small></div>
-            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・ライフログ・Fitbit</small></div>
+            <div class="tut-card"><b>📰 情報</b><br><small>天気・ニュース・メール</small></div>
+            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・食事・支出・Fitbit</small></div>
             <div class="tut-card"><b>📅 予定</b><br><small>MIT・カレンダー・タスク</small></div>
         </div>
         <p style="margin-top:10px;font-size:0.85rem;color:var(--text-muted);">下のナビ（チャット・情報・ログ・予定）でタブを切り替えます。</p>`
@@ -6000,6 +6006,7 @@ const TUTORIAL_SLIDES = [
             <li>👆 メッセージ長押しでお気に入り・コレクション・翻訳保存などのアクション</li>
             <li>🌐 ヘッダーの EN トグルで英会話モード</li>
             <li>🔍 ヘッダーの検索アイコンで全メッセージ検索</li>
+            <li>💡 AI が永久ノートの保存を提案した場合は確認モーダルで承認・却下できます</li>
         </ul>`
     },
     {
@@ -6022,15 +6029,16 @@ const TUTORIAL_SLIDES = [
             <li>📖 読書 / 📝 勉強</li>
             <li>🔨 タスク分解</li>
             <li>🧹 仕事・プライベート整理</li>
-            <li>🧘 瞑想タイマー</li>
+            <li>🧘 瞑想タイマー（Wake Lock で画面 ON・完了時バイブ）</li>
         </ul>`
     },
     {
-        title: '天気・ニュース',
+        title: 'Yahoo!天気・ニュース',
         target: 'info',
         body: `<p>情報タブには日々の情報がまとまっています。</p>
         <ul>
-            <li>🌤️ 天気（岡山 北部 / 南部 を切替）</li>
+            <li>🌤️ Yahoo!天気（岡山 北部 / 南部 を切替）</li>
+            <li>🕐 時間別予報（気温・降水確率）をスクロールで確認</li>
             <li>🔗 Yahoo!天気の詳細ページへリンク</li>
             <li>📰 Yahoo!ニュース 主要トピック</li>
         </ul>`
@@ -6039,7 +6047,22 @@ const TUTORIAL_SLIDES = [
         title: 'ストックリンク',
         target: 'info',
         body: `<p>気になった URL（記事・YouTube・レシピ・地図・本）をチャットに貼ると自動分類で保存。</p>
-        <p style="margin-top:8px;">⭐ お気に入り設定や、長押しで詳細編集できます。</p>`
+        <ul>
+            <li>🏷️ タグ付け・タグ絞り込み対応</li>
+            <li>📅 目標日を設定して管理</li>
+            <li>✏️「手動追加」ボタンで直接登録も可能</li>
+        </ul>`
+    },
+    {
+        title: 'メール受信トレイ',
+        target: 'info',
+        body: `<p>Gmail の受信メールを AI が要約・重要度判定して表示します。</p>
+        <ul>
+            <li>📬 未処理 / 既読 / ゴミ箱 / 全てをタブ切替</li>
+            <li>🔴 重要メールは赤ラベル付きで通知も届きます</li>
+            <li>📌 重要メールは「保存」で Obsidian に Markdown 保存</li>
+            <li>📥「取り込み」で手動再ポーリングも可能</li>
+        </ul>`
     },
     {
         title: '習慣トラッカー',
@@ -6049,7 +6072,7 @@ const TUTORIAL_SLIDES = [
             <li>⭕ チェックで完了記録（Google Tasks「習慣」リストと同期）</li>
             <li>⏰「+いつ」を設定すると指定時刻にマネージャーが声をかけます</li>
             <li>⠿ 長押しで並び替え可能</li>
-            <li>📊 過去 28 日のヒートマップ ＋ 過去 90 日のガントチャート（習慣ごとに色分け）</li>
+            <li>📊 過去 28 日のヒートマップ ＋ 過去 90 日のガントチャート</li>
         </ul>`
     },
     {
@@ -6062,6 +6085,28 @@ const TUTORIAL_SLIDES = [
             内容: 自由記入
         </div>
         <p style="margin-top:8px;font-size:0.85rem;color:var(--text-muted);">時刻・マーク・内容は列が揃って表示されます。</p>`
+    },
+    {
+        title: '食事ログ',
+        target: 'log',
+        body: `<p>食事を写真または手動で記録。Gemini Vision が自動で栄養分析します。</p>
+        <ul>
+            <li>📷 写真撮影 → AI が料理名・カロリー・PFC を推定</li>
+            <li>✏️ 手動入力も可能</li>
+            <li>🥗 1 日の合計カロリー・PFC をカード上部に表示</li>
+            <li>💬「アドバイス」ボタンで栄養バランスのフィードバック</li>
+        </ul>`
+    },
+    {
+        title: '支出メモ',
+        target: 'log',
+        body: `<p>レシートを撮影するか手動で支出を記録します。</p>
+        <ul>
+            <li>📷 レシート撮影 → AI が店名・金額・カテゴリを自動入力</li>
+            <li>💸 大きな支出は閾値超過で自動通知（しきい値は設定変更可）</li>
+            <li>📊 月別合計をカテゴリ別に集計</li>
+            <li>🧾 レシート画像は Google Drive に自動バックアップ</li>
+        </ul>`
     },
     {
         title: 'Fitbit データ',
@@ -6088,9 +6133,10 @@ const TUTORIAL_SLIDES = [
         target: 'log',
         body: `<p>1 日の記録を統合した日報を表示・編集できます。</p>
         <ul>
-            <li>📔 <b>今日の日記</b>: AI が振り返り → 「編集」ボタンで自分で書き換え可能（Obsidian 反映）</li>
-            <li>📅 <b>デイリーサマリー</b>: 予定・天気・会話・ライフログ・位置・Fitbit を一画面に集約</li>
-            <li>❓ AI が判断に迷う点は<b>質問キュー</b>に保存され、後で答えると確定します</li>
+            <li>📔 <b>今日の日記</b>: AI が振り返り → 「編集」ボタンで自分で書き換え可能</li>
+            <li>📅 <b>デイリーサマリー</b>: 「日付指定」で任意日のサマリーを生成</li>
+            <li>❓ AI が判断に迷う点は<b>質問キュー</b>に保存され、後で答えると確定</li>
+            <li>🌅 直近確定済みのサマリーを常に表示（今日未生成でも昨日分を表示）</li>
         </ul>`
     },
     {
@@ -6101,6 +6147,7 @@ const TUTORIAL_SLIDES = [
             <li>「設定」ボタンですぐ入力画面が開きます</li>
             <li>チャット上部にバナーで常時表示</li>
             <li>達成チェックは Obsidian に反映</li>
+            <li>🌅 毎朝 6:30 に AI が Calendar を参照してMIT候補を提案（通知あり）</li>
         </ul>`
     },
     {
@@ -6125,7 +6172,7 @@ const TUTORIAL_SLIDES = [
             <li>🔄 アプリ更新（PWA キャッシュ更新）</li>
             <li>❓ このヘルプを再表示</li>
             <li>🗑 チャット履歴リセット</li>
-            <li>⚙ 通知などの設定</li>
+            <li>⚙ 通知・APIコスト・自動格下げなどの設定</li>
         </ul>`
     },
 ];
@@ -6523,16 +6570,16 @@ window.switchInvestHistory = (cat) => {
 window.loadInvestmentHistory = async () => {
     const listEl = $('#invest-history-list');
     if (!listEl) return;
-    listEl.innerHTML = '<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">読み込み中...</div>';
+    listEl.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
     try {
         const data = await apiFetch(`/api/investment/history/${encodeURIComponent(_investHistoryCategory)}?limit=20`);
         if (!data || !data.ok) {
-            listEl.innerHTML = '<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">履歴の取得に失敗しました</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">履歴の取得に失敗しました。</div>';
             return;
         }
         const items = data.items || [];
         if (!items.length) {
-            listEl.innerHTML = '<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">まだ履歴がありません</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">まだ履歴がありません。</div>';
             return;
         }
         const cat = _investHistoryCategory;
@@ -6543,7 +6590,7 @@ window.loadInvestmentHistory = async () => {
             return `<div class="invest-history-item" onclick="openInvestHistoryItem('${cat}','${safeId}','${safeName.replace(/'/g, '&#39;')}')"><span class="name">${safeName}</span><span class="meta">${modified}</span></div>`;
         }).join('');
     } catch (e) {
-        listEl.innerHTML = `<div style="padding:12px;font-size:0.85rem;color:var(--text-muted);">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+        listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
     }
 };
 
@@ -6609,14 +6656,14 @@ window.loadPortfolio = async () => {
     try {
         const data = await apiFetch('/api/investment/portfolio');
         if (!data || !data.ok) {
-            listEl.innerHTML = '<div class="invest-empty">取得に失敗しました</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
             _investHoldingsCache = [];
             return;
         }
         const holdings = data.holdings || [];
         _investHoldingsCache = holdings;
         if (!holdings.length) {
-            listEl.innerHTML = '<div class="invest-empty">保有銘柄がまだありません。「追加」から登録してください。</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">保有銘柄がまだありません。「追加」から登録してください。</div>';
             return;
         }
         listEl.innerHTML = holdings.map(h => {
@@ -6639,7 +6686,7 @@ window.loadPortfolio = async () => {
             </div>`;
         }).join('');
     } catch (e) {
-        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+        listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
         _investHoldingsCache = [];
     }
 };
@@ -6677,7 +6724,7 @@ window.openHoldingPicker = async (target) => {
             </div>`;
         }).join('');
     } catch (e) {
-        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+        listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
     }
 };
 
@@ -6910,12 +6957,12 @@ window.loadJournalList = async () => {
     try {
         const data = await apiFetch('/api/investment/journal?limit=50');
         if (!data || !data.ok) {
-            listEl.innerHTML = '<div class="invest-empty">取得に失敗しました</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
             return;
         }
         const items = data.items || [];
         if (!items.length) {
-            listEl.innerHTML = '<div class="invest-empty">日記がまだありません。「追加」から書いてみましょう。</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">日記がまだありません。「追加」から書いてみましょう。</div>';
             return;
         }
         listEl.innerHTML = items.map(it => {
@@ -6935,7 +6982,7 @@ window.loadJournalList = async () => {
             </div>`;
         }).join('');
     } catch (e) {
-        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+        listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
     }
 };
 
@@ -7011,12 +7058,12 @@ window.loadAlertsList = async () => {
     try {
         const data = await apiFetch('/api/investment/alerts');
         if (!data || !data.ok) {
-            listEl.innerHTML = '<div class="invest-empty">取得に失敗しました</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
             return;
         }
         const rules = data.rules || [];
         if (!rules.length) {
-            listEl.innerHTML = '<div class="invest-empty">アラートがまだありません。「追加」から登録してください。</div>';
+            listEl.innerHTML = '<div class="loading-placeholder">アラートがまだありません。「追加」から登録してください。</div>';
             return;
         }
         listEl.innerHTML = rules.map(r => {
@@ -7039,7 +7086,7 @@ window.loadAlertsList = async () => {
             </div>`;
         }).join('');
     } catch (e) {
-        listEl.innerHTML = `<div class="invest-empty">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+        listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
     }
 };
 

@@ -536,27 +536,33 @@ class InfoService:
             text = text[:16] + "…"
         return text
 
-    async def get_news(self, limit=3):
+    async def get_news(self, limit=5):
         """Yahoo!ニュースのRSSからタイトルとURLを取得"""
-        url = "https://news.yahoo.co.jp/rss/topics/top-picks.xml"
+        candidate_urls = [
+            "https://news.yahoo.co.jp/rss/topics/top-picks.xml",
+            "https://news.yahoo.co.jp/pickup/rss.xml",
+        ]
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/91.0.4472.124"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         }
-        try:
-            async with aiohttp.ClientSession(headers=headers) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                    if response.status == 200:
-                        xml_data = await response.text()
-                        root = ET.fromstring(xml_data)
-                        news_list = []
-                        items = root.findall(".//item")
-                        for item in items[:limit]:
-                            title_el = item.find("title")
-                            link_el = item.find("link")
-                            title = title_el.text if title_el is not None else "無題"
-                            link = link_el.text if link_el is not None else "#"
-                            news_list.append({"title": title, "link": link})
-                        return news_list
-        except Exception as e:
-            logging.error(f"News Fetch Error: {e}")
+        for url in candidate_urls:
+            try:
+                async with aiohttp.ClientSession(headers=headers) as session:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                        if response.status == 200:
+                            xml_data = await response.text()
+                            root = ET.fromstring(xml_data)
+                            news_list = []
+                            items = root.findall(".//item")
+                            for item in items[:limit]:
+                                title_el = item.find("title")
+                                link_el = item.find("link")
+                                title = title_el.text if title_el is not None else "無題"
+                                link = link_el.text if link_el is not None else "#"
+                                if title and title != "無題":
+                                    news_list.append({"title": title, "link": link})
+                            if news_list:
+                                return news_list
+            except Exception as e:
+                logging.warning(f"News Fetch Error ({url}): {e}")
         return []
