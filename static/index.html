@@ -119,6 +119,9 @@
                     </div>
                 </div>
                 <div class="chat-input-area">
+                    <div style="font-size:0.68rem;color:var(--text-muted);text-align:center;padding:4px 8px 6px;">
+                        💡 マネージャー会話の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「マネージャー会話」で変更できます。
+                    </div>
                     <form id="chat-form">
                         <div class="input-wrapper">
                             <button type="button" class="img-attach-btn" id="img-attach-btn" title="手書きメモを読み取る">
@@ -465,6 +468,9 @@
                         </div>
                         <div id="invest-sentiment-result" class="card-body">
                             <div class="loading-placeholder">「分析する」ボタンから最新の日米市場データを取得して地合いを判定します。</div>
+                            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:6px;">
+                                💡 Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「地合い分析」で変更できます。
+                            </div>
                         </div>
                     </div>
 
@@ -476,7 +482,7 @@
                             <button class="mini-link" onclick="openScreenerModal()">開く</button>
                         </div>
                         <div class="card-body">
-                            <div class="loading-placeholder">スタイル別（順張り / じわじわ上昇 / 低ボラ収束 / バリュー / グロース）に買い候補を多角的に抽出します。Python 計算で機械的に絞り込み、上位銘柄のみ Gemini で質的補強。</div>
+                            <div class="loading-placeholder">スタイル別（じわじわ高値ブレイク / バリュー / グロース）に買い候補を多角的に抽出します。Python 計算で機械的に絞り込み、上位銘柄のみ Gemini で質的補強。</div>
                         </div>
                     </div>
 
@@ -504,6 +510,9 @@
                             <p style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">
                                 日本株は4桁コード、米国株はティッカーシンボルで指定。結果はGoogleドライブの <code>Investment/</code> 配下に自動保存されます。
                             </p>
+                            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:6px;">
+                                💡 Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 →「銘柄スナップショット / 憲法審査 / 同業比較 / ニュースセンチメント / 決算分析 / 配当分析」で機能ごとに変更できます。
+                            </div>
                         </div>
                     </div>
 
@@ -531,6 +540,9 @@
                             <p style="font-size:0.7rem;color:var(--text-muted);margin-top:6px;">
                                 CEOの発言・表情・スライドの注釈と、過去の財務諸表・地理的事実（Google Maps）を照合し、矛盾を洗い出します。動画の長さによって数十秒〜数分かかります。
                             </p>
+                            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:6px;">
+                                💡 Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「決算分析」で変更できます。
+                            </div>
                         </div>
                     </div>
 
@@ -544,6 +556,9 @@
                             <button class="mini-link" onclick="runRiskAssessment()">リスク評価</button>
                         </div>
                         <div id="invest-portfolio-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div style="font-size:0.7rem;color:var(--text-muted);margin:0 12px 10px;">
+                            💡 リスク評価の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「リスク評価」で変更できます。
+                        </div>
                     </div>
 
                     <!-- 注目銘柄 -->
@@ -554,6 +569,9 @@
                             <button class="mini-link" onclick="loadWatchlist()">更新</button>
                         </div>
                         <div id="invest-watchlist-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div style="font-size:0.7rem;color:var(--text-muted);margin:0 12px 10px;">
+                            💡 注目銘柄から実行できる各分析の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 →「銘柄スナップショット / 憲法審査 / 同業比較 / ニュースセンチメント」で変更できます。
+                        </div>
                     </div>
 
                     <!-- 投資日記 -->
@@ -566,6 +584,9 @@
                             <button class="mini-link" onclick="runJournalAnalyze()">癖を分析</button>
                         </div>
                         <div id="invest-journal-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div style="font-size:0.7rem;color:var(--text-muted);margin:0 12px 10px;">
+                            💡 「癖を分析」の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「投資日記分析」で変更できます。
+                        </div>
                     </div>
 
                     <!-- アラート -->
@@ -590,6 +611,9 @@
                         </div>
                         <div class="card-body">
                             <div class="loading-placeholder">銘柄審査の判断基準。「半年レビュー」を押すと過去の審査履歴・日記・保有銘柄から憲法の改訂案を提示します。</div>
+                            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:6px;">
+                                💡 「半年レビュー」の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「憲法レビュー」で変更できます。
+                            </div>
                         </div>
                     </div>
 
@@ -1532,6 +1556,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=63"></script>
+    <script src="/static/js/app_v12.js?v=64"></script>
 </body>
 </html>

@@ -276,14 +276,17 @@ class CreepingBreakoutStrategy(StyleStrategy):
     display_name = "じわじわ高値ブレイク（低ボラ）"
     description = "52週高値圏でじわじわ上昇し、急騰や下抜けがない、ブレイク前夜の銘柄"
     filters = [
+        # 【位置】高値圏に位置している
         FilterDef("near_high", "52週高値乖離 ≤ 5%", "高値圏に位置している", True),
         FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
+        # 【トレンド】じわじわ上昇している
+        FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", True),
+        FilterDef("ret_5d", "直近5日リターン 0〜+15%", "短期上昇しているが過熱なし", True),
+        FilterDef("vol_increase", "出来高比率 5日/20日 ≥1.10x", "出来高がじわじわ増加", True),
+        # 【品質】過熱なし・低ボラ
         FilterDef("low_volatility", "ATR/Close < 3%（低ボラ）", "値動きが激しすぎない", True),
         FilterDef("no_big_pop", "直近10日 大陽線（+5%超）なし", "大跳ねしていない", True),
         FilterDef("no_prev_low_break", "直近5日 前日安値割れなし", "押し目が浅い", True),
-        FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", False),
-        FilterDef("vol_increase", "出来高比率 5日/20日 ≥1.10x", "出来高がじわじわ増加", False),
-        FilterDef("ret_5d", "直近5日リターン 0〜+15%", "短期上昇しているが過熱なし", False),
     ]
 
     def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
@@ -325,23 +328,27 @@ class CreepingBreakoutStrategy(StyleStrategy):
         ret_5d = TechnicalSignals.return_pct(close, 5)
 
         sigs = [
-            Signal("52週高値乖離", f"{gap * 100:.2f}%", "≤5.00%", is_near),
+            # 【位置】高値圏
+            Signal("52週高値乖離 ≤ 5%", f"{gap * 100:.2f}%", "≤5.00%", is_near),
             Signal(
                 "200日MA上抜け",
                 f"{((latest_close - sma200_val) / sma200_val * 100):+.2f}%" if sma200_val else "N/A",
                 ">0%",
                 above_sma200,
             ),
-            Signal("ATR/Close (低ボラ)", f"{atr_pct * 100:.2f}%" if atr_pct else "N/A", "<3.00%", low_vol),
-            Signal("直近10日 最大日次リターン", f"{max_daily_ret * 100:+.2f}%", "≤+5.00%", no_big_pop),
-            Signal("直近5日 前日安値割れ回数", f"{breaks}回" if breaks < 99 else "N/A", "0回", no_prev_low_break),
-            Signal("連続上昇日数 (+0.5〜+3%, 10日)", f"{up_days}日", "≥3日", up_days >= 3),
-            Signal("出来高比率 (5日/20日)", f"{vol_ratio:.2f}x", "≥1.10x", vol_ratio >= 1.10),
-            Signal("直近5日リターン", f"{ret_5d * 100:+.2f}%", "0%〜+15%", 0 <= ret_5d <= 0.15),
+            # 【トレンド】じわじわ上昇
+            Signal("連続上昇日数 ≥3日（+0.5〜+3%）", f"{up_days}日", "≥3日", up_days >= 3),
+            Signal("直近5日リターン 0〜+15%", f"{ret_5d * 100:+.2f}%", "0%〜+15%", 0 <= ret_5d <= 0.15),
+            Signal("出来高比率 5日/20日 ≥1.10x", f"{vol_ratio:.2f}x", "≥1.10x", vol_ratio >= 1.10),
+            # 【品質】過熱なし・低ボラ
+            Signal("ATR/Close < 3%（低ボラ）", f"{atr_pct * 100:.2f}%" if atr_pct else "N/A", "<3.00%", low_vol),
+            Signal("直近10日 大陽線（+5%超）なし", f"最大{max_daily_ret * 100:+.2f}%", "≤+5.00%", no_big_pop),
+            Signal("直近5日 前日安値割れなし", f"{breaks}回" if breaks < 99 else "N/A", "0回", no_prev_low_break),
         ]
         signal_keys = [
-            "near_high", "above_sma200", "low_volatility", "no_big_pop",
-            "no_prev_low_break", "up_days", "vol_increase", "ret_5d",
+            "near_high", "above_sma200",
+            "up_days", "ret_5d", "vol_increase",
+            "low_volatility", "no_big_pop", "no_prev_low_break",
         ]
 
         bonus = 0.0

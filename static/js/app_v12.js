@@ -6975,12 +6975,14 @@ function _renderScreenerCandidates(data) {
         const sourceEsc = (data.style_display || (data.styles || [data.style]).join(' / ') || '').replace(/'/g, "\\'");
         return `<div class="screener-row" style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;${c.is_near_miss ? 'background:rgba(255,212,84,0.05);' : ''}">
             <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
-                <input type="checkbox" data-idx="${idx}" class="screener-cand-check" checked style="margin-top:4px;">
-                <div style="flex:1;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:6px;">
-                        <strong>${escapeHtml(c.code)} ${escapeHtml(c.name)}</strong>
-                        <span style="font-size:0.78rem;color:var(--text-muted);flex:1;text-align:right;">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
-                        <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
+                <input type="checkbox" data-idx="${idx}" class="screener-cand-check" checked style="margin-top:4px;flex-shrink:0;">
+                <div style="flex:1;min-width:0;">
+                    <div style="margin-bottom:4px;">
+                        <strong style="word-break:break-word;line-height:1.3;">${escapeHtml(c.code)} ${escapeHtml(c.name)}</strong>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap;">
+                        <span style="font-size:0.78rem;color:var(--text-muted);">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
+                        <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;flex-shrink:0;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
                     </div>
                     ${styleBadges ? `<div style="margin-bottom:4px;">${styleBadges}</div>` : ''}
                     ${failedBadge}
