@@ -254,6 +254,94 @@ class TrendFollowStrategy(StyleStrategy):
         )
 
 
+class CreepingBreakoutStrategy(StyleStrategy):
+    style_name = "creeping_breakout"
+    display_name = "じわじわ高値ブレイク（低ボラ）"
+    description = "52週高値圏でじわじわ上昇し、急騰や下抜けがない、ブレイク前夜の銘柄"
+
+    def evaluate(self, code, name, sector, df, fundamentals=None):
+        if df is None or len(df) < 60:
+            return None
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+
+        is_near, gap, _high_52w = TechnicalSignals.near_52w_high(close, high, tolerance=0.05)
+
+        sma200 = TechnicalSignals.sma(close, 200)
+        sma200_val = float(sma200.iloc[-1]) if sma200.iloc[-1] == sma200.iloc[-1] else None
+        latest_close = float(close.iloc[-1])
+        above_sma200 = bool(sma200_val and latest_close > sma200_val)
+
+        atr = TechnicalSignals.atr(high, low, close, n=14)
+        atr_val = float(atr.iloc[-1]) if atr.iloc[-1] == atr.iloc[-1] else None
+        atr_pct = (atr_val / latest_close) if (atr_val and latest_close > 0) else None
+        low_vol = bool(atr_pct is not None and atr_pct < 0.03)
+
+        recent_returns = close.pct_change().tail(10).dropna()
+        max_daily_ret = float(recent_returns.max()) if not recent_returns.empty else 0.0
+        no_big_pop = max_daily_ret <= 0.05
+
+        recent_low = low.tail(6)
+        if len(recent_low) >= 6:
+            prev_lows = recent_low.shift(1).iloc[1:]
+            curr_lows = recent_low.iloc[1:]
+            breaks = int((curr_lows < prev_lows).sum())
+        else:
+            breaks = 99
+        no_prev_low_break = breaks == 0
+
+        sigs = [
+            Signal(
+                name="52週高値乖離",
+                value=f"{gap * 100:.2f}%",
+                threshold="≤5.00%",
+                passed=is_near,
+            ),
+            Signal(
+                name="200日MA上抜け",
+                value=f"{((latest_close - sma200_val) / sma200_val * 100):+.2f}%" if sma200_val else "N/A",
+                threshold=">0%",
+                passed=above_sma200,
+            ),
+            Signal(
+                name="ATR/Close (低ボラ)",
+                value=f"{atr_pct * 100:.2f}%" if atr_pct else "N/A",
+                threshold="<3.00%",
+                passed=low_vol,
+            ),
+            Signal(
+                name="直近10日 最大日次リターン",
+                value=f"{max_daily_ret * 100:+.2f}%",
+                threshold="≤+5.00%（大陽線なし）",
+                passed=no_big_pop,
+            ),
+            Signal(
+                name="直近5日 前日安値割れ回数",
+                value=(f"{breaks}回" if breaks < 99 else "N/A"),
+                threshold="0回",
+                passed=no_prev_low_break,
+            ),
+        ]
+
+        if not all(s.passed for s in sigs):
+            return None
+
+        passed_count = sum(1 for s in sigs if s.passed)
+        score = passed_count / len(sigs) * 100
+        score += max(0, (0.05 - gap) * 200)
+        if atr_pct is not None:
+            score += max(0, (0.03 - atr_pct) * 500)
+        score = min(100.0, score)
+
+        return ScreeningResult(
+            code=code, name=name, sector=sector, style=self.style_name,
+            score=score, signals=sigs,
+            price_snapshot=self._build_snapshot(df),
+            data_as_of=self._data_as_of(df),
+        )
+
+
 class CreepingUpStrategy(StyleStrategy):
     style_name = "creeping_up"
     display_name = "じわじわ上昇（注目集まり前）"
@@ -477,6 +565,7 @@ class GrowthStrategy(StyleStrategy):
 STRATEGY_REGISTRY: dict[str, StyleStrategy] = {
     s.style_name: s for s in [
         TrendFollowStrategy(),
+        CreepingBreakoutStrategy(),
         CreepingUpStrategy(),
         LowVolBreakoutStrategy(),
         ValueStrategy(),

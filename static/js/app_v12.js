@@ -6648,6 +6648,8 @@ let _screenerStylesCache = null;
 let _screenerCandidates = [];
 let _screenerJobId = null;
 let _screenerJobPollTimer = null;
+let _screenerFakeProgressTimer = null;
+let _screenerFakeProgressPct = 0;
 
 window.openScreenerModal = async () => {
     const modal = $('#invest-screener-modal');
@@ -6732,10 +6734,38 @@ function _showScreenerProgress(text, percent) {
     if (!wrap) return;
     wrap.classList.remove('hidden');
     if (txt) txt.textContent = text || '処理中...';
-    if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
+    if (typeof percent === 'number') {
+        const clamped = Math.max(0, Math.min(100, percent));
+        _screenerFakeProgressPct = clamped;
+        if (bar) bar.style.width = `${clamped}%`;
+    }
+}
+
+function _startScreenerFakeProgress(target = 92, intervalMs = 700) {
+    _stopScreenerFakeProgress();
+    _screenerFakeProgressTimer = setInterval(() => {
+        const bar = $('#screener-progress-bar');
+        if (!bar) return;
+        const remaining = target - _screenerFakeProgressPct;
+        if (remaining <= 0.1) return;
+        const inc = Math.max(0.4, remaining * 0.07);
+        _screenerFakeProgressPct = Math.min(target, _screenerFakeProgressPct + inc);
+        bar.style.width = `${_screenerFakeProgressPct}%`;
+    }, intervalMs);
+}
+
+function _stopScreenerFakeProgress() {
+    if (_screenerFakeProgressTimer) {
+        clearInterval(_screenerFakeProgressTimer);
+        _screenerFakeProgressTimer = null;
+    }
 }
 
 function _hideScreenerProgress() {
+    _stopScreenerFakeProgress();
+    _screenerFakeProgressPct = 0;
+    const bar = $('#screener-progress-bar');
+    if (bar) bar.style.width = '0%';
     $('#screener-progress')?.classList.add('hidden');
 }
 
@@ -6750,14 +6780,17 @@ window.runScreener = async () => {
     const minMcapJpy = (minMcapOku && minMcapOku > 0) ? minMcapOku * 100000000 : null;
 
     _renderScreenerResults('機械スクリーニング中... (1〜2分かかる場合があります)');
-    _showScreenerProgress('銘柄データを取得して機械フィルタを実行中...', 30);
+    _showScreenerProgress('銘柄データを取得して機械フィルタを実行中...', 5);
+    _startScreenerFakeProgress(92, 700);
     _setScreenerAnalyzeEnabled(false);
 
     try {
         const body = { styles: [..._screenerSelectedStyles], universe, top_n: topN };
         if (minMcapJpy) body.min_market_cap_jpy = minMcapJpy;
         const data = await apiFetch('/api/investment/screener/run', { method: 'POST', body: JSON.stringify(body) });
-        _hideScreenerProgress();
+        _stopScreenerFakeProgress();
+        _showScreenerProgress('結果を集計中...', 100);
+        setTimeout(_hideScreenerProgress, 400);
         if (!data || !data.ok) {
             const err = (data && (data.error || data.detail)) || '失敗しました';
             _renderScreenerResults(`エラー: ${err}`);
