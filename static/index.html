@@ -119,9 +119,6 @@
                     </div>
                 </div>
                 <div class="chat-input-area">
-                    <div style="font-size:0.68rem;color:var(--text-muted);text-align:center;padding:4px 8px 6px;">
-                        💡 マネージャー会話の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「マネージャー会話」で変更できます。
-                    </div>
                     <form id="chat-form">
                         <div class="input-wrapper">
                             <button type="button" class="img-attach-btn" id="img-attach-btn" title="手書きメモを読み取る">
@@ -159,7 +156,7 @@
                         <div id="dash-news" class="card-body list-body"></div>
                     </div>
                     
-                    <details class="card stocked-links-card" open>
+                    <details class="card stocked-links-card">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🌐</span>
@@ -350,6 +347,9 @@
                             <button class="mini-link" onclick="generateDailySummaryForDate()" title="日付を指定して生成">📆 日付指定</button>
                             <button class="mini-link" onclick="openDailySummaryEditor()">編集</button>
                         </div>
+                        <div style="font-size:0.78rem;color:var(--text-muted);padding:0 16px 6px;">
+                            直近の確定済みサマリーを自動表示します。新しい日付が生成されると更新されます。
+                        </div>
                         <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
                         <div id="dash-daily-summary" class="card-body diary-content"></div>
                     </div>
@@ -359,12 +359,18 @@
                             <span class="card-title">今日の日記</span>
                             <button class="mini-link" onclick="openDailyJournalEditor()">編集</button>
                         </div>
+                        <div style="font-size:0.78rem;color:var(--text-muted);padding:0 16px 6px;">
+                            Obsidian の DailyNotes と連動して今日の日記を表示します。
+                        </div>
                         <div id="dash-daily-journal" class="card-body diary-content"></div>
                     </div>
                     <div class="card diary-card">
                         <div class="card-header">
                             <span class="card-icon">📒</span>
                             <span class="card-title">観察日記</span>
+                        </div>
+                        <div style="font-size:0.78rem;color:var(--text-muted);padding:0 16px 6px;">
+                            AIがあなたとの対話から見つけた傾向や気づきを記録します。
                         </div>
                         <div id="dash-alter-log" class="card-body diary-content"></div>
                     </div>
@@ -1015,7 +1021,10 @@
 
                 <div style="display:flex; flex-direction:column; gap:4px;">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">関連ノートURL（NotebookLM等）</label>
-                    <input type="text" id="link-note-url-input" class="modern-input" style="padding:10px;" placeholder="https://...">
+                    <div style="display:flex; gap:6px; align-items:center;">
+                        <input type="text" id="link-note-url-input" class="modern-input" style="padding:10px; flex:1;" placeholder="https://...">
+                        <button type="button" class="mini-link" onclick="_openLinkedNote()" title="保存済みのノートURLを新しいタブで開く">↗ 開く</button>
+                    </div>
                 </div>
 
                 <div style="display:flex; flex-direction:column; gap:4px;">
@@ -1621,6 +1630,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=66"></script>
+    <script src="/static/js/app_v12.js?v=69"></script>
 </body>
 </html>

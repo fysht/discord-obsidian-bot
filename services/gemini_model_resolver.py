@@ -17,13 +17,35 @@ from typing import Optional
 GEMINI_FLASH_MODEL = "gemini-2.5-flash"
 GEMINI_PRO_MODEL = "gemini-2.5-pro"
 
+# 設定 UI のドロップダウンキー → 実際の Gemini モデル ID へのエイリアス
+KNOWN_MODELS = {
+    "flash": "gemini-2.5-flash",                # 既存互換（デフォルトFlash）
+    "pro": "gemini-2.5-pro",                    # 既存互換（デフォルトPro）
+    "flash-lite": "gemini-2.5-flash-lite",
+    "flash-preview": "gemini-3-flash-preview",
+    "flash-lite-3": "gemini-3.1-flash-lite",
+    "pro-preview": "gemini-3.1-pro-preview",
+}
+
 
 def _from_choice(choice: str, default_pro: bool) -> str:
-    if choice == "flash":
-        return GEMINI_FLASH_MODEL
-    if choice == "pro":
-        return GEMINI_PRO_MODEL
+    if not choice:
+        return GEMINI_PRO_MODEL if default_pro else GEMINI_FLASH_MODEL
+    if choice in KNOWN_MODELS:
+        return KNOWN_MODELS[choice]
+    # 任意のモデルIDを直接受け付ける（"gemini-" で始まる文字列）
+    if choice.startswith("gemini-"):
+        return choice
     return GEMINI_PRO_MODEL if default_pro else GEMINI_FLASH_MODEL
+
+
+def is_valid_choice(choice: str) -> bool:
+    """設定 UI から保存される値の妥当性チェック。"""
+    if not choice:
+        return False
+    if choice in KNOWN_MODELS:
+        return True
+    return choice.startswith("gemini-") and len(choice) <= 100
 
 
 async def resolve_gemini_model(feature_key: str, default_pro: bool = True) -> str:

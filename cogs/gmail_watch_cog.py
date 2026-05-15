@@ -49,9 +49,30 @@ class GmailWatchCog(commands.Cog):
             if not gmail or not gmail.creds:
                 return
 
-            from api.database import gmail_get, gmail_upsert, gmail_update
+            from api.database import (
+                gmail_get,
+                gmail_upsert,
+                gmail_update,
+                gmail_delete_by_id,
+                gmail_list_active_ids,
+            )
             from api.notification_service import send_push
             from services import cost_meter_service
+
+            # === 削除同期: Gmail 側で削除されたメッセージを DB から物理削除 ===
+            try:
+                gmail_ids = await gmail.list_recent_ids(days=14, max_results=200)
+                if gmail_ids is not None:
+                    db_active = await gmail_list_active_ids()
+                    deleted_count = 0
+                    for db_id in db_active:
+                        if db_id not in gmail_ids:
+                            if await gmail_delete_by_id(db_id):
+                                deleted_count += 1
+                    if deleted_count:
+                        logging.info(f"GmailWatchCog: synced {deleted_count} deleted messages")
+            except Exception as e:
+                logging.debug(f"GmailWatchCog delete sync error: {e}")
 
             unread_meta = await gmail.list_unread(max_results=20, newer_than_days=1)
             if not unread_meta:

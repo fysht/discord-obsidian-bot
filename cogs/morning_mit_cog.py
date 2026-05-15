@@ -15,13 +15,19 @@ class MorningMitCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._last_run_date = None
         self.morning_mit_loop.start()
 
     def cog_unload(self):
         self.morning_mit_loop.cancel()
 
-    @tasks.loop(time=datetime.time(hour=6, minute=30, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def morning_mit_loop(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("morning_mit", "06:30", "daily", self._last_run_date)
+        if not due:
+            return
+        self._last_run_date = today
         # 一斉スパムにならないよう 0〜90 秒のジッタ
         await asyncio.sleep(random.randint(0, 90))
         await self._run()

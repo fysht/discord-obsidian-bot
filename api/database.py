@@ -974,6 +974,27 @@ async def gmail_update(message_id: str, **fields) -> bool:
         return cursor.rowcount > 0
 
 
+async def gmail_delete_by_id(message_id: str) -> bool:
+    """指定 message_id の Gmail レコードを物理削除する（Gmail 側で削除されたもの同期用）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM gmail_inbox WHERE id = ?",
+            (message_id,),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def gmail_list_active_ids() -> list[str]:
+    """state='pending' または 'archived' の Gmail メッセージID一覧を返す（trashed は除外）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT id FROM gmail_inbox WHERE state IN ('pending', 'archived')"
+        )
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
+
+
 async def gmail_list(state: str = "pending", limit: int = 50) -> list[dict]:
     """state='pending' / 'archived' / 'trashed' / 'all' を指定して一覧取得。"""
     async with aiosqlite.connect(str(DB_PATH)) as db:

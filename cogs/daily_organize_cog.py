@@ -24,13 +24,19 @@ class DailyOrganizeCog(commands.Cog):
         self.tasks_service = getattr(bot, "tasks_service", None)
         self.info_service = getattr(bot, "info_service", InfoService())
 
+        self._last_run_date = None
         self.daily_organize_task.start()
 
     def cog_unload(self):
         self.daily_organize_task.cancel()
 
-    @tasks.loop(time=datetime.time(hour=23, minute=55, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def daily_organize_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("daily_organize", "23:55", "daily", self._last_run_date)
+        if not due:
+            return
+        self._last_run_date = today
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return

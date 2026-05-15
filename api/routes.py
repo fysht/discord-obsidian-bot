@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import asyncio
 import datetime
@@ -4624,6 +4625,7 @@ def _setting_key(feature_key: str) -> str:
 @router.get("/settings/gemini_models", dependencies=[Depends(verify_api_key)])
 async def settings_gemini_models_get():
     from api.database import get_app_setting
+    from services.gemini_model_resolver import is_valid_choice
     items = []
     for key, label, desc, default in GEMINI_FEATURE_CATALOG:
         val = await get_app_setting(_setting_key(key), default)
@@ -4632,26 +4634,94 @@ async def settings_gemini_models_get():
             "label": label,
             "description": desc,
             "default": default,
-            "value": val if val in ("flash", "pro") else default,
+            "value": val if is_valid_choice(val) else default,
         })
     return {"ok": True, "items": items}
 
 
 class SettingsGeminiModelRequest(BaseModel):
-    # {feature_key: "flash"|"pro", ...}
+    # {feature_key: <model alias or "gemini-..." model id>, ...}
     values: dict
 
 
 @router.post("/settings/gemini_models", dependencies=[Depends(verify_api_key)])
 async def settings_gemini_models_post(req: SettingsGeminiModelRequest):
     from api.database import set_app_setting
+    from services.gemini_model_resolver import is_valid_choice
     valid_keys = {k for k, *_ in GEMINI_FEATURE_CATALOG}
     saved = 0
     for k, v in (req.values or {}).items():
         if k not in valid_keys:
             continue
-        if v not in ("flash", "pro"):
+        if not is_valid_choice(v):
             continue
         await set_app_setting(_setting_key(k), v)
+        saved += 1
+    return {"ok": True, "saved": saved}
+
+
+# =========================================================
+# マネージャー連絡スケジュール (時刻 + 有効/無効 + 曜日)
+# =========================================================
+
+_VALID_DOW = {"daily", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+
+
+def _schedule_setting_key(task_key: str, field: str) -> str:
+    return f"schedule.{task_key}.{field}"
+
+
+@router.get("/settings/schedules", dependencies=[Depends(verify_api_key)])
+async def settings_schedules_get():
+    from api.database import get_app_setting
+    from services.schedule_resolver import SCHEDULE_CATALOG
+    items = []
+    for task_key, label, default_time, default_dow in SCHEDULE_CATALOG:
+        enabled = await get_app_setting(_schedule_setting_key(task_key, "enabled"), "1")
+        time_str = await get_app_setting(_schedule_setting_key(task_key, "time"), default_time)
+        dow = await get_app_setting(_schedule_setting_key(task_key, "dow"), default_dow)
+        items.append({
+            "key": task_key,
+            "label": label,
+            "default_time": default_time,
+            "default_dow": default_dow,
+            "enabled": enabled == "1",
+            "time": time_str,
+            "dow": dow if dow in _VALID_DOW else default_dow,
+        })
+    return {"ok": True, "items": items}
+
+
+class SettingsSchedulesRequest(BaseModel):
+    # {task_key: {"enabled": bool, "time": "HH:MM", "dow": "daily"|"monday"...}}
+    values: dict
+
+
+_TIME_RE = re.compile(r"^[0-2]?\d:[0-5]\d$")
+
+
+@router.post("/settings/schedules", dependencies=[Depends(verify_api_key)])
+async def settings_schedules_post(req: SettingsSchedulesRequest):
+    from api.database import set_app_setting
+    from services.schedule_resolver import SCHEDULE_CATALOG
+    valid_keys = {k for k, *_ in SCHEDULE_CATALOG}
+    saved = 0
+    for k, v in (req.values or {}).items():
+        if k not in valid_keys or not isinstance(v, dict):
+            continue
+        # enabled
+        if "enabled" in v:
+            await set_app_setting(_schedule_setting_key(k, "enabled"), "1" if v["enabled"] else "0")
+        # time (HH:MM 形式のみ受付)
+        if "time" in v and isinstance(v["time"], str) and _TIME_RE.match(v["time"]):
+            try:
+                h, m = map(int, v["time"].split(":"))
+                if 0 <= h < 24 and 0 <= m < 60:
+                    await set_app_setting(_schedule_setting_key(k, "time"), f"{h:02d}:{m:02d}")
+            except Exception:
+                pass
+        # dow
+        if "dow" in v and v["dow"] in _VALID_DOW:
+            await set_app_setting(_schedule_setting_key(k, "dow"), v["dow"])
         saved += 1
     return {"ok": True, "saved": saved}

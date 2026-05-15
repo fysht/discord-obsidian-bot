@@ -17,16 +17,19 @@ class WeeklyReviewCog(commands.Cog):
         self.drive_service = bot.drive_service
         self.gemini_client = bot.gemini_client
 
+        self._last_run_date = None
         self.weekly_review_task.start()
 
     def cog_unload(self):
         self.weekly_review_task.cancel()
 
-    @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def weekly_review_task(self):
-        now = datetime.datetime.now(JST)
-        if now.weekday() != 6:
+        from services.schedule_resolver import is_due
+        due, today = await is_due("weekly_review", "21:00", "sunday", self._last_run_date)
+        if not due:
             return
+        self._last_run_date = today
 
         # 月額閾値を超過していれば週次レビューをスキップ（頻度調整）
         try:

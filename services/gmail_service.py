@@ -87,6 +87,42 @@ class GmailService:
             logging.error(f"Gmail list_unread error: {e}")
             return []
 
+    async def list_recent_ids(self, days: int = 14, max_results: int = 200) -> Optional[set]:
+        """直近 N 日以内に Gmail 上に存在するメッセージID集合を返す（削除同期用）。
+
+        ゴミ箱・スパム以外の全ての受信フォルダを対象。失敗時は None を返す
+        （None なら呼び出し側で削除同期をスキップする想定）。
+        """
+        service = self.get_service()
+        if not service:
+            return None
+        try:
+            ids: set[str] = set()
+            page_token: Optional[str] = None
+            query = f"newer_than:{days}d -in:trash -in:spam"
+            while True:
+                kwargs = {
+                    "userId": "me",
+                    "q": query,
+                    "maxResults": min(max_results, 500),
+                }
+                if page_token:
+                    kwargs["pageToken"] = page_token
+                res = await asyncio.to_thread(
+                    lambda k=kwargs: service.users().messages().list(**k).execute()
+                )
+                for m in (res.get("messages") or []):
+                    mid = m.get("id")
+                    if mid:
+                        ids.add(mid)
+                page_token = res.get("nextPageToken")
+                if not page_token or len(ids) >= max_results:
+                    break
+            return ids
+        except Exception as e:
+            logging.error(f"Gmail list_recent_ids error: {e}")
+            return None
+
     async def get_message(self, message_id: str) -> Optional[dict]:
         """メッセージ全体（ヘッダ + 本文）を取得して dict で返す。"""
         service = self.get_service()

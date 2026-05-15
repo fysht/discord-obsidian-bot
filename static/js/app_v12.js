@@ -153,16 +153,6 @@ window.openSettingsModal = async () => {
                 <div class="modal-card" style="max-width:560px;max-height:90vh;overflow-y:auto;">
                     <h3 style="margin-top:0;">⚙️ 設定</h3>
 
-                    <!-- 通知 -->
-                    <details open style="margin-bottom:10px;">
-                        <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">🔔 通知</summary>
-                        <div style="display:flex;flex-direction:column;gap:6px;padding:8px 0 4px;">
-                            <button class="modal-btn cancel" onclick="checkNotificationStatus()">通知ステータスを確認</button>
-                            <button class="modal-btn cancel" onclick="testPushNotification()">通知テスト送信</button>
-                            <button class="modal-btn cancel" onclick="resubscribePush()">購読を再登録</button>
-                        </div>
-                    </details>
-
                     <!-- コストメーター -->
                     <details open style="margin-bottom:10px;">
                         <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">💰 運用コスト</summary>
@@ -179,6 +169,14 @@ window.openSettingsModal = async () => {
                         </div>
                     </details>
 
+                    <!-- マネージャー連絡スケジュール -->
+                    <details style="margin-bottom:10px;">
+                        <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">📅 マネージャー連絡スケジュール</summary>
+                        <div id="schedules-body" style="padding:8px 0;">
+                            <div class="loading-placeholder">読み込み中。</div>
+                        </div>
+                    </details>
+
                     <div class="modal-actions" style="margin-top:14px;">
                         <button class="modal-btn cancel" onclick="closeSettingsModal()">閉じる</button>
                     </div>
@@ -191,7 +189,18 @@ window.openSettingsModal = async () => {
     modal.classList.remove('hidden');
     loadCostMeter();
     loadGeminiModelSettings();
+    loadScheduleSettings();
 };
+
+// Gemini モデル選択肢（バックエンド KNOWN_MODELS と対応）
+const GEMINI_MODEL_OPTIONS = [
+    { value: 'flash',         label: '⚡ Flash 2.5' },
+    { value: 'flash-lite',    label: '💨 Flash 2.5 Lite' },
+    { value: 'pro',           label: '🧠 Pro 2.5' },
+    { value: 'flash-preview', label: '🔬 Flash 3 Preview' },
+    { value: 'flash-lite-3',  label: '💨 Flash 3.1 Lite' },
+    { value: 'pro-preview',   label: '🧪 Pro 3.1 Preview' },
+];
 
 window.loadGeminiModelSettings = async () => {
     const body = $('#gemini-models-body');
@@ -204,24 +213,31 @@ window.loadGeminiModelSettings = async () => {
             return;
         }
         const items = data.items || [];
+        const knownValues = GEMINI_MODEL_OPTIONS.map(o => o.value);
         const rows = items.map(it => {
-            const flashSel = it.value === 'flash' ? 'selected' : '';
-            const proSel = it.value === 'pro' ? 'selected' : '';
+            const isCustom = !knownValues.includes(it.value);
+            const customDisplay = isCustom ? '' : 'display:none;';
+            const opts = GEMINI_MODEL_OPTIONS.map(o => {
+                const sel = !isCustom && it.value === o.value ? 'selected' : '';
+                return `<option value="${o.value}" ${sel}>${o.label}</option>`;
+            }).join('');
+            const customSel = isCustom ? 'selected' : '';
             return `<div style="padding:6px 0;border-bottom:1px solid var(--border-glass);">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                     <div style="flex:1;min-width:0;">
                         <div style="font-size:0.82rem;color:var(--text-primary);">${escapeHtml(it.label)}</div>
                         <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(it.description || '')}</div>
                     </div>
-                    <select class="modern-input gemini-model-select" data-key="${escapeHtml(it.key)}" style="font-size:0.78rem;padding:4px;width:auto;">
-                        <option value="flash" ${flashSel}>⚡ Flash</option>
-                        <option value="pro" ${proSel}>🧠 Pro</option>
+                    <select class="modern-input gemini-model-select" data-key="${escapeHtml(it.key)}" style="font-size:0.78rem;padding:4px;width:auto;" onchange="_toggleGeminiCustomInput(this)">
+                        ${opts}
+                        <option value="__custom__" ${customSel}>✏️ カスタム…</option>
                     </select>
                 </div>
+                <input type="text" class="modern-input gemini-model-custom" data-key="${escapeHtml(it.key)}" value="${escapeHtml(isCustom ? it.value : '')}" placeholder="例: gemini-3-flash-preview" style="margin-top:4px;font-size:0.78rem;padding:4px 6px;width:100%;${customDisplay}">
             </div>`;
         }).join('');
         body.innerHTML = rows + `
-            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚡ Flash: 低コスト・高速 / 🧠 Pro: 高精度・約20倍コスト</div>
+            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚡ Flash 系: 低コスト・高速 / 🧠 Pro 系: 高精度・高コスト / 🔬🧪 Preview: 最新版（API変動の可能性）</div>
             <button class="modal-btn submit" style="width:100%;margin-top:10px;" onclick="saveGeminiModelSettings()">設定を保存</button>
         `;
     } catch (e) {
@@ -229,16 +245,113 @@ window.loadGeminiModelSettings = async () => {
     }
 };
 
+window._toggleGeminiCustomInput = (sel) => {
+    const key = sel.dataset.key;
+    const inp = document.querySelector(`.gemini-model-custom[data-key="${key}"]`);
+    if (!inp) return;
+    if (sel.value === '__custom__') {
+        inp.style.display = '';
+        inp.focus();
+    } else {
+        inp.style.display = 'none';
+    }
+};
+
 window.saveGeminiModelSettings = async () => {
     const values = {};
+    const knownValues = GEMINI_MODEL_OPTIONS.map(o => o.value);
     document.querySelectorAll('.gemini-model-select').forEach(sel => {
         const k = sel.dataset.key;
-        const v = sel.value;
-        if (k && (v === 'flash' || v === 'pro')) values[k] = v;
+        if (!k) return;
+        let v = sel.value;
+        if (v === '__custom__') {
+            const inp = document.querySelector(`.gemini-model-custom[data-key="${k}"]`);
+            v = (inp?.value || '').trim();
+        }
+        if (knownValues.includes(v) || v.startsWith('gemini-')) {
+            values[k] = v;
+        }
     });
     try {
-        await apiFetch('/api/settings/gemini_models', { method: 'POST', body: JSON.stringify({ values }) });
-        showToast('Geminiモデル設定を保存しました');
+        const r = await apiFetch('/api/settings/gemini_models', { method: 'POST', body: JSON.stringify({ values }) });
+        if (r && r.ok) {
+            showToast(`Geminiモデル設定を保存しました（${r.saved} 件）`);
+        } else {
+            showToast('保存に失敗しました', true);
+        }
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    }
+};
+
+// マネージャー連絡スケジュール 編集
+const SCHEDULE_DOW_OPTIONS = [
+    { value: 'daily',    label: '毎日' },
+    { value: 'monday',   label: '月' },
+    { value: 'tuesday',  label: '火' },
+    { value: 'wednesday',label: '水' },
+    { value: 'thursday', label: '木' },
+    { value: 'friday',   label: '金' },
+    { value: 'saturday', label: '土' },
+    { value: 'sunday',   label: '日' },
+];
+
+window.loadScheduleSettings = async () => {
+    const body = $('#schedules-body');
+    if (!body) return;
+    body.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/settings/schedules');
+        if (!data || !data.ok) {
+            body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+            return;
+        }
+        const items = data.items || [];
+        const rows = items.map(it => {
+            const checked = it.enabled ? 'checked' : '';
+            const dowOpts = SCHEDULE_DOW_OPTIONS.map(o =>
+                `<option value="${o.value}" ${o.value === it.dow ? 'selected' : ''}>${o.label}</option>`
+            ).join('');
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border-glass);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <label style="display:flex;align-items:center;gap:5px;flex:1;min-width:140px;cursor:pointer;">
+                    <input type="checkbox" class="schedule-enabled" data-key="${escapeHtml(it.key)}" ${checked}>
+                    <span style="font-size:0.84rem;color:var(--text-primary);">${escapeHtml(it.label)}</span>
+                </label>
+                <input type="time" class="schedule-time modern-input" data-key="${escapeHtml(it.key)}" value="${escapeHtml(it.time)}" style="font-size:0.78rem;padding:3px 6px;width:90px;">
+                <select class="schedule-dow modern-input" data-key="${escapeHtml(it.key)}" style="font-size:0.78rem;padding:3px 4px;width:auto;">
+                    ${dowOpts}
+                </select>
+            </div>`;
+        }).join('');
+        body.innerHTML = rows + `
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:8px;">⏱ 設定変更は次の実行サイクル（最大1分）から反映されます。Bot 再起動は不要です。</div>
+            <button class="modal-btn submit" style="width:100%;margin-top:10px;" onclick="saveScheduleSettings()">スケジュールを保存</button>
+        `;
+    } catch (e) {
+        body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+    }
+};
+
+window.saveScheduleSettings = async () => {
+    const values = {};
+    document.querySelectorAll('.schedule-enabled').forEach(chk => {
+        const k = chk.dataset.key;
+        if (!k) return;
+        const timeInp = document.querySelector(`.schedule-time[data-key="${k}"]`);
+        const dowSel = document.querySelector(`.schedule-dow[data-key="${k}"]`);
+        values[k] = {
+            enabled: chk.checked,
+            time: (timeInp?.value || '').trim(),
+            dow: dowSel?.value || 'daily',
+        };
+    });
+    try {
+        const r = await apiFetch('/api/settings/schedules', { method: 'POST', body: JSON.stringify({ values }) });
+        if (r && r.ok) {
+            showToast(`スケジュール設定を保存しました（${r.saved} 件）`);
+        } else {
+            showToast('保存に失敗しました', true);
+        }
     } catch (e) {
         showToast('保存に失敗しました', true);
     }
@@ -692,6 +805,14 @@ function renderWeather(w, weatherEl) {
             <span class="temp-min">↓${w.min_temp}℃</span>
         </div>`;
     }
+    // 1日の代表天気（時間別予報の上に表示）
+    const today = (w.daily && w.daily[0]) ? w.daily[0] : null;
+    if (today && (today.icon || today.weather)) {
+        html += `<div style="display:flex;align-items:center;justify-content:center;gap:10px;margin:10px 0 6px;">
+            <span style="font-size:2.2rem;line-height:1;">${today.icon || ''}</span>
+            <span style="font-size:1rem;font-weight:600;color:var(--text-primary);">${escapeHtml(today.weather || '')}</span>
+        </div>`;
+    }
     // 時間別予報を先に表示（今日のものを優先）
     const slots = w.hourly || w.slots || [];
     if (slots.length > 0) {
@@ -743,9 +864,8 @@ function renderWeather(w, weatherEl) {
     const loc = w.location || localStorage.getItem('mng_weather_location') || '33/6610';
     if (/^\d+\/\d+$/.test(loc)) {
         // 末尾を `.html` 形式にする（ディレクトリ形式は404になるため）
-        const yahooUrl = `https://weather.yahoo.co.jp/weather/jp/${encodeURI(loc)}.html`;
         html += `<div style="margin-top:8px;text-align:right;">
-            <a href="${yahooUrl}" target="_blank" rel="noopener"
+            <a href="#" onclick="openYahooWeather('${encodeURI(loc)}');return false;"
                style="font-size:0.78rem;color:var(--text-muted);text-decoration:none;">
                Yahoo!天気で詳細を見る ↗
             </a>
@@ -753,6 +873,44 @@ function renderWeather(w, weatherEl) {
     }
     weatherEl.innerHTML = html;
 }
+
+window.openYahooWeather = (loc) => {
+    if (!loc) return;
+    const webUrl = `https://weather.yahoo.co.jp/weather/jp/${loc}.html`;
+    const ua = navigator.userAgent;
+    const isAndroid = /Android/i.test(ua);
+    const isIOS = /iPhone|iPad|iPod/i.test(ua);
+    if (isAndroid) {
+        // Android: intent スキームでアプリ起動。未インストールなら browser_fallback_url で Web 版へ
+        const intentUrl =
+            `intent://weather.yahoo.co.jp/weather/jp/${loc}.html` +
+            `#Intent;scheme=https;package=jp.co.yahoo.android.weather.type1` +
+            `;S.browser_fallback_url=${encodeURIComponent(webUrl)};end`;
+        location.href = intentUrl;
+        return;
+    }
+    if (isIOS) {
+        // iOS: Yahoo!天気アプリは Universal Link 設定済みのため、Safari で Web URL を開けば
+        // アプリがインストールされていれば自動的にアプリで起動される
+        const startedAt = Date.now();
+        const fallbackTimer = setTimeout(() => {
+            if (document.visibilityState === 'visible' && Date.now() - startedAt < 2500) {
+                window.open(webUrl, '_blank', 'noopener');
+            }
+        }, 1500);
+        const onVisChange = () => {
+            if (document.visibilityState === 'hidden') {
+                clearTimeout(fallbackTimer);
+                document.removeEventListener('visibilitychange', onVisChange);
+            }
+        };
+        document.addEventListener('visibilitychange', onVisChange);
+        location.href = webUrl;
+        return;
+    }
+    // デスクトップは Web 版を新しいタブで開く
+    window.open(webUrl, '_blank', 'noopener');
+};
 
 async function loadDashboard() {
     if (!apiKey) return;
@@ -2527,6 +2685,19 @@ window.deleteNotebook = (idx) => {
     }
 };
 
+window._openLinkedNote = () => {
+    const url = $('#link-note-url-input')?.value?.trim();
+    if (!url) {
+        showToast('ノートURLが未入力です。先に保存してください', true);
+        return;
+    }
+    if (!/^https?:\/\//i.test(url)) {
+        showToast('有効なURLではありません', true);
+        return;
+    }
+    window.open(url, '_blank', 'noopener');
+};
+
 let currentEditLinkId = null;
 window.openLinkDetailsModal = (lk) => {
     currentEditLinkId = lk.id;
@@ -2826,10 +2997,48 @@ function speakText(text, lang = 'en-US') {
     }
 }
 
+function _handleExpenseShareTarget() {
+    // PWA share_target 経由で PayPay 等から共有されたテキストを支出メモに自動取り込み
+    const params = new URLSearchParams(window.location.search);
+    const text = ((params.get('text') || '') + ' ' + (params.get('title') || '')).trim();
+    if (!text) return false;
+    // PayPay 系キーワードまたは「○○円」を含む場合のみ反応
+    const looksLikePayment = /(PayPay|ペイペイ|pay\s*pay|円)/i.test(text);
+    if (!looksLikePayment) return false;
+    // 金額抽出: "1,234円" "¥1234" "1234 円" などに対応
+    const amountMatch = text.match(/(?:¥|￥)?\s*([0-9][0-9,]{0,9})\s*円/);
+    const amount = amountMatch ? parseInt(amountMatch[1].replace(/,/g, ''), 10) : 0;
+    // 店名推定: 行頭〜「で支払い/に支払/にて」までの最後 30 文字
+    let vendor = '';
+    const storeMatch = text.match(/(.{1,40}?)\s*(?:で支払い|で決済|に支払|にて支払)/);
+    if (storeMatch) {
+        vendor = storeMatch[1].trim().slice(-30);
+    }
+    // PayPay 文字列が含まれていれば支払方法に QR をセット
+    const isPayPay = /(PayPay|ペイペイ|pay\s*pay)/i.test(text);
+    const seed = {
+        amount: amount || undefined,
+        vendor: vendor || (isPayPay ? 'PayPay 支払い' : ''),
+        payment_method: isPayPay ? 'QR' : '',
+        memo: text.length <= 200 ? text : text.slice(0, 200),
+        category: 'その他',
+    };
+    // URL からクエリを除去
+    window.history.replaceState({}, '', '/');
+    // モーダルを開いてプレフィル
+    setTimeout(() => {
+        try { openExpenseManualModal(null, seed); } catch {}
+    }, 600);
+    return true;
+}
+
 function initMain() {
     loadHistory();
+    _startChatAutoRefresh();
     loadDashboard();
     requestNotificationPermission();
+    // PayPay 等の共有テキストが来ていれば支出モーダルへ
+    if (apiKey) _handleExpenseShareTarget();
 
     const params = new URLSearchParams(window.location.search);
     const sharedUrl = params.get('url') || '';
@@ -2879,25 +3088,48 @@ function initMain() {
     }
 }
 
-async function loadHistory() {
+let _lastChatMsgIds = '';
+async function loadHistory(silent = false) {
     try {
         const data = await apiFetch('/api/history?limit=100');
-        if (chatMessages) {
-            chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
-            lastMsgDate = null;
-            // 返信先の本文を引きやすいよう辞書化
-            const idMap = new Map();
-            (data.messages || []).forEach(m => idMap.set(m.id, m));
-            (data.messages || []).forEach(m => {
-                const replyContent = m.reply_to ? (idMap.get(m.reply_to)?.content || null) : null;
-                appendMsg(m.role, m.content, m.timestamp, {
-                    id: m.id,
-                    starred: !!m.starred,
-                    replyContent,
-                });
+        if (!chatMessages) return;
+        const messages = data.messages || [];
+        // silent モード: メッセージID列が同じなら描画スキップ（差分なし）
+        const idsKey = messages.map(m => `${m.id}:${m.starred ? 1 : 0}`).join(',');
+        if (silent && idsKey === _lastChatMsgIds) return;
+        _lastChatMsgIds = idsKey;
+        // スクロール位置を保存
+        const wasAtBottom = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight < 80;
+        chatMessages.innerHTML = '<div class="chat-welcome"><h2>こんにちは。</h2><p>今日はどんなお手伝いをしましょうか？</p></div>';
+        lastMsgDate = null;
+        // 返信先の本文を引きやすいよう辞書化
+        const idMap = new Map();
+        messages.forEach(m => idMap.set(m.id, m));
+        messages.forEach(m => {
+            const replyContent = m.reply_to ? (idMap.get(m.reply_to)?.content || null) : null;
+            appendMsg(m.role, m.content, m.timestamp, {
+                id: m.id,
+                starred: !!m.starred,
+                replyContent,
             });
+        });
+        if (silent && !wasAtBottom) {
+            // 元のスクロール位置を保つ（ユーザーが過去メッセージを読んでいる場合）
+            // 何もしない: appendMsg が新規分だけスクロールしないようにする必要があるが、フル再描画のため割愛
         }
     } catch {}
+}
+
+let _chatPollTimer = null;
+function _startChatAutoRefresh() {
+    if (_chatPollTimer) return;
+    _chatPollTimer = setInterval(() => {
+        if (document.visibilityState === 'visible') loadHistory(true);
+    }, 30_000);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') loadHistory(true);
+    });
+    window.addEventListener('focus', () => loadHistory(true));
 }
 
 window.addEventListener('DOMContentLoaded', () => { if (apiKey) { showScreen('main-screen'); initMain(); } else { showScreen('login-screen'); } });
@@ -4471,7 +4703,30 @@ window.openGmail = (id, threadId = '') => {
     if (!id && !threadId) return;
     // Gmail のディープリンクは thread_id ベースの方が確実に該当スレッドへ飛ぶ
     const target = threadId || id;
-    window.open(`https://mail.google.com/mail/u/0/#all/${encodeURIComponent(target)}`, '_blank', 'noopener');
+    const webUrl = `https://mail.google.com/mail/u/0/#all/${encodeURIComponent(target)}`;
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (!isMobile) {
+        window.open(webUrl, '_blank', 'noopener');
+        return;
+    }
+    // モバイル: Gmail アプリ起動を試みる。アプリ未インストールなら 1.5 秒後に Web 版へフォールバック
+    const startedAt = Date.now();
+    const fallbackTimer = setTimeout(() => {
+        // ページが visible のままならアプリ起動失敗とみなして Web 版へ
+        if (document.visibilityState === 'visible' && Date.now() - startedAt < 2500) {
+            window.open(webUrl, '_blank', 'noopener');
+        }
+    }, 1500);
+    // visibility が変わった (= アプリへ遷移した) らフォールバックをキャンセル
+    const onVisChange = () => {
+        if (document.visibilityState === 'hidden') {
+            clearTimeout(fallbackTimer);
+            document.removeEventListener('visibilitychange', onVisChange);
+        }
+    };
+    document.addEventListener('visibilitychange', onVisChange);
+    // Gmail アプリの search クエリで該当メッセージを開く
+    location.href = `googlegmail://search?q=rfc822msgid:${encodeURIComponent(id || target)}`;
 };
 
 window.saveGmailToObsidian = async (id) => {
@@ -5585,9 +5840,9 @@ function renderDailySummaryCard(data) {
     const isFallback = !!(data && data.fallback);
 
     if (text) {
-        // 直近確定済みサマリーの日付ラベル（昨日分を表示している場合に明示）
+        // 表示中のサマリーの日付ラベル
         const dateLabel = displayDate
-            ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;">📅 ${escapeHtml(displayDate)} の振り返り${isFallback ? '（最新の確定分）' : ''}</div>`
+            ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;">📅 ${escapeHtml(displayDate)} の振り返り</div>`
             : '';
         const html = text
             .split('\n')

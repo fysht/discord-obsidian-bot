@@ -29,6 +29,8 @@ class PartnerRoutineCog(commands.Cog):
         self.tasks_service = getattr(bot, "tasks_service", None)
         self.calendar_service = getattr(bot, "calendar_service", None)
         self.info_service = getattr(bot, "info_service", InfoService())
+        # スケジュール対象タスクの最終実行日（同日重複防止用）
+        self._last_run_dates: dict[str, "datetime.date"] = {}
 
         for task in [
             self.inactivity_check_task,
@@ -60,8 +62,13 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # 毎晩23:45に「取扱説明書」を自動更新
     # ==========================================
-    @tasks.loop(time=datetime.time(hour=23, minute=45, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def update_manual_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("update_manual", "23:45", "daily", self._last_run_dates.get("update_manual"))
+        if not due:
+            return
+        self._last_run_dates["update_manual"] = today
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
@@ -143,8 +150,13 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # 朝のルーティン（7:00）
     # ==========================================
-    @tasks.loop(time=datetime.time(hour=7, minute=0, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def morning_routine_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("morning_routine", "07:00", "daily", self._last_run_dates.get("morning_routine"))
+        if not due:
+            return
+        self._last_run_dates["morning_routine"] = today
         await asyncio.sleep(random.randint(0, 900))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
@@ -216,8 +228,13 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # 夜の振り返り（22:00）
     # ==========================================
-    @tasks.loop(time=datetime.time(hour=22, minute=0, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def nightly_reflection_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("evening_review", "22:00", "daily", self._last_run_dates.get("evening_review"))
+        if not due:
+            return
+        self._last_run_dates["evening_review"] = today
         await asyncio.sleep(random.randint(0, 900))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
@@ -288,10 +305,13 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # 週末の株レビュー（金曜20:00）
     # ==========================================
-    @tasks.loop(time=datetime.time(hour=20, minute=0, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def weekend_stock_review_task(self):
-        if datetime.datetime.now(JST).weekday() != 4:
+        from services.schedule_resolver import is_due
+        due, today = await is_due("weekend_stocks", "20:00", "friday", self._last_run_dates.get("weekend_stocks"))
+        if not due:
             return
+        self._last_run_dates["weekend_stocks"] = today
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return
@@ -302,8 +322,13 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # 習慣チェック（21:00）
     # ==========================================
-    @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def habit_check_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("habit_check", "21:00", "daily", self._last_run_dates.get("habit_check"))
+        if not due:
+            return
+        self._last_run_dates["habit_check"] = today
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
         habit_cog = self.bot.get_cog("HabitCog")
@@ -326,8 +351,13 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # 明日の予定（21:00）
     # ==========================================
-    @tasks.loop(time=datetime.time(hour=21, minute=0, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def tomorrow_plan_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("tomorrow_preview", "21:00", "daily", self._last_run_dates.get("tomorrow_preview"))
+        if not due:
+            return
+        self._last_run_dates["tomorrow_preview"] = today
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
@@ -359,8 +389,13 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # Obsidianデイリーノートの振り返り（20:00）
     # ==========================================
-    @tasks.loop(time=datetime.time(hour=20, minute=0, tzinfo=JST))
+    @tasks.loop(minutes=1)
     async def obsidian_review_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("obsidian_review", "20:00", "daily", self._last_run_dates.get("obsidian_review"))
+        if not due:
+            return
+        self._last_run_dates["obsidian_review"] = today
         await asyncio.sleep(random.randint(0, 600))
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
