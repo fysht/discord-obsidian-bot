@@ -377,7 +377,8 @@ details.card > summary > .card-header { border-bottom: none; }
 
 .action-chips-container { padding: 12px 0; border-top: 1px solid var(--border-glass); overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 0; }
 .action-chips { display: flex; gap: 10px; padding: 0 16px; width: max-content; }
-.chip-btn { padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-glass); color: #fff; font-size: 0.85rem; cursor: pointer; white-space: nowrap; }
+.chip-btn { padding: 8px 16px; border-radius: 20px; background: rgba(255,255,255,0.06); border: 1px solid var(--border-glass); color: #fff; font-size: 0.85rem; cursor: pointer; white-space: nowrap; transition: background 0.15s, border-color 0.15s; }
+.chip-btn.active { background: rgba(78,161,255,0.22); border-color: var(--accent, #4ea1ff); color: var(--accent, #4ea1ff); font-weight: 600; }
 .chip-btn.special { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .action-chips.invest-action-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; padding: 0; width: 100%; box-sizing: border-box; }
 .action-chips.invest-action-grid .chip-btn { white-space: normal; text-align: center; padding: 8px 10px; }
