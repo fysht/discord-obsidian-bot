@@ -41,7 +41,6 @@ feedparser
 yfinance
 pandas
 numpy
-pandas-ta
 
 # PWA (Secretary AI App)
 fastapi
