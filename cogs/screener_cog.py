@@ -42,6 +42,10 @@ class ScreenerCog(commands.Cog):
 
     async def list_universes(self) -> dict:
         names = await self.service.list_universes()
+        # 「all」は CSV が未配置でも UI で選択肢として常に表示する
+        # （実行時にエラーで案内し、ユーザーに tools/fetch_jpx_universe.py を促す）
+        if "all" not in names:
+            names = list(names) + ["all"]
         return {"ok": True, "universes": names}
 
     async def run_screening(
@@ -92,9 +96,15 @@ class ScreenerCog(commands.Cog):
                 exclude_sectors=exclude_sectors,
                 enabled_filters=_filters_for(styles[0]),
             )
-            if result.get("ok") and result.get("candidates"):
-                for c in result["candidates"]:
-                    c.setdefault("matched_styles", [styles[0]])
+            if result.get("ok"):
+                if result.get("candidates"):
+                    for c in result["candidates"]:
+                        c.setdefault("matched_styles", [styles[0]])
+                # マルチスタイル形式のレスポンスに合わせる
+                result["styles"] = [styles[0]]
+                result["applied_filters_by_style"] = {
+                    styles[0]: result.pop("applied_filters", [])
+                }
             return result
 
         tasks = [
@@ -112,11 +122,16 @@ class ScreenerCog(commands.Cog):
         merged: dict[str, dict] = {}
         total_scanned = 0
         total_qualified = 0
+        applied_filters_by_style: dict[str, list[dict]] = {}
+        any_near_miss = False
         for style_key, result in zip(styles, results_list):
             if not result.get("ok"):
                 continue
             total_scanned = max(total_scanned, result.get("scanned", 0))
             total_qualified += result.get("qualified", 0)
+            applied_filters_by_style[style_key] = result.get("applied_filters", [])
+            if result.get("used_near_miss"):
+                any_near_miss = True
             for cand in result.get("candidates", []):
                 code = cand["code"]
                 cand_copy = dict(cand)
@@ -133,6 +148,7 @@ class ScreenerCog(commands.Cog):
         all_cands = sorted(merged.values(), key=lambda c: c.get("score", 0), reverse=True)[:top_n]
         style_displays = [self._style_display(s) for s in styles]
         data_as_of = all_cands[0].get("data_as_of") if all_cands else datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        executed_at = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
 
         return {
             "ok": True,
@@ -140,8 +156,11 @@ class ScreenerCog(commands.Cog):
             "style_display": " / ".join(style_displays),
             "universe": universe_name,
             "data_as_of": data_as_of,
+            "executed_at": executed_at,
             "scanned": total_scanned,
             "qualified": total_qualified,
+            "applied_filters_by_style": applied_filters_by_style,
+            "used_near_miss": any_near_miss,
             "candidates": all_cands,
         }
 

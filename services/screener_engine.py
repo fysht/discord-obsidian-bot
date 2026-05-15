@@ -138,6 +138,8 @@ class ScreeningResult:
     signals: list[Signal] = field(default_factory=list)
     price_snapshot: dict = field(default_factory=dict)
     data_as_of: str = ""
+    is_near_miss: bool = False
+    failed_filters: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -149,6 +151,8 @@ class ScreeningResult:
             "signals": [s.__dict__ for s in self.signals],
             "price_snapshot": self.price_snapshot,
             "data_as_of": self.data_as_of,
+            "is_near_miss": self.is_near_miss,
+            "failed_filters": self.failed_filters,
         }
 
 
@@ -170,12 +174,15 @@ class StyleStrategy(ABC):
         df,
         fundamentals: Optional[dict] = None,
         enabled_filters: Optional[set[str]] = None,
+        near_miss: bool = False,
     ) -> Optional[ScreeningResult]:
         """1 銘柄を評価してスコアリング。必須条件を満たさなければ None。
 
         Args:
             enabled_filters: ON にされている構成要素のキー集合。
                              None の場合は全構成要素 ON とみなす。
+            near_miss: True の場合、必須条件を満たさなくても部分スコアで返す
+                      （満たさなかった条件は failed_filters に記録）。
         """
 
     @classmethod
@@ -230,25 +237,37 @@ class StyleStrategy(ABC):
         signal_keys: list[str],
         df,
         score_bonus: float = 0.0,
+        near_miss: bool = False,
     ) -> Optional[ScreeningResult]:
-        """共通: ON のシグナルがすべて passed なら ScreeningResult を返す。
+        """共通: ON のシグナルが全て passed なら ScreeningResult を返す。
+
+        near_miss=True なら、満たさない条件があっても部分スコアで返す（失敗条件名を記録）。
 
         Args:
             signal_keys: sigs と同じ順序で各 Signal の filter_key を並べたもの
         """
-        active_sigs = [s for s, key in zip(sigs, signal_keys) if key in enabled]
-        if not active_sigs:
+        active_pairs = [(s, key) for s, key in zip(sigs, signal_keys) if key in enabled]
+        if not active_pairs:
             return None
-        if not all(s.passed for s in active_sigs):
+        active_sigs = [s for s, _ in active_pairs]
+        all_passed = all(s.passed for s in active_sigs)
+        if not all_passed and not near_miss:
             return None
         passed_count = sum(1 for s in active_sigs if s.passed)
-        score = passed_count / len(active_sigs) * 100 + score_bonus
+        # near miss モードでは bonus を付けず、純粋な通過率でスコア化
+        if all_passed:
+            score = passed_count / len(active_sigs) * 100 + score_bonus
+        else:
+            score = passed_count / len(active_sigs) * 100
         score = min(100.0, max(0.0, score))
+        failed = [s.name for s, _ in active_pairs if not s.passed]
         return ScreeningResult(
             code=code, name=name, sector=sector, style=self.style_name,
             score=score, signals=active_sigs,
             price_snapshot=self._build_snapshot(df),
             data_as_of=self._data_as_of(df),
+            is_near_miss=not all_passed,
+            failed_filters=failed,
         )
 
 
@@ -262,15 +281,19 @@ class CreepingBreakoutStrategy(StyleStrategy):
         FilterDef("low_volatility", "ATR/Close < 3%（低ボラ）", "値動きが激しすぎない", True),
         FilterDef("no_big_pop", "直近10日 大陽線（+5%超）なし", "大跳ねしていない", True),
         FilterDef("no_prev_low_break", "直近5日 前日安値割れなし", "押し目が浅い", True),
+        FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", False),
+        FilterDef("vol_increase", "出来高比率 5日/20日 ≥1.10x", "出来高がじわじわ増加", False),
+        FilterDef("ret_5d", "直近5日リターン 0〜+15%", "短期上昇しているが過熱なし", False),
     ]
 
-    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None):
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
         if df is None or len(df) < 60:
             return None
         enabled = self._resolve_enabled(enabled_filters)
         close = df["Close"]
         high = df["High"]
         low = df["Low"]
+        volume = df["Volume"]
 
         is_near, gap, _high_52w = TechnicalSignals.near_52w_high(close, high, tolerance=0.05)
 
@@ -297,6 +320,10 @@ class CreepingBreakoutStrategy(StyleStrategy):
             breaks = 99
         no_prev_low_break = breaks == 0
 
+        up_days = TechnicalSignals.consecutive_up_count(close, 0.005, 0.03, 10)
+        vol_ratio = TechnicalSignals.volume_surge_ratio(volume, 5, 20)
+        ret_5d = TechnicalSignals.return_pct(close, 5)
+
         sigs = [
             Signal("52週高値乖離", f"{gap * 100:.2f}%", "≤5.00%", is_near),
             Signal(
@@ -308,87 +335,21 @@ class CreepingBreakoutStrategy(StyleStrategy):
             Signal("ATR/Close (低ボラ)", f"{atr_pct * 100:.2f}%" if atr_pct else "N/A", "<3.00%", low_vol),
             Signal("直近10日 最大日次リターン", f"{max_daily_ret * 100:+.2f}%", "≤+5.00%", no_big_pop),
             Signal("直近5日 前日安値割れ回数", f"{breaks}回" if breaks < 99 else "N/A", "0回", no_prev_low_break),
+            Signal("連続上昇日数 (+0.5〜+3%, 10日)", f"{up_days}日", "≥3日", up_days >= 3),
+            Signal("出来高比率 (5日/20日)", f"{vol_ratio:.2f}x", "≥1.10x", vol_ratio >= 1.10),
+            Signal("直近5日リターン", f"{ret_5d * 100:+.2f}%", "0%〜+15%", 0 <= ret_5d <= 0.15),
         ]
-        signal_keys = ["near_high", "above_sma200", "low_volatility", "no_big_pop", "no_prev_low_break"]
+        signal_keys = [
+            "near_high", "above_sma200", "low_volatility", "no_big_pop",
+            "no_prev_low_break", "up_days", "vol_increase", "ret_5d",
+        ]
 
         bonus = 0.0
         bonus += max(0, (0.05 - gap) * 200)
         if atr_pct is not None:
             bonus += max(0, (0.03 - atr_pct) * 500)
 
-        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, score_bonus=bonus)
-
-
-class CreepingUpStrategy(StyleStrategy):
-    style_name = "creeping_up"
-    display_name = "じわじわ上昇（注目集まり前）"
-    description = "数%の上昇を連日続け、出来高もじわじわ増えており過熱はしていない銘柄"
-    filters = [
-        FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", True),
-        FilterDef("vol_increase", "出来高比率 5日/20日 ≥1.10x", "出来高がじわじわ増加", True),
-        FilterDef("low_atr", "ATR/Close < 4%（過熱なし）", "ボラティリティが激しくない", True),
-        FilterDef("ret_5d", "直近5日リターン 0〜+15%", "短期上昇しているが過熱なし", True),
-    ]
-
-    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None):
-        if df is None or len(df) < 30:
-            return None
-        enabled = self._resolve_enabled(enabled_filters)
-        close = df["Close"]
-        volume = df["Volume"]
-        high = df["High"]
-        low = df["Low"]
-
-        up_days = TechnicalSignals.consecutive_up_count(close, 0.005, 0.03, 10)
-        vol_ratio = TechnicalSignals.volume_surge_ratio(volume, 5, 20)
-        atr = TechnicalSignals.atr(high, low, close, n=14)
-        atr_val = float(atr.iloc[-1]) if atr.iloc[-1] == atr.iloc[-1] else None
-        latest_close = float(close.iloc[-1])
-        atr_pct = (atr_val / latest_close) if (atr_val and latest_close > 0) else None
-        ret_5d = TechnicalSignals.return_pct(close, 5)
-
-        sigs = [
-            Signal("連続上昇日数 (+0.5%〜+3%, 直近10日)", f"{up_days}日", "≥3日", up_days >= 3),
-            Signal("出来高比率 (5日/20日)", f"{vol_ratio:.2f}x", "≥1.10x", vol_ratio >= 1.10),
-            Signal("ATR/Close", f"{atr_pct * 100:.2f}%" if atr_pct else "N/A", "<4.00%", bool(atr_pct and atr_pct < 0.04)),
-            Signal("直近5日リターン", f"{ret_5d * 100:+.2f}%", "0%〜+15%", 0 <= ret_5d <= 0.15),
-        ]
-        signal_keys = ["up_days", "vol_increase", "low_atr", "ret_5d"]
-
-        bonus = min(15.0, up_days * 1.5)
-        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, score_bonus=bonus)
-
-
-class LowVolBreakoutStrategy(StyleStrategy):
-    style_name = "low_vol_breakout"
-    display_name = "待てば上がる（低ボラ収束）"
-    description = "ボリンジャー収束で動きが少ない、ブレイク待ちの銘柄"
-    filters = [
-        FilterDef("bb_squeeze", "BB幅が直近100日下位10%以内", "バンドが収束している", True),
-        FilterDef("low_60d_return", "60日リターン絶対値 ≤15%", "値動きが穏やか", True),
-    ]
-
-    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None):
-        if df is None or len(df) < 100:
-            return None
-        enabled = self._resolve_enabled(enabled_filters)
-        close = df["Close"]
-        _, _, _, width = TechnicalSignals.bollinger(close, n=20, k=2.0)
-        recent_widths = width.tail(100).dropna()
-        if len(recent_widths) < 20:
-            return None
-        latest_width = float(recent_widths.iloc[-1])
-        rank_pct = float((recent_widths < latest_width).sum()) / len(recent_widths)
-        ret_60 = TechnicalSignals.return_pct(close, 60) if len(close) > 60 else 0.0
-
-        sigs = [
-            Signal("BB幅 直近100日順位", f"下位 {rank_pct * 100:.1f}%", "下位 ≤10%", rank_pct <= 0.10),
-            Signal("60日リターン絶対値", f"{abs(ret_60) * 100:.2f}%", "≤15%", abs(ret_60) <= 0.15),
-        ]
-        signal_keys = ["bb_squeeze", "low_60d_return"]
-
-        bonus = (1 - rank_pct) * 30
-        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, score_bonus=bonus)
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, score_bonus=bonus, near_miss=near_miss)
 
 
 class ValueStrategy(StyleStrategy):
@@ -401,7 +362,7 @@ class ValueStrategy(StyleStrategy):
         FilterDef("dividend", "配当利回り ≥ 3%", "インカム狙い", True),
     ]
 
-    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None):
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
         if not fundamentals:
             return None
         enabled = self._resolve_enabled(enabled_filters)
@@ -423,17 +384,7 @@ class ValueStrategy(StyleStrategy):
             ),
         ]
         signal_keys = ["per", "pbr", "dividend"]
-
-        active = [s for s, key in zip(sigs, signal_keys) if key in enabled]
-        if not active or not all(s.passed for s in active):
-            return None
-        score = sum(1 for s in active if s.passed) / len(active) * 100
-        return ScreeningResult(
-            code=code, name=name, sector=sector, style=self.style_name,
-            score=score, signals=active,
-            price_snapshot=self._build_snapshot(df) if df is not None else {},
-            data_as_of=self._data_as_of(df) if df is not None else "",
-        )
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
 
 
 class GrowthStrategy(StyleStrategy):
@@ -446,7 +397,7 @@ class GrowthStrategy(StyleStrategy):
         FilterDef("roe", "ROE ≥ 12%", "資本効率が高い", True),
     ]
 
-    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None):
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
         if not fundamentals:
             return None
         enabled = self._resolve_enabled(enabled_filters)
@@ -478,28 +429,12 @@ class GrowthStrategy(StyleStrategy):
             ),
         ]
         signal_keys = ["revenue_growth", "earnings_growth", "roe"]
-
-        active = [s for s, key in zip(sigs, signal_keys) if key in enabled]
-        if not active:
-            return None
-        # グロースは「2/3通過」緩めの判定（過去仕様）。ON個数の過半数を要件に。
-        passed_count = sum(1 for s in active if s.passed)
-        if passed_count < max(1, (len(active) + 1) // 2):
-            return None
-        score = passed_count / len(active) * 100
-        return ScreeningResult(
-            code=code, name=name, sector=sector, style=self.style_name,
-            score=score, signals=active,
-            price_snapshot=self._build_snapshot(df) if df is not None else {},
-            data_as_of=self._data_as_of(df) if df is not None else "",
-        )
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
 
 
 STRATEGY_REGISTRY: dict[str, StyleStrategy] = {
     s.style_name: s for s in [
         CreepingBreakoutStrategy(),
-        CreepingUpStrategy(),
-        LowVolBreakoutStrategy(),
         ValueStrategy(),
         GrowthStrategy(),
     ]

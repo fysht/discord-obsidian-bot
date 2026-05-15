@@ -59,6 +59,14 @@ class ScreenerService:
 
         universe = await self.provider.get_universe(universe_name)
         if not universe:
+            if universe_name == "all":
+                return {
+                    "ok": False,
+                    "error": (
+                        "全銘柄リスト (data/jp_universe_all.csv) が未配置です。"
+                        "tools/fetch_jpx_universe.py を実行して JPX から取得してください。"
+                    ),
+                }
             return {"ok": False, "error": f"ユニバースが空: {universe_name}"}
 
         excluded = set((s or "").strip() for s in (exclude_sectors or []) if s)
@@ -72,6 +80,9 @@ class ScreenerService:
         max_concurrent = 8 if not needs_fundamentals else 4
         sem = asyncio.Semaphore(max_concurrent)
 
+        # near-miss 候補も収集して、0件時のフォールバックに使う
+        near_miss_results: list[ScreeningResult] = []
+
         async def _process(item: dict):
             code = item["code"]
             name = item.get("name", "")
@@ -81,9 +92,9 @@ class ScreenerService:
                     df = await self.provider.get_ohlcv(code, days=300)
                 except Exception as e:
                     logging.debug(f"OHLCV取得エラー {code}: {e}")
-                    return None
+                    return None, None
                 if df is None:
-                    return None
+                    return None, None
                 fundamentals = None
                 if needs_fundamentals:
                     try:
@@ -92,31 +103,51 @@ class ScreenerService:
                         logging.debug(f"ファンダ取得エラー {code}: {e}")
                         fundamentals = None
                     if not fundamentals:
-                        return None
-                # 時価総額フィルタ
+                        return None, None
                 if min_market_cap_jpy:
                     mcap = (fundamentals or {}).get("market_cap_jpy")
                     if not mcap or mcap < min_market_cap_jpy:
                         if needs_fundamentals:
-                            return None
+                            return None, None
                 try:
-                    return strategy.evaluate(code, name, sector, df, fundamentals, enabled_filters=enabled_set)
+                    hit = strategy.evaluate(code, name, sector, df, fundamentals, enabled_filters=enabled_set)
+                    if hit is not None:
+                        return hit, None
+                    nm = strategy.evaluate(code, name, sector, df, fundamentals, enabled_filters=enabled_set, near_miss=True)
+                    return None, nm
                 except Exception as e:
                     logging.debug(f"evaluate エラー {code}: {e}")
-                    return None
+                    return None, None
 
         tasks = [_process(it) for it in universe]
         scanned = 0
         for coro in asyncio.as_completed(tasks):
-            res = await coro
+            hit, nm = await coro
             scanned += 1
-            if res is not None:
-                results.append(res)
+            if hit is not None:
+                results.append(hit)
+            elif nm is not None and nm.is_near_miss:
+                near_miss_results.append(nm)
 
         results.sort(key=lambda r: r.score, reverse=True)
         top = results[:top_n]
 
+        # 通過0件のとき、near-miss 上位を返す
+        used_near_miss = False
+        if not top and near_miss_results:
+            near_miss_results.sort(key=lambda r: r.score, reverse=True)
+            top = near_miss_results[:top_n]
+            used_near_miss = True
+
+        # 適用条件の詳細（UI表示用）
+        applied_filters = []
+        for f in strategy.list_filters():
+            on = (enabled_set is None and f["default"]) or (enabled_set is not None and f["key"] in enabled_set)
+            if on:
+                applied_filters.append({"key": f["key"], "label": f["label"]})
+
         data_as_of = top[0].data_as_of if top else datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        executed_at = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
 
         return {
             "ok": True,
@@ -124,8 +155,11 @@ class ScreenerService:
             "style_display": strategy.display_name,
             "universe": universe_name,
             "data_as_of": data_as_of,
+            "executed_at": executed_at,
             "scanned": scanned,
             "qualified": len(results),
+            "applied_filters": applied_filters,
+            "used_near_miss": used_near_miss,
             "candidates": [r.to_dict() for r in top],
         }
 

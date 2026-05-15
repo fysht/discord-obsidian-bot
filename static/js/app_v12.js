@@ -6801,7 +6801,12 @@ async function _loadScreenerUniverses() {
         const data = await apiFetch('/api/investment/screener/universes');
         const names = (data && data.universes) || [];
         if (!names.length) return;
-        sel.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n.toUpperCase())}</option>`).join('');
+        const labelOf = n => {
+            if (n === 'all') return '全銘柄 (要 data/jp_universe_all.csv)';
+            if (n === 'topix500') return 'TOPIX500';
+            return n.toUpperCase();
+        };
+        sel.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(labelOf(n))}</option>`).join('');
     } catch (e) {
         // フォールバック: HTML側のデフォルト値を使う
     }
@@ -6910,7 +6915,11 @@ window.runScreener = async () => {
         _screenerCandidates = data.candidates || [];
         _renderScreenerCandidates(data);
         _setScreenerAnalyzeEnabled(_screenerCandidates.length > 0);
-        showToast(`${_screenerCandidates.length} 銘柄が条件を通過しました`);
+        if (data.used_near_miss) {
+            showToast(`条件通過なし。代わりに「条件に近い銘柄」${_screenerCandidates.length} 件を表示`, true);
+        } else {
+            showToast(`${_screenerCandidates.length} 銘柄が条件を通過しました`);
+        }
     } catch (e) {
         _hideScreenerProgress();
         _renderScreenerResults(`通信エラー: ${e.message || e}`);
@@ -6921,16 +6930,42 @@ function _renderScreenerCandidates(data) {
     const el = $('#screener-results');
     if (!el) return;
     const cands = data.candidates || [];
+
+    // 実行条件サマリー
+    const filtersByStyle = data.applied_filters_by_style || {};
+    const filtersHtml = Object.keys(filtersByStyle).length
+        ? Object.entries(filtersByStyle).map(([sn, fs]) => {
+            const sObj = (_screenerStylesCache || []).find(x => x.name === sn);
+            const sLabel = sObj ? sObj.display_name : sn;
+            const items = (fs || []).map(f => `<span style="display:inline-block;margin:1px 3px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(78,161,255,0.12);color:#4ea1ff;font-size:0.7rem;">${escapeHtml(f.label)}</span>`).join('');
+            return `<div style="margin-top:4px;"><span style="color:var(--text-primary);font-size:0.74rem;font-weight:700;">${escapeHtml(sLabel)}:</span> ${items || '<span style="color:var(--text-muted);font-size:0.7rem;">条件なし</span>'}</div>`;
+        }).join('')
+        : '';
+
+    const meta = `<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;">
+        <div>スタイル: ${escapeHtml(data.style_display || (data.styles || [data.style]).join(' / '))}</div>
+        <div>ユニバース: ${escapeHtml(data.universe || '-')} / データ基準日: ${escapeHtml(data.data_as_of || '')} / 実行: ${escapeHtml(data.executed_at || '')}</div>
+        <div>走査 ${data.scanned} 銘柄 → ${data.qualified} 通過 → 上位 ${cands.length} 件</div>
+        ${filtersHtml ? `<details style="margin-top:6px;"><summary style="cursor:pointer;color:var(--text-secondary);font-size:0.74rem;">📋 適用した条件</summary>${filtersHtml}</details>` : ''}
+    </div>`;
+
     if (!cands.length) {
-        el.innerHTML = `<div class="loading-placeholder">条件に該当する銘柄が見つかりませんでした (走査 ${data.scanned || 0} 銘柄)。</div>`;
+        el.innerHTML = meta + `<div class="loading-placeholder">条件に該当する銘柄が見つかりませんでした。条件を緩めるか、ユニバースを「全銘柄」に変えてみてください。</div>`;
         return;
     }
-    const header = `<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;">スタイル: ${escapeHtml(data.style_display || (data.styles || [data.style]).join(' / '))} / データ基準日: ${escapeHtml(data.data_as_of || '')} / 走査 ${data.scanned} 銘柄 → ${data.qualified} 通過 → 上位 ${cands.length} 件</div>`;
+
+    const nearMissBanner = data.used_near_miss
+        ? `<div style="padding:8px;margin-bottom:8px;background:rgba(255,212,84,0.12);border-left:3px solid #ffd454;border-radius:4px;font-size:0.78rem;color:#ffd454;">⚠️ 全条件を満たす銘柄はありませんでした。代わりに「条件に近い銘柄」を提示しています（赤バッジ＝満たさなかった条件）。</div>`
+        : '';
+
     const rows = cands.map((c, idx) => {
         const sigBadges = (c.signals || []).map(s => {
             const color = s.passed ? '#7cd6a0' : '#ff8a8a';
             return `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,0.05);color:${color};font-size:0.72rem;">${escapeHtml(s.name)}: ${escapeHtml(s.value)}</span>`;
         }).join('');
+        const failedBadge = (c.is_near_miss && (c.failed_filters || []).length)
+            ? `<div style="font-size:0.7rem;color:#ff8a8a;margin-bottom:4px;">🔻 不足: ${(c.failed_filters || []).map(f => escapeHtml(f)).join(' / ')}</div>`
+            : '';
         const ps = c.price_snapshot || {};
         const matchedStyles = c.matched_styles || [];
         const styleBadges = matchedStyles.map(ms => `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(78,161,255,0.15);color:#4ea1ff;font-size:0.70rem;">${escapeHtml(ms)}</span>`).join('');
@@ -6938,7 +6973,7 @@ function _renderScreenerCandidates(data) {
         const nameEsc = (c.name || '').replace(/'/g, "\\'");
         const sectorEsc = (c.sector || '').replace(/'/g, "\\'");
         const sourceEsc = (data.style_display || (data.styles || [data.style]).join(' / ') || '').replace(/'/g, "\\'");
-        return `<div class="screener-row" style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
+        return `<div class="screener-row" style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;${c.is_near_miss ? 'background:rgba(255,212,84,0.05);' : ''}">
             <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
                 <input type="checkbox" data-idx="${idx}" class="screener-cand-check" checked style="margin-top:4px;">
                 <div style="flex:1;">
@@ -6948,13 +6983,14 @@ function _renderScreenerCandidates(data) {
                         <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
                     </div>
                     ${styleBadges ? `<div style="margin-bottom:4px;">${styleBadges}</div>` : ''}
+                    ${failedBadge}
                     <div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:4px;">終値 ${ps.close ?? '-'} (${ps.change_pct ?? 0}%) / 52週: ${ps.low_52w ?? '-'}〜${ps.high_52w ?? '-'}</div>
                     <div>${sigBadges}</div>
                 </div>
             </label>
         </div>`;
     }).join('');
-    el.innerHTML = header + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
+    el.innerHTML = meta + nearMissBanner + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 }
 
 window._addScreenerToWatchlist = async (code, name, sector, source) => {
@@ -6985,10 +7021,8 @@ window.runScreenerAnalyze = async () => {
         showToast('1 銘柄以上を選択してください', true);
         return;
     }
-    const usePro = document.querySelector('input[name="screener-model"]:checked')?.value === 'pro';
-    const modelLabel = usePro ? 'Pro（高精度・高コスト）' : 'Flash（低コスト）';
-    const estSecs = selected.length * (usePro ? 20 : 12);
-    if (!confirm(`${selected.length} 銘柄を Gemini ${modelLabel} で質的分析します。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
+    const estSecs = selected.length * 15;
+    if (!confirm(`${selected.length} 銘柄を Gemini で質的分析します（モデルは設定画面の「スクリーナー質的分析」に従う）。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
 
     _setScreenerAnalyzeEnabled(false);
     _showScreenerProgress(`質的分析を起動中...`, 5);
@@ -6996,7 +7030,7 @@ window.runScreenerAnalyze = async () => {
     try {
         const data = await apiFetch('/api/investment/screener/analyze', {
             method: 'POST',
-            body: JSON.stringify({ styles: [..._screenerSelectedStyles], candidates: selected, use_pro: usePro }),
+            body: JSON.stringify({ styles: [..._screenerSelectedStyles], candidates: selected }),
         });
         if (!data || !data.ok) {
             _hideScreenerProgress();
