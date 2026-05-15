@@ -80,8 +80,10 @@ class PartnerRoutineCog(commands.Cog):
 
         try:
             logging.info("【UserManual】取扱説明書の自動更新を開始します...")
+            from services.gemini_model_resolver import resolve_gemini_model
+            _m = await resolve_gemini_model("routines", default_pro=True)
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-pro", contents=prompt
+                model=_m, contents=prompt
             )
             new_manual = response.text.strip()
 
@@ -263,8 +265,10 @@ class PartnerRoutineCog(commands.Cog):
 
         try:
             if self.gemini_client:
+                from services.gemini_model_resolver import resolve_gemini_model
+                _m = await resolve_gemini_model("routines", default_pro=True)
                 response = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-pro", contents=prompt
+                    model=_m, contents=prompt
                 )
                 from api.database import backup_db_to_drive
                 from api.notification_service import save_message_and_notify

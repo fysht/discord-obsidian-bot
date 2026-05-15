@@ -171,6 +171,14 @@ window.openSettingsModal = async () => {
                         </div>
                     </details>
 
+                    <!-- Gemini モデル設定 -->
+                    <details style="margin-bottom:10px;">
+                        <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">🧠 Gemini モデル選択</summary>
+                        <div id="gemini-models-body" style="padding:8px 0;">
+                            <div class="loading-placeholder">読み込み中。</div>
+                        </div>
+                    </details>
+
                     <div class="modal-actions" style="margin-top:14px;">
                         <button class="modal-btn cancel" onclick="closeSettingsModal()">閉じる</button>
                     </div>
@@ -182,6 +190,58 @@ window.openSettingsModal = async () => {
     }
     modal.classList.remove('hidden');
     loadCostMeter();
+    loadGeminiModelSettings();
+};
+
+window.loadGeminiModelSettings = async () => {
+    const body = $('#gemini-models-body');
+    if (!body) return;
+    body.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/settings/gemini_models');
+        if (!data || !data.ok) {
+            body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+            return;
+        }
+        const items = data.items || [];
+        const rows = items.map(it => {
+            const flashSel = it.value === 'flash' ? 'selected' : '';
+            const proSel = it.value === 'pro' ? 'selected' : '';
+            return `<div style="padding:6px 0;border-bottom:1px solid var(--border-glass);">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-size:0.82rem;color:var(--text-primary);">${escapeHtml(it.label)}</div>
+                        <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(it.description || '')}</div>
+                    </div>
+                    <select class="modern-input gemini-model-select" data-key="${escapeHtml(it.key)}" style="font-size:0.78rem;padding:4px;width:auto;">
+                        <option value="flash" ${flashSel}>⚡ Flash</option>
+                        <option value="pro" ${proSel}>🧠 Pro</option>
+                    </select>
+                </div>
+            </div>`;
+        }).join('');
+        body.innerHTML = rows + `
+            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚡ Flash: 低コスト・高速 / 🧠 Pro: 高精度・約20倍コスト</div>
+            <button class="modal-btn submit" style="width:100%;margin-top:10px;" onclick="saveGeminiModelSettings()">設定を保存</button>
+        `;
+    } catch (e) {
+        body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+    }
+};
+
+window.saveGeminiModelSettings = async () => {
+    const values = {};
+    document.querySelectorAll('.gemini-model-select').forEach(sel => {
+        const k = sel.dataset.key;
+        const v = sel.value;
+        if (k && (v === 'flash' || v === 'pro')) values[k] = v;
+    });
+    try {
+        await apiFetch('/api/settings/gemini_models', { method: 'POST', body: JSON.stringify({ values }) });
+        showToast('Geminiモデル設定を保存しました');
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    }
 };
 
 window.closeSettingsModal = () => {
@@ -315,6 +375,7 @@ function switchTab(tab) {
     if (tab === 'invest') {
         loadInvestmentHistory();
         if (typeof loadPortfolio === 'function') loadPortfolio();
+        if (typeof loadWatchlist === 'function') loadWatchlist();
         if (typeof loadJournalList === 'function') loadJournalList();
         if (typeof loadAlertsList === 'function') loadAlertsList();
     }
@@ -6650,6 +6711,8 @@ let _screenerJobId = null;
 let _screenerJobPollTimer = null;
 let _screenerFakeProgressTimer = null;
 let _screenerFakeProgressPct = 0;
+// {style_name: Set<filter_key>} - スタイルごとに ON 状態の構成要素キー
+let _screenerStyleFilters = {};
 
 window.openScreenerModal = async () => {
     const modal = $('#invest-screener-modal');
@@ -6666,6 +6729,7 @@ window.closeScreenerModal = () => {
     $('#invest-screener-modal')?.classList.add('hidden');
     _screenerSelectedStyles.clear();
     _screenerCandidates = [];
+    _screenerStyleFilters = {};
 };
 
 async function _loadScreenerStyles() {
@@ -6688,7 +6752,47 @@ async function _loadScreenerStyles() {
         const active = _screenerSelectedStyles.has(s.name) ? ' active' : '';
         return `<button class="chip-btn${active}" data-style="${escapeHtml(s.name)}" title="${escapeHtml(s.description || '')}" onclick="_selectScreenerStyle('${s.name.replace(/'/g, '&#39;')}')">${escapeHtml(s.display_name)}</button>`;
     }).join('');
+    _renderScreenerFilters();
 }
+
+function _renderScreenerFilters() {
+    const wrap = $('#screener-filters-wrap');
+    if (!wrap) return;
+    if (!_screenerStylesCache || !_screenerSelectedStyles.size) {
+        wrap.innerHTML = '<div style="font-size:0.76rem;color:var(--text-muted);">スタイルを選ぶと、その構成条件が表示されます。チェックを外すと、その条件を必須から外して評価します。</div>';
+        return;
+    }
+    const blocks = [];
+    for (const styleName of _screenerSelectedStyles) {
+        const s = _screenerStylesCache.find(x => x.name === styleName);
+        if (!s || !s.filters || !s.filters.length) continue;
+        if (!_screenerStyleFilters[styleName]) {
+            _screenerStyleFilters[styleName] = new Set(s.filters.filter(f => f.default).map(f => f.key));
+        }
+        const enabled = _screenerStyleFilters[styleName];
+        const items = s.filters.map(f => {
+            const checked = enabled.has(f.key) ? 'checked' : '';
+            return `<label style="display:flex;align-items:flex-start;gap:6px;padding:3px 0;cursor:pointer;font-size:0.78rem;">
+                <input type="checkbox" ${checked} onchange="_toggleScreenerFilter('${styleName}','${f.key}',this.checked)" style="margin-top:3px;">
+                <div>
+                    <div style="color:var(--text-primary);">${escapeHtml(f.label)}</div>
+                    <div style="color:var(--text-muted);font-size:0.72rem;">${escapeHtml(f.description || '')}</div>
+                </div>
+            </label>`;
+        }).join('');
+        blocks.push(`<div style="margin-bottom:8px;padding:8px;border:1px solid var(--border-glass);border-radius:6px;">
+            <div style="font-size:0.8rem;font-weight:700;color:var(--accent);margin-bottom:4px;">${escapeHtml(s.display_name)}</div>
+            ${items}
+        </div>`);
+    }
+    wrap.innerHTML = blocks.join('') || '<div style="font-size:0.76rem;color:var(--text-muted);">選択スタイルに構成要素はありません。</div>';
+}
+
+window._toggleScreenerFilter = (styleName, filterKey, isChecked) => {
+    if (!_screenerStyleFilters[styleName]) _screenerStyleFilters[styleName] = new Set();
+    if (isChecked) _screenerStyleFilters[styleName].add(filterKey);
+    else _screenerStyleFilters[styleName].delete(filterKey);
+};
 
 async function _loadScreenerUniverses() {
     const sel = $('#screener-universe-select');
@@ -6712,6 +6816,7 @@ window._selectScreenerStyle = (name) => {
     document.querySelectorAll('#screener-style-chips .chip-btn').forEach(b => {
         b.classList.toggle('active', _screenerSelectedStyles.has(b.dataset.style));
     });
+    _renderScreenerFilters();
 };
 
 function _setScreenerAnalyzeEnabled(enabled) {
@@ -6787,10 +6892,15 @@ window.runScreener = async () => {
     try {
         const body = { styles: [..._screenerSelectedStyles], universe, top_n: topN };
         if (minMcapJpy) body.min_market_cap_jpy = minMcapJpy;
+        const filter_overrides = {};
+        for (const styleName of _screenerSelectedStyles) {
+            if (_screenerStyleFilters[styleName]) {
+                filter_overrides[styleName] = Array.from(_screenerStyleFilters[styleName]);
+            }
+        }
+        if (Object.keys(filter_overrides).length) body.filter_overrides = filter_overrides;
         const data = await apiFetch('/api/investment/screener/run', { method: 'POST', body: JSON.stringify(body) });
-        _stopScreenerFakeProgress();
-        _showScreenerProgress('結果を集計中...', 100);
-        setTimeout(_hideScreenerProgress, 400);
+        _hideScreenerProgress();
         if (!data || !data.ok) {
             const err = (data && (data.error || data.detail)) || '失敗しました';
             _renderScreenerResults(`エラー: ${err}`);
@@ -6824,13 +6934,18 @@ function _renderScreenerCandidates(data) {
         const ps = c.price_snapshot || {};
         const matchedStyles = c.matched_styles || [];
         const styleBadges = matchedStyles.map(ms => `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(78,161,255,0.15);color:#4ea1ff;font-size:0.70rem;">${escapeHtml(ms)}</span>`).join('');
+        const codeEsc = c.code.replace(/'/g, "\\'");
+        const nameEsc = (c.name || '').replace(/'/g, "\\'");
+        const sectorEsc = (c.sector || '').replace(/'/g, "\\'");
+        const sourceEsc = (data.style_display || (data.styles || [data.style]).join(' / ') || '').replace(/'/g, "\\'");
         return `<div class="screener-row" style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
             <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
                 <input type="checkbox" data-idx="${idx}" class="screener-cand-check" checked style="margin-top:4px;">
                 <div style="flex:1;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;gap:6px;">
                         <strong>${escapeHtml(c.code)} ${escapeHtml(c.name)}</strong>
-                        <span style="font-size:0.78rem;color:var(--text-muted);">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
+                        <span style="font-size:0.78rem;color:var(--text-muted);flex:1;text-align:right;">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
+                        <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
                     </div>
                     ${styleBadges ? `<div style="margin-bottom:4px;">${styleBadges}</div>` : ''}
                     <div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:4px;">終値 ${ps.close ?? '-'} (${ps.change_pct ?? 0}%) / 52週: ${ps.low_52w ?? '-'}〜${ps.high_52w ?? '-'}</div>
@@ -6841,6 +6956,23 @@ function _renderScreenerCandidates(data) {
     }).join('');
     el.innerHTML = header + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 }
+
+window._addScreenerToWatchlist = async (code, name, sector, source) => {
+    try {
+        const data = await apiFetch('/api/investment/watchlist', {
+            method: 'POST',
+            body: JSON.stringify({ code, name, sector, source }),
+        });
+        if (data && data.ok) {
+            showToast(`⭐ ${code} ${name} を注目銘柄に追加しました`);
+            if (typeof loadWatchlist === 'function') loadWatchlist();
+        } else {
+            showToast('追加に失敗しました', true);
+        }
+    } catch (e) {
+        showToast(`通信エラー: ${e.message || e}`, true);
+    }
+};
 
 window.runScreenerAnalyze = async () => {
     if (!_screenerCandidates.length) {
@@ -6914,6 +7046,90 @@ function _pollScreenerJob() {
         }
     }, 3000);
 }
+
+// =================================================================
+// 注目銘柄 (Watchlist)
+// =================================================================
+
+window.loadWatchlist = async () => {
+    const el = $('#invest-watchlist-list');
+    if (!el) return;
+    el.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/investment/watchlist');
+        if (!data || !data.ok) {
+            el.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+            return;
+        }
+        const items = data.items || [];
+        if (!items.length) {
+            el.innerHTML = '<div class="loading-placeholder">注目銘柄はまだありません。スクリーニング結果から⭐ボタンで追加できます。</div>';
+            return;
+        }
+        el.innerHTML = items.map(it => {
+            const codeJs = it.code.replace(/'/g, "\\'");
+            return `<div style="padding:8px;border-bottom:1px solid var(--border-glass);">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;">
+                    <strong>${escapeHtml(it.code)} ${escapeHtml(it.name || '')}</strong>
+                    <span style="font-size:0.72rem;color:var(--text-muted);">${escapeHtml(it.sector || '')}</span>
+                </div>
+                ${it.source ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">出典: ${escapeHtml(it.source)}</div>` : ''}
+                <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="runSnapshotForTicker('${codeJs}')">📷 スナップ</button>
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="runAuditForTicker('${codeJs}')">🎯 審査</button>
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="runPeerComparisonForTicker('${codeJs}')">🔬 同業</button>
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="runNewsSentimentForTicker('${codeJs}')">📰 ニュース</button>
+                    <button class="mini-link" style="font-size:0.72rem;color:#ff8a8a;margin-left:auto;" onclick="removeFromWatchlist('${codeJs}')">削除</button>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        el.innerHTML = `<div class="loading-placeholder">通信エラー: ${escapeHtml(e.message || e)}</div>`;
+    }
+};
+
+window.removeFromWatchlist = async (code) => {
+    if (!confirm(`${code} を注目銘柄から削除しますか?`)) return;
+    try {
+        await apiFetch(`/api/investment/watchlist/${encodeURIComponent(code)}`, { method: 'DELETE' });
+        showToast('削除しました');
+        loadWatchlist();
+    } catch (e) {
+        showToast('削除に失敗しました', true);
+    }
+};
+
+window.runSnapshotForTicker = async (ticker) => {
+    const data = await _callInvestmentApi('/api/investment/snapshot', { ticker }, `${ticker} スナップショット`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`📷 ${data.ticker} スナップショット`, data.report);
+        window.loadInvestmentHistory && window.loadInvestmentHistory();
+    }
+};
+
+window.runAuditForTicker = async (ticker) => {
+    const data = await _callInvestmentApi('/api/investment/audit', { ticker }, `${ticker} 憲法審査`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`🎯 ${data.ticker} 投資憲法審査`, data.audit);
+        window.loadInvestmentHistory && window.loadInvestmentHistory();
+    }
+};
+
+window.runPeerComparisonForTicker = async (ticker) => {
+    const data = await _callInvestmentApi('/api/investment/peer_comparison', { ticker }, `${ticker} 同業比較`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`🔬 ${data.ticker} 同業他社比較`, data.report);
+        window.loadInvestmentHistory && window.loadInvestmentHistory();
+    }
+};
+
+window.runNewsSentimentForTicker = async (ticker) => {
+    const data = await _callInvestmentApi('/api/investment/news_sentiment', { ticker }, `${ticker} ニュース`);
+    if (data && data.ok) {
+        window.openInvestmentResultModal(`📰 ${data.ticker} ニュースセンチメント`, data.report);
+        window.loadInvestmentHistory && window.loadInvestmentHistory();
+    }
+};
 
 // =================================================================
 // Investment Tab — 拡張機能 (ポートフォリオ・日記・アラート・他)

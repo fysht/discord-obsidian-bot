@@ -234,6 +234,17 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_screener_jobs_status ON screener_jobs(status)"
         )
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS watchlist (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL DEFAULT '',
+                sector TEXT DEFAULT '',
+                source TEXT DEFAULT '',
+                memo TEXT DEFAULT '',
+                added_at TEXT NOT NULL
+            )
+        """)
+
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
             "ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''",
@@ -1080,6 +1091,51 @@ async def screener_job_count_active() -> int:
         )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+
+# =========================================================
+# Watchlist (注目銘柄)
+# =========================================================
+
+async def watchlist_add(code: str, name: str = "", sector: str = "", source: str = "", memo: str = "") -> bool:
+    """注目銘柄を追加。既に存在すれば name/sector/source を上書きする。"""
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            """INSERT INTO watchlist (code, name, sector, source, memo, added_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(code) DO UPDATE SET
+                   name=excluded.name,
+                   sector=excluded.sector,
+                   source=excluded.source""",
+            (code, name, sector, source, memo, now),
+        )
+        await db.commit()
+        return True
+
+
+async def watchlist_remove(code: str) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("DELETE FROM watchlist WHERE code = ?", (code,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def watchlist_list() -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT code, name, sector, source, memo, added_at FROM watchlist ORDER BY added_at DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def watchlist_update_memo(code: str, memo: str) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("UPDATE watchlist SET memo = ? WHERE code = ?", (memo, code))
+        await db.commit()
+        return cursor.rowcount > 0
 
 
 async def gmail_count_unnotified_high() -> int:

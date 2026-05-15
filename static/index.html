@@ -546,6 +546,16 @@
                         <div id="invest-portfolio-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
                     </div>
 
+                    <!-- 注目銘柄 -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-icon">⭐</span>
+                            <span class="card-title">注目銘柄</span>
+                            <button class="mini-link" onclick="loadWatchlist()">更新</button>
+                        </div>
+                        <div id="invest-watchlist-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                    </div>
+
                     <!-- 投資日記 -->
                     <div class="card">
                         <div class="card-header">
@@ -657,6 +667,13 @@
                 <label style="font-size:0.78rem;color:var(--text-muted);">スタイル <span style="opacity:0.6;">（複数選択可）</span></label>
                 <div id="screener-style-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
                     <span class="loading-placeholder" style="font-size:0.8rem;">読み込み中...</span>
+                </div>
+            </div>
+
+            <div style="margin-bottom:10px;">
+                <label style="font-size:0.78rem;color:var(--text-muted);">構成要素 <span style="opacity:0.6;">（チェックを外すと必須から除外）</span></label>
+                <div id="screener-filters-wrap" style="margin-top:6px;max-height:200px;overflow-y:auto;">
+                    <div style="font-size:0.76rem;color:var(--text-muted);">スタイルを選ぶと、その構成条件が表示されます。</div>
                 </div>
             </div>
 
@@ -1522,6 +1539,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=61"></script>
+    <script src="/static/js/app_v12.js?v=62"></script>
 </body>
 </html>

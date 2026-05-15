@@ -158,8 +158,10 @@ class MorningMitCog(commands.Cog):
 
         try:
             from google.genai import types as _gt
+            from services.gemini_model_resolver import resolve_gemini_model
+            _m = await resolve_gemini_model("routines", default_pro=False)
             response = await gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
+                model=_m,
                 contents=prompt,
                 config=_gt.GenerateContentConfig(response_mime_type="application/json"),
             )

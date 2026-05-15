@@ -51,6 +51,7 @@ class ScreenerCog(commands.Cog):
         universe_name: str = "topix500",
         min_market_cap_jpy: Optional[int] = None,
         exclude_sectors: Optional[list[str]] = None,
+        enabled_filters: Optional[list[str]] = None,
     ) -> dict:
         return await self.service.run_screening(
             style=style,
@@ -58,6 +59,7 @@ class ScreenerCog(commands.Cog):
             universe_name=universe_name,
             min_market_cap_jpy=min_market_cap_jpy,
             exclude_sectors=exclude_sectors,
+            enabled_filters=enabled_filters,
         )
 
     async def run_multi_screening(
@@ -67,17 +69,28 @@ class ScreenerCog(commands.Cog):
         universe_name: str = "topix500",
         min_market_cap_jpy: Optional[int] = None,
         exclude_sectors: Optional[list[str]] = None,
+        filter_overrides: Optional[dict[str, list[str]]] = None,
     ) -> dict:
-        """複数スタイルを並列実行して結果をマージ（同一銘柄は最高スコアを採用）。"""
+        """複数スタイルを並列実行して結果をマージ（同一銘柄は最高スコアを採用）。
+
+        filter_overrides: {style_name: [enabled_filter_keys, ...], ...}
+        """
         import asyncio as _asyncio
         if not styles:
             return {"ok": False, "error": "スタイルを1つ以上指定してください"}
+
+        def _filters_for(style_name: str) -> Optional[list[str]]:
+            if filter_overrides is None:
+                return None
+            return filter_overrides.get(style_name)
+
         if len(styles) == 1:
             result = await self.run_screening(
                 style=styles[0], top_n=top_n,
                 universe_name=universe_name,
                 min_market_cap_jpy=min_market_cap_jpy,
                 exclude_sectors=exclude_sectors,
+                enabled_filters=_filters_for(styles[0]),
             )
             if result.get("ok") and result.get("candidates"):
                 for c in result["candidates"]:
@@ -90,6 +103,7 @@ class ScreenerCog(commands.Cog):
                 universe_name=universe_name,
                 min_market_cap_jpy=min_market_cap_jpy,
                 exclude_sectors=exclude_sectors,
+                enabled_filters=_filters_for(s),
             )
             for s in styles
         ]
@@ -228,7 +242,11 @@ class ScreenerCog(commands.Cog):
             style_display = " / ".join(self._style_display(s) for s in styles)
 
             results_with_qual: list[dict] = []
-            model_b = GEMINI_PRO_MODEL if use_pro else GEMINI_FLASH_MODEL
+            if use_pro:
+                model_b = GEMINI_PRO_MODEL
+            else:
+                from services.gemini_model_resolver import resolve_gemini_model
+                model_b = await resolve_gemini_model("screener_qualitative", default_pro=False)
 
             for idx, cand in enumerate(candidates, 1):
                 code = cand.get("code", "")
@@ -262,7 +280,7 @@ class ScreenerCog(commands.Cog):
                 progress_current=len(candidates),
                 current_ticker="統合中",
             )
-            model_c = GEMINI_PRO_MODEL if use_pro else GEMINI_FLASH_MODEL
+            model_c = model_b
             phase_c_prompt = ScreenerService.build_phase_c_prompt(style_display, results_with_qual)
             try:
                 summary = await inv_cog._gemini_plain(phase_c_prompt, model=model_c)

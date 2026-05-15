@@ -254,6 +254,13 @@ class ChatService:
         user_manual = await self._get_user_manual()
         system_prompt = get_system_prompt(self.user_name, now_str, user_manual)
 
+        # マネージャー会話のモデルを設定から取得（デフォルト Pro）
+        try:
+            from services.gemini_model_resolver import resolve_gemini_model
+            chat_model = await resolve_gemini_model("partner_chat", default_pro=True)
+        except Exception:
+            chat_model = "gemini-2.5-pro"
+
         contents = []
         for msg in history:
             role = "user" if msg["role"] == "user" else "model"
@@ -264,7 +271,7 @@ class ChatService:
 
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-pro",
+                model=chat_model,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt, tools=function_tools
@@ -310,7 +317,7 @@ class ChatService:
 
                 contents.append(types.Content(role="user", parts=function_responses))
                 follow_up = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-pro",
+                    model=chat_model,
                     contents=contents,
                     config=types.GenerateContentConfig(system_instruction=system_prompt),
                 )

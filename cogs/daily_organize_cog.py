@@ -84,8 +84,10 @@ class DailyOrganizeCog(commands.Cog):
             prompt = f"{PROMPT_DAILY_ORGANIZE}\n【現在の未完了タスク】\n{current_tasks_text}\n\n【今日の移動記録】\n{location_log_text}\n\n--- Chat Log ---\n{log_text}"
             try:
                 if self.gemini_client:
+                    from services.gemini_model_resolver import resolve_gemini_model
+                    _m = await resolve_gemini_model("routines", default_pro=True)
                     response = await self.gemini_client.aio.models.generate_content(
-                        model="gemini-2.5-pro",
+                        model=_m,
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json"
@@ -299,8 +301,10 @@ class DailyOrganizeCog(commands.Cog):
             f"--- 発言ログ ---\n{joined}\n--- 終わり ---"
         )
         try:
+            from services.gemini_model_resolver import resolve_gemini_model
+            _m = await resolve_gemini_model("routines", default_pro=False)
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-flash",
+                model=_m,
                 contents=prompt,
             )
             text = (response.text or "").strip()

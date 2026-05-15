@@ -4418,6 +4418,8 @@ class ScreenerRunRequest(BaseModel):
     top_n: int = 10
     min_market_cap_jpy: Optional[int] = None
     exclude_sectors: Optional[List[str]] = None
+    # {style_name: [enabled_filter_keys]} - スタイルごとに ON にする構成要素を指定
+    filter_overrides: Optional[dict] = None
 
 
 class ScreenerAnalyzeRequest(BaseModel):
@@ -4451,6 +4453,7 @@ async def screener_run(req: ScreenerRunRequest):
         universe_name=req.universe,
         min_market_cap_jpy=req.min_market_cap_jpy,
         exclude_sectors=req.exclude_sectors,
+        filter_overrides=req.filter_overrides,
     )
 
 
@@ -4471,3 +4474,111 @@ async def screener_analyze(req: ScreenerAnalyzeRequest):
 async def screener_job(job_id: str):
     cog = _get_screener_cog()
     return await cog.get_job_status(job_id)
+
+
+# =========================================================
+# 注目銘柄 (Watchlist)
+# =========================================================
+
+class WatchlistAddRequest(BaseModel):
+    code: str
+    name: str = ""
+    sector: str = ""
+    source: str = ""
+    memo: str = ""
+
+
+class WatchlistMemoRequest(BaseModel):
+    memo: str
+
+
+@router.get("/investment/watchlist", dependencies=[Depends(verify_api_key)])
+async def watchlist_get():
+    from api.database import watchlist_list
+    items = await watchlist_list()
+    return {"ok": True, "items": items}
+
+
+@router.post("/investment/watchlist", dependencies=[Depends(verify_api_key)])
+async def watchlist_post(req: WatchlistAddRequest):
+    from api.database import watchlist_add
+    if not req.code:
+        raise HTTPException(status_code=422, detail="code は必須です")
+    await watchlist_add(req.code, req.name, req.sector, req.source, req.memo)
+    return {"ok": True}
+
+
+@router.delete("/investment/watchlist/{code}", dependencies=[Depends(verify_api_key)])
+async def watchlist_delete(code: str):
+    from api.database import watchlist_remove
+    ok = await watchlist_remove(code)
+    return {"ok": ok}
+
+
+@router.put("/investment/watchlist/{code}/memo", dependencies=[Depends(verify_api_key)])
+async def watchlist_memo(code: str, req: WatchlistMemoRequest):
+    from api.database import watchlist_update_memo
+    ok = await watchlist_update_memo(code, req.memo)
+    return {"ok": ok}
+
+
+# =========================================================
+# Gemini モデル設定 (機能ごとに Flash / Pro)
+# =========================================================
+
+# 機能カテゴリ定義: (key, ラベル, 説明, デフォルトモデル)
+GEMINI_FEATURE_CATALOG = [
+    ("screener_qualitative", "スクリーナー質的分析", "スクリーニング結果のPhase B/C質的分析", "flash"),
+    ("investment_snapshot", "銘柄スナップショット", "銘柄の現状把握分析", "pro"),
+    ("investment_audit", "憲法審査", "投資憲法に基づく銘柄審査", "pro"),
+    ("investment_peer", "同業比較", "同業他社との比較分析", "pro"),
+    ("investment_news", "ニュースセンチメント", "個別銘柄のニュース分析", "pro"),
+    ("investment_earnings", "決算分析", "決算予定・資料・CEO検証", "pro"),
+    ("investment_dividend", "配当分析", "配当スケジュール調査", "pro"),
+    ("investment_sentiment", "地合い分析", "市場全体のセンチメント", "pro"),
+    ("investment_journal", "投資日記分析", "投資日記の癖分析", "pro"),
+    ("investment_review", "憲法レビュー", "投資憲法の定期レビュー", "pro"),
+    ("investment_risk", "リスク評価", "ポートフォリオのリスク評価", "pro"),
+    ("partner_chat", "マネージャー会話", "PWAチャットでの応答", "pro"),
+    ("routines", "自動ルーチン", "朝MIT・デイリーサマリー・週次レビュー・Gmail要約", "flash"),
+]
+
+
+def _setting_key(feature_key: str) -> str:
+    return f"gemini_model.{feature_key}"
+
+
+@router.get("/settings/gemini_models", dependencies=[Depends(verify_api_key)])
+async def settings_gemini_models_get():
+    from api.database import get_app_setting
+    items = []
+    for key, label, desc, default in GEMINI_FEATURE_CATALOG:
+        val = await get_app_setting(_setting_key(key), default)
+        items.append({
+            "key": key,
+            "label": label,
+            "description": desc,
+            "default": default,
+            "value": val if val in ("flash", "pro") else default,
+        })
+    return {"ok": True, "items": items}
+
+
+class SettingsGeminiModelRequest(BaseModel):
+    # {feature_key: "flash"|"pro", ...}
+    values: dict
+
+
+@router.post("/settings/gemini_models", dependencies=[Depends(verify_api_key)])
+async def settings_gemini_models_post(req: SettingsGeminiModelRequest):
+    from api.database import set_app_setting
+    valid_keys = {k for k, *_ in GEMINI_FEATURE_CATALOG}
+    saved = 0
+    for k, v in (req.values or {}).items():
+        if k not in valid_keys:
+            continue
+        if v not in ("flash", "pro"):
+            continue
+        await set_app_setting(_setting_key(k), v)
+        saved += 1
+    return {"ok": True, "saved": saved}

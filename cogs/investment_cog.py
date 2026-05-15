@@ -38,6 +38,7 @@ import asyncio
 import logging
 import datetime
 import random
+from typing import Optional
 
 from discord.ext import commands, tasks
 from google.genai import types
@@ -519,12 +520,27 @@ class InvestmentCog(commands.Cog):
     # Gemini呼び出しヘルパー
     # ==========================================================
 
-    async def _gemini_with_search(self, prompt: str, model: str = GEMINI_MODEL) -> str:
+    async def _resolve_model(self, model: Optional[str], feature_key: Optional[str]) -> str:
+        """model > feature_key設定 > デフォルト の優先で Gemini モデル名を決定。"""
+        if model:
+            return model
+        if feature_key:
+            try:
+                from services.gemini_model_resolver import resolve_gemini_model
+                return await resolve_gemini_model(feature_key, default_pro=True)
+            except Exception as e:
+                logging.debug(f"resolve_gemini_model failed for {feature_key}: {e}")
+        return GEMINI_MODEL
+
+    async def _gemini_with_search(
+        self, prompt: str, model: Optional[str] = None, feature_key: Optional[str] = None
+    ) -> str:
         if not self.gemini_client:
             return ""
+        resolved = await self._resolve_model(model, feature_key)
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model=model,
+                model=resolved,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -535,12 +551,15 @@ class InvestmentCog(commands.Cog):
             logging.error(f"InvestmentCog: Gemini(search) error: {e}", exc_info=True)
             return ""
 
-    async def _gemini_plain(self, prompt: str, model: str = GEMINI_MODEL) -> str:
+    async def _gemini_plain(
+        self, prompt: str, model: Optional[str] = None, feature_key: Optional[str] = None
+    ) -> str:
         if not self.gemini_client:
             return ""
+        resolved = await self._resolve_model(model, feature_key)
         try:
             response = await self.gemini_client.aio.models.generate_content(
-                model=model,
+                model=resolved,
                 contents=prompt,
             )
             return (response.text or "").strip()
@@ -549,11 +568,12 @@ class InvestmentCog(commands.Cog):
             return ""
 
     async def _gemini_with_video(
-        self, prompt: str, video_url: str, model: str = GEMINI_MODEL
+        self, prompt: str, video_url: str, model: Optional[str] = None, feature_key: Optional[str] = None
     ) -> str:
         """Gemini multimodalにYouTube URLを直接渡して解析させる。"""
         if not self.gemini_client:
             return ""
+        resolved = await self._resolve_model(model, feature_key)
         try:
             video_part = types.Part(
                 file_data=types.FileData(file_uri=video_url, mime_type="video/*")
@@ -561,7 +581,7 @@ class InvestmentCog(commands.Cog):
             text_part = types.Part.from_text(text=prompt)
             content = types.Content(role="user", parts=[video_part, text_part])
             response = await self.gemini_client.aio.models.generate_content(
-                model=model,
+                model=resolved,
                 contents=[content],
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())],
@@ -600,7 +620,7 @@ class InvestmentCog(commands.Cog):
             return {"ok": False, "error": "Geminiクライアント未設定"}
         today = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
         prompt = PROMPT_MARKET_SENTIMENT.format(date=today)
-        result = await self._gemini_with_search(prompt)
+        result = await self._gemini_with_search(prompt, feature_key="investment_sentiment")
         if not result:
             return {"ok": False, "error": "地合い分析の取得に失敗"}
 
@@ -623,7 +643,7 @@ class InvestmentCog(commands.Cog):
         prompt = PROMPT_STOCK_SNAPSHOT.format(
             ticker=code, market=market, date=now_str
         )
-        result = await self._gemini_with_search(prompt)
+        result = await self._gemini_with_search(prompt, feature_key="investment_snapshot")
         if not result:
             return {"ok": False, "error": "スナップショットの取得に失敗"}
         date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -659,7 +679,7 @@ class InvestmentCog(commands.Cog):
         snap_prompt = PROMPT_STOCK_SNAPSHOT.format(
             ticker=code, market=market, date=now_str
         )
-        snapshot = await self._gemini_with_search(snap_prompt)
+        snapshot = await self._gemini_with_search(snap_prompt, feature_key="investment_snapshot")
         if not snapshot:
             return {"ok": False, "error": "銘柄データの取得に失敗"}
 
@@ -668,7 +688,7 @@ class InvestmentCog(commands.Cog):
             snapshot=snapshot,
             ticker=code,
         )
-        audit = await self._gemini_plain(audit_prompt)
+        audit = await self._gemini_plain(audit_prompt, feature_key="investment_audit")
         if not audit:
             return {"ok": False, "error": "審査結果の生成に失敗"}
 
@@ -697,7 +717,7 @@ class InvestmentCog(commands.Cog):
             return {"ok": False, "error": "Geminiクライアント未設定"}
         market, code = _resolve_market(ticker)
         prompt = PROMPT_EARNINGS_SCHEDULE.format(ticker=code, market=market)
-        raw = await self._gemini_with_search(prompt)
+        raw = await self._gemini_with_search(prompt, feature_key="investment_earnings")
         if not raw:
             return {"ok": False, "error": "決算情報の取得に失敗"}
         data = self._extract_json(raw)
@@ -774,7 +794,7 @@ class InvestmentCog(commands.Cog):
             return {"ok": False, "error": "Geminiクライアント未設定"}
         market, code = _resolve_market(ticker)
         prompt = PROMPT_EARNINGS_DOCUMENTS.format(ticker=code, market=market)
-        raw = await self._gemini_with_search(prompt)
+        raw = await self._gemini_with_search(prompt, feature_key="investment_earnings")
         if not raw:
             return {"ok": False, "error": "決算資料の取得に失敗"}
         data = self._extract_json(raw)
@@ -871,7 +891,7 @@ class InvestmentCog(commands.Cog):
         snap_prompt = PROMPT_STOCK_SNAPSHOT.format(
             ticker=code, market=market, date=now_str
         )
-        snapshot = await self._gemini_with_search(snap_prompt)
+        snapshot = await self._gemini_with_search(snap_prompt, feature_key="investment_snapshot")
 
         # 2. 動画解析プロンプトを構築
         background = (
@@ -894,7 +914,7 @@ class InvestmentCog(commands.Cog):
             "数値を引用するときは必ず時刻（mm:ss）も併記してください。"
         )
 
-        analysis = await self._gemini_with_video(cross_prompt, video_url)
+        analysis = await self._gemini_with_video(cross_prompt, video_url, feature_key="investment_earnings")
         if not analysis:
             return {"ok": False, "error": "動画解析に失敗しました"}
 
@@ -1386,7 +1406,7 @@ class InvestmentCog(commands.Cog):
         if len(joined) > 80000:
             joined = joined[:80000] + "\n\n（以下省略）"
         prompt = PROMPT_JOURNAL_PATTERN.format(entries=joined)
-        result = await self._gemini_plain(prompt)
+        result = await self._gemini_plain(prompt, feature_key="investment_journal")
         if not result:
             return {"ok": False, "error": "Geminiでの解析に失敗"}
         date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -1499,7 +1519,7 @@ class InvestmentCog(commands.Cog):
             f"- drop_pct/rise_pct: 直近1ヶ月で threshold% 以上下落/上昇\n"
             f"- earnings_within_days: 次回決算が threshold 日以内に迫っている"
         )
-        raw = await self._gemini_with_search(prompt)
+        raw = await self._gemini_with_search(prompt, feature_key="investment_review")
         data = self._extract_json(raw) or {}
         hits = data.get("hits") or []
         # ログ追記
@@ -1526,7 +1546,7 @@ class InvestmentCog(commands.Cog):
             return {"ok": False, "error": "Geminiクライアント未設定"}
         market, code = _resolve_market(ticker)
         prompt = PROMPT_PEER_COMPARISON.format(ticker=code, market=market)
-        result = await self._gemini_with_search(prompt)
+        result = await self._gemini_with_search(prompt, feature_key="investment_peer")
         if not result:
             return {"ok": False, "error": "比較レポートの生成に失敗"}
         date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -1553,7 +1573,7 @@ class InvestmentCog(commands.Cog):
             return {"ok": False, "error": "Geminiクライアント未設定"}
         market, code = _resolve_market(ticker)
         prompt = PROMPT_NEWS_SENTIMENT.format(ticker=code, market=market)
-        result = await self._gemini_with_search(prompt)
+        result = await self._gemini_with_search(prompt, feature_key="investment_news")
         if not result:
             return {"ok": False, "error": "ニュース取得に失敗"}
         date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -1582,7 +1602,7 @@ class InvestmentCog(commands.Cog):
             return {"ok": False, "error": "Geminiクライアント未設定"}
         market, code = _resolve_market(ticker)
         prompt = PROMPT_DIVIDEND_SCHEDULE.format(ticker=code, market=market)
-        raw = await self._gemini_with_search(prompt)
+        raw = await self._gemini_with_search(prompt, feature_key="investment_dividend")
         if not raw:
             return {"ok": False, "error": "配当情報の取得に失敗"}
         data = self._extract_json(raw)
@@ -1721,7 +1741,7 @@ class InvestmentCog(commands.Cog):
             journal=journal_str,
             holdings=holdings_str,
         )
-        result = await self._gemini_plain(prompt)
+        result = await self._gemini_plain(prompt, feature_key="investment_review")
         if not result:
             return {"ok": False, "error": "レビュー生成に失敗"}
         date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -1766,7 +1786,7 @@ class InvestmentCog(commands.Cog):
             "形式:\n"
             '{"data": [{"code": "...", "price": 0, "currency": "JPY/USD", "per": 0, "change_pct_1m": 0}]}\n'
         )
-        raw = await self._gemini_with_search(market_data_prompt)
+        raw = await self._gemini_with_search(market_data_prompt, feature_key="investment_risk")
         market_obj = self._extract_json(raw) or {"data": []}
         market_data_str = json.dumps(market_obj, ensure_ascii=False, indent=2)
 
@@ -1775,7 +1795,7 @@ class InvestmentCog(commands.Cog):
             holdings_json=json.dumps(holdings, ensure_ascii=False, indent=2),
             market_data=market_data_str,
         )
-        report = await self._gemini_plain(prompt)
+        report = await self._gemini_plain(prompt, feature_key="investment_risk")
         if not report:
             return {"ok": False, "error": "リスク評価の生成に失敗"}
         date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")

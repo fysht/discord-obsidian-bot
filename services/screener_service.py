@@ -37,6 +37,7 @@ class ScreenerService:
         universe_name: str = "topix500",
         min_market_cap_jpy: Optional[int] = None,
         exclude_sectors: Optional[list[str]] = None,
+        enabled_filters: Optional[list[str]] = None,
     ) -> dict:
         """機械スクリーニング (Phase A) を実行する。
 
@@ -53,6 +54,8 @@ class ScreenerService:
         strategy = get_strategy(style)
         if not strategy:
             return {"ok": False, "error": f"未知のスタイル: {style}"}
+
+        enabled_set = set(enabled_filters) if enabled_filters is not None else None
 
         universe = await self.provider.get_universe(universe_name)
         if not universe:
@@ -97,7 +100,7 @@ class ScreenerService:
                         if needs_fundamentals:
                             return None
                 try:
-                    return strategy.evaluate(code, name, sector, df, fundamentals)
+                    return strategy.evaluate(code, name, sector, df, fundamentals, enabled_filters=enabled_set)
                 except Exception as e:
                     logging.debug(f"evaluate エラー {code}: {e}")
                     return None

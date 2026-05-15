@@ -74,8 +74,10 @@ class WeeklyReviewCog(commands.Cog):
 
         try:
             if self.gemini_client:
+                from services.gemini_model_resolver import resolve_gemini_model
+                _m = await resolve_gemini_model("routines", default_pro=True)
                 response = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-pro",
+                    model=_m,
                     contents=prompt,
                 )
 

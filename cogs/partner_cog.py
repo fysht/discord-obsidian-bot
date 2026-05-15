@@ -312,8 +312,10 @@ class PartnerCog(commands.Cog):
             return
         prompt = f"{PROMPT_CONTEXTUAL_LOG}\n\nAIの発言: {ai_text}\nユーザーの発言: {user_text}"
         try:
+            from services.gemini_model_resolver import resolve_gemini_model
+            _m = await resolve_gemini_model("partner_chat", default_pro=True)
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-pro", contents=prompt
+                model=_m, contents=prompt
             )
             log_entry = response.text.strip() if response.text else ""
             if log_entry:
@@ -880,8 +882,10 @@ class PartnerCog(commands.Cog):
         )
 
         try:
+            from services.gemini_model_resolver import resolve_gemini_model
+            _m = await resolve_gemini_model("partner_chat", default_pro=True)
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-pro",
+                model=_m,
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
@@ -902,7 +906,7 @@ class PartnerCog(commands.Cog):
 
                 contents.append(types.Content(role="user", parts=f_responses))
                 final_res = await self.gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-pro",
+                    model=_m,
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=system_prompt
@@ -939,8 +943,10 @@ class PartnerCog(commands.Cog):
 
         prompt = f"{routine_prompt}\n\n【状況】\n{context_text}"
         try:
+            from services.gemini_model_resolver import resolve_gemini_model
+            _m = await resolve_gemini_model("routines", default_pro=False)
             response = await self.gemini_client.aio.models.generate_content(
-                model="gemini-2.5-pro",
+                model=_m,
                 contents=prompt,
                 config=types.GenerateContentConfig(system_instruction=system_prompt),
             )
