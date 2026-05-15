@@ -6713,6 +6713,8 @@ let _screenerFakeProgressTimer = null;
 let _screenerFakeProgressPct = 0;
 // {style_name: Set<filter_key>} - スタイルごとに ON 状態の構成要素キー
 let _screenerStyleFilters = {};
+let _screenerLastResult = null;        // 最後のスクリーニング結果（保存用）
+let _screenerLastQualitativeReport = null; // 最後の質的分析レポートMarkdown
 
 window.openScreenerModal = async () => {
     const modal = $('#invest-screener-modal');
@@ -6895,7 +6897,8 @@ window.runScreener = async () => {
     _setScreenerAnalyzeEnabled(false);
 
     try {
-        const body = { styles: [..._screenerSelectedStyles], universe, top_n: topN };
+        const combineMode = document.querySelector('input[name="screener-combine-mode"]:checked')?.value || 'any';
+        const body = { styles: [..._screenerSelectedStyles], universe, top_n: topN, combine_mode: combineMode };
         if (minMcapJpy) body.min_market_cap_jpy = minMcapJpy;
         const filter_overrides = {};
         for (const styleName of _screenerSelectedStyles) {
@@ -6913,8 +6916,12 @@ window.runScreener = async () => {
             return;
         }
         _screenerCandidates = data.candidates || [];
+        _screenerLastResult = data;
+        _screenerLastQualitativeReport = null;
+        _clearQualitativeResult();
         _renderScreenerCandidates(data);
         _setScreenerAnalyzeEnabled(_screenerCandidates.length > 0);
+        _updateScreenerSaveButton();
         if (data.used_near_miss) {
             showToast(`条件通過なし。代わりに「条件に近い銘柄」${_screenerCandidates.length} 件を表示`, true);
         } else {
@@ -6942,6 +6949,11 @@ function _renderScreenerCandidates(data) {
         }).join('')
         : '';
 
+    const isAnd = data.combine_mode === 'all' && (data.styles || []).length > 1;
+    const andBanner = isAnd
+        ? `<div style="padding:6px 10px;margin-bottom:8px;background:rgba(78,161,255,0.1);border-left:3px solid #4ea1ff;border-radius:4px;font-size:0.76rem;color:#4ea1ff;">🔗 AND モード: 選択した全スタイルの条件をすべて満たす銘柄のみを表示しています。</div>`
+        : '';
+
     const meta = `<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;">
         <div>スタイル: ${escapeHtml(data.style_display || (data.styles || [data.style]).join(' / '))}</div>
         <div>ユニバース: ${escapeHtml(data.universe || '-')} / データ基準日: ${escapeHtml(data.data_as_of || '')} / 実行: ${escapeHtml(data.executed_at || '')}</div>
@@ -6950,13 +6962,19 @@ function _renderScreenerCandidates(data) {
     </div>`;
 
     if (!cands.length) {
-        el.innerHTML = meta + `<div class="loading-placeholder">条件に該当する銘柄が見つかりませんでした。条件を緩めるか、ユニバースを「全銘柄」に変えてみてください。</div>`;
+        el.innerHTML = andBanner + meta + `<div class="loading-placeholder">条件に該当する銘柄が見つかりませんでした。${isAnd ? 'ANDモードでは条件が厳しくなります。構成要素のチェックを減らすか、ORモードをお試しください。' : '条件を緩めるか、ユニバースを「全銘柄」に変えてみてください。'}</div>`;
         return;
     }
 
     const nearMissBanner = data.used_near_miss
         ? `<div style="padding:8px;margin-bottom:8px;background:rgba(255,212,84,0.12);border-left:3px solid #ffd454;border-radius:4px;font-size:0.78rem;color:#ffd454;">⚠️ 全条件を満たす銘柄はありませんでした。代わりに「条件に近い銘柄」を提示しています（赤バッジ＝満たさなかった条件）。</div>`
         : '';
+
+    const bulkToggle = `<div style="font-size:0.74rem;margin-bottom:6px;color:var(--text-secondary);">
+        <a href="#" onclick="event.preventDefault();_screenerCheckAll(true);" style="color:#4ea1ff;cursor:pointer;text-decoration:underline;">☑ すべて選択</a>
+        <span style="opacity:0.5;margin:0 4px;">/</span>
+        <a href="#" onclick="event.preventDefault();_screenerCheckAll(false);" style="color:#4ea1ff;cursor:pointer;text-decoration:underline;">☐ すべて解除</a>
+    </div>`;
 
     const rows = cands.map((c, idx) => {
         const sigBadges = (c.signals || []).map(s => {
@@ -6992,7 +7010,7 @@ function _renderScreenerCandidates(data) {
             </label>
         </div>`;
     }).join('');
-    el.innerHTML = meta + nearMissBanner + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
+    el.innerHTML = andBanner + meta + nearMissBanner + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 }
 
 window._addScreenerToWatchlist = async (code, name, sector, source) => {
@@ -7057,18 +7075,28 @@ function _pollScreenerJob() {
             const data = await apiFetch(`/api/investment/screener/jobs/${encodeURIComponent(_screenerJobId)}`);
             if (!data || !data.ok) return;
             const prog = data.progress || {};
-            const pct = prog.total ? Math.round(prog.current / prog.total * 100) : 0;
+            const total = prog.total || 0;
+            const cur = prog.current || 0;
             const ticker = prog.current_ticker || '';
-            _showScreenerProgress(`質的分析中: ${prog.current}/${prog.total} ${ticker ? `(${ticker})` : ''}`, pct);
+            // 実進捗が出るまでは「準備中」とし、5%を維持（バーが後退しないように）
+            if (data.status === 'pending' || total === 0) {
+                _showScreenerProgress('質的分析を準備中...', Math.max(5, _screenerFakeProgressPct));
+            } else if (data.status === 'running') {
+                const pct = Math.max(5, Math.round(cur / total * 100));
+                const tickerSuffix = ticker ? ` (${ticker})` : '';
+                _showScreenerProgress(`質的分析中: ${cur}/${total}${tickerSuffix}`, pct);
+            }
             if (data.status === 'done') {
                 clearInterval(_screenerJobPollTimer); _screenerJobPollTimer = null;
-                _hideScreenerProgress();
+                _showScreenerProgress('結果を整形中...', 98);
                 _setScreenerAnalyzeEnabled(true);
                 showToast('質的分析が完了しました');
                 if (data.report_markdown) {
-                    window.openInvestmentResultModal('🔎 スクリーニング結果', data.report_markdown);
+                    _showQualitativeResult(data.report_markdown);
                 }
                 window.loadInvestmentHistory && window.loadInvestmentHistory();
+                // 完了レポートが表示された後にゲージを片付ける
+                setTimeout(_hideScreenerProgress, 600);
                 _screenerJobId = null;
             } else if (data.status === 'error') {
                 clearInterval(_screenerJobPollTimer); _screenerJobPollTimer = null;
@@ -7082,6 +7110,172 @@ function _pollScreenerJob() {
         }
     }, 3000);
 }
+
+// 質的分析レポートをスクリーナーモーダル内に表示
+function _showQualitativeResult(markdown) {
+    _screenerLastQualitativeReport = markdown;
+    const wrap = $('#screener-qualitative-result');
+    const body = $('#screener-qualitative-body');
+    if (!wrap || !body) return;
+    const html = (typeof renderMarkdown === 'function') ? renderMarkdown(markdown) : `<pre style="white-space:pre-wrap;">${escapeHtml(markdown)}</pre>`;
+    body.innerHTML = html;
+    wrap.classList.remove('hidden');
+    // 結果セクションへスクロール
+    setTimeout(() => { wrap.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, 100);
+    // 質的分析が出たので保存ボタンを再評価
+    _updateScreenerSaveButton();
+}
+
+window._clearQualitativeResult = () => {
+    const wrap = $('#screener-qualitative-result');
+    const body = $('#screener-qualitative-body');
+    if (body) body.innerHTML = '';
+    wrap?.classList.add('hidden');
+    _screenerLastQualitativeReport = null;
+    _updateScreenerSaveButton();
+};
+
+// 候補チェックボックスの一括選択/解除
+window._screenerCheckAll = (flag) => {
+    document.querySelectorAll('.screener-cand-check').forEach(c => { c.checked = !!flag; });
+};
+
+// 「💾 結果を保存」ボタンの活性化
+function _updateScreenerSaveButton() {
+    const btn = $('#screener-save-btn');
+    if (!btn) return;
+    const hasResult = _screenerLastResult && (_screenerLastResult.candidates || []).length > 0;
+    btn.disabled = !hasResult;
+    btn.style.opacity = hasResult ? '1' : '0.5';
+}
+
+// 結果を保存（候補一覧 + 質的分析レポート）
+window.saveScreenerResult = async () => {
+    if (!_screenerLastResult || !(_screenerLastResult.candidates || []).length) {
+        showToast('保存できるスクリーニング結果がありません', true);
+        return;
+    }
+    const defaultTitle = `${_screenerLastResult.style_display || '結果'} (${_screenerLastResult.executed_at || ''})`;
+    const title = prompt('保存名を入力してください', defaultTitle);
+    if (title === null) return;
+    try {
+        const body = {
+            title: title || defaultTitle,
+            styles: _screenerLastResult.styles || (_screenerLastResult.style ? [_screenerLastResult.style] : []),
+            combine_mode: _screenerLastResult.combine_mode || 'any',
+            universe: _screenerLastResult.universe || '',
+            applied_filters: _screenerLastResult.applied_filters_by_style || {},
+            candidates: _screenerLastResult.candidates || [],
+            qualitative_report: _screenerLastQualitativeReport || '',
+        };
+        const data = await apiFetch('/api/investment/screener/runs', { method: 'POST', body: JSON.stringify(body) });
+        if (data && data.ok) {
+            showToast('💾 スクリーニング結果を保存しました');
+            // 保存済み一覧が開いていたら更新
+            if (!$('#screener-saved-details')?.hasAttribute('hidden')) {
+                loadScreenerSavedList();
+            }
+        } else {
+            showToast('保存失敗: ' + (data?.error || data?.detail || '不明'), true);
+        }
+    } catch (e) {
+        showToast('保存失敗: ' + (e.message || e), true);
+    }
+};
+
+// 保存済みスクリーニング一覧をロード
+window.loadScreenerSavedList = async () => {
+    const el = $('#screener-saved-list');
+    if (!el) return;
+    el.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    try {
+        const data = await apiFetch('/api/investment/screener/runs');
+        if (!data || !data.ok) {
+            el.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+            return;
+        }
+        const items = data.items || [];
+        if (!items.length) {
+            el.innerHTML = '<div class="loading-placeholder">保存済みの結果はまだありません。</div>';
+            return;
+        }
+        el.innerHTML = items.map(it => {
+            const date = (it.created_at || '').replace('T', ' ').slice(0, 16);
+            const reportTag = it.has_report ? '<span style="color:#7cd6a0;font-size:0.7rem;margin-left:6px;">🤖 質的分析あり</span>' : '';
+            return `<div style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
+                <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;flex-wrap:wrap;">
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-weight:600;font-size:0.84rem;word-break:break-word;">${escapeHtml(it.title || '(無題)')}${reportTag}</div>
+                        <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">
+                            ${escapeHtml(date)} / ${escapeHtml((it.styles || []).join(', '))} [${escapeHtml(it.combine_mode || 'any').toUpperCase()}] / ${it.candidate_count} 銘柄
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:4px;flex-shrink:0;">
+                        <button class="mini-link" onclick="restoreScreenerRun(${it.id})">📋 復元</button>
+                        <button class="mini-link" style="color:#ff6b6b;" onclick="deleteScreenerRun(${it.id})">🗑</button>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        el.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+};
+
+window.restoreScreenerRun = async (runId) => {
+    try {
+        const data = await apiFetch(`/api/investment/screener/runs/${runId}`);
+        if (!data || !data.ok || !data.data) {
+            showToast('復元失敗', true);
+            return;
+        }
+        const r = data.data;
+        // 表示用 data オブジェクトを構築
+        const restored = {
+            ok: true,
+            styles: r.styles || [],
+            style_display: (r.styles || []).join(' / ') + ' [' + (r.combine_mode || 'any').toUpperCase() + '] (復元)',
+            combine_mode: r.combine_mode || 'any',
+            universe: r.universe || '',
+            data_as_of: '(保存時点)',
+            executed_at: (r.created_at || '').replace('T', ' ').slice(0, 16),
+            scanned: '-',
+            qualified: (r.candidates || []).length,
+            applied_filters_by_style: r.applied_filters || {},
+            used_near_miss: false,
+            candidates: r.candidates || [],
+        };
+        _screenerCandidates = restored.candidates;
+        _screenerLastResult = restored;
+        _screenerLastQualitativeReport = r.qualitative_report || null;
+        _renderScreenerCandidates(restored);
+        _setScreenerAnalyzeEnabled(_screenerCandidates.length > 0);
+        if (r.qualitative_report) {
+            _showQualitativeResult(r.qualitative_report);
+        } else {
+            _clearQualitativeResult();
+        }
+        _updateScreenerSaveButton();
+        showToast('📋 保存済み結果を復元しました');
+    } catch (e) {
+        showToast('復元失敗: ' + (e.message || e), true);
+    }
+};
+
+window.deleteScreenerRun = async (runId) => {
+    if (!confirm('この保存済み結果を削除しますか？')) return;
+    try {
+        const data = await apiFetch(`/api/investment/screener/runs/${runId}`, { method: 'DELETE' });
+        if (data && data.ok) {
+            showToast('🗑 削除しました');
+            loadScreenerSavedList();
+        } else {
+            showToast('削除失敗', true);
+        }
+    } catch (e) {
+        showToast('削除失敗: ' + (e.message || e), true);
+    }
+};
 
 // =================================================================
 // 注目銘柄 (Watchlist)
@@ -7306,16 +7500,63 @@ window.closeHoldingPicker = () => {
 };
 
 window.pickHolding = (code) => {
-    if (_holdingPickerTarget === 'ceo') {
-        const el = $('#invest-ceo-ticker');
-        if (el) el.value = code;
-    } else {
-        const el = $('#invest-ticker-input');
-        if (el) el.value = code;
-    }
+    _setPickerTargetValue(_holdingPickerTarget, code);
     showToast(`${code} を選択しました`);
     window.closeHoldingPicker();
 };
+
+// === 注目銘柄ピッカー（銘柄分析・CEO・投資日記用） ===
+let _watchlistPickerTarget = null; // 'analysis' | 'ceo' | 'journal'
+
+window.openWatchlistPicker = async (target) => {
+    _watchlistPickerTarget = target;
+    const modal = $('#invest-watchlist-picker-modal');
+    const listEl = $('#invest-watchlist-picker-list');
+    if (!modal || !listEl) return;
+    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    modal.classList.remove('hidden');
+    try {
+        const data = await apiFetch('/api/investment/watchlist');
+        const items = (data && data.ok) ? (data.items || []) : [];
+        if (!items.length) {
+            listEl.innerHTML = '<div class="invest-empty">注目銘柄がまだありません。スクリーニング結果から⭐ボタンで追加してください。</div>';
+            return;
+        }
+        listEl.innerHTML = items.map(it => {
+            const code = escapeHtml(it.code || '?');
+            const name = escapeHtml(it.name || code);
+            const sector = escapeHtml(it.sector || '');
+            return `<div class="invest-row" style="cursor:pointer;" onclick="pickWatchlistTicker('${code.replace(/'/g, '&#39;')}')">
+                <div class="row-main">
+                    <div class="row-title">${name} (${code})</div>
+                    <div class="row-meta">${sector}</div>
+                </div>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
+    }
+};
+
+window.closeWatchlistPicker = () => {
+    $('#invest-watchlist-picker-modal')?.classList.add('hidden');
+};
+
+window.pickWatchlistTicker = (code) => {
+    _setPickerTargetValue(_watchlistPickerTarget, code);
+    showToast(`${code} を選択しました`);
+    window.closeWatchlistPicker();
+};
+
+// 共通: ピッカーのターゲット種別に応じて対応する input に値を設定
+function _setPickerTargetValue(target, code) {
+    let id;
+    if (target === 'ceo') id = 'invest-ceo-ticker';
+    else if (target === 'journal') id = 'journal-add-ticker';
+    else id = 'invest-ticker-input'; // 'analysis' or default
+    const el = $('#' + id);
+    if (el) el.value = code;
+}
 
 // === 保有銘柄アクションシート（ポートフォリオ行クリック用） ===
 let _holdingActionCode = null;
@@ -7546,11 +7787,16 @@ window.loadJournalList = async () => {
             const action = escapeHtml(it.action || '');
             const emotion = escapeHtml(it.emotion || '');
             const meta = [date+' '+time, ticker, action, emotion].filter(Boolean).join(' / ');
-            const safeFn = escapeHtml(it.filename || '');
-            return `<div class="invest-row" onclick="openJournalEntry('${safeFn.replace(/'/g, '&#39;')}', '${title.replace(/'/g, '&#39;')}')" style="cursor:pointer;">
-                <div class="row-main">
+            const safeFn = (it.filename || '').replace(/'/g, "\\'");
+            const safeTitle = title.replace(/'/g, '&#39;');
+            return `<div class="invest-row" style="display:flex;align-items:flex-start;gap:6px;">
+                <div class="row-main" style="flex:1;min-width:0;cursor:pointer;" onclick="openJournalEntry('${safeFn}', '${safeTitle}')">
                     <div class="row-title">${title}</div>
                     <div class="row-meta">${meta}</div>
+                </div>
+                <div style="display:flex;gap:4px;flex-shrink:0;">
+                    <button class="mini-link" onclick="event.stopPropagation();openJournalEditModal('${safeFn}')" title="編集">✏️</button>
+                    <button class="mini-link" style="color:#ff6b6b;" onclick="event.stopPropagation();deleteJournalEntry('${safeFn}')" title="削除">🗑</button>
                 </div>
             </div>`;
         }).join('');
@@ -7577,7 +7823,14 @@ window.openJournalEntry = async (filename, title) => {
     }
 };
 
+let _journalEditingFile = null; // null=追加モード, filename=編集モード
+
 window.openJournalAddModal = () => {
+    _journalEditingFile = null;
+    const titleEl = $('#invest-journal-modal-title');
+    if (titleEl) titleEl.textContent = '📔 投資日記を追加';
+    const submitBtn = $('#journal-submit-btn');
+    if (submitBtn) submitBtn.textContent = '保存';
     ['journal-add-title','journal-add-ticker','journal-add-emotion','journal-add-content'].forEach(id => {
         const el = $('#'+id);
         if (el) el.value = '';
@@ -7586,7 +7839,36 @@ window.openJournalAddModal = () => {
     if (sel) sel.value = '';
     $('#invest-journal-modal')?.classList.remove('hidden');
 };
-window.closeJournalAddModal = () => $('#invest-journal-modal')?.classList.add('hidden');
+
+window.openJournalEditModal = async (filename) => {
+    if (!filename) return;
+    try {
+        const data = await apiFetch(`/api/investment/journal/${encodeURIComponent(filename)}`);
+        if (!data || !data.ok) {
+            showToast('読み込み失敗: ' + (data?.error || '不明'), true);
+            return;
+        }
+        _journalEditingFile = filename;
+        const titleEl = $('#invest-journal-modal-title');
+        if (titleEl) titleEl.textContent = '✏️ 投資日記を編集';
+        const submitBtn = $('#journal-submit-btn');
+        if (submitBtn) submitBtn.textContent = '更新';
+        $('#journal-add-title').value = data.title || '';
+        $('#journal-add-ticker').value = data.ticker || '';
+        $('#journal-add-emotion').value = data.emotion || '';
+        $('#journal-add-content').value = data.content || '';
+        const sel = $('#journal-add-action');
+        if (sel) sel.value = data.action || '';
+        $('#invest-journal-modal')?.classList.remove('hidden');
+    } catch (e) {
+        showToast('読み込みエラー: ' + (e.message || e), true);
+    }
+};
+
+window.closeJournalAddModal = () => {
+    $('#invest-journal-modal')?.classList.add('hidden');
+    _journalEditingFile = null;
+};
 
 window.submitJournalAdd = async () => {
     const content = $('#journal-add-content')?.value?.trim();
@@ -7602,9 +7884,16 @@ window.submitJournalAdd = async () => {
         emotion: $('#journal-add-emotion')?.value?.trim() || '',
     };
     try {
-        const data = await apiFetch('/api/investment/journal/add', { method: 'POST', body: JSON.stringify(body) });
+        let data;
+        if (_journalEditingFile) {
+            data = await apiFetch(`/api/investment/journal/${encodeURIComponent(_journalEditingFile)}`, {
+                method: 'PUT', body: JSON.stringify(body),
+            });
+        } else {
+            data = await apiFetch('/api/investment/journal/add', { method: 'POST', body: JSON.stringify(body) });
+        }
         if (data && data.ok) {
-            showToast('日記を保存しました');
+            showToast(_journalEditingFile ? '日記を更新しました' : '日記を保存しました');
             window.closeJournalAddModal();
             window.loadJournalList();
         } else {
@@ -7612,6 +7901,22 @@ window.submitJournalAdd = async () => {
         }
     } catch (e) {
         showToast('保存失敗: ' + (e.message || e), true);
+    }
+};
+
+window.deleteJournalEntry = async (filename) => {
+    if (!filename) return;
+    if (!confirm('この日記を削除しますか？（Driveのファイルもゴミ箱に移動されます）')) return;
+    try {
+        const data = await apiFetch(`/api/investment/journal/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+        if (data && data.ok) {
+            showToast('🗑 日記を削除しました');
+            window.loadJournalList();
+        } else {
+            showToast('削除失敗: ' + (data?.error || '不明'), true);
+        }
+    } catch (e) {
+        showToast('削除失敗: ' + (e.message || e), true);
     }
 };
 

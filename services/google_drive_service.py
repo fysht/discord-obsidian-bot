@@ -96,6 +96,14 @@ class GoogleDriveService:
             lambda: service.files().update(fileId=file_id, media_body=media).execute()
         )
 
+    async def delete_file(self, service, file_id):
+        """ファイルをゴミ箱へ移動（trashed=True）。完全削除ではないので復元可能。"""
+        await asyncio.to_thread(
+            lambda: service.files().update(
+                fileId=file_id, body={"trashed": True}
+            ).execute()
+        )
+
     async def upload_file(
         self, service, parent_id, name, local_path, mime_type="application/octet-stream"
     ):

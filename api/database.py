@@ -3,6 +3,7 @@ import datetime
 import json
 import logging
 from pathlib import Path
+from typing import Optional
 from config import JST
 
 DB_PATH = Path(__file__).parent.parent / "chat_history.db"
@@ -244,6 +245,24 @@ async def init_db():
                 added_at TEXT NOT NULL
             )
         """)
+
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS screener_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT DEFAULT '',
+                styles TEXT DEFAULT '[]',
+                combine_mode TEXT DEFAULT 'any',
+                universe TEXT DEFAULT '',
+                applied_filters TEXT DEFAULT '{}',
+                candidates TEXT DEFAULT '[]',
+                qualitative_report TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_screener_runs_created ON screener_runs(created_at DESC)"
+        )
 
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
@@ -1134,6 +1153,120 @@ async def watchlist_list() -> list[dict]:
 async def watchlist_update_memo(code: str, memo: str) -> bool:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute("UPDATE watchlist SET memo = ? WHERE code = ?", (memo, code))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# =========================================================
+# Screener Runs (保存済みスクリーニング結果)
+# =========================================================
+
+async def screener_run_save(
+    title: str,
+    styles: list,
+    combine_mode: str,
+    universe: str,
+    applied_filters: dict,
+    candidates: list,
+    qualitative_report: str = "",
+) -> int:
+    import json as _json
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            """INSERT INTO screener_runs
+               (title, styles, combine_mode, universe, applied_filters, candidates, qualitative_report, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                title or "",
+                _json.dumps(styles or [], ensure_ascii=False),
+                combine_mode or "any",
+                universe or "",
+                _json.dumps(applied_filters or {}, ensure_ascii=False),
+                _json.dumps(candidates or [], ensure_ascii=False),
+                qualitative_report or "",
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def screener_run_update_qualitative(run_id: int, qualitative_report: str) -> bool:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE screener_runs SET qualitative_report = ?, updated_at = ? WHERE id = ?",
+            (qualitative_report or "", now, run_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def screener_run_list() -> list[dict]:
+    """概要のみ返す（candidates 件数, has_report のフラグ）。"""
+    import json as _json
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, title, styles, combine_mode, universe, candidates, qualitative_report, created_at "
+            "FROM screener_runs ORDER BY created_at DESC"
+        )
+        rows = await cursor.fetchall()
+        out = []
+        for r in rows:
+            try:
+                styles = _json.loads(r["styles"] or "[]")
+            except Exception:
+                styles = []
+            try:
+                cands = _json.loads(r["candidates"] or "[]")
+                cand_count = len(cands)
+            except Exception:
+                cand_count = 0
+            out.append({
+                "id": r["id"],
+                "title": r["title"] or "",
+                "styles": styles,
+                "combine_mode": r["combine_mode"] or "any",
+                "universe": r["universe"] or "",
+                "candidate_count": cand_count,
+                "has_report": bool((r["qualitative_report"] or "").strip()),
+                "created_at": r["created_at"],
+            })
+        return out
+
+
+async def screener_run_get(run_id: int) -> Optional[dict]:
+    import json as _json
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM screener_runs WHERE id = ?", (run_id,)
+        )
+        r = await cursor.fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        try:
+            d["styles"] = _json.loads(d.get("styles") or "[]")
+        except Exception:
+            d["styles"] = []
+        try:
+            d["applied_filters"] = _json.loads(d.get("applied_filters") or "{}")
+        except Exception:
+            d["applied_filters"] = {}
+        try:
+            d["candidates"] = _json.loads(d.get("candidates") or "[]")
+        except Exception:
+            d["candidates"] = []
+        return d
+
+
+async def screener_run_delete(run_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("DELETE FROM screener_runs WHERE id = ?", (run_id,))
         await db.commit()
         return cursor.rowcount > 0
 

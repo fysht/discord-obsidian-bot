@@ -1375,6 +1375,142 @@ class InvestmentCog(commands.Cog):
         items = list(reversed(index))[:limit]
         return {"ok": True, "items": items}
 
+    async def journal_get(self, filename: str) -> dict:
+        """指定ファイル名の日記エントリを取得（インデックス + 本文）。"""
+        if not filename:
+            return {"ok": False, "error": "filename が空です"}
+        index = await self._read_json_file(
+            JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]
+        )
+        meta = next((it for it in index if it.get("filename") == filename), None)
+        if not meta:
+            return {"ok": False, "error": "日記が見つかりません"}
+        # 本文取得
+        if not self.drive_service:
+            return {"ok": False, "error": "Drive未接続"}
+        service = self.drive_service.get_service()
+        if not service:
+            return {"ok": False, "error": "Drive接続失敗"}
+        inv_id = await self._get_investment_folder(service)
+        sub_id = await self.drive_service.find_file(service, inv_id, JOURNAL_FOLDER)
+        if not sub_id:
+            return {"ok": False, "error": "Journalフォルダがありません"}
+        f_id = await self.drive_service.find_file(service, sub_id, filename)
+        if not f_id:
+            return {"ok": False, "error": "ファイルが見つかりません"}
+        raw = await self.drive_service.read_text_file(service, f_id)
+        # 本文（## 内容 以降）を抽出
+        content = ""
+        if raw:
+            marker = "## 内容"
+            if marker in raw:
+                content = raw.split(marker, 1)[1].lstrip("\n")
+            else:
+                content = raw
+        return {
+            "ok": True,
+            "filename": filename,
+            "title": meta.get("title", ""),
+            "ticker": meta.get("ticker", ""),
+            "action": meta.get("action", ""),
+            "emotion": meta.get("emotion", ""),
+            "date": meta.get("date", ""),
+            "time": meta.get("time", ""),
+            "content": content.strip(),
+        }
+
+    async def journal_edit(self, filename: str, entry: dict) -> dict:
+        """既存日記を上書き編集する。filename と作成日時は維持し、本文・メタを更新。"""
+        if not filename:
+            return {"ok": False, "error": "filename が空です"}
+        index = await self._read_json_file(
+            JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]
+        )
+        meta = next((it for it in index if it.get("filename") == filename), None)
+        if not meta:
+            return {"ok": False, "error": "日記が見つかりません"}
+
+        title = (entry.get("title") or "").strip() or "(無題)"
+        content = (entry.get("content") or "").strip()
+        if not content:
+            return {"ok": False, "error": "本文が空です"}
+        ticker = (entry.get("ticker") or "").strip().upper()
+        action = (entry.get("action") or "").strip()
+        emotion = (entry.get("emotion") or "").strip()
+        date_str = meta.get("date") or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        time_str = meta.get("time") or datetime.datetime.now(JST).strftime("%H:%M")
+        now_iso = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+
+        body_lines = [
+            "---",
+            f"title: {title}",
+            f"date: {date_str}",
+            f"ticker: {ticker}",
+            f"action: {action}",
+            f"emotion: {emotion}",
+            f"updated_at: {now_iso}",
+            "tags: [investment, journal]",
+            "---",
+            "",
+            f"# {title}",
+            "",
+            f"- 日時: {date_str} {time_str}",
+            f"- 銘柄: {ticker or '(なし)'}",
+            f"- アクション: {action or '(なし)'}",
+            f"- 感情: {emotion or '(なし)'}",
+            f"- 更新: {now_iso}",
+            "",
+            "## 内容",
+            "",
+            content,
+        ]
+        body = "\n".join(body_lines)
+        # _save_dated_note は既存ファイルがあれば上書きする
+        await self._save_dated_note(JOURNAL_FOLDER, filename, body)
+
+        # インデックスを更新
+        meta["title"] = title
+        meta["ticker"] = ticker
+        meta["action"] = action
+        meta["emotion"] = emotion
+        meta["updated_at"] = now_iso
+        await self._write_json_file(JOURNAL_FOLDER, JOURNAL_INDEX_FILE, index)
+        return {"ok": True, "filename": filename}
+
+    async def journal_delete(self, filename: str) -> dict:
+        """日記を削除する。Driveファイルをゴミ箱に移動し、インデックスからも除去。"""
+        if not filename:
+            return {"ok": False, "error": "filename が空です"}
+        index = await self._read_json_file(
+            JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]
+        )
+        meta = next((it for it in index if it.get("filename") == filename), None)
+        if not meta:
+            return {"ok": False, "error": "日記が見つかりません"}
+
+        # Driveファイル削除（ゴミ箱）
+        if self.drive_service:
+            service = self.drive_service.get_service()
+            if service:
+                inv_id = await self._get_investment_folder(service)
+                sub_id = await self.drive_service.find_file(
+                    service, inv_id, JOURNAL_FOLDER
+                )
+                if sub_id:
+                    f_id = await self.drive_service.find_file(
+                        service, sub_id, filename
+                    )
+                    if f_id:
+                        try:
+                            await self.drive_service.delete_file(service, f_id)
+                        except Exception as e:
+                            logging.warning(f"journal_delete: drive削除失敗 {filename}: {e}")
+
+        # インデックスから除去
+        new_index = [it for it in index if it.get("filename") != filename]
+        await self._write_json_file(JOURNAL_FOLDER, JOURNAL_INDEX_FILE, new_index)
+        return {"ok": True}
+
     async def journal_analyze_pattern(self, limit: int = 30) -> dict:
         index = await self._read_json_file(
             JOURNAL_FOLDER, JOURNAL_INDEX_FILE, default=[]

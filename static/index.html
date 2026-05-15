@@ -493,10 +493,11 @@
                             <span class="card-title">銘柄分析</span>
                         </div>
                         <div class="card-body">
-                            <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+                            <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
                                 <label style="font-size:0.78rem;color:var(--text-muted);white-space:nowrap;">ティッカー</label>
-                                <input type="text" id="invest-ticker-input" class="modern-input" style="flex:1;padding:10px;font-size:0.9rem;" placeholder="例: 7203 / AAPL">
-                                <button class="mini-link" onclick="openHoldingPicker('analysis')" title="保有銘柄から選ぶ">📂 保有から</button>
+                                <input type="text" id="invest-ticker-input" class="modern-input" style="flex:1;min-width:120px;padding:10px;font-size:0.9rem;" placeholder="例: 7203 / AAPL">
+                                <button class="mini-link" onclick="openHoldingPicker('analysis')" title="保有銘柄から選ぶ">📂 保有</button>
+                                <button class="mini-link" onclick="openWatchlistPicker('analysis')" title="注目銘柄から選ぶ">⭐ 注目</button>
                             </div>
                             <div class="action-chips invest-action-grid" style="padding:0;margin-bottom:6px;">
                                 <button class="chip-btn" onclick="runStockSnapshot()">📷 スナップショット</button>
@@ -696,6 +697,20 @@
                 </div>
 
                 <div style="margin-bottom:10px;">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">複数スタイルの組み合わせ <span style="opacity:0.6;">（スタイルを2つ以上選んだとき有効）</span></label>
+                    <div style="display:flex;gap:16px;margin-top:6px;">
+                        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.84rem;">
+                            <input type="radio" name="screener-combine-mode" value="any" checked>
+                            <span>いずれか合致（OR）</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.84rem;">
+                            <input type="radio" name="screener-combine-mode" value="all">
+                            <span>すべて合致（AND）</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div style="margin-bottom:10px;">
                     <label style="font-size:0.78rem;color:var(--text-muted);">構成要素 <span style="opacity:0.6;">（チェックを外すと必須から除外）</span></label>
                     <div id="screener-filters-wrap" style="margin-top:6px;">
                         <div style="font-size:0.76rem;color:var(--text-muted);">スタイルを選ぶと、その構成条件が表示されます。</div>
@@ -724,10 +739,27 @@
                     💡 質的分析の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「スクリーナー質的分析」で変更できます。
                 </div>
 
-                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
                     <button class="modal-btn submit" style="flex:1;font-size:0.88rem;" onclick="runScreener()">📊 機械スクリーニング</button>
                     <button class="modal-btn cancel" id="screener-analyze-btn" style="flex:1;font-size:0.88rem;" onclick="runScreenerAnalyze()" disabled>🤖 質的分析（選択銘柄）</button>
                 </div>
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <button class="modal-btn cancel" id="screener-save-btn" style="flex:1;font-size:0.82rem;" onclick="saveScreenerResult()" disabled>💾 結果を保存</button>
+                </div>
+
+                <details style="margin-bottom:8px;">
+                    <summary style="cursor:pointer;color:var(--text-secondary);font-size:0.74rem;">ℹ️ 質的分析では何を見ているか</summary>
+                    <div style="font-size:0.72rem;color:var(--text-muted);padding:6px 0 0 12px;line-height:1.5;">
+                        Gemini が以下を取得して銘柄ごとに整理します:
+                        <ul style="margin:4px 0;padding-left:18px;">
+                            <li>直近1ヶ月のIR・適時開示（出典URL付き）</li>
+                            <li>直近の決算事実（売上・利益・ガイダンス改定）</li>
+                            <li>ニュース・センチメント要約</li>
+                            <li>投資憲法との整合性（合致・不合致）</li>
+                        </ul>
+                        複数銘柄の場合は統合レポート（要点・銘柄別1行サマリー・留意点）も生成します。
+                    </div>
+                </details>
 
                 <div id="screener-progress" class="hidden" style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,0.05);border-radius:6px;">
                     <div id="screener-progress-text" style="font-size:0.82rem;margin-bottom:6px;">分析中...</div>
@@ -739,6 +771,21 @@
                 <div id="screener-results" style="border-top:1px solid var(--border-glass);padding-top:10px;font-size:0.85rem;">
                     <div class="loading-placeholder">スタイルを選んで「機械スクリーニング」を実行してください。</div>
                 </div>
+
+                <div id="screener-qualitative-result" class="hidden" style="margin-top:12px;border-top:1px solid var(--border-glass);padding-top:10px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                        <strong style="font-size:0.9rem;">🤖 質的分析レポート</strong>
+                        <button class="mini-link" onclick="_clearQualitativeResult()">✕ 閉じる</button>
+                    </div>
+                    <div id="screener-qualitative-body" class="invest-md-body" style="font-size:0.85rem;line-height:1.55;"></div>
+                </div>
+
+                <details style="margin-top:14px;border-top:1px solid var(--border-glass);padding-top:10px;" id="screener-saved-details" ontoggle="if (this.open) loadScreenerSavedList();">
+                    <summary style="cursor:pointer;font-size:0.85rem;color:var(--text-secondary);">📂 保存済みスクリーニング結果</summary>
+                    <div id="screener-saved-list" style="margin-top:8px;font-size:0.82rem;">
+                        <div class="loading-placeholder">展開すると一覧を取得します。</div>
+                    </div>
+                </details>
             </div>
 
             <div class="modal-actions" style="margin-top:10px;flex-shrink:0;">
@@ -757,6 +804,20 @@
             <div id="invest-holding-picker-list" style="flex:1;overflow-y:auto;border:1px solid var(--border-glass);border-radius:8px;"></div>
             <div class="modal-actions" style="margin-top:12px;">
                 <button class="modal-btn cancel" onclick="closeHoldingPicker()">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== WATCHLIST PICKER MODAL (注目銘柄から選ぶ) ========== -->
+    <div id="invest-watchlist-picker-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:480px;max-height:80vh;display:flex;flex-direction:column;">
+            <h3 style="margin-top:0;">⭐ 注目銘柄から選択</h3>
+            <p style="font-size:0.78rem;color:var(--text-muted);margin:-6px 0 12px;">
+                銘柄を選ぶとティッカーが自動入力されます。
+            </p>
+            <div id="invest-watchlist-picker-list" style="flex:1;overflow-y:auto;border:1px solid var(--border-glass);border-radius:8px;"></div>
+            <div class="modal-actions" style="margin-top:12px;">
+                <button class="modal-btn cancel" onclick="closeWatchlistPicker()">閉じる</button>
             </div>
         </div>
     </div>
@@ -830,13 +891,17 @@
         </div>
     </div>
 
-    <!-- ========== JOURNAL ADD MODAL ========== -->
+    <!-- ========== JOURNAL ADD/EDIT MODAL ========== -->
     <div id="invest-journal-modal" class="modal-overlay hidden">
         <div class="modal-card" style="max-width:560px;">
-            <h3 style="margin-top:0;">📔 投資日記を追加</h3>
+            <h3 id="invest-journal-modal-title" style="margin-top:0;">📔 投資日記を追加</h3>
             <div style="display:flex;flex-direction:column;gap:8px;">
                 <input type="text" id="journal-add-title" class="modern-input" placeholder="タイトル (任意)">
-                <input type="text" id="journal-add-ticker" class="modern-input" placeholder="ティッカー (任意, 例: 7203)">
+                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                    <input type="text" id="journal-add-ticker" class="modern-input" style="flex:1;min-width:140px;" placeholder="ティッカー (任意, 例: 7203)">
+                    <button class="mini-link" onclick="openHoldingPicker('journal')" title="保有銘柄から選ぶ">📂 保有</button>
+                    <button class="mini-link" onclick="openWatchlistPicker('journal')" title="注目銘柄から選ぶ">⭐ 注目</button>
+                </div>
                 <select id="journal-add-action" class="modern-input">
                     <option value="">アクション選択 (任意)</option>
                     <option value="buy">buy (買い)</option>
@@ -849,7 +914,7 @@
             </div>
             <div class="modal-actions" style="margin-top:16px;">
                 <button class="modal-btn cancel" onclick="closeJournalAddModal()">キャンセル</button>
-                <button class="modal-btn submit" onclick="submitJournalAdd()">保存</button>
+                <button class="modal-btn submit" id="journal-submit-btn" onclick="submitJournalAdd()">保存</button>
             </div>
         </div>
     </div>
@@ -1556,6 +1621,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=64"></script>
+    <script src="/static/js/app_v12.js?v=66"></script>
 </body>
 </html>

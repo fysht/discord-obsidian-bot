@@ -4337,6 +4337,24 @@ async def investment_journal_add(req: JournalAddRequest):
     return await cog.journal_add(req.dict())
 
 
+@router.get("/investment/journal/{filename}", dependencies=[Depends(verify_api_key)])
+async def investment_journal_get(filename: str):
+    cog = _get_investment_cog()
+    return await cog.journal_get(filename)
+
+
+@router.put("/investment/journal/{filename}", dependencies=[Depends(verify_api_key)])
+async def investment_journal_edit(filename: str, req: JournalAddRequest):
+    cog = _get_investment_cog()
+    return await cog.journal_edit(filename, req.dict())
+
+
+@router.delete("/investment/journal/{filename}", dependencies=[Depends(verify_api_key)])
+async def investment_journal_delete(filename: str):
+    cog = _get_investment_cog()
+    return await cog.journal_delete(filename)
+
+
 class JournalAnalyzeRequest(BaseModel):
     limit: int = 30
 
@@ -4420,6 +4438,8 @@ class ScreenerRunRequest(BaseModel):
     exclude_sectors: Optional[List[str]] = None
     # {style_name: [enabled_filter_keys]} - スタイルごとに ON にする構成要素を指定
     filter_overrides: Optional[dict] = None
+    # "any"=OR（いずれか合致）, "all"=AND（すべて合致）
+    combine_mode: str = "any"
 
 
 class ScreenerAnalyzeRequest(BaseModel):
@@ -4454,6 +4474,7 @@ async def screener_run(req: ScreenerRunRequest):
         min_market_cap_jpy=req.min_market_cap_jpy,
         exclude_sectors=req.exclude_sectors,
         filter_overrides=req.filter_overrides,
+        combine_mode=req.combine_mode,
     )
 
 
@@ -4519,6 +4540,58 @@ async def watchlist_delete(code: str):
 async def watchlist_memo(code: str, req: WatchlistMemoRequest):
     from api.database import watchlist_update_memo
     ok = await watchlist_update_memo(code, req.memo)
+    return {"ok": ok}
+
+
+# =========================================================
+# 保存済みスクリーニング結果 (Screener Runs)
+# =========================================================
+
+class ScreenerRunSaveRequest(BaseModel):
+    title: Optional[str] = ""
+    styles: Optional[List[str]] = None
+    combine_mode: Optional[str] = "any"
+    universe: Optional[str] = ""
+    applied_filters: Optional[dict] = None
+    candidates: Optional[List[dict]] = None
+    qualitative_report: Optional[str] = ""
+
+
+@router.post("/investment/screener/runs", dependencies=[Depends(verify_api_key)])
+async def screener_runs_save(req: ScreenerRunSaveRequest):
+    from api.database import screener_run_save
+    run_id = await screener_run_save(
+        title=req.title or "",
+        styles=req.styles or [],
+        combine_mode=req.combine_mode or "any",
+        universe=req.universe or "",
+        applied_filters=req.applied_filters or {},
+        candidates=req.candidates or [],
+        qualitative_report=req.qualitative_report or "",
+    )
+    return {"ok": True, "id": run_id}
+
+
+@router.get("/investment/screener/runs", dependencies=[Depends(verify_api_key)])
+async def screener_runs_list():
+    from api.database import screener_run_list
+    items = await screener_run_list()
+    return {"ok": True, "items": items}
+
+
+@router.get("/investment/screener/runs/{run_id}", dependencies=[Depends(verify_api_key)])
+async def screener_runs_get(run_id: int):
+    from api.database import screener_run_get
+    data = await screener_run_get(run_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="保存済み結果が見つかりません")
+    return {"ok": True, "data": data}
+
+
+@router.delete("/investment/screener/runs/{run_id}", dependencies=[Depends(verify_api_key)])
+async def screener_runs_delete(run_id: int):
+    from api.database import screener_run_delete
+    ok = await screener_run_delete(run_id)
     return {"ok": ok}
 
 

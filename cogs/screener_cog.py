@@ -74,9 +74,12 @@ class ScreenerCog(commands.Cog):
         min_market_cap_jpy: Optional[int] = None,
         exclude_sectors: Optional[list[str]] = None,
         filter_overrides: Optional[dict[str, list[str]]] = None,
+        combine_mode: str = "any",
     ) -> dict:
-        """複数スタイルを並列実行して結果をマージ（同一銘柄は最高スコアを採用）。
+        """複数スタイルを並列実行して結果をマージ。
 
+        combine_mode="any" (OR): いずれかのスタイルに合致した銘柄を返す。
+        combine_mode="all" (AND): すべてのスタイルに合致した銘柄のみを返す。
         filter_overrides: {style_name: [enabled_filter_keys, ...], ...}
         """
         import asyncio as _asyncio
@@ -100,8 +103,8 @@ class ScreenerCog(commands.Cog):
                 if result.get("candidates"):
                     for c in result["candidates"]:
                         c.setdefault("matched_styles", [styles[0]])
-                # マルチスタイル形式のレスポンスに合わせる
                 result["styles"] = [styles[0]]
+                result["combine_mode"] = combine_mode
                 result["applied_filters_by_style"] = {
                     styles[0]: result.pop("applied_filters", [])
                 }
@@ -109,7 +112,7 @@ class ScreenerCog(commands.Cog):
 
         tasks = [
             self.run_screening(
-                style=s, top_n=top_n * 2,
+                style=s, top_n=top_n * 3,
                 universe_name=universe_name,
                 min_market_cap_jpy=min_market_cap_jpy,
                 exclude_sectors=exclude_sectors,
@@ -119,41 +122,76 @@ class ScreenerCog(commands.Cog):
         ]
         results_list = await _asyncio.gather(*tasks)
 
-        merged: dict[str, dict] = {}
         total_scanned = 0
         total_qualified = 0
         applied_filters_by_style: dict[str, list[dict]] = {}
         any_near_miss = False
+
+        # 各スタイルの結果を code → candidate dict にインデックス
+        per_style_by_code: list[dict[str, dict]] = []
+        ok_styles: list[str] = []
         for style_key, result in zip(styles, results_list):
             if not result.get("ok"):
+                per_style_by_code.append({})
                 continue
+            ok_styles.append(style_key)
             total_scanned = max(total_scanned, result.get("scanned", 0))
             total_qualified += result.get("qualified", 0)
             applied_filters_by_style[style_key] = result.get("applied_filters", [])
             if result.get("used_near_miss"):
                 any_near_miss = True
-            for cand in result.get("candidates", []):
-                code = cand["code"]
-                cand_copy = dict(cand)
-                if code not in merged:
-                    cand_copy["matched_styles"] = [style_key]
-                    merged[code] = cand_copy
-                else:
-                    merged[code]["matched_styles"].append(style_key)
-                    if cand_copy.get("score", 0) > merged[code].get("score", 0):
-                        matched = merged[code]["matched_styles"]
-                        cand_copy["matched_styles"] = matched
-                        merged[code] = cand_copy
+            per_style_by_code.append({c["code"]: c for c in result.get("candidates", [])})
 
-        all_cands = sorted(merged.values(), key=lambda c: c.get("score", 0), reverse=True)[:top_n]
         style_displays = [self._style_display(s) for s in styles]
-        data_as_of = all_cands[0].get("data_as_of") if all_cands else datetime.datetime.now(JST).strftime("%Y-%m-%d")
         executed_at = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
+
+        if combine_mode == "all" and len(ok_styles) > 1:
+            # AND: すべてのスタイルに共通するコードのみ
+            valid_dicts = [d for d in per_style_by_code if d]
+            common_codes: set[str] = set(valid_dicts[0].keys()) if valid_dicts else set()
+            for d in valid_dicts[1:]:
+                common_codes &= set(d.keys())
+
+            merged_and: list[dict] = []
+            for code in common_codes:
+                style_cands = [d[code] for d in per_style_by_code if code in d]
+                base = dict(style_cands[0])
+                # スコアは全スタイルの合計
+                base["score"] = round(sum(c.get("score", 0) for c in style_cands), 2)
+                # シグナルは全スタイル分を結合
+                base["signals"] = [sig for c in style_cands for sig in (c.get("signals") or [])]
+                base["matched_styles"] = [s for s in styles if s in (d := {d2["code"]: True for d2 in per_style_by_code if code in d2})]
+                base["is_near_miss"] = any(c.get("is_near_miss") for c in style_cands)
+                base["failed_filters"] = [f for c in style_cands for f in (c.get("failed_filters") or [])]
+                merged_and.append(base)
+
+            all_cands = sorted(merged_and, key=lambda c: c.get("score", 0), reverse=True)[:top_n]
+            combine_label = "AND"
+        else:
+            # OR: いずれかのスタイルに合致（従来動作）
+            merged: dict[str, dict] = {}
+            for style_key, by_code in zip(styles, per_style_by_code):
+                for code, cand in by_code.items():
+                    cand_copy = dict(cand)
+                    if code not in merged:
+                        cand_copy["matched_styles"] = [style_key]
+                        merged[code] = cand_copy
+                    else:
+                        merged[code]["matched_styles"].append(style_key)
+                        if cand_copy.get("score", 0) > merged[code].get("score", 0):
+                            matched = merged[code]["matched_styles"]
+                            cand_copy["matched_styles"] = matched
+                            merged[code] = cand_copy
+            all_cands = sorted(merged.values(), key=lambda c: c.get("score", 0), reverse=True)[:top_n]
+            combine_label = "OR"
+
+        data_as_of = all_cands[0].get("data_as_of") if all_cands else datetime.datetime.now(JST).strftime("%Y-%m-%d")
 
         return {
             "ok": True,
             "styles": styles,
-            "style_display": " / ".join(style_displays),
+            "style_display": " / ".join(style_displays) + f" [{combine_label}]",
+            "combine_mode": combine_mode,
             "universe": universe_name,
             "data_as_of": data_as_of,
             "executed_at": executed_at,
