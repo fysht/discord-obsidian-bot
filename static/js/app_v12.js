@@ -6640,6 +6640,249 @@ window.openInvestHistoryItem = async (category, fileId, name) => {
 };
 
 // =================================================================
+// Investment Tab — 銘柄スクリーナー
+// =================================================================
+
+let _screenerSelectedStyles = new Set();
+let _screenerStylesCache = null;
+let _screenerCandidates = [];
+let _screenerJobId = null;
+let _screenerJobPollTimer = null;
+
+window.openScreenerModal = async () => {
+    const modal = $('#invest-screener-modal');
+    if (!modal) return;
+    modal.classList.remove('hidden');
+    await _loadScreenerStyles();
+    await _loadScreenerUniverses();
+    _renderScreenerResults('スタイルを1つ以上選んで「機械スクリーニング」を実行してください。');
+    _setScreenerAnalyzeEnabled(false);
+};
+
+window.closeScreenerModal = () => {
+    if (_screenerJobPollTimer) { clearInterval(_screenerJobPollTimer); _screenerJobPollTimer = null; }
+    $('#invest-screener-modal')?.classList.add('hidden');
+    _screenerSelectedStyles.clear();
+    _screenerCandidates = [];
+};
+
+async function _loadScreenerStyles() {
+    const chipsEl = $('#screener-style-chips');
+    if (!chipsEl) return;
+    if (!_screenerStylesCache) {
+        try {
+            const data = await apiFetch('/api/investment/screener/styles');
+            _screenerStylesCache = (data && data.styles) || [];
+        } catch (e) {
+            chipsEl.innerHTML = `<span style="color:#ff6b6b;font-size:0.78rem;">スタイル取得失敗: ${escapeHtml(e.message || e)}</span>`;
+            return;
+        }
+    }
+    if (!_screenerStylesCache.length) {
+        chipsEl.innerHTML = '<span class="loading-placeholder">スタイルが登録されていません。</span>';
+        return;
+    }
+    chipsEl.innerHTML = _screenerStylesCache.map(s => {
+        const active = _screenerSelectedStyles.has(s.name) ? ' active' : '';
+        return `<button class="chip-btn${active}" data-style="${escapeHtml(s.name)}" title="${escapeHtml(s.description || '')}" onclick="_selectScreenerStyle('${s.name.replace(/'/g, '&#39;')}')">${escapeHtml(s.display_name)}</button>`;
+    }).join('');
+}
+
+async function _loadScreenerUniverses() {
+    const sel = $('#screener-universe-select');
+    if (!sel) return;
+    try {
+        const data = await apiFetch('/api/investment/screener/universes');
+        const names = (data && data.universes) || [];
+        if (!names.length) return;
+        sel.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(n.toUpperCase())}</option>`).join('');
+    } catch (e) {
+        // フォールバック: HTML側のデフォルト値を使う
+    }
+}
+
+window._selectScreenerStyle = (name) => {
+    if (_screenerSelectedStyles.has(name)) {
+        _screenerSelectedStyles.delete(name);
+    } else {
+        _screenerSelectedStyles.add(name);
+    }
+    document.querySelectorAll('#screener-style-chips .chip-btn').forEach(b => {
+        b.classList.toggle('active', _screenerSelectedStyles.has(b.dataset.style));
+    });
+};
+
+function _setScreenerAnalyzeEnabled(enabled) {
+    const btn = $('#screener-analyze-btn');
+    if (btn) {
+        btn.disabled = !enabled;
+        btn.style.opacity = enabled ? '1' : '0.5';
+    }
+}
+
+function _renderScreenerResults(html) {
+    const el = $('#screener-results');
+    if (el) el.innerHTML = (typeof html === 'string') ? `<div class="loading-placeholder">${escapeHtml(html)}</div>` : html;
+}
+
+function _showScreenerProgress(text, percent) {
+    const wrap = $('#screener-progress');
+    const txt = $('#screener-progress-text');
+    const bar = $('#screener-progress-bar');
+    if (!wrap) return;
+    wrap.classList.remove('hidden');
+    if (txt) txt.textContent = text || '処理中...';
+    if (bar) bar.style.width = `${Math.max(0, Math.min(100, percent || 0))}%`;
+}
+
+function _hideScreenerProgress() {
+    $('#screener-progress')?.classList.add('hidden');
+}
+
+window.runScreener = async () => {
+    if (_screenerSelectedStyles.size === 0) {
+        showToast('スタイルを1つ以上選んでください', true);
+        return;
+    }
+    const universe = $('#screener-universe-select')?.value || 'topix500';
+    const topN = parseInt($('#screener-top-n')?.value || '10', 10);
+    const minMcapOku = parseInt($('#screener-min-mcap')?.value || '0', 10);
+    const minMcapJpy = (minMcapOku && minMcapOku > 0) ? minMcapOku * 100000000 : null;
+
+    _renderScreenerResults('機械スクリーニング中... (1〜2分かかる場合があります)');
+    _showScreenerProgress('銘柄データを取得して機械フィルタを実行中...', 30);
+    _setScreenerAnalyzeEnabled(false);
+
+    try {
+        const body = { styles: [..._screenerSelectedStyles], universe, top_n: topN };
+        if (minMcapJpy) body.min_market_cap_jpy = minMcapJpy;
+        const data = await apiFetch('/api/investment/screener/run', { method: 'POST', body: JSON.stringify(body) });
+        _hideScreenerProgress();
+        if (!data || !data.ok) {
+            const err = (data && (data.error || data.detail)) || '失敗しました';
+            _renderScreenerResults(`エラー: ${err}`);
+            showToast(`スクリーニング失敗: ${err}`, true);
+            return;
+        }
+        _screenerCandidates = data.candidates || [];
+        _renderScreenerCandidates(data);
+        _setScreenerAnalyzeEnabled(_screenerCandidates.length > 0);
+        showToast(`${_screenerCandidates.length} 銘柄が条件を通過しました`);
+    } catch (e) {
+        _hideScreenerProgress();
+        _renderScreenerResults(`通信エラー: ${e.message || e}`);
+    }
+};
+
+function _renderScreenerCandidates(data) {
+    const el = $('#screener-results');
+    if (!el) return;
+    const cands = data.candidates || [];
+    if (!cands.length) {
+        el.innerHTML = `<div class="loading-placeholder">条件に該当する銘柄が見つかりませんでした (走査 ${data.scanned || 0} 銘柄)。</div>`;
+        return;
+    }
+    const header = `<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;">スタイル: ${escapeHtml(data.style_display || (data.styles || [data.style]).join(' / '))} / データ基準日: ${escapeHtml(data.data_as_of || '')} / 走査 ${data.scanned} 銘柄 → ${data.qualified} 通過 → 上位 ${cands.length} 件</div>`;
+    const rows = cands.map((c, idx) => {
+        const sigBadges = (c.signals || []).map(s => {
+            const color = s.passed ? '#7cd6a0' : '#ff8a8a';
+            return `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,0.05);color:${color};font-size:0.72rem;">${escapeHtml(s.name)}: ${escapeHtml(s.value)}</span>`;
+        }).join('');
+        const ps = c.price_snapshot || {};
+        const matchedStyles = c.matched_styles || [];
+        const styleBadges = matchedStyles.map(ms => `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(78,161,255,0.15);color:#4ea1ff;font-size:0.70rem;">${escapeHtml(ms)}</span>`).join('');
+        return `<div class="screener-row" style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
+            <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
+                <input type="checkbox" data-idx="${idx}" class="screener-cand-check" checked style="margin-top:4px;">
+                <div style="flex:1;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                        <strong>${escapeHtml(c.code)} ${escapeHtml(c.name)}</strong>
+                        <span style="font-size:0.78rem;color:var(--text-muted);">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
+                    </div>
+                    ${styleBadges ? `<div style="margin-bottom:4px;">${styleBadges}</div>` : ''}
+                    <div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:4px;">終値 ${ps.close ?? '-'} (${ps.change_pct ?? 0}%) / 52週: ${ps.low_52w ?? '-'}〜${ps.high_52w ?? '-'}</div>
+                    <div>${sigBadges}</div>
+                </div>
+            </label>
+        </div>`;
+    }).join('');
+    el.innerHTML = header + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
+}
+
+window.runScreenerAnalyze = async () => {
+    if (!_screenerCandidates.length) {
+        showToast('先に機械スクリーニングを実行してください', true);
+        return;
+    }
+    const checked = Array.from(document.querySelectorAll('.screener-cand-check')).filter(c => c.checked).map(c => parseInt(c.dataset.idx, 10));
+    const selected = checked.map(i => _screenerCandidates[i]).filter(Boolean);
+    if (!selected.length) {
+        showToast('1 銘柄以上を選択してください', true);
+        return;
+    }
+    const usePro = document.querySelector('input[name="screener-model"]:checked')?.value === 'pro';
+    const modelLabel = usePro ? 'Pro（高精度・高コスト）' : 'Flash（低コスト）';
+    const estSecs = selected.length * (usePro ? 20 : 12);
+    if (!confirm(`${selected.length} 銘柄を Gemini ${modelLabel} で質的分析します。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
+
+    _setScreenerAnalyzeEnabled(false);
+    _showScreenerProgress(`質的分析を起動中...`, 5);
+
+    try {
+        const data = await apiFetch('/api/investment/screener/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ styles: [..._screenerSelectedStyles], candidates: selected, use_pro: usePro }),
+        });
+        if (!data || !data.ok) {
+            _hideScreenerProgress();
+            _setScreenerAnalyzeEnabled(true);
+            showToast(`起動失敗: ${(data && (data.error || data.detail)) || '不明'}`, true);
+            return;
+        }
+        _screenerJobId = data.job_id;
+        _pollScreenerJob();
+    } catch (e) {
+        _hideScreenerProgress();
+        _setScreenerAnalyzeEnabled(true);
+        showToast(`通信エラー: ${e.message || e}`, true);
+    }
+};
+
+function _pollScreenerJob() {
+    if (_screenerJobPollTimer) clearInterval(_screenerJobPollTimer);
+    _screenerJobPollTimer = setInterval(async () => {
+        if (!_screenerJobId) { clearInterval(_screenerJobPollTimer); _screenerJobPollTimer = null; return; }
+        try {
+            const data = await apiFetch(`/api/investment/screener/jobs/${encodeURIComponent(_screenerJobId)}`);
+            if (!data || !data.ok) return;
+            const prog = data.progress || {};
+            const pct = prog.total ? Math.round(prog.current / prog.total * 100) : 0;
+            const ticker = prog.current_ticker || '';
+            _showScreenerProgress(`質的分析中: ${prog.current}/${prog.total} ${ticker ? `(${ticker})` : ''}`, pct);
+            if (data.status === 'done') {
+                clearInterval(_screenerJobPollTimer); _screenerJobPollTimer = null;
+                _hideScreenerProgress();
+                _setScreenerAnalyzeEnabled(true);
+                showToast('質的分析が完了しました');
+                if (data.report_markdown) {
+                    window.openInvestmentResultModal('🔎 スクリーニング結果', data.report_markdown);
+                }
+                window.loadInvestmentHistory && window.loadInvestmentHistory();
+                _screenerJobId = null;
+            } else if (data.status === 'error') {
+                clearInterval(_screenerJobPollTimer); _screenerJobPollTimer = null;
+                _hideScreenerProgress();
+                _setScreenerAnalyzeEnabled(true);
+                showToast(`エラー: ${data.error || '不明'}`, true);
+                _screenerJobId = null;
+            }
+        } catch (e) {
+            // 一過性のエラーは無視して次回ポーリングへ
+        }
+    }, 3000);
+}
+
+// =================================================================
 // Investment Tab — 拡張機能 (ポートフォリオ・日記・アラート・他)
 // =================================================================
 

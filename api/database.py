@@ -196,6 +196,44 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_meals_date ON meals(date)"
         )
 
+        # 株価 OHLCV キャッシュ（日本株スクリーナー用）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS stock_ohlcv (
+                code TEXT NOT NULL,
+                date TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER,
+                PRIMARY KEY (code, date)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ohlcv_code_date ON stock_ohlcv(code, date)"
+        )
+
+        # スクリーナーの非同期ジョブ管理
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS screener_jobs (
+                job_id TEXT PRIMARY KEY,
+                style TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                progress_current INTEGER DEFAULT 0,
+                progress_total INTEGER DEFAULT 0,
+                current_ticker TEXT DEFAULT '',
+                candidates_json TEXT DEFAULT '',
+                report_markdown TEXT DEFAULT '',
+                saved_as TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_screener_jobs_status ON screener_jobs(status)"
+        )
+
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
             "ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''",
@@ -923,6 +961,125 @@ async def gmail_list(state: str = "pending", limit: int = 50) -> list[dict]:
             )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+
+# --- Stock OHLCV Cache (日本株スクリーナー用) ---
+
+async def upsert_ohlcv_rows(code: str, rows: list[dict]) -> int:
+    """OHLCV 行群を upsert する。rows は {date, open, high, low, close, volume} のリスト。"""
+    if not rows:
+        return 0
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.executemany(
+            "INSERT INTO stock_ohlcv (code, date, open, high, low, close, volume) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(code, date) DO UPDATE SET "
+            "open=excluded.open, high=excluded.high, low=excluded.low, "
+            "close=excluded.close, volume=excluded.volume",
+            [
+                (
+                    code,
+                    r.get("date"),
+                    r.get("open"),
+                    r.get("high"),
+                    r.get("low"),
+                    r.get("close"),
+                    r.get("volume"),
+                )
+                for r in rows
+            ],
+        )
+        await db.commit()
+        return len(rows)
+
+
+async def get_ohlcv_range(code: str, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
+    """code の OHLCV を [start_date, end_date] で日付昇順に取得。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        query = "SELECT date, open, high, low, close, volume FROM stock_ohlcv WHERE code = ?"
+        params: list = [code]
+        if start_date:
+            query += " AND date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND date <= ?"
+            params.append(end_date)
+        query += " ORDER BY date ASC"
+        cursor = await db.execute(query, tuple(params))
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_ohlcv_latest_date(code: str) -> str | None:
+    """code の OHLCV キャッシュの最新日付を返す。なければ None。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT MAX(date) FROM stock_ohlcv WHERE code = ?", (code,)
+        )
+        row = await cursor.fetchone()
+        return row[0] if row and row[0] else None
+
+
+# --- Screener Jobs ---
+
+async def screener_job_create(job_id: str, style: str, total: int) -> None:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT INTO screener_jobs (job_id, style, status, progress_current, progress_total, created_at, updated_at) "
+            "VALUES (?, ?, 'queued', 0, ?, ?, ?)",
+            (job_id, style, int(total), now, now),
+        )
+        await db.commit()
+
+
+async def screener_job_update(job_id: str, **fields) -> bool:
+    if not fields:
+        return False
+    allowed = {
+        "status", "progress_current", "progress_total", "current_ticker",
+        "candidates_json", "report_markdown", "saved_as", "error",
+    }
+    sets = []
+    values = []
+    for k, v in fields.items():
+        if k not in allowed:
+            continue
+        sets.append(f"{k} = ?")
+        values.append(v)
+    if not sets:
+        return False
+    sets.append("updated_at = ?")
+    values.append(datetime.datetime.now(JST).isoformat())
+    values.append(job_id)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            f"UPDATE screener_jobs SET {', '.join(sets)} WHERE job_id = ?",
+            tuple(values),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def screener_job_get(job_id: str) -> dict | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM screener_jobs WHERE job_id = ?", (job_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def screener_job_count_active() -> int:
+    """実行中ジョブ件数（同時実行数の制御用）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM screener_jobs WHERE status IN ('queued', 'running')"
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
 
 
 async def gmail_count_unnotified_high() -> int:

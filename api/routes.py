@@ -4394,3 +4394,80 @@ async def investment_alerts_remove(req: AlertRemoveRequest):
 async def investment_alerts_check():
     cog = _get_investment_cog()
     return await cog.alerts_check_now()
+
+
+# ============================================================
+# Screener (銘柄スクリーナー) エンドポイント群
+# ============================================================
+
+def _get_screener_cog():
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    cog = bot.get_cog("ScreenerCog")
+    if not cog:
+        raise HTTPException(status_code=503, detail="ScreenerCogがロードされていません。")
+    return cog
+
+
+class ScreenerRunRequest(BaseModel):
+    styles: Optional[List[str]] = None
+    style: Optional[str] = None  # backward compat
+    universe: str = "topix500"
+    top_n: int = 10
+    min_market_cap_jpy: Optional[int] = None
+    exclude_sectors: Optional[List[str]] = None
+
+
+class ScreenerAnalyzeRequest(BaseModel):
+    styles: Optional[List[str]] = None
+    style: Optional[str] = None  # backward compat
+    candidates: List[dict]
+    use_pro: bool = False
+
+
+@router.get("/investment/screener/styles", dependencies=[Depends(verify_api_key)])
+async def screener_styles():
+    cog = _get_screener_cog()
+    return await cog.list_styles()
+
+
+@router.get("/investment/screener/universes", dependencies=[Depends(verify_api_key)])
+async def screener_universes():
+    cog = _get_screener_cog()
+    return await cog.list_universes()
+
+
+@router.post("/investment/screener/run", dependencies=[Depends(verify_api_key)])
+async def screener_run(req: ScreenerRunRequest):
+    cog = _get_screener_cog()
+    styles = req.styles or ([req.style] if req.style else [])
+    if not styles:
+        raise HTTPException(status_code=422, detail="styles または style を1つ以上指定してください")
+    return await cog.run_multi_screening(
+        styles=styles,
+        top_n=req.top_n,
+        universe_name=req.universe,
+        min_market_cap_jpy=req.min_market_cap_jpy,
+        exclude_sectors=req.exclude_sectors,
+    )
+
+
+@router.post("/investment/screener/analyze", dependencies=[Depends(verify_api_key)])
+async def screener_analyze(req: ScreenerAnalyzeRequest):
+    cog = _get_screener_cog()
+    styles = req.styles or ([req.style] if req.style else [])
+    if not styles:
+        raise HTTPException(status_code=422, detail="styles または style を1つ以上指定してください")
+    return await cog.start_qualitative_analysis(
+        styles=styles,
+        candidates=req.candidates,
+        use_pro=req.use_pro,
+    )
+
+
+@router.get("/investment/screener/jobs/{job_id}", dependencies=[Depends(verify_api_key)])
+async def screener_job(job_id: str):
+    cog = _get_screener_cog()
+    return await cog.get_job_status(job_id)

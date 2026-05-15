@@ -1,0 +1,401 @@
+"""日本株スクリーナー Cog（PWA 専用）。
+
+機械的なスクリーニング (Phase A) と Gemini による質的補強 (Phase B/C) を提供する。
+Drive 保存・履歴管理は InvestmentCog のヘルパーを再利用する。
+"""
+from __future__ import annotations
+
+import asyncio
+import datetime
+import logging
+import re
+import secrets
+from typing import Optional
+
+from discord.ext import commands
+
+from config import JST
+from services.screener_service import ScreenerService
+from services.screener_engine import list_strategies
+
+
+GEMINI_FLASH_MODEL = "gemini-2.5-flash"
+GEMINI_PRO_MODEL = "gemini-2.5-pro"
+
+# 1 ジョブ内で Gemini に投げる候補数の上限（コスト保護）
+MAX_QUALITATIVE_CANDIDATES = 10
+# 同時実行可能なジョブ数（コスト保護）
+MAX_CONCURRENT_JOBS = 1
+
+
+class ScreenerCog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.service = ScreenerService()
+
+    # ==========================================================
+    # 同期 API (Phase A: 機械スクリーニング)
+    # ==========================================================
+
+    async def list_styles(self) -> dict:
+        return {"ok": True, "styles": list_strategies()}
+
+    async def list_universes(self) -> dict:
+        names = await self.service.list_universes()
+        return {"ok": True, "universes": names}
+
+    async def run_screening(
+        self,
+        style: str,
+        top_n: int = 10,
+        universe_name: str = "topix500",
+        min_market_cap_jpy: Optional[int] = None,
+        exclude_sectors: Optional[list[str]] = None,
+    ) -> dict:
+        return await self.service.run_screening(
+            style=style,
+            top_n=int(top_n),
+            universe_name=universe_name,
+            min_market_cap_jpy=min_market_cap_jpy,
+            exclude_sectors=exclude_sectors,
+        )
+
+    async def run_multi_screening(
+        self,
+        styles: list[str],
+        top_n: int = 10,
+        universe_name: str = "topix500",
+        min_market_cap_jpy: Optional[int] = None,
+        exclude_sectors: Optional[list[str]] = None,
+    ) -> dict:
+        """複数スタイルを並列実行して結果をマージ（同一銘柄は最高スコアを採用）。"""
+        import asyncio as _asyncio
+        if not styles:
+            return {"ok": False, "error": "スタイルを1つ以上指定してください"}
+        if len(styles) == 1:
+            result = await self.run_screening(
+                style=styles[0], top_n=top_n,
+                universe_name=universe_name,
+                min_market_cap_jpy=min_market_cap_jpy,
+                exclude_sectors=exclude_sectors,
+            )
+            if result.get("ok") and result.get("candidates"):
+                for c in result["candidates"]:
+                    c.setdefault("matched_styles", [styles[0]])
+            return result
+
+        tasks = [
+            self.run_screening(
+                style=s, top_n=top_n * 2,
+                universe_name=universe_name,
+                min_market_cap_jpy=min_market_cap_jpy,
+                exclude_sectors=exclude_sectors,
+            )
+            for s in styles
+        ]
+        results_list = await _asyncio.gather(*tasks)
+
+        merged: dict[str, dict] = {}
+        total_scanned = 0
+        total_qualified = 0
+        for style_key, result in zip(styles, results_list):
+            if not result.get("ok"):
+                continue
+            total_scanned = max(total_scanned, result.get("scanned", 0))
+            total_qualified += result.get("qualified", 0)
+            for cand in result.get("candidates", []):
+                code = cand["code"]
+                cand_copy = dict(cand)
+                if code not in merged:
+                    cand_copy["matched_styles"] = [style_key]
+                    merged[code] = cand_copy
+                else:
+                    merged[code]["matched_styles"].append(style_key)
+                    if cand_copy.get("score", 0) > merged[code].get("score", 0):
+                        matched = merged[code]["matched_styles"]
+                        cand_copy["matched_styles"] = matched
+                        merged[code] = cand_copy
+
+        all_cands = sorted(merged.values(), key=lambda c: c.get("score", 0), reverse=True)[:top_n]
+        style_displays = [self._style_display(s) for s in styles]
+        data_as_of = all_cands[0].get("data_as_of") if all_cands else datetime.datetime.now(JST).strftime("%Y-%m-%d")
+
+        return {
+            "ok": True,
+            "styles": styles,
+            "style_display": " / ".join(style_displays),
+            "universe": universe_name,
+            "data_as_of": data_as_of,
+            "scanned": total_scanned,
+            "qualified": total_qualified,
+            "candidates": all_cands,
+        }
+
+    # ==========================================================
+    # 非同期 API (Phase B/C: Gemini 質的分析)
+    # ==========================================================
+
+    async def start_qualitative_analysis(
+        self,
+        styles: list[str],
+        candidates: list[dict],
+        use_pro: bool = False,
+    ) -> dict:
+        """質的分析ジョブを起動し job_id を返す。実処理はバックグラウンドで実行。"""
+        from api.database import screener_job_count_active, screener_job_create
+
+        if not candidates:
+            return {"ok": False, "error": "候補が空です"}
+        if not styles:
+            return {"ok": False, "error": "スタイルが指定されていません"}
+
+        # 同時実行数上限
+        active = await screener_job_count_active()
+        if active >= MAX_CONCURRENT_JOBS:
+            return {"ok": False, "error": f"既に {active} 件のジョブが実行中です。完了をお待ちください。"}
+
+        # コストメーター: 重い処理を抑制
+        try:
+            from services import cost_meter_service
+            if await cost_meter_service.should_throttle_heavy_tasks():
+                return {"ok": False, "error": "API 月額閾値を超過しているため、質的分析は一時停止中です。"}
+        except Exception:
+            pass
+
+        # 上限内に切り詰め
+        candidates = candidates[:MAX_QUALITATIVE_CANDIDATES]
+
+        style_key = ",".join(styles)
+        job_id = f"scr_{datetime.datetime.now(JST).strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+        await screener_job_create(job_id, style_key, len(candidates))
+
+        from utils.async_utils import safe_create_task
+        safe_create_task(
+            self._run_qualitative_job(job_id, styles, candidates, use_pro=use_pro),
+            name=f"screener_qual_{job_id}",
+        )
+
+        model_label = "Pro" if use_pro else "Flash"
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "status": "queued",
+            "model": model_label,
+            "expected_seconds": len(candidates) * (20 if use_pro else 12),
+        }
+
+    async def get_job_status(self, job_id: str) -> dict:
+        from api.database import screener_job_get
+        job = await screener_job_get(job_id)
+        if not job:
+            return {"ok": False, "error": "ジョブが見つかりません"}
+        return {
+            "ok": True,
+            "status": job["status"],
+            "progress": {
+                "current": job["progress_current"],
+                "total": job["progress_total"],
+                "current_ticker": job["current_ticker"],
+            },
+            "saved_as": job.get("saved_as", ""),
+            "report_markdown": job.get("report_markdown", ""),
+            "error": job.get("error", ""),
+        }
+
+    async def _run_qualitative_job(
+        self,
+        job_id: str,
+        styles: list[str],
+        candidates: list[dict],
+        use_pro: bool = False,
+    ) -> None:
+        from api.database import screener_job_update
+        from services.screener_service import ScreenerService
+
+        try:
+            await screener_job_update(job_id, status="running")
+
+            inv_cog = self.bot.get_cog("InvestmentCog")
+            if not inv_cog or not inv_cog.gemini_client:
+                await screener_job_update(
+                    job_id, status="error",
+                    error="InvestmentCog または Gemini クライアントが利用できません",
+                )
+                return
+
+            constitution_excerpt = await self._fetch_style_sections(inv_cog, styles)
+            style_key = ",".join(styles)
+            style_display = " / ".join(self._style_display(s) for s in styles)
+
+            results_with_qual: list[dict] = []
+            model_b = GEMINI_PRO_MODEL if use_pro else GEMINI_FLASH_MODEL
+
+            for idx, cand in enumerate(candidates, 1):
+                code = cand.get("code", "")
+                await screener_job_update(
+                    job_id,
+                    progress_current=idx - 1,
+                    current_ticker=code,
+                )
+                # 銘柄が複数スタイルにマッチしている場合は該当スタイルの憲法のみ使う
+                matched = cand.get("matched_styles") or styles
+                if len(matched) < len(styles):
+                    cand_excerpt = await self._fetch_style_sections(inv_cog, matched)
+                else:
+                    cand_excerpt = constitution_excerpt
+                prompt = ScreenerService.build_phase_b_prompt(cand, cand_excerpt)
+                try:
+                    raw = await inv_cog._gemini_with_search(prompt, model=model_b)
+                except Exception as e:
+                    logging.error(f"screener Phase B error for {code}: {e}")
+                    raw = ""
+                cleaned, warnings = ScreenerService.sanitize_qualitative_output(raw)
+                if warnings:
+                    cleaned += f"\n\n> ⚠️ 出力に予測表現が混入していたため要確認: {', '.join(warnings)}"
+                cand_with_qual = dict(cand)
+                cand_with_qual["qualitative"] = cleaned
+                results_with_qual.append(cand_with_qual)
+
+            # Phase C: 統合
+            await screener_job_update(
+                job_id,
+                progress_current=len(candidates),
+                current_ticker="統合中",
+            )
+            model_c = GEMINI_PRO_MODEL if use_pro else GEMINI_FLASH_MODEL
+            phase_c_prompt = ScreenerService.build_phase_c_prompt(style_display, results_with_qual)
+            try:
+                summary = await inv_cog._gemini_plain(phase_c_prompt, model=model_c)
+            except Exception as e:
+                logging.error(f"screener Phase C error: {e}")
+                summary = ""
+
+            # Markdown レポート組み立て
+            report_md = self._build_report_markdown(style_key, style_display, results_with_qual, summary)
+
+            # Drive 保存
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            filename = f"{today}_{_safe_filename(style_key)}.md"
+            try:
+                from cogs.investment_cog import SCREENINGS_FOLDER
+                await inv_cog._save_dated_note(SCREENINGS_FOLDER, filename, report_md)
+            except Exception as e:
+                logging.error(f"screener save error: {e}")
+                filename = ""
+
+            await screener_job_update(
+                job_id,
+                status="done",
+                progress_current=len(candidates),
+                current_ticker="",
+                report_markdown=report_md,
+                saved_as=filename,
+            )
+
+            # Push 通知
+            try:
+                from api import notification_service
+                await notification_service.send_push(
+                    title=f"🔎 スクリーナー完了 ({style_display})",
+                    body=f"{len(candidates)} 銘柄の質的分析が完了しました",
+                    url="/?tab=invest",
+                )
+            except Exception as e:
+                logging.debug(f"push notify error: {e}")
+
+        except Exception as e:
+            logging.exception("screener qualitative job failed")
+            await screener_job_update(job_id, status="error", error=str(e))
+
+    @staticmethod
+    def _style_display(style: str) -> str:
+        for s in list_strategies():
+            if s["name"] == style:
+                return s["display_name"]
+        return style
+
+    @staticmethod
+    async def _fetch_style_section(inv_cog, style: str) -> str:
+        """投資憲法から1スタイルのセクションを抽出。"""
+        return await ScreenerCog._fetch_style_sections(inv_cog, [style])
+
+    @staticmethod
+    async def _fetch_style_sections(inv_cog, styles: list[str]) -> str:
+        """投資憲法から複数スタイルのセクションを抽出して結合する。"""
+        try:
+            content = await inv_cog._read_constitution()
+        except Exception:
+            return ""
+        if not content:
+            return ""
+        try:
+            from utils.constitution_parser import parse_constitution
+            parsed = parse_constitution(content)
+            common = parsed.get("common") or ""
+            style_map = parsed.get("styles") or {}
+            parts = [common] if common else []
+            for style in styles:
+                if style in style_map:
+                    body = style_map[style].get("body", "")
+                    if body:
+                        display = style_map[style].get("title") or style
+                        parts.append(f"### スタイル: {display}\n{body}")
+            if parts:
+                return "\n\n".join(parts).strip()
+            return common.strip() or content[:2000]
+        except Exception:
+            return content[:2000]
+
+    @staticmethod
+    def _build_report_markdown(style: str, style_display: str, candidates: list[dict], summary: str) -> str:
+        today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        lines = [
+            f"# 銘柄スクリーニング結果 — {style_display}",
+            "",
+            f"- スタイル: `{style}`",
+            f"- 実行日: {today}",
+            f"- 対象銘柄数: {len(candidates)}",
+            "",
+            "---",
+            "",
+            "## 統合サマリー",
+            "",
+            summary or "_(サマリー生成に失敗しました)_",
+            "",
+            "---",
+            "",
+            "## 銘柄詳細",
+            "",
+        ]
+        for i, c in enumerate(candidates, 1):
+            lines.append(f"### {i}. {c.get('code')} {c.get('name')}（スコア {c.get('score')}）")
+            lines.append("")
+            ps = c.get("price_snapshot") or {}
+            if ps:
+                lines.append(f"- 終値: {ps.get('close')} / 前日比 {ps.get('change_pct')}%")
+                lines.append(f"- 52週レンジ: {ps.get('low_52w')} 〜 {ps.get('high_52w')}")
+                lines.append(f"- データ基準日: {c.get('data_as_of', '')}")
+                lines.append("")
+            lines.append("**テクニカルシグナル:**")
+            for s in c.get("signals", []):
+                mark = "✅" if s["passed"] else "❌"
+                lines.append(f"- {mark} {s['name']}: {s['value']} (基準 {s['threshold']})")
+            lines.append("")
+            qual = c.get("qualitative") or ""
+            if qual:
+                lines.append("**質的補強:**")
+                lines.append("")
+                lines.append(qual)
+                lines.append("")
+            lines.append("---")
+            lines.append("")
+        lines.append("> ⚠️ 本レポートは投資推奨ではありません。最終的な投資判断は自己責任でお願いします。")
+        return "\n".join(lines)
+
+
+def _safe_filename(name: str) -> str:
+    return re.sub(r"[\\/:*?\"<>|]", "_", name).strip() or "untitled"
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ScreenerCog(bot))

@@ -468,6 +468,18 @@
                         </div>
                     </div>
 
+                    <!-- 銘柄スクリーナー -->
+                    <div class="card">
+                        <div class="card-header">
+                            <span class="card-icon">🔎</span>
+                            <span class="card-title">銘柄スクリーナー</span>
+                            <button class="mini-link" onclick="openScreenerModal()">開く</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="loading-placeholder">スタイル別（順張り / じわじわ上昇 / 低ボラ収束 / バリュー / グロース）に買い候補を多角的に抽出します。Python 計算で機械的に絞り込み、上位銘柄のみ Gemini で質的補強。</div>
+                        </div>
+                    </div>
+
                     <!-- 銘柄分析 -->
                     <div class="card">
                         <div class="card-header">
@@ -591,6 +603,7 @@
                                 <button class="chip-btn invest-history-tab" data-cat="risk_report" onclick="switchInvestHistory('risk_report')">⚠️ リスク</button>
                                 <button class="chip-btn invest-history-tab" data-cat="constitution_review" onclick="switchInvestHistory('constitution_review')">🔄 レビュー</button>
                                 <button class="chip-btn invest-history-tab" data-cat="journal" onclick="switchInvestHistory('journal')">📔 日記</button>
+                                <button class="chip-btn invest-history-tab" data-cat="screening" onclick="switchInvestHistory('screening')">🔎 スクリーナー</button>
                             </div>
                             <div id="invest-history-list" class="list-body"><div class="loading-placeholder">読み込み中。</div></div>
                         </div>
@@ -631,6 +644,71 @@
             <div id="invest-result-body" class="invest-md-body" style="flex:1;overflow-y:auto;padding:8px 4px;font-size:0.88rem;line-height:1.55;"></div>
             <div class="modal-actions" style="margin-top:12px;">
                 <button class="modal-btn cancel" onclick="closeInvestmentResultModal()">閉じる</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== SCREENER MODAL ========== -->
+    <div id="invest-screener-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:760px;max-height:90vh;display:flex;flex-direction:column;">
+            <h3 style="margin-top:0;">🔎 銘柄スクリーナー</h3>
+
+            <div style="margin-bottom:10px;">
+                <label style="font-size:0.78rem;color:var(--text-muted);">スタイル <span style="opacity:0.6;">（複数選択可）</span></label>
+                <div id="screener-style-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+                    <span class="loading-placeholder" style="font-size:0.8rem;">読み込み中...</span>
+                </div>
+            </div>
+
+            <div style="margin-bottom:10px;">
+                <label style="font-size:0.78rem;color:var(--text-muted);">分析モデル</label>
+                <div style="display:flex;gap:16px;margin-top:6px;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.82rem;">
+                        <input type="radio" name="screener-model" id="screener-model-flash" value="flash" checked>
+                        ⚡ Flash（コスト優先）
+                    </label>
+                    <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:0.82rem;">
+                        <input type="radio" name="screener-model" id="screener-model-pro" value="pro">
+                        🧠 Pro（精度優先・約20倍コスト）
+                    </label>
+                </div>
+            </div>
+
+            <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+                <div style="flex:1;min-width:140px;">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">ユニバース</label>
+                    <select id="screener-universe-select" class="modern-input" style="width:100%;padding:8px;font-size:0.85rem;margin-top:4px;">
+                        <option value="topix500">TOPIX500</option>
+                    </select>
+                </div>
+                <div style="width:120px;">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">抽出件数</label>
+                    <input type="number" id="screener-top-n" class="modern-input" style="width:100%;padding:8px;font-size:0.85rem;margin-top:4px;" value="10" min="3" max="20">
+                </div>
+                <div style="width:160px;">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">最小時価総額(億円)</label>
+                    <input type="number" id="screener-min-mcap" class="modern-input" style="width:100%;padding:8px;font-size:0.85rem;margin-top:4px;" placeholder="未指定" min="0">
+                </div>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-bottom:10px;">
+                <button class="modal-btn submit" style="flex:1;font-size:0.88rem;" onclick="runScreener()">📊 機械スクリーニング</button>
+                <button class="modal-btn cancel" id="screener-analyze-btn" style="flex:1;font-size:0.88rem;" onclick="runScreenerAnalyze()" disabled>🤖 質的分析（選択銘柄）</button>
+            </div>
+
+            <div id="screener-progress" class="hidden" style="margin-bottom:10px;padding:10px;background:rgba(255,255,255,0.05);border-radius:6px;">
+                <div id="screener-progress-text" style="font-size:0.82rem;margin-bottom:6px;">分析中...</div>
+                <div style="height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;">
+                    <div id="screener-progress-bar" style="height:100%;width:0;background:var(--accent-color, #4ea1ff);transition:width 0.3s;"></div>
+                </div>
+            </div>
+
+            <div id="screener-results" style="flex:1;overflow-y:auto;border-top:1px solid var(--border-glass);padding-top:10px;font-size:0.85rem;">
+                <div class="loading-placeholder">スタイルを選んで「機械スクリーニング」を実行してください。</div>
+            </div>
+
+            <div class="modal-actions" style="margin-top:10px;">
+                <button class="modal-btn cancel" onclick="closeScreenerModal()">閉じる</button>
             </div>
         </div>
     </div>

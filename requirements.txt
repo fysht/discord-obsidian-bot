@@ -37,6 +37,12 @@ jpholiday
 pyyaml
 feedparser
 
+# Stock Screener (ScreenerCog)
+yfinance
+pandas
+numpy
+pandas-ta
+
 # PWA (Secretary AI App)
 fastapi
 uvicorn
