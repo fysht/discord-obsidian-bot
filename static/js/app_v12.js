@@ -312,15 +312,19 @@ window.loadScheduleSettings = async () => {
             const dowOpts = SCHEDULE_DOW_OPTIONS.map(o =>
                 `<option value="${o.value}" ${o.value === it.dow ? 'selected' : ''}>${o.label}</option>`
             ).join('');
-            return `<div style="padding:6px 0;border-bottom:1px solid var(--border-glass);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                <label style="display:flex;align-items:center;gap:5px;flex:1;min-width:140px;cursor:pointer;">
-                    <input type="checkbox" class="schedule-enabled" data-key="${escapeHtml(it.key)}" ${checked}>
-                    <span style="font-size:0.84rem;color:var(--text-primary);">${escapeHtml(it.label)}</span>
-                </label>
-                <input type="time" class="schedule-time modern-input" data-key="${escapeHtml(it.key)}" value="${escapeHtml(it.time)}" style="font-size:0.78rem;padding:3px 6px;width:90px;">
-                <select class="schedule-dow modern-input" data-key="${escapeHtml(it.key)}" style="font-size:0.78rem;padding:3px 4px;width:auto;">
-                    ${dowOpts}
-                </select>
+            const desc = it.description ? `<div style="font-size:0.7rem;color:var(--text-muted);margin:2px 0 0 22px;">${escapeHtml(it.description)}</div>` : '';
+            return `<div style="padding:8px 0;border-bottom:1px solid var(--border-glass);">
+                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <label style="display:flex;align-items:center;gap:5px;flex:1;min-width:140px;cursor:pointer;">
+                        <input type="checkbox" class="schedule-enabled" data-key="${escapeHtml(it.key)}" ${checked}>
+                        <span style="font-size:0.84rem;color:var(--text-primary);font-weight:600;">${escapeHtml(it.label)}</span>
+                    </label>
+                    <input type="time" class="schedule-time modern-input" data-key="${escapeHtml(it.key)}" value="${escapeHtml(it.time)}" style="font-size:0.78rem;padding:3px 6px;width:90px;">
+                    <select class="schedule-dow modern-input" data-key="${escapeHtml(it.key)}" style="font-size:0.78rem;padding:3px 4px;width:auto;">
+                        ${dowOpts}
+                    </select>
+                </div>
+                ${desc}
             </div>`;
         }).join('');
         body.innerHTML = rows + `
@@ -648,10 +652,15 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
 
     // [ACTION:...] タグを抽出してボタン描画用に分離
     const actions = [];
-    const visibleText = String(content || '').replace(/\[ACTION:([^\]]+)\]/g, (_, payload) => {
+    let rawText = String(content || '').replace(/\[ACTION:([^\]]+)\]/g, (_, payload) => {
         actions.push(payload);
         return '';
-    }).trim();
+    });
+    // 内部関数呼び出しの生文字列を除去（「ツールを呼び出す xxx(...)」「tool_call: xxx(...)」など）
+    rawText = rawText
+        .replace(/^\s*(?:ツールを呼び出す|tool[_ ]?call:?)\s*[\w.]+\([^)]*\)\s*$/gim, '')
+        .replace(/^\s*\[?function[_ ]?call\]?:?\s*[\w.]+\([^)]*\)\s*$/gim, '');
+    const visibleText = rawText.trim();
     const processedContent = escapeHtml(visibleText).replace(/\n/g, '<br>');
 
     // 引用 (返信) 表示
@@ -718,6 +727,12 @@ function describeAction(payload) {
         case 'mit_rollover': return `📤 未達MITを翌日へ繰越`;
         case 'note_create':  return `📝 ノートに保存: ${args.title || ''}`;
         case 'propose_perm_note': return `📌 永久ノートにする: ${args.title || ''}`;
+        case 'log_life_activity': {
+            const s = args.status === 'end' ? '終了' : '開始';
+            return `🔥 ライフログを${s}: ${args.activity_name || ''}`;
+        }
+        case 'save_thought_reflection': return `💭 思考整理を保存: ${args.theme || ''}`;
+        case 'habit_complete': return `✅ 習慣を完了: ${args.habit_name || ''}`;
         default:             return `▶ ${action} を実行`;
     }
 }
@@ -785,6 +800,30 @@ window.executeAction = async function(encodedPayload, btn) {
             window.openPermanentNoteConfirmModal(args.title || '', args.content || '');
             if (btn) { btn.textContent = '確認モーダルを開いた ✓'; btn.classList.add('done'); }
             return;
+        } else if (action === 'log_life_activity') {
+            const status = (args.status === 'end') ? 'end' : 'start';
+            await apiFetch('/api/lifelog_activity', {
+                method: 'POST',
+                body: JSON.stringify({ activity_name: args.activity_name || '', status })
+            });
+            showToast(`ライフログを${status === 'start' ? '開始' : '終了'}として記録しました`);
+        } else if (action === 'save_thought_reflection') {
+            await apiFetch('/api/thought_reflection', {
+                method: 'POST',
+                body: JSON.stringify({
+                    theme: args.theme || '無題',
+                    summary: args.summary || '',
+                    next_step: args.next_step || ''
+                })
+            });
+            showToast('思考整理を保存しました');
+        } else if (action === 'habit_complete') {
+            await apiFetch('/api/habits/complete', {
+                method: 'POST',
+                body: JSON.stringify({ habit_name: args.habit_name || '' })
+            });
+            showToast(`習慣「${args.habit_name || ''}」を完了として記録しました`);
+            if (typeof loadHabits === 'function') loadHabits();
         } else {
             showToast('未対応のアクションです', true);
         }
@@ -798,20 +837,31 @@ window.executeAction = async function(encodedPayload, btn) {
 
 function renderWeather(w, weatherEl) {
     if (!weatherEl) return;
-    let html = `<div class="weather-summary">${escapeHtml(w.summary || '')}</div>`;
-    if (w.max_temp || w.min_temp) {
-        html += `<div class="weather-temps">
-            <span class="temp-max">↑${w.max_temp}℃</span>
-            <span class="temp-min">↓${w.min_temp}℃</span>
-        </div>`;
-    }
-    // 1日の代表天気（時間別予報の上に表示）
+    let html = '';
+    // 1日の代表天気: アイコン + 天気名 + 気温 + 降水確率を1行に統合
     const today = (w.daily && w.daily[0]) ? w.daily[0] : null;
-    if (today && (today.icon || today.weather)) {
-        html += `<div style="display:flex;align-items:center;justify-content:center;gap:10px;margin:10px 0 6px;">
-            <span style="font-size:2.2rem;line-height:1;">${today.icon || ''}</span>
-            <span style="font-size:1rem;font-weight:600;color:var(--text-primary);">${escapeHtml(today.weather || '')}</span>
+    const todayIcon = today?.icon || '';
+    const todayWeather = today?.weather || w.summary || '';
+    const todayMax = today?.max_temp ?? w.max_temp ?? '--';
+    const todayMin = today?.min_temp ?? w.min_temp ?? '--';
+    const todayPopRaw = today?.pop || '';
+    const todayPop = todayPopRaw
+        ? (String(todayPopRaw).includes('%') ? todayPopRaw : `${todayPopRaw}%`)
+        : '';
+    if (todayIcon || todayWeather) {
+        html += `<div style="display:flex;align-items:center;gap:14px;padding:10px 4px;">
+            <span style="font-size:2.6rem;line-height:1;">${todayIcon}</span>
+            <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;">
+                <div style="font-size:1rem;font-weight:600;color:var(--text-primary);">${escapeHtml(todayWeather)}</div>
+                <div style="font-size:0.84rem;color:var(--text-secondary);display:flex;gap:10px;flex-wrap:wrap;">
+                    <span style="color:#ff6b6b;">↑${todayMax}℃</span>
+                    <span style="color:#74c0fc;">↓${todayMin}℃</span>
+                    ${todayPop ? `<span style="color:var(--text-muted);">☂${escapeHtml(todayPop)}</span>` : ''}
+                </div>
+            </div>
         </div>`;
+    } else if (w.summary) {
+        html += `<div class="weather-summary">${escapeHtml(w.summary)}</div>`;
     }
     // 時間別予報を先に表示（今日のものを優先）
     const slots = w.hourly || w.slots || [];
@@ -3186,11 +3236,20 @@ async function loadHabits() {
                 ? `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '${escapeHtml(trigger)}')">⏰ ${escapeHtml(trigger)}</span>`
                 : `<button class="habit-trigger-add" title="いつやるかを設定" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '')">＋いつ</button>`;
 
+            const weekdays = Array.isArray(h.weekdays) ? h.weekdays : [];
+            const dowLabels = ['月','火','水','木','金','土','日'];
+            const wdEncoded = encodeURIComponent(JSON.stringify(weekdays));
+            const wdChip = weekdays.length === 0 || weekdays.length === 7
+                ? `<button class="habit-trigger-add" title="曜日を指定" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}','${wdEncoded}')">📅 毎日</button>`
+                : `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}','${wdEncoded}')">📅 ${weekdays.map(d => dowLabels[d]).join('・')}</span>`;
+
             let freqChip = '';
             if (freq > 1) {
                 const freqLabel = freq === 7 ? '週1回' : `${freq}日に1回`;
                 const notDueStyle = !dueToday ? 'color:var(--text-muted);' : 'color:var(--accent);';
                 freqChip = `<span style="font-size:0.68rem; padding:1px 5px; border-radius:3px; background:rgba(255,255,255,0.06); ${notDueStyle}">${freqLabel}${!dueToday ? ' (今日はお休み)' : ''}</span>`;
+            } else if (weekdays.length > 0 && weekdays.length < 7 && !dueToday) {
+                freqChip = `<span style="font-size:0.68rem; padding:1px 5px; border-radius:3px; background:rgba(255,255,255,0.06); color:var(--text-muted);">今日はお休み</span>`;
             }
 
             const dimmed = !dueToday && !isDone;
@@ -3200,7 +3259,7 @@ async function loadHabits() {
                     <button class="habit-check-btn" onclick="${isDone ? `uncompleteHabit('${h.name}', '${h.id}')` : `completeHabit('${h.name}', '${h.id}')`}" ${!isDone && !dueToday ? 'disabled' : ''} style="${isDone ? 'opacity:0.8;' : ''}">✔</button>
                     <div class="habit-name-wrap" style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0;">
                         <div class="habit-name">${escapeHtml(h.name)}${freqChip ? ' ' + freqChip : ''}</div>
-                        <div class="habit-trigger-row">${triggerChip}</div>
+                        <div class="habit-trigger-row" style="display:flex;gap:6px;flex-wrap:wrap;">${triggerChip}${wdChip}</div>
                     </div>
                     ${streakBadge}
                 </div>
@@ -3239,6 +3298,69 @@ window.uncompleteHabit = async (habitName, hId) => {
         await apiFetch('/api/habits/uncomplete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
         loadHabits();
     } catch { showToast('失敗しました', true); }
+};
+
+window.openHabitWeekdaysModal = (habitName, weekdaysEncoded) => {
+    let current = [];
+    try { current = JSON.parse(decodeURIComponent(weekdaysEncoded)) || []; } catch {}
+    let modal = $('#habit-weekdays-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="habit-weekdays-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:380px;">
+                    <h3 id="habit-weekdays-title" style="margin-top:0;">📅 対象の曜日</h3>
+                    <p style="font-size:0.78rem;color:var(--text-muted);margin:0 0 10px;">チェックを外した曜日はリマインダーや「今日対象の習慣」から除外されます。すべて選択（または全解除）すると毎日対象になります。</p>
+                    <div id="habit-weekdays-checks" style="display:flex;gap:6px;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;"></div>
+                    <div class="modal-actions" style="display:flex;gap:8px;">
+                        <button class="modal-btn cancel" onclick="closeHabitWeekdaysModal()">キャンセル</button>
+                        <button class="modal-btn submit" onclick="saveHabitWeekdaysModal()">保存</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#habit-weekdays-modal');
+    }
+    $('#habit-weekdays-title').textContent = `📅 ${habitName} の対象曜日`;
+    const checks = $('#habit-weekdays-checks');
+    const labels = ['月','火','水','木','金','土','日'];
+    checks.innerHTML = labels.map((lab, idx) => {
+        const isAllDay = current.length === 0; // 空 = 毎日 = 全 ON 表示
+        const checked = isAllDay || current.includes(idx) ? 'checked' : '';
+        return `<label style="display:flex;flex-direction:column;align-items:center;gap:4px;cursor:pointer;font-size:0.84rem;">
+            <input type="checkbox" class="habit-weekday-check" data-day="${idx}" ${checked}>
+            <span>${lab}</span>
+        </label>`;
+    }).join('');
+    modal.dataset.habitName = habitName;
+    modal.classList.remove('hidden');
+};
+
+window.closeHabitWeekdaysModal = () => {
+    $('#habit-weekdays-modal')?.classList.add('hidden');
+};
+
+window.saveHabitWeekdaysModal = async () => {
+    const modal = $('#habit-weekdays-modal');
+    if (!modal) return;
+    const name = modal.dataset.habitName || '';
+    const selected = Array.from(document.querySelectorAll('.habit-weekday-check'))
+        .filter(c => c.checked).map(c => parseInt(c.dataset.day, 10))
+        .filter(n => Number.isInteger(n));
+    // 全選択 or 全解除はどちらも「毎日」として扱う（空配列で送信）
+    const weekdays = (selected.length === 0 || selected.length === 7) ? [] : selected;
+    try {
+        await apiFetch('/api/habits/add', {
+            method: 'POST',
+            body: JSON.stringify({ name, frequency_days: 1, weekdays }),
+        });
+        showToast('曜日設定を保存しました');
+        closeHabitWeekdaysModal();
+        if (typeof loadHabits === 'function') loadHabits();
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    }
 };
 
 window.openHabitTriggerModal = (habitName, currentTrigger) => {
@@ -6335,14 +6457,15 @@ const TUTORIAL_SLIDES = [
     {
         title: 'はじめに',
         target: null,
-        body: `<p>このアプリは <b>4つのタブ</b>でできています。</p>
+        body: `<p>このアプリは <b>5つのタブ</b>でできています。</p>
         <div class="tut-grid">
-            <div class="tut-card"><b>💬 チャット</b><br><small>AI に何でも頼める</small></div>
-            <div class="tut-card"><b>📰 情報</b><br><small>天気・ニュース・メール</small></div>
-            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・食事・支出・Fitbit</small></div>
+            <div class="tut-card"><b>💬 チャット</b><br><small>マネージャーAI と対話</small></div>
             <div class="tut-card"><b>📅 予定</b><br><small>MIT・カレンダー・タスク</small></div>
+            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・食事・支出・日記</small></div>
+            <div class="tut-card"><b>📰 情報</b><br><small>天気・ニュース・リンク</small></div>
+            <div class="tut-card"><b>💹 投資</b><br><small>銘柄分析・スクリーナー</small></div>
         </div>
-        <p style="margin-top:10px;font-size:0.85rem;color:var(--text-muted);">下のナビ（チャット・情報・ログ・予定）でタブを切り替えます。</p>`
+        <p style="margin-top:10px;font-size:0.85rem;color:var(--text-muted);">下のナビでタブを切り替えます（左から推奨利用順）。</p>`
     },
     {
         title: 'チャット',
@@ -6353,8 +6476,20 @@ const TUTORIAL_SLIDES = [
             <li>👆 メッセージ長押しでお気に入り・コレクション・翻訳保存などのアクション</li>
             <li>🌐 ヘッダーの EN トグルで英会話モード</li>
             <li>🔍 ヘッダーの検索アイコンで全メッセージ検索</li>
-            <li>💡 AI が永久ノートの保存を提案した場合は確認モーダルで承認・却下できます</li>
+            <li>🔄 チャットは30秒ごとに自動更新（マネージャーからのメッセージも自動で表示）</li>
         </ul>`
+    },
+    {
+        title: 'アクション提案ボタン',
+        target: 'chat',
+        body: `<p>マネージャーは記録系アクションを<b>勝手には保存しません</b>。代わりに「このアクション実行する？」というボタンを表示します。</p>
+        <ul>
+            <li>📝 ノートに保存 / 📌 永久ノートにする</li>
+            <li>📅 カレンダーに追加 / ✅ タスクに追加 / 🎯 MITを登録</li>
+            <li>🔥 ライフログを記録 / 💭 思考整理を保存 / ✅ 習慣を完了</li>
+            <li>各ボタンの右の <b>✕</b> で却下できます</li>
+        </ul>
+        <p style="font-size:0.85rem;color:var(--text-muted);">ボタンを押した時にだけ実際に保存されます。</p>`
     },
     {
         title: 'タスク開始 / タスク終了',
@@ -6414,10 +6549,11 @@ const TUTORIAL_SLIDES = [
     {
         title: '習慣トラッカー',
         target: 'log',
-        body: `<p>毎日の習慣をワンタップでチェック。継続状況を 2 種類の図で可視化します。</p>
+        body: `<p>毎日の習慣をワンタップでチェック。週N回や特定曜日の習慣も管理できます。</p>
         <ul>
             <li>⭕ チェックで完了記録（Google Tasks「習慣」リストと同期）</li>
             <li>⏰「+いつ」を設定すると指定時刻にマネージャーが声をかけます</li>
+            <li>📅「+毎日」をタップ → 月火水…のチェックボックスで対象曜日を指定（例: 月水金のみ）</li>
             <li>⠿ 長押しで並び替え可能</li>
             <li>📊 過去 28 日のヒートマップ ＋ 過去 90 日のガントチャート</li>
         </ul>`
@@ -6476,14 +6612,14 @@ const TUTORIAL_SLIDES = [
         </ul>`
     },
     {
-        title: '今日の日記 / デイリーサマリー',
+        title: '今日の振り返り / デイリーノート / マネージャーの気づき',
         target: 'log',
-        body: `<p>1 日の記録を統合した日報を表示・編集できます。</p>
+        body: `<p>ログタブの最上部に「今日の記録」グループとして並びます。</p>
         <ul>
-            <li>📔 <b>今日の日記</b>: AI が振り返り → 「編集」ボタンで自分で書き換え可能</li>
-            <li>📅 <b>デイリーサマリー</b>: 「日付指定」で任意日のサマリーを生成</li>
-            <li>❓ AI が判断に迷う点は<b>質問キュー</b>に保存され、後で答えると確定</li>
-            <li>🌅 直近確定済みのサマリーを常に表示（今日未生成でも昨日分を表示）</li>
+            <li>📅 <b>今日の振り返り</b>: マネージャーが1日の出来事を要約。今日未生成なら昨日分を表示</li>
+            <li>📔 <b>デイリーノート</b>: Obsidian の DailyNotes。「編集」ボタンで内容を書き換え可能</li>
+            <li>📒 <b>マネージャーの気づき</b>: 対話から見つけた傾向・パターンの観察ノート</li>
+            <li>🚀 <b>次のアクション</b>: マネージャーが提案する次の一手</li>
         </ul>`
     },
     {
@@ -6509,6 +6645,67 @@ const TUTORIAL_SLIDES = [
         </ul>`
     },
     {
+        title: '銘柄スクリーナー & ウォッチリスト',
+        target: 'invest',
+        body: `<p>日本株を機械的にフィルタして、注目銘柄を保存できます。</p>
+        <ul>
+            <li>🔎 「じわじわ高値ブレイク / バリュー / グロース」のスタイル別スクリーニング</li>
+            <li>🔗 複数スタイルの <b>AND/OR 検索</b>（OR=いずれか / AND=すべて合致）</li>
+            <li>⭐ 結果から「注目」ボタンでウォッチリストに追加</li>
+            <li>🤖 質的分析ボタンで Gemini が直近 IR・ニュース・決算を補強</li>
+            <li>📚 NotebookLM ノートURLを書籍編集モーダルに保存して「↗開く」で起動</li>
+        </ul>`
+    },
+    {
+        title: 'マネージャー連絡スケジュール',
+        target: null,
+        body: `<p>⚙ 設定 → 「📅 マネージャー連絡スケジュール」で時刻と有効/無効を編集できます。</p>
+        <ul>
+            <li>朝のMIT・朝のルーチン・夜の振り返り・週次レビュー など</li>
+            <li>各項目を有効/無効化できる（チェックボックス）</li>
+            <li>時刻と曜日（毎日/月～日）を変更可能、Bot 再起動不要で即時反映</li>
+        </ul>`
+    },
+    {
+        title: 'Gemini モデル選択',
+        target: null,
+        body: `<p>⚙ 設定 → 「🧠 Gemini モデル選択」で、機能ごとに Gemini モデルを切替できます。</p>
+        <ul>
+            <li>⚡ Flash 系（低コスト・高速）/ 🧠 Pro 系（高精度）</li>
+            <li>🔬 Preview / カスタム ID 入力にも対応</li>
+            <li>機能例: スクリーナー質的分析・銘柄スナップショット・地合い分析・マネージャー会話 など</li>
+        </ul>`
+    },
+    {
+        title: 'PayPay 共有から支出記録',
+        target: null,
+        body: `<p>PayPay の取引履歴で「共有」 → このアプリを選ぶと、自動で支出記録モーダルが開きます。</p>
+        <ul>
+            <li>💴 金額・店名・支払方法をテキストから自動抽出</li>
+            <li>📝 内容を確認・修正してから保存</li>
+        </ul>`
+    },
+    {
+        title: 'Gmail 自動同期',
+        target: null,
+        body: `<p>Gmail の状態がローカル DB と双方向同期されます。</p>
+        <ul>
+            <li>🆕 受信時: AI が要約・重要度判定して保存</li>
+            <li>🗑 Gmail 側で削除: 7分以内に PWA からも消える</li>
+            <li>📲 メールの「↗ Gmail で開く」: モバイルでは Gmail アプリを起動（Web 版にフォールバック）</li>
+        </ul>`
+    },
+    {
+        title: 'アプリで開く設定（モバイル）',
+        target: null,
+        body: `<p>Gmail / Yahoo!天気 など外部サービスをアプリで起動するための端末設定。</p>
+        <ul>
+            <li><b>iPhone</b>: 設定 → Safari → リンク → アプリで開く</li>
+            <li><b>Android</b>: 設定 → アプリ → 各アプリ → 既定で開く → 対応するリンクを開く</li>
+            <li>一部の Yahoo!天気アプリは Universal Link 未対応で Web 版にフォールバックします</li>
+        </ul>`
+    },
+    {
         title: 'ヘッダーのアイコン',
         target: null,
         body: `<p>ヘッダー右側のアイコンの意味：</p>
@@ -6519,7 +6716,7 @@ const TUTORIAL_SLIDES = [
             <li>🔄 アプリ更新（PWA キャッシュ更新）</li>
             <li>❓ このヘルプを再表示</li>
             <li>🗑 チャット履歴リセット</li>
-            <li>⚙ 通知・APIコスト・自動格下げなどの設定</li>
+            <li>⚙ コスト・Gemini モデル・スケジュールなどの設定</li>
         </ul>`
     },
 ];

@@ -759,14 +759,23 @@ class PartnerCog(commands.Cog):
 
         try:
             if name == "log_life_activity":
-                return await self._log_life_activity_to_obsidian(
-                    args["activity_name"], args["status"]
+                # 自動保存はせず、ボタン提案として ACTION タグを返す
+                n = (args.get("activity_name") or "").replace("|", " ").replace("=", " ")
+                s = (args.get("status") or "start").strip()
+                if s not in ("start", "end"):
+                    s = "start"
+                return (
+                    f"[ACTION:log_life_activity:activity_name={n}|status={s}] "
+                    f"({n} を「{'開始' if s == 'start' else '終了'}」として記録する？ボタンで保存できるよ。)"
                 )
             elif name == "save_thought_reflection":
-                return await self._save_thought_reflection_to_obsidian(
-                    args.get("theme", "無題"),
-                    args.get("summary", ""),
-                    args.get("next_step", ""),
+                # 自動保存はせず、ボタン提案として ACTION タグを返す
+                th = (args.get("theme") or "無題").replace("|", " ").replace("=", " ")
+                sm = (args.get("summary") or "").replace("|", " ").replace("=", " ").replace("\n", " / ")
+                ns = (args.get("next_step") or "").replace("|", " ").replace("=", " ").replace("\n", " / ")
+                return (
+                    f"[ACTION:save_thought_reflection:theme={th}|summary={sm}|next_step={ns}] "
+                    f"(思考整理「{th}」を保存する？ボタンで実行できるよ。)"
                 )
             elif name == "propose_permanent_note":
                 # 即時保存はしない。フロントで確認モーダルを起動するための ACTION 文字列を返す
@@ -796,13 +805,11 @@ class PartnerCog(commands.Cog):
                 habit_cog = self.bot.get_cog("HabitCog")
                 return await habit_cog.list_habits() if habit_cog else "HabitCog不在"
             elif name == "record_habit":
-                habit_cog = self.bot.get_cog("HabitCog")
+                # 自動完了はせず、ボタン提案として ACTION タグを返す
+                hn = (args.get("habit_name") or "").replace("|", " ").replace("=", " ")
                 return (
-                    await habit_cog.complete_habit(
-                        args["habit_name"], int(args.get("frequency_days", 1))
-                    )
-                    if habit_cog
-                    else "HabitCog不在"
+                    f"[ACTION:habit_complete:habit_name={hn}] "
+                    f"(習慣「{hn}」を完了として記録する？ボタンで実行できるよ。)"
                 )
             elif name == "report_sleep":
                 fitbit_cog = self.bot.get_cog("FitbitCog")

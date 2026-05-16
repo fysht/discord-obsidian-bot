@@ -20,18 +20,19 @@ from config import JST
 
 
 # ユーザーが設定画面で編集可能なスケジュール一覧
-# (task_key, label, default_time, default_dow)
-SCHEDULE_CATALOG: list[tuple[str, str, str, str]] = [
-    ("morning_mit",      "朝のMIT",         "06:30", "daily"),
-    ("morning_routine",  "朝のルーチン",     "07:00", "daily"),
-    ("evening_review",   "夜の振り返り",     "22:00", "daily"),
-    ("tomorrow_preview", "明日の予定",       "21:00", "daily"),
-    ("habit_check",      "習慣チェック",     "21:00", "daily"),
-    ("obsidian_review",  "Obsidian 振り返り", "20:00", "daily"),
-    ("weekend_stocks",   "週末株レビュー",   "20:00", "friday"),
-    ("daily_organize",   "デイリー整理",     "23:55", "daily"),
-    ("weekly_review",    "週次レビュー",     "21:00", "sunday"),
-    ("update_manual",    "取扱説明書更新",   "23:45", "daily"),
+# (task_key, label, default_time, default_dow, description)
+# 並び順は時系列（朝 → 夜）
+SCHEDULE_CATALOG: list[tuple[str, str, str, str, str]] = [
+    ("morning_mit",      "朝のMIT",          "06:30", "daily",  "今日のMIT候補3件を朝に提案します。あなたの返信で確定。"),
+    ("morning_routine",  "朝のルーチン",      "07:00", "daily",  "今日の予定・タスク・天気・ニュース・過去の今日を一括お届け。"),
+    ("obsidian_review",  "Obsidian 振り返り", "20:00", "daily",  "Obsidian の今日のデイリーノートを読んで、マネージャーが感想を返します。"),
+    ("weekend_stocks",   "週末株レビュー",    "20:00", "friday", "金曜の市場クローズに合わせて週末の株式振り返り。"),
+    ("tomorrow_preview", "明日の予定",        "21:00", "daily",  "明日のカレンダー予定と天気を前夜に通知。"),
+    ("habit_check",      "習慣チェック",      "21:00", "daily",  "今日まだ完了していない習慣をリマインドします。"),
+    ("weekly_review",    "週次レビュー",      "21:00", "sunday", "日曜の夜に1週間の振り返りを Drive に保存します。"),
+    ("evening_review",   "夜の振り返り",      "22:00", "daily",  "今日の会話ログ・MIT・翌日情報を統括して夜にレビュー。"),
+    ("update_manual",    "取扱説明書更新",    "23:45", "daily",  "あなたの会話ログから「ユーザー取扱説明書」を自動更新。"),
+    ("daily_organize",   "デイリー整理",      "23:55", "daily",  "タスク・チャットログ・天気を整理して Obsidian に保存。"),
 ]
 
 _DOW_MAP = {
@@ -95,6 +96,12 @@ async def is_due(
 def get_catalog() -> list[dict]:
     """SCHEDULE_CATALOG をシリアライズしやすい dict 形式で返す（API用）。"""
     return [
-        {"key": k, "label": label, "default_time": dt, "default_dow": dow}
-        for k, label, dt, dow in SCHEDULE_CATALOG
+        {
+            "key": k,
+            "label": label,
+            "default_time": dt,
+            "default_dow": dow,
+            "description": desc,
+        }
+        for k, label, dt, dow, desc in SCHEDULE_CATALOG
     ]

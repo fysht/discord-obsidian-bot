@@ -286,10 +286,23 @@ class ChatService:
                 for fc in response.function_calls:
                     tool_result = ""
                     if fc.name == "log_life_activity":
-                        tool_result = await self._log_life_activity(fc.args["activity_name"], fc.args["status"])
+                        # 自動保存せず、ボタンで実行できるよう ACTION タグを返す
+                        n = (fc.args.get("activity_name") or "").replace("|", " ").replace("=", " ")
+                        s = (fc.args.get("status") or "start").strip()
+                        if s not in ("start", "end"):
+                            s = "start"
+                        tool_result = (
+                            f"[ACTION:log_life_activity:activity_name={n}|status={s}] "
+                            f"({n} を「{'開始' if s == 'start' else '終了'}」として記録する？ボタンで保存できるよ。)"
+                        )
                     elif fc.name == "save_thought_reflection":
-                        tool_result = await self._save_thought_reflection(
-                            fc.args.get("theme", "無題"), fc.args.get("summary", ""), fc.args.get("next_step", "")
+                        # 自動保存せず、ボタンで実行できるよう ACTION タグを返す
+                        th = (fc.args.get("theme") or "無題").replace("|", " ").replace("=", " ")
+                        sm = (fc.args.get("summary") or "").replace("|", " ").replace("=", " ").replace("\n", " / ")
+                        ns = (fc.args.get("next_step") or "").replace("|", " ").replace("=", " ").replace("\n", " / ")
+                        tool_result = (
+                            f"[ACTION:save_thought_reflection:theme={th}|summary={sm}|next_step={ns}] "
+                            f"(思考整理「{th}」をノートに保存する？ボタンを押すと保存されるよ。)"
                         )
                     elif fc.name == "propose_permanent_note":
                         # 即時保存せず、フロントへ確認モーダルの起動を促す ACTION を返す

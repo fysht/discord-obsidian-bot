@@ -145,15 +145,26 @@ class HabitCog(commands.Cog):
 
         return f"習慣「{target_habit['name']}」の完了を取り消しました"
 
+    @staticmethod
+    def _is_due_today(habit: dict, today_weekday: int) -> bool:
+        """習慣が今日対象か判定。weekdays が空/未設定なら毎日対象。
+        weekdays には 0=月..6=日 のインデックスが入る。"""
+        weekdays = habit.get("weekdays") or []
+        if not weekdays:
+            return True
+        return today_weekday in weekdays
+
     async def get_incomplete_habits(self) -> list[str]:
-        """今日まだ完了していない習慣の名前リストを返す"""
+        """今日まだ完了していない習慣の名前リスト（曜日フィルタ済み）を返す"""
         data = await self._load_data()
-        today_str = datetime.now(JST).strftime("%Y-%m-%d")
+        now = datetime.now(JST)
+        today_str = now.strftime("%Y-%m-%d")
+        today_weekday = now.weekday()
         today_logs = data.get("logs", {}).get(today_str, [])
         return [
             h["name"]
             for h in data.get("habits", [])
-            if h["id"] not in today_logs
+            if h["id"] not in today_logs and self._is_due_today(h, today_weekday)
         ]
 
     @tasks.loop(minutes=30)

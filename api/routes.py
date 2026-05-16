@@ -997,10 +997,15 @@ async def get_habits():
             due_today = _is_due_today(matching, matching["id"])
             # trigger は habit_data 側を優先（永続化）
             trigger_val = matching.get("trigger", "") or m.get("trigger_notes", "")
+            weekdays = matching.get("weekdays") or []
+            # 曜日指定がある場合は今日が指定曜日かどうかも反映
+            if weekdays and today_date.weekday() not in weekdays:
+                due_today = False
             habits_list.append({
                 "id": matching["id"],
                 "name": matching["name"],
                 "frequency_days": freq,
+                "weekdays": weekdays,
                 "trigger": trigger_val,
                 "task_id": m["task_id"],
                 "due_today": due_today,
@@ -1033,6 +1038,7 @@ async def uncomplete_habit(req: HabitCompleteRequest):
 class HabitAddRequest(BaseModel):
     name: str
     frequency_days: int = 1
+    weekdays: Optional[List[int]] = None  # 0=月..6=日, None or 空 → 毎日
 
 @router.post("/habits/add", dependencies=[Depends(verify_api_key)])
 async def add_habit(req: HabitAddRequest):
@@ -1042,12 +1048,24 @@ async def add_habit(req: HabitAddRequest):
     if not habit_cog:
         raise HTTPException(status_code=503, detail="HabitCog不在")
 
+    # weekdays をバリデーション（0..6 のみ、ソート＋重複排除）
+    weekdays = sorted({d for d in (req.weekdays or []) if isinstance(d, int) and 0 <= d <= 6})
+
     data = await habit_cog._load_data()
     existing = next((h for h in data["habits"] if h["name"].lower() == req.name.lower()), None)
     if not existing:
         existing_ids = [int(h["id"]) for h in data["habits"]] if data["habits"] else [0]
         new_id = str(max(existing_ids) + 1)
-        data["habits"].append({"id": new_id, "name": req.name, "frequency_days": req.frequency_days})
+        data["habits"].append({
+            "id": new_id,
+            "name": req.name,
+            "frequency_days": req.frequency_days,
+            "weekdays": weekdays,
+        })
+        await habit_cog._save_data(data)
+    else:
+        # 既存習慣の weekdays 更新（毎日↔曜日指定の切替えを許容）
+        existing["weekdays"] = weekdays
         await habit_cog._save_data(data)
 
     if hasattr(bot, "tasks_service") and bot.tasks_service:
@@ -4020,6 +4038,34 @@ async def meals_advice(date: str = ""):
 # Lifelog activity (Bot の log_life_activity と同形式で記録)
 # ============================================================
 
+class ThoughtReflectionRequest(BaseModel):
+    theme: str
+    summary: str = ""
+    next_step: str = ""
+
+
+@router.post("/thought_reflection", dependencies=[Depends(verify_api_key)])
+async def thought_reflection_save(req: ThoughtReflectionRequest):
+    """壁打ちメモを Obsidian に保存する（ボタン経由のみで呼ばれる想定）。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジン未初期化")
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="PartnerCog 未ロード")
+    try:
+        msg = await partner_cog._save_thought_reflection_to_obsidian(
+            req.theme or "無題",
+            req.summary or "",
+            req.next_step or "",
+        )
+        return {"ok": True, "message": msg}
+    except Exception as e:
+        logging.error(f"thought_reflection_save error: {e}")
+        return {"ok": False, "error": "保存失敗"}
+
+
 class LifelogActivityRequest(BaseModel):
     activity_name: str
     status: str  # 'start' / 'end'
@@ -4676,13 +4722,14 @@ async def settings_schedules_get():
     from api.database import get_app_setting
     from services.schedule_resolver import SCHEDULE_CATALOG
     items = []
-    for task_key, label, default_time, default_dow in SCHEDULE_CATALOG:
+    for task_key, label, default_time, default_dow, description in SCHEDULE_CATALOG:
         enabled = await get_app_setting(_schedule_setting_key(task_key, "enabled"), "1")
         time_str = await get_app_setting(_schedule_setting_key(task_key, "time"), default_time)
         dow = await get_app_setting(_schedule_setting_key(task_key, "dow"), default_dow)
         items.append({
             "key": task_key,
             "label": label,
+            "description": description,
             "default_time": default_time,
             "default_dow": default_dow,
             "enabled": enabled == "1",
@@ -4704,7 +4751,7 @@ _TIME_RE = re.compile(r"^[0-2]?\d:[0-5]\d$")
 async def settings_schedules_post(req: SettingsSchedulesRequest):
     from api.database import set_app_setting
     from services.schedule_resolver import SCHEDULE_CATALOG
-    valid_keys = {k for k, *_ in SCHEDULE_CATALOG}
+    valid_keys = {row[0] for row in SCHEDULE_CATALOG}
     saved = 0
     for k, v in (req.values or {}).items():
         if k not in valid_keys or not isinstance(v, dict):

@@ -1174,8 +1174,10 @@ mark.search-hl {
     overflow-y: auto;
 }
 
-/* ニュースカード内 list-item の最終要素ボーダーを除去（カード枠との二重線回避） */
-.news-card .card-body .list-item:last-child {
+/* ニュースカード内の最終要素ボーダーを除去（カード枠との二重線回避） */
+.news-card .card-body .list-item:last-child,
+.news-card .card-body .news-item:last-child,
+.news-card .card-body > *:last-child {
     border-bottom: none;
 }
 
