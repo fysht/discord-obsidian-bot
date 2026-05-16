@@ -279,8 +279,103 @@ details.card > summary > .card-header { border-bottom: none; }
 .stocked-link-notebook-btn:hover { opacity: 0.85; }
 .stocked-link-notebook-btn:visited { color: #fff; }
 
-/* 情報タブのカード並び替え用ドラッグハンドル */
-.card-drag-handle {
+/* ====== 勉強カード ====== */
+.study-goal-block {
+    padding: 14px 16px;
+    border-top: 1px solid var(--border, rgba(127,127,127,0.18));
+}
+.study-goal-block:first-child { border-top: none; }
+.study-goal-block .study-goal-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}
+.study-goal-block .study-goal-title { flex: 1; min-width: 0; font-weight: 600; font-size: 0.95rem; }
+.study-goal-block .study-goal-due { font-size: 0.78rem; color: var(--text-muted); }
+.study-goal-block .study-goal-memo { font-size: 0.8rem; color: var(--text-secondary); margin: 2px 0 6px; }
+.study-section-label { font-size: 0.78rem; color: var(--text-secondary); margin: 10px 0 4px; }
+.study-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    margin-top: 6px;
+    background: rgba(127,127,127,0.05);
+    border-radius: 8px;
+}
+.study-item .study-item-title { flex: 1; min-width: 0; font-size: 0.9rem; }
+.study-item .study-item-memo { width: 100%; font-size: 0.78rem; color: var(--text-secondary); }
+.study-empty {
+    padding: 18px 16px;
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+}
+.study-error {
+    padding: 12px 16px;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    background: rgba(255,193,7,0.12);
+    border-radius: 6px;
+    margin: 8px 12px;
+}
+.study-session-btn-start {
+    background: rgba(46,160,67,0.15);
+    border: 1px solid rgba(46,160,67,0.4);
+    color: #2da44e;
+}
+.study-session-btn-end {
+    background: rgba(217,48,37,0.12);
+    border: 1px solid rgba(217,48,37,0.4);
+    color: #cf222e;
+}
+
+/* ====== ドラム練習カード ====== */
+.drum-phase-block {
+    padding: 14px 16px;
+    border-top: 1px solid var(--border, rgba(127,127,127,0.18));
+}
+.drum-phase-block:first-child { border-top: none; }
+.drum-phase-block .drum-phase-title { font-weight: 600; font-size: 0.95rem; }
+.drum-phase-block .drum-phase-desc { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 6px; }
+.drum-milestone-row {
+    padding: 10px 14px;
+    margin-top: 6px;
+    background: rgba(127,127,127,0.05);
+    border-radius: 8px;
+}
+.drum-milestone-row .drum-milestone-title { font-size: 0.9rem; font-weight: 500; }
+.drum-milestone-row .drum-milestone-criteria { font-size: 0.78rem; color: var(--text-secondary); margin-top: 2px; }
+.drum-video-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 4px;
+    font-size: 0.82rem;
+}
+.drum-video-row img { width: 80px; aspect-ratio: 16/9; object-fit: cover; border-radius: 4px; background: #000; flex-shrink: 0; }
+.drum-video-row .drum-video-meta { flex: 1; min-width: 0; }
+.drum-video-row .drum-video-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drum-video-row .drum-video-author { color: var(--text-secondary); font-size: 0.74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drum-add-row {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+.drum-add-row input {
+    flex: 1;
+    padding: 6px 8px;
+    border: 1px solid var(--border, rgba(127,127,127,0.3));
+    border-radius: 6px;
+    font-size: 0.82rem;
+    background: var(--bg-elevated, transparent);
+    color: inherit;
+}
+
+/* ====== カード内項目の並び替えハンドル ====== */
+.list-item-drag-handle {
     cursor: grab;
     touch-action: none;
     user-select: none;
@@ -290,10 +385,11 @@ details.card > summary > .card-header { border-bottom: none; }
     margin-right: 2px;
     letter-spacing: -2px;
     line-height: 1;
+    flex-shrink: 0;
 }
-.card-drag-handle:active { cursor: grabbing; }
-#info-cards-sortable .card.sortable-ghost { opacity: 0.4; }
-#info-cards-sortable .card.sortable-chosen { background-color: rgba(127,127,127,0.06); }
+.list-item-drag-handle:active { cursor: grabbing; }
+.sortable-ghost { opacity: 0.4; }
+.sortable-chosen { background-color: rgba(127,127,127,0.1) !important; }
 
 .stocked-link-meta {
     display: flex;

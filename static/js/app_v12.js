@@ -484,7 +484,6 @@ function switchTab(tab) {
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
     if (tab !== 'chat' && tab !== 'invest') loadDashboard();
-    if (tab === 'info' && typeof initInfoCardsSortable === 'function') initInfoCardsSortable();
     // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
@@ -850,11 +849,11 @@ function renderWeather(w, weatherEl) {
         ? (String(todayPopRaw).includes('%') ? todayPopRaw : `${todayPopRaw}%`)
         : '';
     if (todayIcon || todayWeather) {
-        html += `<div style="display:flex;align-items:center;gap:14px;padding:10px 4px;">
-            <span style="font-size:2.6rem;line-height:1;">${todayIcon}</span>
-            <div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:0;">
-                <div style="font-size:1rem;font-weight:600;color:var(--text-primary);">${escapeHtml(todayWeather)}</div>
-                <div style="font-size:0.84rem;color:var(--text-secondary);display:flex;gap:10px;flex-wrap:wrap;">
+        html += `<div style="display:flex;align-items:center;gap:10px;padding:8px 4px;">
+            <span style="font-size:1.4rem;line-height:1;">${todayIcon}</span>
+            <div style="display:flex;flex-direction:column;gap:2px;flex:1;min-width:0;">
+                <div style="font-size:0.92rem;font-weight:600;color:var(--text-primary);">${escapeHtml(todayWeather)}</div>
+                <div style="font-size:0.82rem;color:var(--text-secondary);display:flex;gap:10px;flex-wrap:wrap;">
                     <span style="color:#ff6b6b;">↑${todayMax}℃</span>
                     <span style="color:#74c0fc;">↓${todayMin}℃</span>
                     ${todayPop ? `<span style="color:var(--text-muted);">☂${escapeHtml(todayPop)}</span>` : ''}
@@ -2521,6 +2520,16 @@ window.changeLinkPurposeFilter = (type, val) => {
     loadStockedLinks();
 };
 
+// ストックリンクのカスタム並び順（localStorage 永続化）
+const STOCKED_ORDER_KEY = (type) => `stocked_links_order_${type}`;
+function _loadStockedCustomOrder(type) {
+    try { return JSON.parse(localStorage.getItem(STOCKED_ORDER_KEY(type)) || '[]'); }
+    catch { return []; }
+}
+function _saveStockedCustomOrder(type, ids) {
+    localStorage.setItem(STOCKED_ORDER_KEY(type), JSON.stringify(ids));
+}
+
 window.loadStockedLinks = async () => {
     try {
         const data = await apiFetch('/api/links');
@@ -2531,10 +2540,20 @@ window.loadStockedLinks = async () => {
         const bookEl = $('#dash-stocked-book');
 
         let links = data.links || [];
-        
+
         const getSortFn = (type) => {
             return (a, b) => {
                 const sortType = linkSorts[type];
+                if (sortType === 'custom') {
+                    const order = _loadStockedCustomOrder(type);
+                    const idxA = order.indexOf(a.id);
+                    const idxB = order.indexOf(b.id);
+                    const ia = idxA === -1 ? Infinity : idxA;
+                    const ib = idxB === -1 ? Infinity : idxB;
+                    if (ia !== ib) return ia - ib;
+                    // 並び順に未登録の項目は新しい順で末尾に並ぶ
+                    return new Date(b.added_at) - new Date(a.added_at);
+                }
                 if (sortType === 'newest') return new Date(b.added_at) - new Date(a.added_at);
                 if (sortType === 'oldest') return new Date(a.added_at) - new Date(b.added_at);
                 if (sortType === 'title') return a.title.localeCompare(b.title);
@@ -2614,6 +2633,7 @@ window.loadStockedLinks = async () => {
                     <option value="newest" ${linkSorts[type]==='newest'?'selected':''}>新しい順</option>
                     <option value="oldest" ${linkSorts[type]==='oldest'?'selected':''}>古い順</option>
                     <option value="title" ${linkSorts[type]==='title'?'selected':''}>タイトル順</option>
+                    <option value="custom" ${linkSorts[type]==='custom'?'selected':''}>カスタム順</option>
                 `;
                 sortSelect.onchange = (e) => changeLinkSort(type, e.target.value);
 
@@ -2661,13 +2681,13 @@ window.loadStockedLinks = async () => {
                 const rawTitleEl = lk.url
                     ? `<a class="stocked-link-title" href="${lk.url}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
                     : `<span class="stocked-link-title">${escapeHtml(titleText)}</span>`;
+                // 並び替え用のドラッグハンドル（タイトル行先頭）
+                const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>`;
                 // 書籍で NotebookLM 等のノート URL が登録されている場合、タイトル行にワンタッチ起動ボタンを表示
                 const noteBtn = (lk.type === 'book' && lk.linked_note_url)
                     ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(lk.linked_note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く" onclick="event.stopPropagation();">📓 NotebookLM</a>`
                     : '';
-                const titleEl = noteBtn
-                    ? `<div class="stocked-link-title-row">${rawTitleEl}${noteBtn}</div>`
-                    : rawTitleEl;
+                const titleEl = `<div class="stocked-link-title-row">${dragHandle}${rawTitleEl}${noteBtn}</div>`;
 
                 const chips = [];
                 if (lk.tags) {
@@ -2697,7 +2717,43 @@ window.loadStockedLinks = async () => {
         renderGroup(recipeEl, recipeLinks);
         renderGroup(mapEl, mapLinks);
         renderGroup(bookEl, bookLinks);
-        
+
+        // ドラッグ&ドロップ並び替え（SortableJS 必須・defer ロード）
+        const setupSortable = (container, type) => {
+            if (!container) return;
+            // 既存インスタンスは破棄してから再構築（onload 毎の重複防止）
+            try { if (container._sortable) { container._sortable.destroy(); container._sortable = null; } } catch {}
+            if (typeof window.Sortable === 'undefined') {
+                setTimeout(() => setupSortable(container, type), 200);
+                return;
+            }
+            container._sortable = window.Sortable.create(container, {
+                handle: '.list-item-drag-handle',
+                animation: 150,
+                ghostClass: 'sortable-ghost',
+                chosenClass: 'sortable-chosen',
+                onEnd: () => {
+                    const ids = Array.from(container.querySelectorAll('.stocked-link'))
+                        .map(el => parseInt((el.id || '').replace('stocked-link-', ''), 10))
+                        .filter(n => Number.isFinite(n));
+                    _saveStockedCustomOrder(type, ids);
+                    // ドラッグした時点で「カスタム順」に自動切替
+                    if (linkSorts[type] !== 'custom') {
+                        linkSorts[type] = 'custom';
+                        const details = container.closest('details');
+                        const sel = details?.querySelector('[data-role="sort-select"]');
+                        if (sel) sel.value = 'custom';
+                    }
+                    showToast('並び替えました');
+                },
+            });
+        };
+        setupSortable(webEl, 'web');
+        setupSortable(ytEl, 'youtube');
+        setupSortable(recipeEl, 'recipe');
+        setupSortable(mapEl, 'map');
+        setupSortable(bookEl, 'book');
+
         loadNotebooks();
 
     } catch (e) { console.error("StockedLinks fetch error", e); }
@@ -5626,68 +5682,90 @@ async function loadDrumRoadmap() {
     if (!container) return;
     // ロードマップ本体は静的データなので即レンダリング（API失敗でも表示は壊れない）
     renderDrumRoadmap(DRUM_ROADMAP_STATIC, {});
-    // 動画リンクだけサーバから取得して上書き
+    // 動画リンクは stocked_links から取得（YouTubeカードと同じ仕組み）
+    // 取得失敗時も静的ロードマップは既に表示済みなので、控えめに無視する
     let linksMap = {};
-    let linksError = null;
     try {
-        const res = await apiFetch('/api/drum_roadmap/links');
-        if (res.ok) {
-            const data = await res.json();
-            if (data.ok) linksMap = data.links || {};
-            else linksError = data.error || '';
-        } else {
-            linksError = `HTTP ${res.status}`;
+        const data = await apiFetch('/api/links');
+        const links = (data && data.links) || [];
+        for (const lk of links) {
+            if (lk.type !== 'drum_video') continue;
+            // tags に "milestone:<id>" の形式で紐付け先を埋め込む
+            const tags = String(lk.tags || '').split(',').map(t => t.trim()).filter(Boolean);
+            const milestoneTag = tags.find(t => t.startsWith('milestone:'));
+            if (!milestoneTag) continue;
+            const milestoneId = milestoneTag.slice('milestone:'.length);
+            if (!linksMap[milestoneId]) linksMap[milestoneId] = [];
+            const videoId = _extractYouTubeVideoId(lk.url || '');
+            linksMap[milestoneId].push({
+                link_id: lk.id,
+                url: lk.url,
+                title: lk.title || lk.url,
+                thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '',
+            });
         }
     } catch (e) {
-        linksError = (e && e.message) || 'network';
+        // 失敗してもロードマップは表示済みなので静かにスキップ
     }
-    renderDrumRoadmap(DRUM_ROADMAP_STATIC, linksMap, linksError);
+    renderDrumRoadmap(DRUM_ROADMAP_STATIC, linksMap);
 }
 
-function renderDrumRoadmap(data, linksMap, linksError) {
+function _extractYouTubeVideoId(url) {
+    if (!url) return null;
+    try {
+        const u = new URL(url);
+        const host = u.hostname.toLowerCase();
+        if (host.includes('youtu.be')) {
+            return u.pathname.replace(/^\//, '').split('/')[0] || null;
+        }
+        if (host.includes('youtube.com')) {
+            if (u.pathname.startsWith('/shorts/')) return u.pathname.split('/shorts/')[1].split('/')[0] || null;
+            return u.searchParams.get('v');
+        }
+    } catch { /* noop */ }
+    return null;
+}
+
+function renderDrumRoadmap(data, linksMap) {
     const container = $('#dash-drum-roadmap');
     if (!container) return;
     const phases = data.phases || [];
     let html = '';
-    if (linksError) {
-        html += `<div style="font-size:0.78rem;color:#a26b00;background:#fff8e1;padding:6px 8px;border-radius:6px;margin-bottom:6px;">動画リンクの読込に失敗しました（${escapeHtml(linksError)}）。サーバ再起動後に再表示で取得できます。</div>`;
-    }
     for (const ph of phases) {
-        html += `<div style="margin:8px 0 10px;">
-            <div style="font-weight:600;font-size:0.95rem;color:var(--text-primary);">${escapeHtml(ph.label || '')}</div>
-            <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:6px;">${escapeHtml(ph.description || '')}</div>`;
+        html += `<div class="drum-phase-block">
+            <div class="drum-phase-title">${escapeHtml(ph.label || '')}</div>
+            <div class="drum-phase-desc">${escapeHtml(ph.description || '')}</div>`;
         for (const m of (ph.milestones || [])) {
             const inputId = `drum-add-url-${m.id}`;
             const videos = (linksMap && linksMap[m.id]) || [];
-            html += `<div style="padding:8px 6px;border-top:1px solid var(--border, #eee);">
-                <div style="font-size:0.9rem;font-weight:500;">${escapeHtml(m.label || '')}</div>
-                ${m.criteria ? `<div style="font-size:0.78rem;color:var(--text-secondary);">基準: ${escapeHtml(m.criteria)}</div>` : ''}
-                <div style="margin-top:6px;display:flex;flex-direction:column;gap:6px;">
-                    ${videos.map(v => renderDrumRoadmapVideo(m.id, v)).join('')}
+            html += `<div class="drum-milestone-row">
+                <div class="drum-milestone-title">${escapeHtml(m.label || '')}</div>
+                ${m.criteria ? `<div class="drum-milestone-criteria">基準: ${escapeHtml(m.criteria)}</div>` : ''}
+                <div class="drum-videos">
+                    ${videos.map(v => renderDrumRoadmapVideo(v)).join('')}
                 </div>
-                <div style="display:flex;gap:4px;margin-top:6px;">
-                    <input type="url" id="${inputId}" placeholder="YouTube URL" style="flex:1;padding:6px 8px;border:1px solid var(--border, #ccc);border-radius:6px;font-size:0.82rem;">
+                <div class="drum-add-row">
+                    <input type="url" id="${inputId}" placeholder="YouTube URL を追加">
                     <button class="mini-link" onclick="addDrumRoadmapLink('${escapeHtml(m.id)}', '${inputId}')">追加</button>
                 </div>
             </div>`;
         }
         html += `</div>`;
     }
-    if (!html) html = '<div style="color:var(--text-secondary);padding:8px;">ロードマップが空です</div>';
+    if (!html) html = '<div class="study-empty">ロードマップが空です</div>';
     container.innerHTML = html;
 }
 
-function renderDrumRoadmapVideo(milestoneId, v) {
-    const videoId = v.video_id || '';
-    return `<div style="display:flex;gap:8px;align-items:center;font-size:0.82rem;">
-        <a href="${escapeHtml(v.url || '')}" target="_blank" rel="noopener" style="flex-shrink:0;">
-            <img loading="lazy" src="${escapeHtml(v.thumbnail || '')}" style="width:80px;aspect-ratio:16/9;object-fit:cover;border-radius:4px;background:#000;" alt="">
+function renderDrumRoadmapVideo(v) {
+    const linkId = v.link_id;
+    return `<div class="drum-video-row">
+        <a href="${escapeHtml(v.url || '')}" target="_blank" rel="noopener">
+            <img loading="lazy" src="${escapeHtml(v.thumbnail || '')}" alt="">
         </a>
-        <div style="flex:1;min-width:0;">
-            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(v.title || v.url || '')}</div>
-            <div style="color:var(--text-secondary);font-size:0.75rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(v.author || '')}</div>
+        <div class="drum-video-meta">
+            <div class="drum-video-title">${escapeHtml(v.title || v.url || '')}</div>
         </div>
-        <button class="mini-link" style="flex-shrink:0;color:#a00;" onclick="deleteDrumRoadmapLink('${escapeHtml(milestoneId)}', '${escapeHtml(videoId)}')">削除</button>
+        <button class="mini-link" style="color:#a00;flex-shrink:0;" onclick="deleteDrumRoadmapLink(${linkId})">削除</button>
     </div>`;
 }
 
@@ -5695,38 +5773,38 @@ window.addDrumRoadmapLink = async (milestoneId, inputId) => {
     const input = document.getElementById(inputId);
     const url = (input?.value || '').trim();
     if (!url) return;
-    showToast('動画情報を取得中…');
+    showToast('追加中…');
     try {
-        const res = await apiFetch('/api/drum_roadmap/links/add', {
-            method: 'POST', body: JSON.stringify({ milestone_id: milestoneId, url }),
+        // 1. /api/links で type=drum_video として作成
+        const created = await apiFetch('/api/links', {
+            method: 'POST',
+            body: JSON.stringify({ url, type: 'drum_video', title: '' }),
         });
-        const data = await res.json();
-        if (!data.ok) {
-            showToast('追加失敗: ' + (data.error || ''), true);
+        const linkId = created && created.link_id;
+        if (!linkId) {
+            showToast('追加失敗', true);
             return;
         }
+        // 2. tags に milestone:<id> を保存
+        await apiFetch(`/api/links/${linkId}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                tags: `milestone:${milestoneId}`,
+                type: 'drum_video',
+            }),
+        });
         if (input) input.value = '';
-        const container = $('#dash-drum-roadmap');
-        if (container) container.dataset.loaded = '';
         await loadDrumRoadmap();
     } catch (e) {
         showToast('追加失敗', true);
     }
 };
 
-window.deleteDrumRoadmapLink = async (milestoneId, videoId) => {
+window.deleteDrumRoadmapLink = async (linkId) => {
+    if (!linkId) return;
     if (!confirm('この動画リンクを削除しますか？')) return;
     try {
-        const res = await apiFetch('/api/drum_roadmap/links/delete', {
-            method: 'POST', body: JSON.stringify({ milestone_id: milestoneId, video_id: videoId }),
-        });
-        const data = await res.json();
-        if (!data.ok) {
-            showToast('削除失敗: ' + (data.error || ''), true);
-            return;
-        }
-        const container = $('#dash-drum-roadmap');
-        if (container) container.dataset.loaded = '';
+        await apiFetch(`/api/links/${linkId}`, { method: 'DELETE' });
         await loadDrumRoadmap();
     } catch (e) {
         showToast('削除失敗', true);
@@ -5755,18 +5833,44 @@ async function loadStudy() {
     if (!container) return;
     container.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
-        const res = await apiFetch('/api/study');
-        const data = await res.json();
-        if (!data.ok) {
-            container.innerHTML = '<div style="padding:8px;color:#a00;">取得失敗</div>';
+        const data = await apiFetch('/api/study');
+        if (!data || data.ok === false) {
+            container.innerHTML = '<div class="study-error">サーバから取得できませんでした。サーバ再起動後に再表示してください。</div>';
             return;
         }
         _studyData = { goals: data.goals || [], items: data.items || [] };
         renderStudy();
         _ensureStudyTimer();
     } catch (e) {
-        container.innerHTML = '<div style="padding:8px;color:#a00;">取得失敗</div>';
+        container.innerHTML = '<div class="study-error">サーバから取得できませんでした。サーバ再起動後に再表示してください。</div>';
     }
+}
+
+// ----- 勉強カード並び替えヘルパー -----
+const STUDY_GOAL_ORDER_KEY = 'study_goal_order';
+const STUDY_ITEM_ORDER_KEY = (goalId, itemType) => `study_item_order_${goalId || '_none_'}_${itemType}`;
+function _loadStudyGoalOrder() {
+    try { return JSON.parse(localStorage.getItem(STUDY_GOAL_ORDER_KEY) || '[]'); }
+    catch { return []; }
+}
+function _saveStudyGoalOrder(ids) {
+    localStorage.setItem(STUDY_GOAL_ORDER_KEY, JSON.stringify(ids));
+}
+function _loadStudyItemOrder(goalId, itemType) {
+    try { return JSON.parse(localStorage.getItem(STUDY_ITEM_ORDER_KEY(goalId, itemType)) || '[]'); }
+    catch { return []; }
+}
+function _saveStudyItemOrder(goalId, itemType, ids) {
+    localStorage.setItem(STUDY_ITEM_ORDER_KEY(goalId, itemType), JSON.stringify(ids));
+}
+function _sortByOrder(arr, order, keyFn) {
+    return arr.slice().sort((a, b) => {
+        const ia = order.indexOf(keyFn(a));
+        const ib = order.indexOf(keyFn(b));
+        const xa = ia === -1 ? Infinity : ia;
+        const xb = ib === -1 ? Infinity : ib;
+        return xa - xb;
+    });
 }
 
 function renderStudy() {
@@ -5774,25 +5878,42 @@ function renderStudy() {
     if (!container) return;
     const goals = _studyData.goals || [];
     const items = _studyData.items || [];
+
+    // 完全に空の状態は親切な案内を表示
+    if (!goals.length && !items.length) {
+        container.innerHTML = '<div class="study-empty">目標がまだ登録されていません。<br>右上の「＋ 目標」から追加してください。</div>';
+        return;
+    }
+
+    // 目標を並び順で整列
+    const goalsOrder = _loadStudyGoalOrder();
+    const sortedGoals = _sortByOrder(goals, goalsOrder, g => g.id);
+
     const byGoal = new Map();
-    for (const g of goals) byGoal.set(g.id, []);
+    for (const g of sortedGoals) byGoal.set(g.id, []);
     const noGoal = [];
     for (const it of items) {
         if (it.goal_id && byGoal.has(it.goal_id)) byGoal.get(it.goal_id).push(it);
         else noGoal.push(it);
     }
 
-    let html = '';
-    for (const g of goals) html += renderStudyGoal(g, byGoal.get(g.id) || []);
-    html += renderStudyGoal(null, noGoal);  // 目標なし
+    // 各目標ブロック（+ 目標なし）を順に描画
+    let html = '<div class="study-goals-list">';
+    for (const g of sortedGoals) html += renderStudyGoal(g, byGoal.get(g.id) || []);
+    if (noGoal.length) html += renderStudyGoal(null, noGoal);
+    html += '</div>';
     container.innerHTML = html;
+
+    // 描画後に Sortable を装着
+    _setupStudySortables();
 }
 
 function renderStudyGoal(goal, items) {
     const goalId = goal ? goal.id : '';
+    const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>`;
     const title = goal ? escapeHtml(goal.title) : '🗂 目標なし';
-    const due = goal && goal.due_date ? `<span style="font-size:0.78rem;color:var(--text-muted);">期限: ${escapeHtml(goal.due_date)}</span>` : '';
-    const memo = goal && goal.memo ? `<div style="font-size:0.78rem;color:var(--text-secondary);">${escapeHtml(goal.memo)}</div>` : '';
+    const due = goal && goal.due_date ? `<span class="study-goal-due">期限: ${escapeHtml(goal.due_date)}</span>` : '';
+    const memo = goal && goal.memo ? `<div class="study-goal-memo">${escapeHtml(goal.memo)}</div>` : '';
     const editBtn = goal
         ? `<button class="mini-link" onclick="openStudyGoalModal('${escapeHtml(goalId)}')">編集</button>`
         : '';
@@ -5800,23 +5921,28 @@ function renderStudyGoal(goal, items) {
 
     const materials = items.filter(it => it.type !== 'question');
     const questions = items.filter(it => it.type === 'question');
+    const materialOrder = _loadStudyItemOrder(goalId, 'material');
+    const questionOrder = _loadStudyItemOrder(goalId, 'question');
+    const sortedMaterials = _sortByOrder(materials, materialOrder, it => it.id);
+    const sortedQuestions = _sortByOrder(questions, questionOrder, it => it.id);
 
     let body = '';
-    if (materials.length) {
-        body += `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:6px;">📘 教材</div>`;
-        body += materials.map(it => renderStudyItem(it)).join('');
+    if (sortedMaterials.length) {
+        body += `<div class="study-section-label">📘 教材</div>`;
+        body += `<div class="study-items-list" data-goal-id="${escapeHtml(goalId)}" data-item-type="material">${sortedMaterials.map(it => renderStudyItem(it)).join('')}</div>`;
     }
-    if (questions.length) {
-        body += `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:6px;">❓ 質問・苦手</div>`;
-        body += questions.map(it => renderStudyItem(it)).join('');
+    if (sortedQuestions.length) {
+        body += `<div class="study-section-label">❓ 質問・苦手</div>`;
+        body += `<div class="study-items-list" data-goal-id="${escapeHtml(goalId)}" data-item-type="question">${sortedQuestions.map(it => renderStudyItem(it)).join('')}</div>`;
     }
-    if (!materials.length && !questions.length) {
-        body += `<div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">項目がありません</div>`;
+    if (!sortedMaterials.length && !sortedQuestions.length) {
+        body += `<div class="study-section-label" style="color:var(--text-muted);">項目がありません</div>`;
     }
 
-    return `<div class="study-goal-block" style="padding:8px 4px;border-top:1px solid var(--border,#eee);">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-            <div style="font-weight:600;font-size:0.92rem;flex:1;min-width:0;">${title}</div>
+    return `<div class="study-goal-block" data-goal-id="${escapeHtml(goalId)}">
+        <div class="study-goal-header">
+            ${dragHandle}
+            <div class="study-goal-title">${title}</div>
             ${due}
             ${editBtn}
             ${addBtn}
@@ -5828,6 +5954,7 @@ function renderStudyGoal(goal, items) {
 
 function renderStudyItem(it) {
     const active = _studyActiveSessions()[it.id];
+    const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>`;
     const noteBtn = it.note_url
         ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(it.note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く">📓 NotebookLM</a>`
         : '';
@@ -5837,20 +5964,64 @@ function renderStudyItem(it) {
     } else if (active) {
         const startedAt = new Date(active.started_at);
         const elapsedMin = Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 60000));
-        sessionBtn = `<button class="mini-link" style="background:#ffe0e0;border-color:#c00;color:#a00;" onclick="studySessionEnd('${escapeHtml(it.id)}')" data-study-elapsed="${escapeHtml(it.id)}">■ 終了 (${elapsedMin}分)</button>`;
+        sessionBtn = `<button class="mini-link study-session-btn-end" onclick="studySessionEnd('${escapeHtml(it.id)}')" data-study-elapsed="${escapeHtml(it.id)}">■ 終了 (${elapsedMin}分)</button>`;
     } else {
-        sessionBtn = `<button class="mini-link" style="background:#e0ffe0;border-color:#0a0;color:#060;" onclick="studySessionStart('${escapeHtml(it.id)}')">▶ 開始</button>`;
+        sessionBtn = `<button class="mini-link study-session-btn-start" onclick="studySessionStart('${escapeHtml(it.id)}')">▶ 開始</button>`;
     }
-    const memo = it.memo ? `<div style="font-size:0.74rem;color:var(--text-secondary);">${escapeHtml(it.memo)}</div>` : '';
-    return `<div class="study-item" style="padding:4px 6px;margin-top:2px;background:rgba(127,127,127,0.04);border-radius:6px;">
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
-            <span style="flex:1;min-width:0;font-size:0.88rem;">${escapeHtml(it.title)}</span>
-            ${noteBtn}
-            ${sessionBtn}
-            <button class="mini-link" onclick="openStudyItemModal('${escapeHtml(it.id)}','${escapeHtml(it.goal_id || '')}')">編集</button>
-        </div>
+    const memo = it.memo ? `<div class="study-item-memo">${escapeHtml(it.memo)}</div>` : '';
+    return `<div class="study-item" data-item-id="${escapeHtml(it.id)}">
+        ${dragHandle}
+        <span class="study-item-title">${escapeHtml(it.title)}</span>
+        ${noteBtn}
+        ${sessionBtn}
+        <button class="mini-link" onclick="openStudyItemModal('${escapeHtml(it.id)}','${escapeHtml(it.goal_id || '')}')">編集</button>
         ${memo}
     </div>`;
+}
+
+function _setupStudySortables() {
+    if (typeof window.Sortable === 'undefined') {
+        setTimeout(_setupStudySortables, 200);
+        return;
+    }
+    // 目標一覧
+    const goalsList = document.querySelector('#dash-study .study-goals-list');
+    if (goalsList) {
+        try { if (goalsList._sortable) { goalsList._sortable.destroy(); goalsList._sortable = null; } } catch {}
+        goalsList._sortable = window.Sortable.create(goalsList, {
+            // 目標ヘッダ内のハンドルだけドラッグ起点に（教材/質問の項目ハンドルは別 Sortable に取られる）
+            handle: '.study-goal-header > .list-item-drag-handle',
+            animation: 150,
+            ghostClass: 'sortable-ghost',
+            chosenClass: 'sortable-chosen',
+            onEnd: () => {
+                const ids = Array.from(goalsList.querySelectorAll(':scope > .study-goal-block'))
+                    .map(el => el.dataset.goalId)
+                    .filter(Boolean);
+                _saveStudyGoalOrder(ids);
+                showToast('並び替えました');
+            },
+        });
+    }
+    // 各 study-items-list（教材・質問それぞれ）
+    for (const list of document.querySelectorAll('#dash-study .study-items-list')) {
+        try { if (list._sortable) { list._sortable.destroy(); list._sortable = null; } } catch {}
+        const goalId = list.dataset.goalId || '';
+        const itemType = list.dataset.itemType || 'material';
+        list._sortable = window.Sortable.create(list, {
+            handle: '.list-item-drag-handle',
+            animation: 150,
+            ghostClass: 'sortable-ghost',
+            chosenClass: 'sortable-chosen',
+            onEnd: () => {
+                const ids = Array.from(list.querySelectorAll(':scope > .study-item'))
+                    .map(el => el.dataset.itemId)
+                    .filter(Boolean);
+                _saveStudyItemOrder(goalId, itemType, ids);
+                showToast('並び替えました');
+            },
+        });
+    }
 }
 
 function _ensureStudyTimer() {
@@ -5889,8 +6060,7 @@ window.studyGoalSave = async () => {
     if (!title) { showToast('タイトルを入力してください', true); return; }
     const body = { id, title, due_date: $('#study-goal-due').value, memo: $('#study-goal-memo').value };
     try {
-        const res = await apiFetch('/api/study/goal/save', { method: 'POST', body: JSON.stringify(body) });
-        const data = await res.json();
+        const data = await apiFetch('/api/study/goal/save', { method: 'POST', body: JSON.stringify(body) });
         if (!data.ok) { showToast(data.error || '保存失敗', true); return; }
         $('#study-goal-modal').classList.add('hidden');
         await loadStudy();
@@ -5902,8 +6072,7 @@ window.studyGoalDelete = async () => {
     if (!id) return;
     if (!confirm('この目標を削除しますか？（配下の教材・質問は「目標なし」に移動）')) return;
     try {
-        const res = await apiFetch('/api/study/goal/delete', { method: 'POST', body: JSON.stringify({ id }) });
-        const data = await res.json();
+        const data = await apiFetch('/api/study/goal/delete', { method: 'POST', body: JSON.stringify({ id }) });
         if (!data.ok) { showToast(data.error || '削除失敗', true); return; }
         $('#study-goal-modal').classList.add('hidden');
         await loadStudy();
@@ -5941,8 +6110,7 @@ window.studyItemSave = async () => {
         memo: $('#study-item-memo').value,
     };
     try {
-        const res = await apiFetch('/api/study/item/save', { method: 'POST', body: JSON.stringify(body) });
-        const data = await res.json();
+        const data = await apiFetch('/api/study/item/save', { method: 'POST', body: JSON.stringify(body) });
         if (!data.ok) { showToast(data.error || '保存失敗', true); return; }
         $('#study-item-modal').classList.add('hidden');
         await loadStudy();
@@ -5954,8 +6122,7 @@ window.studyItemDelete = async () => {
     if (!id) return;
     if (!confirm('この項目を削除しますか？')) return;
     try {
-        const res = await apiFetch('/api/study/item/delete', { method: 'POST', body: JSON.stringify({ id }) });
-        const data = await res.json();
+        const data = await apiFetch('/api/study/item/delete', { method: 'POST', body: JSON.stringify({ id }) });
         if (!data.ok) { showToast(data.error || '削除失敗', true); return; }
         $('#study-item-modal').classList.add('hidden');
         await loadStudy();
@@ -5964,8 +6131,7 @@ window.studyItemDelete = async () => {
 
 window.studySessionStart = async (itemId) => {
     try {
-        const res = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'start' }) });
-        const data = await res.json();
+        const data = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'start' }) });
         if (!data.ok) { showToast(data.error || '開始失敗', true); return; }
         _setStudyActiveSession(itemId, new Date().toISOString());
         renderStudy();
@@ -5976,8 +6142,7 @@ window.studySessionStart = async (itemId) => {
 
 window.studySessionEnd = async (itemId) => {
     try {
-        const res = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'end' }) });
-        const data = await res.json();
+        const data = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'end' }) });
         if (!data.ok) { showToast(data.error || '終了失敗', true); return; }
         const active = _studyActiveSessions()[itemId];
         const elapsedMin = active ? Math.max(0, Math.floor((Date.now() - new Date(active.started_at).getTime()) / 60000)) : 0;
@@ -5989,50 +6154,6 @@ window.studySessionEnd = async (itemId) => {
 
 window.loadStudy = loadStudy;
 
-// ----- 情報タブ：ストックカードの並び替え（習慣トラッカーと同じ SortableJS パターン） -----
-const INFO_CARD_ORDER_KEY = 'info_card_order';
-
-function applyInfoCardsOrder() {
-    const container = document.getElementById('info-cards-sortable');
-    if (!container) return;
-    let saved = [];
-    try { saved = JSON.parse(localStorage.getItem(INFO_CARD_ORDER_KEY) || '[]'); } catch { saved = []; }
-    if (!Array.isArray(saved) || !saved.length) return;
-    const cards = Array.from(container.querySelectorAll('[data-card-key]'));
-    const keyToEl = new Map(cards.map(c => [c.dataset.cardKey, c]));
-    for (const key of saved) {
-        const el = keyToEl.get(key);
-        if (el) { container.appendChild(el); keyToEl.delete(key); }
-    }
-    // 保存済み順序に含まれない新規カードは末尾へ
-    for (const el of keyToEl.values()) container.appendChild(el);
-}
-
-function initInfoCardsSortable() {
-    const container = document.getElementById('info-cards-sortable');
-    if (!container) return;
-    applyInfoCardsOrder();
-    if (container._sortable) return;
-    if (typeof window.Sortable === 'undefined') {
-        // SortableJS は defer ロードなので遅延再試行
-        setTimeout(initInfoCardsSortable, 200);
-        return;
-    }
-    container._sortable = window.Sortable.create(container, {
-        handle: '.card-drag-handle',
-        animation: 150,
-        ghostClass: 'sortable-ghost',
-        chosenClass: 'sortable-chosen',
-        dragClass: 'sortable-drag',
-        onEnd: () => {
-            const order = Array.from(container.querySelectorAll('[data-card-key]')).map(el => el.dataset.cardKey);
-            localStorage.setItem(INFO_CARD_ORDER_KEY, JSON.stringify(order));
-            showToast('並び替えました');
-        },
-    });
-}
-
-window.initInfoCardsSortable = initInfoCardsSortable;
 
 // ----- EDINET 決算関連書類 -----
 let _edinetDocs = [];
@@ -6066,11 +6187,10 @@ window.edinetFind = async () => {
     $('#edinet-save-all-btn').style.display = 'none';
     if (status) status.textContent = `${ticker} の過去${days}日分を走査中…`;
     try {
-        const res = await apiFetch('/api/edinet/find', {
+        const data = await apiFetch('/api/edinet/find', {
             method: 'POST',
             body: JSON.stringify({ ticker, days, only_earnings: onlyEarnings }),
         });
-        const data = await res.json();
         if (!data.ok) {
             results.innerHTML = `<div style="padding:10px;color:#a00;">${escapeHtml(data.error || '検索失敗')}</div>`;
             return;
@@ -6117,7 +6237,7 @@ window.edinetSaveOne = async (docId) => {
     const statusEl = row?.querySelector('.edinet-save-status');
     if (statusEl) statusEl.textContent = 'ダウンロード中…';
     try {
-        const res = await apiFetch('/api/edinet/download', {
+        const data = await apiFetch('/api/edinet/download', {
             method: 'POST',
             body: JSON.stringify({
                 doc_id: doc.doc_id,
@@ -6126,7 +6246,6 @@ window.edinetSaveOne = async (docId) => {
                 doc_type_label: doc.doc_type_label,
             }),
         });
-        const data = await res.json();
         if (data.ok) {
             if (statusEl) statusEl.textContent = `✅ 保存: ${data.drive_path} (${Math.round((data.bytes || 0) / 1024)} KB)`;
         } else {

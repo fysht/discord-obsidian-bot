@@ -157,11 +157,9 @@
                         <div id="dash-news" class="card-body list-body"></div>
                     </div>
                     
-                    <div id="info-cards-sortable">
-                    <details class="card stocked-links-card" data-card-key="web">
+                    <details class="card stocked-links-card">
                         <summary>
                             <div class="card-header">
-                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🌐</span>
                                 <span class="card-title">ウェブクリップ</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('web')">全既読</button>
@@ -170,10 +168,9 @@
                         <div id="dash-stocked-web" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card" data-card-key="youtube">
+                    <details class="card stocked-links-card">
                         <summary>
                             <div class="card-header">
-                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">📺</span>
                                 <span class="card-title">YouTube</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('youtube')">全既読</button>
@@ -182,10 +179,9 @@
                         <div id="dash-stocked-youtube" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card" data-card-key="map">
+                    <details class="card stocked-links-card">
                         <summary>
                             <div class="card-header">
-                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🗺️</span>
                                 <span class="card-title">Googleマップ</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('map')">全既読</button>
@@ -194,10 +190,9 @@
                         <div id="dash-stocked-map" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card" data-card-key="recipe">
+                    <details class="card stocked-links-card">
                         <summary>
                             <div class="card-header">
-                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🍳</span>
                                 <span class="card-title">レシピ</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('recipe')">全既読</button>
@@ -206,10 +201,9 @@
                         <div id="dash-stocked-recipe" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card bookshelf-card" data-card-key="book">
+                    <details class="card bookshelf-card">
                         <summary>
                             <div class="card-header">
-                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">📚</span>
                                 <span class="card-title">書籍</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('book')">全既読</button>
@@ -218,10 +212,9 @@
                         <div id="dash-stocked-book" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card study-card" data-card-key="study" ontoggle="if(this.open && typeof loadStudy === 'function') loadStudy()">
+                    <details class="card study-card" ontoggle="if(this.open && typeof loadStudy === 'function') loadStudy()">
                         <summary>
                             <div class="card-header">
-                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🎓</span>
                                 <span class="card-title">勉強</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openStudyGoalModal(null)">＋ 目標</button>
@@ -230,17 +223,15 @@
                         <div id="dash-study" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
                     </details>
 
-                    <details class="card drum-roadmap-card" data-card-key="drum" ontoggle="if(this.open && typeof loadDrumRoadmap === 'function') loadDrumRoadmap()">
+                    <details class="card drum-roadmap-card" ontoggle="if(this.open && typeof loadDrumRoadmap === 'function') loadDrumRoadmap()">
                         <summary>
                             <div class="card-header">
-                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🥁</span>
                                 <span class="card-title">ドラム練習</span>
                             </div>
                         </summary>
                         <div id="dash-drum-roadmap" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
                     </details>
-                    </div>
                 </div>
             </div>
 
