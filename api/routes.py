@@ -4772,3 +4772,171 @@ async def settings_schedules_post(req: SettingsSchedulesRequest):
             await set_app_setting(_schedule_setting_key(k, "dow"), v["dow"])
         saved += 1
     return {"ok": True, "saved": saved}
+
+
+# ==========================================================
+# 楽器練習サポート (InstrumentPracticeCog) — MVP: ドラム
+# ==========================================================
+
+def _get_practice_cog():
+    """InstrumentPracticeCog インスタンスを取得（未ロードなら None）。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    return bot.get_cog("InstrumentPracticeCog") if bot else None
+
+
+class PracticeStartRequest(BaseModel):
+    menu: Optional[List[str]] = None
+
+
+class PracticeEndRequest(BaseModel):
+    memo: Optional[str] = ""
+
+
+class PracticeMemoRequest(BaseModel):
+    text: str
+
+
+class PracticeVideoProposeRequest(BaseModel):
+    url: str
+
+
+class PracticeVideoConfirmRequest(BaseModel):
+    pending_id: str
+    overrides: Optional[dict] = None
+
+
+class PracticeVideoIdRequest(BaseModel):
+    video_id: Optional[str] = None
+    pending_id: Optional[str] = None
+
+
+class PracticeMilestoneRequest(BaseModel):
+    milestone_id: str
+    status: str  # "todo" | "wip" | "done"
+
+
+@router.get("/practice/state", dependencies=[Depends(verify_api_key)])
+async def practice_state():
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    return {"ok": True, **(await cog.get_state())}
+
+
+@router.post("/practice/start", dependencies=[Depends(verify_api_key)])
+async def practice_start(req: PracticeStartRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    session = await cog.start_session(req.menu or [])
+    return {"ok": True, "active_session": session}
+
+
+@router.post("/practice/end", dependencies=[Depends(verify_api_key)])
+async def practice_end(req: PracticeEndRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    session = await cog.end_session(req.memo or "")
+    if not session:
+        return {"ok": False, "error": "進行中のセッションがありません"}
+    return {"ok": True, "session": session}
+
+
+@router.post("/practice/memo", dependencies=[Depends(verify_api_key)])
+async def practice_memo(req: PracticeMemoRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    ok = await cog.add_session_memo(req.text)
+    if not ok:
+        return {"ok": False, "error": "進行中のセッションがありません"}
+    return {"ok": True}
+
+
+@router.get("/practice/videos", dependencies=[Depends(verify_api_key)])
+async def practice_videos(level: Optional[str] = None, category: Optional[str] = None):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    videos = await cog.list_videos(level=level, category=category)
+    pending = await cog.list_pending_videos()
+    return {"ok": True, "videos": videos, "pending": pending}
+
+
+@router.post("/practice/videos/propose", dependencies=[Depends(verify_api_key)])
+async def practice_videos_propose(req: PracticeVideoProposeRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    proposal = await cog.propose_video_classification(req.url)
+    if not proposal:
+        return {"ok": False, "error": "YouTube URL を解釈できませんでした"}
+    return {"ok": True, "pending": proposal}
+
+
+@router.post("/practice/videos/confirm", dependencies=[Depends(verify_api_key)])
+async def practice_videos_confirm(req: PracticeVideoConfirmRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    video = await cog.confirm_video(req.pending_id, req.overrides or {})
+    if not video:
+        return {"ok": False, "error": "pending_id が見つかりません"}
+    return {"ok": True, "video": video}
+
+
+@router.post("/practice/videos/discard", dependencies=[Depends(verify_api_key)])
+async def practice_videos_discard(req: PracticeVideoIdRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    if not req.pending_id:
+        return {"ok": False, "error": "pending_id が必要です"}
+    ok = await cog.discard_pending_video(req.pending_id)
+    return {"ok": ok}
+
+
+@router.post("/practice/videos/delete", dependencies=[Depends(verify_api_key)])
+async def practice_videos_delete(req: PracticeVideoIdRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    if not req.video_id:
+        return {"ok": False, "error": "video_id が必要です"}
+    ok = await cog.delete_video(req.video_id)
+    return {"ok": ok}
+
+
+@router.get("/practice/roadmap", dependencies=[Depends(verify_api_key)])
+async def practice_roadmap():
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    return {"ok": True, **(await cog.get_roadmap_view())}
+
+
+@router.post("/practice/roadmap/mark", dependencies=[Depends(verify_api_key)])
+async def practice_roadmap_mark(req: PracticeMilestoneRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    ok = await cog.mark_milestone(req.milestone_id, req.status)
+    if not ok:
+        return {"ok": False, "error": "無効な status か milestone_id です"}
+    return {"ok": True}
+
+
+class PracticeMenuGenerateRequest(BaseModel):
+    minutes: int = 30
+    mode: str = "template"  # "template" | "ai"
+
+
+@router.post("/practice/menu/generate", dependencies=[Depends(verify_api_key)])
+async def practice_menu_generate(req: PracticeMenuGenerateRequest):
+    cog = _get_practice_cog()
+    if not cog:
+        return {"ok": False, "error": "InstrumentPracticeCog not available"}
+    result = await cog.generate_menu(req.minutes, req.mode)
+    return {"ok": True, **result}

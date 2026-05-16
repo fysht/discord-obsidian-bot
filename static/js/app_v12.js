@@ -479,11 +479,12 @@ function switchTab(tab) {
     $$('.tab-pane').forEach(p => p.classList.remove('active'));
     $(`#tab-${tab}`)?.classList.add('active');
 
-    const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定', invest: '投資' };
+    const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定', invest: '投資', practice: 'ドラム練習' };
     const titleEl = $('#current-tab-title');
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
-    if (tab !== 'chat' && tab !== 'invest') loadDashboard();
+    if (tab !== 'chat' && tab !== 'invest' && tab !== 'practice') loadDashboard();
+    if (tab === 'practice' && typeof loadPractice === 'function') loadPractice();
     // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);

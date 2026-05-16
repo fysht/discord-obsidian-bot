@@ -33,6 +33,7 @@ SCHEDULE_CATALOG: list[tuple[str, str, str, str, str]] = [
     ("evening_review",   "夜の振り返り",      "22:00", "daily",  "今日の会話ログ・MIT・翌日情報を統括して夜にレビュー。"),
     ("update_manual",    "取扱説明書更新",    "23:45", "daily",  "あなたの会話ログから「ユーザー取扱説明書」を自動更新。"),
     ("daily_organize",   "デイリー整理",      "23:55", "daily",  "タスク・チャットログ・天気を整理して Obsidian に保存。"),
+    ("practice_reminder","ドラム練習リマインド","19:00", "daily",  "夜にドラム練習をリマインド。当日まだ未完了なら通知。"),
 ]
 
 _DOW_MAP = {

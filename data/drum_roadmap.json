@@ -1,0 +1,118 @@
+{
+  "instrument": "drum",
+  "version": 1,
+  "phases": [
+    {
+      "id": "phase_basics",
+      "label": "Phase 1: 基礎づくり",
+      "description": "スティックコントロールと最も基本的なビートを身体に入れる。約1〜2ヶ月。",
+      "milestones": [
+        {
+          "id": "M01_grip_stick_control",
+          "label": "マッチドグリップとリバウンドが安定する",
+          "skills": ["matched_grip", "rebound"],
+          "est_hours": 5,
+          "criteria": "脱力したグリップで連続したシングルストロークを30秒"
+        },
+        {
+          "id": "M02_single_double_80bpm",
+          "label": "シングル/ダブルストローク 80BPM",
+          "skills": ["single_stroke", "double_stroke"],
+          "est_hours": 8,
+          "criteria": "メトロノーム80BPMで8分音符の粒が揃う"
+        },
+        {
+          "id": "M03_8beat_80bpm",
+          "label": "8ビートを80BPMで30秒キープ",
+          "skills": ["8beat"],
+          "est_hours": 10,
+          "criteria": "テンポを落とさず安定したダイナミクスでキープできる"
+        },
+        {
+          "id": "M04_paradiddle",
+          "label": "シングル・パラディドルが叩ける",
+          "skills": ["paradiddle"],
+          "est_hours": 6,
+          "criteria": "RLRR LRLL を100BPMで連続"
+        }
+      ]
+    },
+    {
+      "id": "phase_groove",
+      "label": "Phase 2: グルーヴと表現",
+      "description": "8ビート以外のグルーヴ・フィル・ダイナミクスを身につける。約3〜6ヶ月。",
+      "milestones": [
+        {
+          "id": "M05_16beat_basic",
+          "label": "16ビートの基本パターン",
+          "skills": ["16beat"],
+          "est_hours": 12,
+          "criteria": "90BPMで16分のハイハットが安定"
+        },
+        {
+          "id": "M06_basic_fills",
+          "label": "4小節フィルのバリエーション3種",
+          "skills": ["fill"],
+          "est_hours": 10,
+          "criteria": "4分・8分・16分混在のフィルを曲の流れで自然に入れる"
+        },
+        {
+          "id": "M07_shuffle",
+          "label": "シャッフルが叩ける",
+          "skills": ["shuffle"],
+          "est_hours": 8,
+          "criteria": "ブルース/ジャズ系の3連グルーヴが安定"
+        },
+        {
+          "id": "M08_dynamics",
+          "label": "アクセントとゴーストノートの使い分け",
+          "skills": ["accent", "ghost_note"],
+          "est_hours": 10,
+          "criteria": "メインアクセントとゴーストノートを明確に区別"
+        },
+        {
+          "id": "M09_metronome_120",
+          "label": "ルーディメンツ各種を120BPMで",
+          "skills": ["rudiments"],
+          "est_hours": 15,
+          "criteria": "シングル・ダブル・パラディドル系を120BPMで正確に"
+        }
+      ]
+    },
+    {
+      "id": "phase_song",
+      "label": "Phase 3: 曲を叩く",
+      "description": "実曲を頭から終わりまで叩けるようになる。約6ヶ月〜1年。",
+      "milestones": [
+        {
+          "id": "M10_first_full_song",
+          "label": "好きな曲を1曲フルで叩ける",
+          "skills": ["song_cover"],
+          "est_hours": 20,
+          "criteria": "イントロからエンディングまでテンポキープ、フィルも再現"
+        },
+        {
+          "id": "M11_song_x3",
+          "label": "完奏可能曲が3曲",
+          "skills": ["song_cover"],
+          "est_hours": 30,
+          "criteria": "レパートリーとして人前で叩ける状態"
+        },
+        {
+          "id": "M12_genre_variety",
+          "label": "ロック以外のジャンルを1曲",
+          "skills": ["genre_variety"],
+          "est_hours": 15,
+          "criteria": "ファンク・ジャズ・ラテンなどジャンル特有のフィールが出せる"
+        },
+        {
+          "id": "M13_record_playback",
+          "label": "自分の演奏を録音して客観評価",
+          "skills": ["recording", "self_review"],
+          "est_hours": 5,
+          "criteria": "録音を聴いて課題点を3つ以上挙げられる"
+        }
+      ]
+    }
+  ]
+}
