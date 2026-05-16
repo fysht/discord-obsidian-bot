@@ -1181,6 +1181,23 @@ mark.search-hl {
     border-bottom: none;
 }
 
+/* ===== ボタン押下の即時視覚フィードバック ===== */
+/* 全てのボタンに「押した」感を出す。クリック直後に短時間 scale + opacity 変化 */
+button:not(:disabled), .mini-link, .chip-btn, .modal-btn, .nav-item {
+    transition: transform 0.08s ease, opacity 0.12s ease;
+}
+.btn-pressed {
+    transform: scale(0.94) !important;
+    opacity: 0.65 !important;
+    transition: transform 0.06s ease, opacity 0.06s ease !important;
+}
+/* 処理中の disabled ボタンに「⏳ 処理中…」ヒント */
+button.is-busy {
+    position: relative;
+    cursor: wait !important;
+    opacity: 0.7 !important;
+}
+
 /* ===== ACTION ボタン (マネージャー提案の確認 UI) ===== */
 .msg-actions {
     display: flex;

@@ -3082,9 +3082,27 @@ function _handleExpenseShareTarget() {
     return true;
 }
 
+// 全クリック対象に即時タップフィードバック（押した感を出す）
+function _installGlobalButtonFeedback() {
+    if (window._globalBtnFeedbackInstalled) return;
+    window._globalBtnFeedbackInstalled = true;
+    document.addEventListener('pointerdown', (e) => {
+        const el = e.target.closest('button, .mini-link, .chip-btn, .modal-btn, .nav-item');
+        if (!el || el.disabled || el.classList.contains('is-busy')) return;
+        el.classList.add('btn-pressed');
+    }, true);
+    const release = (e) => {
+        document.querySelectorAll('.btn-pressed').forEach(el => el.classList.remove('btn-pressed'));
+    };
+    document.addEventListener('pointerup', release, true);
+    document.addEventListener('pointercancel', release, true);
+    document.addEventListener('pointerleave', release, true);
+}
+
 function initMain() {
     loadHistory();
     _startChatAutoRefresh();
+    _installGlobalButtonFeedback();
     loadDashboard();
     requestNotificationPermission();
     // PayPay 等の共有テキストが来ていれば支出モーダルへ
@@ -7343,8 +7361,8 @@ window.runScreener = async () => {
     const minMcapOku = parseInt($('#screener-min-mcap')?.value || '0', 10);
     const minMcapJpy = (minMcapOku && minMcapOku > 0) ? minMcapOku * 100000000 : null;
 
-    _renderScreenerResults('機械スクリーニング中... (1〜2分かかる場合があります)');
-    _showScreenerProgress('銘柄データを取得して機械フィルタを実行中...', 5);
+    _renderScreenerResults('スクリーニング中...');
+    _showScreenerProgress('スクリーニング中...', 5);
     _startScreenerFakeProgress(92, 700);
     _setScreenerAnalyzeEnabled(false);
 
@@ -7497,7 +7515,7 @@ window.runScreenerAnalyze = async () => {
     if (!confirm(`${selected.length} 銘柄を Gemini で質的分析します（モデルは設定画面の「スクリーナー質的分析」に従う）。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
 
     _setScreenerAnalyzeEnabled(false);
-    _showScreenerProgress(`質的分析を起動中...`, 5);
+    _showScreenerProgress('質的分析中...', 5);
 
     try {
         const data = await apiFetch('/api/investment/screener/analyze', {
@@ -7530,17 +7548,16 @@ function _pollScreenerJob() {
             const total = prog.total || 0;
             const cur = prog.current || 0;
             const ticker = prog.current_ticker || '';
-            // 実進捗が出るまでは「準備中」とし、5%を維持（バーが後退しないように）
+            // 実進捗が出るまでも「質的分析中」のシンプル表示で統一（バーが後退しないように 5% 維持）
             if (data.status === 'pending' || total === 0) {
-                _showScreenerProgress('質的分析を準備中...', Math.max(5, _screenerFakeProgressPct));
+                _showScreenerProgress('質的分析中...', Math.max(5, _screenerFakeProgressPct));
             } else if (data.status === 'running') {
                 const pct = Math.max(5, Math.round(cur / total * 100));
-                const tickerSuffix = ticker ? ` (${ticker})` : '';
-                _showScreenerProgress(`質的分析中: ${cur}/${total}${tickerSuffix}`, pct);
+                _showScreenerProgress(`質的分析中... (${cur}/${total})`, pct);
             }
             if (data.status === 'done') {
                 clearInterval(_screenerJobPollTimer); _screenerJobPollTimer = null;
-                _showScreenerProgress('結果を整形中...', 98);
+                _showScreenerProgress('質的分析中...', 98);
                 _setScreenerAnalyzeEnabled(true);
                 showToast('質的分析が完了しました');
                 if (data.report_markdown) {
