@@ -479,12 +479,11 @@ function switchTab(tab) {
     $$('.tab-pane').forEach(p => p.classList.remove('active'));
     $(`#tab-${tab}`)?.classList.add('active');
 
-    const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定', invest: '投資', practice: 'ドラム練習' };
+    const titles = { chat: 'チャット', info: '情報', log: 'ライフログ', schedule: '予定', invest: '投資' };
     const titleEl = $('#current-tab-title');
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
-    if (tab !== 'chat' && tab !== 'invest' && tab !== 'practice') loadDashboard();
-    if (tab === 'practice' && typeof loadPractice === 'function') loadPractice();
+    if (tab !== 'chat' && tab !== 'invest') loadDashboard();
     // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
@@ -5469,6 +5468,219 @@ window.closeMeditationModal = (e) => {
     if (_medState.interval) stopMeditation();
     else $('#meditation-modal')?.classList.add('hidden');
 };
+
+// ----- ドラム練習タイマー（瞑想と同じ枠組み） -----
+let _drumState = { interval: null, remaining: 0, total: 0, startAt: null, wakeLock: null, activityName: null };
+
+async function _requestDrumWakeLock() {
+    try {
+        if ('wakeLock' in navigator) {
+            _drumState.wakeLock = await navigator.wakeLock.request('screen');
+            document.addEventListener('visibilitychange', _reacquireDrumWakeLock);
+        }
+    } catch (e) {
+        console.warn('Wake Lock 取得に失敗:', e);
+    }
+}
+
+async function _reacquireDrumWakeLock() {
+    if (document.visibilityState === 'visible' && _drumState.interval && !_drumState.wakeLock) {
+        try {
+            _drumState.wakeLock = await navigator.wakeLock.request('screen');
+        } catch {}
+    }
+}
+
+async function _releaseDrumWakeLock() {
+    try {
+        if (_drumState.wakeLock) await _drumState.wakeLock.release();
+    } catch {}
+    _drumState.wakeLock = null;
+    document.removeEventListener('visibilitychange', _reacquireDrumWakeLock);
+}
+
+window.openDrumPracticeModal = () => {
+    const modal = $('#drum-practice-modal');
+    if (!modal) return;
+    const lastMin = parseInt(localStorage.getItem('drum_last_minutes') || '30', 10);
+    const customInput = $('#drum-custom-min');
+    if (customInput) customInput.value = lastMin;
+    $('#drum-step-setup').style.display = '';
+    $('#drum-step-timer').style.display = 'none';
+    $('#drum-step-done').style.display = 'none';
+    modal.classList.remove('hidden');
+};
+
+window.setDrumDuration = (min) => {
+    const input = $('#drum-custom-min');
+    if (input) input.value = min;
+};
+
+window.startDrumPractice = () => {
+    const min = parseInt($('#drum-custom-min').value || '30', 10);
+    if (isNaN(min) || min < 1) { showToast('時間を入力してください', true); return; }
+    localStorage.setItem('drum_last_minutes', String(min));
+    _drumState.total = min * 60;
+    _drumState.remaining = min * 60;
+    _drumState.startAt = new Date();
+    $('#drum-step-setup').style.display = 'none';
+    $('#drum-step-timer').style.display = '';
+    _updateDrumDisplay();
+    _drumState.interval = setInterval(() => {
+        _drumState.remaining--;
+        _updateDrumDisplay();
+        if (_drumState.remaining <= 0) _finishDrumPractice(min);
+    }, 1000);
+    _requestDrumWakeLock();
+    _drumState.activityName = `ドラム練習（${min}分）`;
+    apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: _drumState.activityName, status: 'start' }) }).catch(() => {});
+};
+
+function _updateDrumDisplay() {
+    const m = Math.floor(_drumState.remaining / 60);
+    const s = _drumState.remaining % 60;
+    const el = $('#drum-timer-display');
+    if (el) el.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
+function _finishDrumPractice(min) {
+    clearInterval(_drumState.interval);
+    _drumState.interval = null;
+    $('#drum-step-timer').style.display = 'none';
+    $('#drum-step-done').style.display = '';
+    const msg = `${min}分間のドラム練習を完了しました。`;
+    const doneEl = $('#drum-done-msg');
+    if (doneEl) doneEl.textContent = msg;
+    try { if (navigator.vibrate) navigator.vibrate([300, 150, 300, 150, 600]); } catch {}
+    const activityName = _drumState.activityName || `ドラム練習（${min}分）`;
+    apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: activityName, status: 'end' }) }).catch(() => {});
+    _releaseDrumWakeLock();
+    showToast(`🥁 ${msg}`);
+}
+
+window.stopDrumPractice = () => {
+    if (_drumState.interval) { clearInterval(_drumState.interval); _drumState.interval = null; }
+    const elapsed = Math.max(0, _drumState.total - _drumState.remaining);
+    const min = Math.round(elapsed / 60);
+    if (min > 0 && _drumState.activityName) {
+        apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: _drumState.activityName, status: 'end' }) }).catch(() => {});
+    }
+    _releaseDrumWakeLock();
+    $('#drum-practice-modal')?.classList.add('hidden');
+};
+
+window.closeDrumPracticeModal = (e) => {
+    if (e && e.target.closest && e.target.closest('.modal-card')) return;
+    if (_drumState.interval) stopDrumPractice();
+    else $('#drum-practice-modal')?.classList.add('hidden');
+};
+
+// ----- ドラム上達ロードマップ（情報タブのカード内） -----
+async function loadDrumRoadmap() {
+    const container = $('#dash-drum-roadmap');
+    if (!container) return;
+    if (container.dataset.loaded === '1') return;  // 重複ロード抑止（再表示は手動ボタン）
+    container.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
+    try {
+        const res = await apiFetch('/api/drum_roadmap');
+        const data = await res.json();
+        if (!data.ok) {
+            container.innerHTML = '<div style="color:#a00;padding:8px;">取得失敗</div>';
+            return;
+        }
+        renderDrumRoadmap(data);
+        container.dataset.loaded = '1';
+    } catch (e) {
+        container.innerHTML = '<div style="color:#a00;padding:8px;">取得失敗</div>';
+    }
+}
+
+function renderDrumRoadmap(data) {
+    const container = $('#dash-drum-roadmap');
+    if (!container) return;
+    const phases = data.phases || [];
+    let html = '';
+    for (const ph of phases) {
+        html += `<div style="margin:8px 0 10px;">
+            <div style="font-weight:600;font-size:0.95rem;color:var(--text-primary);">${escapeHtml(ph.label || '')}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:6px;">${escapeHtml(ph.description || '')}</div>`;
+        for (const m of (ph.milestones || [])) {
+            const inputId = `drum-add-url-${m.id}`;
+            html += `<div style="padding:8px 6px;border-top:1px solid var(--border, #eee);">
+                <div style="font-size:0.9rem;font-weight:500;">${escapeHtml(m.label || '')}</div>
+                ${m.criteria ? `<div style="font-size:0.78rem;color:var(--text-secondary);">基準: ${escapeHtml(m.criteria)}</div>` : ''}
+                <div style="margin-top:6px;display:flex;flex-direction:column;gap:6px;">
+                    ${(m.videos || []).map(v => renderDrumRoadmapVideo(m.id, v)).join('')}
+                </div>
+                <div style="display:flex;gap:4px;margin-top:6px;">
+                    <input type="url" id="${inputId}" placeholder="YouTube URL" style="flex:1;padding:6px 8px;border:1px solid var(--border, #ccc);border-radius:6px;font-size:0.82rem;">
+                    <button class="mini-link" onclick="addDrumRoadmapLink('${escapeHtml(m.id)}', '${inputId}')">追加</button>
+                </div>
+            </div>`;
+        }
+        html += `</div>`;
+    }
+    if (!html) html = '<div style="color:var(--text-secondary);padding:8px;">ロードマップが空です</div>';
+    container.innerHTML = html;
+}
+
+function renderDrumRoadmapVideo(milestoneId, v) {
+    const videoId = v.video_id || '';
+    return `<div style="display:flex;gap:8px;align-items:center;font-size:0.82rem;">
+        <a href="${escapeHtml(v.url || '')}" target="_blank" rel="noopener" style="flex-shrink:0;">
+            <img loading="lazy" src="${escapeHtml(v.thumbnail || '')}" style="width:80px;aspect-ratio:16/9;object-fit:cover;border-radius:4px;background:#000;" alt="">
+        </a>
+        <div style="flex:1;min-width:0;">
+            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(v.title || v.url || '')}</div>
+            <div style="color:var(--text-secondary);font-size:0.75rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(v.author || '')}</div>
+        </div>
+        <button class="mini-link" style="flex-shrink:0;color:#a00;" onclick="deleteDrumRoadmapLink('${escapeHtml(milestoneId)}', '${escapeHtml(videoId)}')">削除</button>
+    </div>`;
+}
+
+window.addDrumRoadmapLink = async (milestoneId, inputId) => {
+    const input = document.getElementById(inputId);
+    const url = (input?.value || '').trim();
+    if (!url) return;
+    showToast('動画情報を取得中…');
+    try {
+        const res = await apiFetch('/api/drum_roadmap/links/add', {
+            method: 'POST', body: JSON.stringify({ milestone_id: milestoneId, url }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+            showToast('追加失敗: ' + (data.error || ''), true);
+            return;
+        }
+        if (input) input.value = '';
+        const container = $('#dash-drum-roadmap');
+        if (container) container.dataset.loaded = '';
+        await loadDrumRoadmap();
+    } catch (e) {
+        showToast('追加失敗', true);
+    }
+};
+
+window.deleteDrumRoadmapLink = async (milestoneId, videoId) => {
+    if (!confirm('この動画リンクを削除しますか？')) return;
+    try {
+        const res = await apiFetch('/api/drum_roadmap/links/delete', {
+            method: 'POST', body: JSON.stringify({ milestone_id: milestoneId, video_id: videoId }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+            showToast('削除失敗: ' + (data.error || ''), true);
+            return;
+        }
+        const container = $('#dash-drum-roadmap');
+        if (container) container.dataset.loaded = '';
+        await loadDrumRoadmap();
+    } catch (e) {
+        showToast('削除失敗', true);
+    }
+};
+
+window.loadDrumRoadmap = loadDrumRoadmap;
 
 // ----- Fitbit全データ -----
 let _fitbitRows = [];

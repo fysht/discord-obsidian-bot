@@ -116,6 +116,7 @@
                         <button class="chip-btn" onclick="runTaskTriage('仕事')">🧹 仕事を整理</button>
                         <button class="chip-btn" onclick="runTaskTriage('プライベート')">🧹 ﾌﾟﾗｲﾍﾞｰﾄ整理</button>
                         <button class="chip-btn" onclick="openMeditationModal()">🧘 瞑想</button>
+                        <button class="chip-btn" onclick="openDrumPracticeModal()">🥁 ドラム練習</button>
                     </div>
                 </div>
                 <div class="chat-input-area">
@@ -181,23 +182,23 @@
                     <details class="card stocked-links-card">
                         <summary>
                             <div class="card-header">
-                                <span class="card-icon">🍳</span>
-                                <span class="card-title">レシピ</span>
-                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('recipe')">全既読</button>
-                            </div>
-                        </summary>
-                        <div id="dash-stocked-recipe" class="card-body list-body"></div>
-                    </details>
-
-                    <details class="card stocked-links-card">
-                        <summary>
-                            <div class="card-header">
                                 <span class="card-icon">🗺️</span>
                                 <span class="card-title">Googleマップ</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('map')">全既読</button>
                             </div>
                         </summary>
                         <div id="dash-stocked-map" class="card-body list-body"></div>
+                    </details>
+
+                    <details class="card stocked-links-card">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">🍳</span>
+                                <span class="card-title">レシピ</span>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('recipe')">全既読</button>
+                            </div>
+                        </summary>
+                        <div id="dash-stocked-recipe" class="card-body list-body"></div>
                     </details>
 
                     <details class="card bookshelf-card">
@@ -209,6 +210,16 @@
                             </div>
                         </summary>
                         <div id="dash-stocked-book" class="card-body list-body"></div>
+                    </details>
+
+                    <details class="card drum-roadmap-card" ontoggle="if(this.open && typeof loadDrumRoadmap === 'function') loadDrumRoadmap()">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">🥁</span>
+                                <span class="card-title">ドラム上達ロードマップ</span>
+                            </div>
+                        </summary>
+                        <div id="dash-drum-roadmap" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
                     </details>
                 </div>
             </div>
@@ -642,101 +653,6 @@
                     </div>
                 </div>
             </div>
-
-            <!-- ========== DRUM PRACTICE TAB ========== -->
-            <div id="tab-practice" class="tab-pane">
-                <!-- セッション -->
-                <section class="practice-section" id="practice-session-section">
-                    <div id="practice-session-card" class="practice-card">
-                        <div id="practice-state-summary" style="display:flex;justify-content:space-between;font-size:0.95rem;color:#555;margin-bottom:8px;">
-                            <span>今日: <b id="practice-today-min">0</b> 分</span>
-                            <span>連続: <b id="practice-streak">0</b> 日</span>
-                        </div>
-                        <div id="practice-timer" style="font-size:2.6rem;font-weight:700;text-align:center;margin:8px 0;">00:00</div>
-                        <div id="practice-menu-list" style="font-size:0.92rem;color:#444;min-height:1.5em;text-align:center;"></div>
-                        <div style="display:flex;gap:12px;margin-top:14px;">
-                            <button id="practice-start-btn" class="practice-big-btn practice-btn-primary">▶ 練習開始</button>
-                            <button id="practice-end-btn" class="practice-big-btn practice-btn-danger" style="display:none;">■ 終了</button>
-                        </div>
-                        <div id="practice-memo-area" style="display:none;margin-top:14px;">
-                            <textarea id="practice-memo-input" placeholder="練習メモ（任意）" style="width:100%;min-height:60px;padding:8px;border:1px solid #ccc;border-radius:8px;font-size:0.95rem;"></textarea>
-                        </div>
-                    </div>
-                </section>
-
-                <!-- 今日のメニュー -->
-                <section class="practice-section">
-                    <h3 class="practice-heading">🥁 今日のメニュー</h3>
-                    <div class="practice-card">
-                        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
-                            <label style="font-size:0.95rem;">時間:</label>
-                            <select id="practice-menu-minutes" style="padding:6px 10px;font-size:0.95rem;border-radius:6px;">
-                                <option value="15">15分</option>
-                                <option value="30" selected>30分</option>
-                                <option value="60">60分</option>
-                            </select>
-                            <button id="practice-menu-template-btn" class="practice-mini-btn">テンプレ</button>
-                            <button id="practice-menu-ai-btn" class="practice-mini-btn">AIで作る</button>
-                        </div>
-                        <div id="practice-menu-result" style="font-size:0.92rem;color:#333;"></div>
-                        <button id="practice-menu-use-btn" class="practice-mini-btn" style="display:none;margin-top:10px;">このメニューで開始</button>
-                    </div>
-                </section>
-
-                <!-- ロードマップ -->
-                <section class="practice-section">
-                    <h3 class="practice-heading">🗺 上達ロードマップ</h3>
-                    <div id="practice-roadmap-container"><div class="loading-placeholder">読み込み中。</div></div>
-                </section>
-
-                <!-- 動画ライブラリ -->
-                <section class="practice-section">
-                    <h3 class="practice-heading">📺 動画ライブラリ</h3>
-                    <div class="practice-card">
-                        <div style="display:flex;gap:6px;margin-bottom:10px;">
-                            <input type="url" id="practice-video-url-input" placeholder="YouTube URL を貼り付け" style="flex:1;padding:8px;border:1px solid #ccc;border-radius:6px;font-size:0.95rem;">
-                            <button id="practice-video-add-btn" class="practice-mini-btn">追加</button>
-                        </div>
-                        <div id="practice-video-filters" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;font-size:0.85rem;"></div>
-                    </div>
-                    <div id="practice-video-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px;"></div>
-                </section>
-
-                <!-- 動画分類確認モーダル -->
-                <div id="practice-video-modal" class="modal-overlay hidden">
-                    <div class="modal-card" style="max-width:480px;">
-                        <h3 style="margin-top:0;">動画を確認</h3>
-                        <div id="practice-video-modal-body" style="font-size:0.92rem;"></div>
-                        <div class="modal-actions" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
-                            <button class="modal-btn cancel" onclick="practiceDiscardPending()">破棄</button>
-                            <button class="modal-btn primary" onclick="practiceConfirmPending()">確認して保存</button>
-                        </div>
-                    </div>
-                </div>
-
-                <style>
-                    .practice-section { padding: 10px 12px; }
-                    .practice-heading { font-size:1.05rem;margin:14px 0 8px;color:#333; }
-                    .practice-card { background:#fff;border:1px solid #eee;border-radius:10px;padding:14px;box-shadow:0 1px 3px rgba(0,0,0,0.04); }
-                    .practice-big-btn { flex:1;padding:18px 12px;font-size:1.15rem;font-weight:600;border:none;border-radius:10px;color:#fff;cursor:pointer; }
-                    .practice-btn-primary { background:#4caf50; }
-                    .practice-btn-danger { background:#e53935; }
-                    .practice-mini-btn { padding:6px 12px;border:1px solid #4caf50;background:#fff;color:#4caf50;border-radius:6px;font-size:0.9rem;cursor:pointer; }
-                    .practice-mini-btn:hover { background:#e8f5e9; }
-                    .practice-roadmap-phase { background:#fff;border:1px solid #eee;border-radius:10px;padding:10px 12px;margin-bottom:10px; }
-                    .practice-milestone { display:flex;align-items:center;justify-content:space-between;padding:8px 4px;border-top:1px solid #f0f0f0;font-size:0.92rem; }
-                    .practice-milestone:first-of-type { border-top:none; }
-                    .practice-status-badge { font-size:0.78rem;padding:2px 8px;border-radius:10px;cursor:pointer; }
-                    .practice-status-todo { background:#eee;color:#666; }
-                    .practice-status-wip { background:#fff3cd;color:#856404; }
-                    .practice-status-done { background:#c8e6c9;color:#256029; }
-                    .practice-video-card { background:#fff;border:1px solid #eee;border-radius:8px;overflow:hidden;font-size:0.85rem; }
-                    .practice-video-card img { width:100%;display:block;background:#000;aspect-ratio:16/9;object-fit:cover; }
-                    .practice-video-card .meta { padding:8px; }
-                    .practice-chip { padding:4px 10px;border:1px solid #ccc;background:#fff;border-radius:14px;cursor:pointer; }
-                    .practice-chip.active { background:#4caf50;color:#fff;border-color:#4caf50; }
-                </style>
-            </div>
         </main>
 
         <!-- BOTTOM NAVIGATION (LINE-like) -->
@@ -760,10 +676,6 @@
             <button class="nav-item" data-tab="invest">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
                 <span>投資</span>
-            </button>
-            <button class="nav-item" data-tab="practice">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/></svg>
-                <span>練習</span>
             </button>
         </nav>
     </div>
@@ -1508,6 +1420,42 @@
         </div>
     </div>
 
+    <!-- ========== DRUM PRACTICE TIMER MODAL ========== -->
+    <div id="drum-practice-modal" class="modal-overlay hidden" onclick="closeDrumPracticeModal(event)">
+        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:320px; text-align:center;">
+            <div id="drum-step-setup">
+                <div style="font-size:2.5rem; margin-bottom:12px;">🥁</div>
+                <h3 style="margin-bottom:16px;">ドラム練習タイマー</h3>
+                <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:16px;">練習する時間を選んでください</p>
+                <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin-bottom:20px;">
+                    <button class="modal-btn" onclick="setDrumDuration(15)" style="min-width:60px;">15分</button>
+                    <button class="modal-btn" onclick="setDrumDuration(30)" style="min-width:60px;">30分</button>
+                    <button class="modal-btn" onclick="setDrumDuration(60)" style="min-width:60px;">60分</button>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:20px; justify-content:center;">
+                    <input type="number" id="drum-custom-min" class="modern-input" style="width:80px; padding:8px; text-align:center;" min="1" max="240" placeholder="分">
+                    <span style="color:var(--text-secondary); font-size:0.85rem;">分（カスタム）</span>
+                </div>
+                <div class="modal-actions" style="justify-content:center;">
+                    <button class="modal-btn cancel" onclick="closeDrumPracticeModal()">キャンセル</button>
+                    <button class="modal-btn submit" onclick="startDrumPractice()">開始</button>
+                </div>
+            </div>
+            <div id="drum-step-timer" style="display:none;">
+                <div style="font-size:2rem; margin-bottom:8px;">🥁</div>
+                <div id="drum-timer-display" style="font-size:3rem; font-weight:800; font-variant-numeric:tabular-nums; margin:16px 0; color:var(--accent);">00:00</div>
+                <p style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:20px;">集中して叩こう！</p>
+                <button class="modal-btn cancel" onclick="stopDrumPractice()">終了</button>
+            </div>
+            <div id="drum-step-done" style="display:none;">
+                <div style="font-size:2.5rem; margin-bottom:12px;">🎉</div>
+                <h3 style="margin-bottom:8px;">練習完了！</h3>
+                <p id="drum-done-msg" style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:20px;"></p>
+                <button class="modal-btn submit" onclick="closeDrumPracticeModal()">閉じる</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== WEATHER LOCATION PICKER ========== -->
     <div id="weather-location-overlay" class="modal-overlay hidden" onclick="closeWeatherLocationPicker(event)">
         <div class="search-panel" onclick="event.stopPropagation()">
@@ -1721,6 +1669,5 @@
     </div>
 
     <script src="/static/js/app_v12.js?v=71"></script>
-    <script src="/static/js/practice.js?v=1" defer></script>
 </body>
 </html>
