@@ -157,7 +157,7 @@
                         <div id="dash-news" class="card-body list-body"></div>
                     </div>
                     
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" data-card-key="webclip">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🌐</span>
@@ -168,7 +168,7 @@
                         <div id="dash-stocked-web" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" data-card-key="youtube">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">📺</span>
@@ -179,7 +179,7 @@
                         <div id="dash-stocked-youtube" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" data-card-key="gmap">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🗺️</span>
@@ -190,7 +190,7 @@
                         <div id="dash-stocked-map" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" data-card-key="recipe">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🍳</span>
@@ -201,7 +201,7 @@
                         <div id="dash-stocked-recipe" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card bookshelf-card">
+                    <details class="card bookshelf-card" data-card-key="book">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">📚</span>
@@ -212,18 +212,18 @@
                         <div id="dash-stocked-book" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card study-card" ontoggle="if(this.open && typeof loadStudy === 'function') loadStudy()">
+                    <details class="card study-card" data-card-key="study">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🎓</span>
                                 <span class="card-title">勉強</span>
-                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openStudyGoalModal(null)">＋ 目標</button>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openAddStudyItemModal()">＋ 追加</button>
                             </div>
                         </summary>
-                        <div id="dash-study" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
+                        <div id="dash-stocked-study" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card drum-roadmap-card" ontoggle="if(this.open && typeof loadDrumRoadmap === 'function') loadDrumRoadmap()">
+                    <details class="card drum-roadmap-card" data-card-key="drum" ontoggle="if(this.open && typeof loadDrumRoadmap === 'function') loadDrumRoadmap()">
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">🥁</span>
@@ -1493,54 +1493,6 @@
             <div class="modal-actions" style="margin-top:8px;">
                 <button class="modal-btn cancel" onclick="closeEdinetModal()">閉じる</button>
                 <button class="modal-btn submit" id="edinet-save-all-btn" onclick="edinetSaveAll()" style="display:none;">📥 すべて保存</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- ========== 勉強: 目標 編集モーダル ========== -->
-    <div id="study-goal-modal" class="modal-overlay hidden" onclick="closeStudyGoalModal(event)">
-        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:420px;">
-            <h3 id="study-goal-modal-title" style="margin-top:0;">目標を追加</h3>
-            <input type="hidden" id="study-goal-id">
-            <div style="display:flex;flex-direction:column;gap:8px;">
-                <label style="font-size:0.82rem;color:var(--text-secondary);">目標名（例: TOEIC 900点 / 簿記2級）</label>
-                <input type="text" id="study-goal-title" class="modern-input" style="padding:8px;">
-                <label style="font-size:0.82rem;color:var(--text-secondary);">期限</label>
-                <input type="date" id="study-goal-due" class="modern-input" style="padding:8px;">
-                <label style="font-size:0.82rem;color:var(--text-secondary);">メモ</label>
-                <textarea id="study-goal-memo" class="modern-input" style="padding:8px;min-height:60px;"></textarea>
-            </div>
-            <div class="modal-actions" style="margin-top:12px;">
-                <button class="modal-btn cancel" onclick="closeStudyGoalModal()">キャンセル</button>
-                <button class="modal-btn danger" id="study-goal-delete-btn" onclick="studyGoalDelete()" style="display:none;">削除</button>
-                <button class="modal-btn submit" onclick="studyGoalSave()">保存</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- ========== 勉強: 教材/質問 編集モーダル ========== -->
-    <div id="study-item-modal" class="modal-overlay hidden" onclick="closeStudyItemModal(event)">
-        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:420px;">
-            <h3 id="study-item-modal-title" style="margin-top:0;">項目を追加</h3>
-            <input type="hidden" id="study-item-id">
-            <input type="hidden" id="study-item-goal-id">
-            <div style="display:flex;flex-direction:column;gap:8px;">
-                <label style="font-size:0.82rem;color:var(--text-secondary);">種別</label>
-                <select id="study-item-type" class="modern-input" style="padding:8px;">
-                    <option value="material">📘 教材（参考書・問題集など）</option>
-                    <option value="question">❓ 質問・苦手分野</option>
-                </select>
-                <label style="font-size:0.82rem;color:var(--text-secondary);">タイトル</label>
-                <input type="text" id="study-item-title" class="modern-input" style="padding:8px;" placeholder="例: 金のフレーズ / 関係代名詞 vs 関係副詞">
-                <label style="font-size:0.82rem;color:var(--text-secondary);">NotebookLM URL</label>
-                <input type="url" id="study-item-note-url" class="modern-input" style="padding:8px;" placeholder="https://notebooklm.google.com/...">
-                <label style="font-size:0.82rem;color:var(--text-secondary);">メモ</label>
-                <textarea id="study-item-memo" class="modern-input" style="padding:8px;min-height:60px;"></textarea>
-            </div>
-            <div class="modal-actions" style="margin-top:12px;">
-                <button class="modal-btn cancel" onclick="closeStudyItemModal()">キャンセル</button>
-                <button class="modal-btn danger" id="study-item-delete-btn" onclick="studyItemDelete()" style="display:none;">削除</button>
-                <button class="modal-btn submit" onclick="studyItemSave()">保存</button>
             </div>
         </div>
     </div>

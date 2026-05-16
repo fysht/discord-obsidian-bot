@@ -472,6 +472,21 @@ window.resubscribePush = async () => {
     }
 };
 
+// カード開閉状態を localStorage で記憶（情報タブの <details data-card-key> が対象）
+function _restoreCardStates() {
+    document.querySelectorAll('#tab-info [data-card-key]').forEach(el => {
+        const key = el.dataset.cardKey;
+        const saved = localStorage.getItem(`card_open_${key}`);
+        if (saved !== null) el.open = saved === '1';
+        if (!el.dataset.cardStateInit) {
+            el.dataset.cardStateInit = '1';
+            el.addEventListener('toggle', () => {
+                localStorage.setItem(`card_open_${key}`, el.open ? '1' : '0');
+            });
+        }
+    });
+}
+
 function switchTab(tab) {
     $$('.nav-item').forEach(i => i.classList.remove('active'));
     document.querySelector(`.nav-item[data-tab="${tab}"]`)?.classList.add('active');
@@ -484,6 +499,10 @@ function switchTab(tab) {
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
     if (tab !== 'chat' && tab !== 'invest') loadDashboard();
+    // 情報タブ: カード開閉状態を復元（localStorage 記憶）
+    if (tab === 'info') {
+        _restoreCardStates();
+    }
     // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
@@ -2520,6 +2539,63 @@ window.changeLinkPurposeFilter = (type, val) => {
     loadStockedLinks();
 };
 
+// ===========================================================
+// 勉強カード用ヘルパー
+// ===========================================================
+
+// メモテキストを Q&A / 箇条書き / 通常テキスト混在でレンダリング
+function renderStudyMemo(text) {
+    if (!text) return '';
+    const lines = text.split('\n');
+    let html = '';
+    let inUl = false;
+    for (const line of lines) {
+        if (/^Q:/i.test(line)) {
+            if (inUl) { html += '</ul>'; inUl = false; }
+            html += `<div class="study-note-line"><span class="study-note-q">Q</span>${escapeHtml(line.slice(2).trim())}</div>`;
+        } else if (/^A:/i.test(line)) {
+            if (inUl) { html += '</ul>'; inUl = false; }
+            html += `<div class="study-note-line"><span class="study-note-a">A</span>${escapeHtml(line.slice(2).trim())}</div>`;
+        } else if (/^[\-*]\s/.test(line)) {
+            if (!inUl) { html += '<ul class="study-note-ul">'; inUl = true; }
+            html += `<li>${escapeHtml(line.slice(2).trim())}</li>`;
+        } else if (line.trim()) {
+            if (inUl) { html += '</ul>'; inUl = false; }
+            html += `<div class="study-note-line">${escapeHtml(line)}</div>`;
+        }
+    }
+    if (inUl) html += '</ul>';
+    return html;
+}
+
+// 勉強カード専用ヘッダ（ソートのみ・タグ絞り込みなし）
+function setupStudyHeader(container, type) {
+    if (!container) return;
+    const details = container.closest('details');
+    if (!details) return;
+    details.querySelectorAll(':scope > .stocked-list-controls').forEach(n => n.remove());
+    const ctrl = document.createElement('div');
+    ctrl.className = 'stocked-list-controls';
+    const sortSelect = document.createElement('select');
+    sortSelect.dataset.role = 'sort-select';
+    sortSelect.title = '並び順';
+    sortSelect.innerHTML = `
+        <option value="newest" ${linkSorts[type]==='newest'?'selected':''}>新しい順</option>
+        <option value="oldest" ${linkSorts[type]==='oldest'?'selected':''}>古い順</option>
+        <option value="title" ${linkSorts[type]==='title'?'selected':''}>タイトル順</option>
+        <option value="custom" ${linkSorts[type]==='custom'?'selected':''}>カスタム順</option>
+    `;
+    sortSelect.onchange = (e) => changeLinkSort(type, e.target.value);
+    ctrl.appendChild(sortSelect);
+    details.insertBefore(ctrl, container);
+}
+
+// 勉強アイテム追加モーダル（URL なしでタイトルだけ追加）
+window.openAddStudyItemModal = () => {
+    // 共通の手動追加モーダルを study タイプで開く
+    openManualAddModal('study');
+};
+
 // ストックリンクのカスタム並び順（localStorage 永続化）
 const STOCKED_ORDER_KEY = (type) => `stocked_links_order_${type}`;
 function _loadStockedCustomOrder(type) {
@@ -2538,6 +2614,7 @@ window.loadStockedLinks = async () => {
         const recipeEl = $('#dash-stocked-recipe');
         const mapEl = $('#dash-stocked-map');
         const bookEl = $('#dash-stocked-book');
+        const studyEl = $('#dash-stocked-study');
 
         let links = data.links || [];
 
@@ -2568,6 +2645,7 @@ window.loadStockedLinks = async () => {
             recipe: links.filter(l => l.type === 'recipe'),
             map: links.filter(l => l.type === 'map'),
             book: links.filter(l => l.type === 'book'),
+            study: links.filter(l => l.type === 'study'),
         };
 
         const applyPurpose = (arr, type) => {
@@ -2582,6 +2660,7 @@ window.loadStockedLinks = async () => {
         const recipeLinks = applyPurpose(allByType.recipe, 'recipe').sort(getSortFn('recipe'));
         const mapLinks = applyPurpose(allByType.map, 'map').sort(getSortFn('map'));
         const bookLinks = applyPurpose(allByType.book, 'book').sort(getSortFn('book'));
+        const studyLinks = allByType.study.sort(getSortFn('study'));
 
         const buildPurposeOptions = (type) => {
             const arr = allByType[type] || [];
@@ -2663,6 +2742,8 @@ window.loadStockedLinks = async () => {
         setupHeader('dash-stocked-recipe', 'recipe');
         setupHeader('dash-stocked-map', 'map');
         setupHeader('dash-stocked-book', 'book');
+        // 勉強カードはソートのみ（タグ絞り込みとURLなし追加はカスタムUI）
+        setupStudyHeader(studyEl, 'study');
 
         // 古い全体のソートプルダウンがあれば削除
         const oldWrap = $('#link-sort-wrapper');
@@ -2683,8 +2764,8 @@ window.loadStockedLinks = async () => {
                     : `<span class="stocked-link-title">${escapeHtml(titleText)}</span>`;
                 // 並び替え用のドラッグハンドル（タイトル行先頭）
                 const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>`;
-                // 書籍で NotebookLM 等のノート URL が登録されている場合、タイトル行にワンタッチ起動ボタンを表示
-                const noteBtn = (lk.type === 'book' && lk.linked_note_url)
+                // 書籍・勉強で NotebookLM 等のノート URL が登録されている場合、タイトル行にワンタッチ起動ボタンを表示
+                const noteBtn = ((lk.type === 'book' || lk.type === 'study') && lk.linked_note_url)
                     ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(lk.linked_note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く" onclick="event.stopPropagation();">📓 NotebookLM</a>`
                     : '';
                 const titleEl = `<div class="stocked-link-title-row">${dragHandle}${rawTitleEl}${noteBtn}</div>`;
@@ -2699,10 +2780,15 @@ window.loadStockedLinks = async () => {
                 chips.push(`<span class="stocked-link-chip added">${dateStr}</span>`);
 
                 const lkJson = JSON.stringify(lk).replace(/'/g, "&#39;");
+                // 勉強カードのみ notes（メモ）をQ&A/箇条書き混在形式で展開表示
+                const memoBlock = (lk.type === 'study' && lk.notes)
+                    ? `<div class="study-memo-block">${renderStudyMemo(lk.notes)}</div>`
+                    : '';
                 return `
                     <div class="stocked-link" id="stocked-link-${lk.id}">
                         ${titleEl}
                         <div class="stocked-link-meta">${chips.join('')}</div>
+                        ${memoBlock}
                         <div class="stocked-link-actions">
                             <button class="stocked-link-btn edit" onclick='openLinkDetailsModal(${lkJson})'>編集</button>
                             <button class="stocked-link-btn danger" onclick="deleteStockedLink(${lk.id})">削除</button>
@@ -2717,6 +2803,7 @@ window.loadStockedLinks = async () => {
         renderGroup(recipeEl, recipeLinks);
         renderGroup(mapEl, mapLinks);
         renderGroup(bookEl, bookLinks);
+        renderGroup(studyEl, studyLinks);
 
         // ドラッグ&ドロップ並び替え（SortableJS 必須・defer ロード）
         const setupSortable = (container, type) => {
@@ -2753,6 +2840,7 @@ window.loadStockedLinks = async () => {
         setupSortable(recipeEl, 'recipe');
         setupSortable(mapEl, 'map');
         setupSortable(bookEl, 'book');
+        setupSortable(studyEl, 'study');
 
         loadNotebooks();
 
@@ -2825,8 +2913,23 @@ window.openLinkDetailsModal = (lk) => {
             <option value="recipe" ${lk.type==='recipe'?'selected':''}>🍳 レシピ</option>
             <option value="map" ${lk.type==='map'?'selected':''}>🗺️ マップ</option>
             <option value="book" ${lk.type==='book'?'selected':''}>📚 書籍</option>
+            <option value="study" ${lk.type==='study'?'selected':''}>✏️ 勉強</option>
         </select>
     `;
+    // study タイプは要約フィールドを非表示にする
+    const _updateSummaryVisibility = () => {
+        const t = $('#link-type-select')?.value;
+        const summaryRow = $('#link-summary-input')?.closest('div[style]') || $('#link-summary-input')?.parentElement;
+        if (summaryRow) summaryRow.style.display = (t === 'study') ? 'none' : '';
+        const memoInput = $('#link-memo-input');
+        if (memoInput) memoInput.placeholder = (t === 'study')
+            ? 'Q: ○○とは？\nA: △△のこと\n- ポイント: ◇◇'
+            : '個人的なメモ...';
+    };
+    _updateSummaryVisibility();
+    requestAnimationFrame(() => {
+        $('#link-type-select')?.addEventListener('change', _updateSummaryVisibility);
+    });
 
     // タグ入力欄を設定（既存 purpose は後方互換フォールバック）
     const tagsInput = $('#link-tags-input');
@@ -5647,31 +5750,83 @@ const DRUM_ROADMAP_STATIC = {
             id: 'phase_basics', label: 'Phase 1: 基礎づくり',
             description: 'スティックコントロールと最も基本的なビートを身体に入れる。約1〜2ヶ月。',
             milestones: [
-                { id: 'M01_grip_stick_control', label: 'マッチドグリップとリバウンドが安定する', criteria: '脱力したグリップで連続したシングルストロークを30秒' },
-                { id: 'M02_single_double_80bpm', label: 'シングル/ダブルストローク 80BPM', criteria: 'メトロノーム80BPMで8分音符の粒が揃う' },
-                { id: 'M03_8beat_80bpm',         label: '8ビートを80BPMで30秒キープ',     criteria: 'テンポを落とさず安定したダイナミクスでキープできる' },
-                { id: 'M04_paradiddle',          label: 'シングル・パラディドルが叩ける',  criteria: 'RLRR LRLL を100BPMで連続' },
+                {
+                    id: 'M01_grip_stick_control', label: 'マッチドグリップとリバウンドが安定する', criteria: '脱力したグリップで連続したシングルストロークを30秒',
+                    practices: ['STEP1: 親指と人差し指でスティックをつまみ、残り3本を添える', 'STEP2: 肘を軽く曲げ、手首の重さを使って振り下ろす', 'STEP3: 膝の上でリバウンドを感じながら左右交互に打つ', 'STEP4: 40BPMのメトロノームに合わせて均等なRLを5分/日'],
+                    search_keywords: ['ドラム グリップ 初心者', 'drum matched grip tutorial'],
+                },
+                {
+                    id: 'M02_single_double_80bpm', label: 'シングル/ダブルストローク 80BPM', criteria: 'メトロノーム80BPMで8分音符の粒が揃う',
+                    practices: ['STEP1: 50BPMから均等なRL連打を1分間', 'STEP2: 5BPMずつテンポを上げ80BPMを目指す', 'STEP3: ダブルストロークはRR LLを同じ手順で練習', 'STEP4: ストロークの粒が揃っているか録音して確認'],
+                    search_keywords: ['ドラム シングルストローク 練習', 'single stroke roll beginner'],
+                },
+                {
+                    id: 'M03_8beat_80bpm', label: '8ビートを80BPMで30秒キープ', criteria: 'テンポを落とさず安定したダイナミクスでキープできる',
+                    practices: ['STEP1: 右手でハイハット8分打ちを安定させる', 'STEP2: スネア（2・4拍目）を加える', 'STEP3: バスドラム（1・3拍目）を加えて3点同時', 'STEP4: 40BPMから始め60→80BPMへ段階的に上げる'],
+                    search_keywords: ['ドラム 8ビート 初心者', 'beginner drum 8 beat pattern'],
+                },
+                {
+                    id: 'M04_paradiddle', label: 'シングル・パラディドルが叩ける', criteria: 'RLRR LRLL を100BPMで連続',
+                    practices: ['STEP1: RLRR LRLL のパターンを手拍子で声に出して覚える', 'STEP2: 60BPMでパッドに叩く、音粒を均等に', 'STEP3: アクセントをRLRLに乗せる', 'STEP4: 100BPMまで5BPMずつ上げる'],
+                    search_keywords: ['ドラム パラディドル 初心者', 'paradiddle drum tutorial'],
+                },
             ],
         },
         {
             id: 'phase_groove', label: 'Phase 2: グルーヴと表現',
             description: '8ビート以外のグルーヴ・フィル・ダイナミクスを身につける。約3〜6ヶ月。',
             milestones: [
-                { id: 'M05_16beat_basic',    label: '16ビートの基本パターン',                criteria: '90BPMで16分のハイハットが安定' },
-                { id: 'M06_basic_fills',     label: '4小節フィルのバリエーション3種',         criteria: '4分・8分・16分混在のフィルを曲の流れで自然に入れる' },
-                { id: 'M07_shuffle',         label: 'シャッフルが叩ける',                    criteria: 'ブルース/ジャズ系の3連グルーヴが安定' },
-                { id: 'M08_dynamics',        label: 'アクセントとゴーストノートの使い分け',   criteria: 'メインアクセントとゴーストノートを明確に区別' },
-                { id: 'M09_metronome_120',   label: 'ルーディメンツ各種を120BPMで',         criteria: 'シングル・ダブル・パラディドル系を120BPMで正確に' },
+                {
+                    id: 'M05_16beat_basic', label: '16ビートの基本パターン', criteria: '90BPMで16分のハイハットが安定',
+                    practices: ['STEP1: 右手だけで16分音符のハイハット連打を安定させる', 'STEP2: スネア（2・4拍目）を加える', 'STEP3: バスドラムを加えて3点同時', 'STEP4: 70BPMから90BPMへ段階的に上げる'],
+                    search_keywords: ['ドラム 16ビート 初心者', 'sixteenth note drum groove'],
+                },
+                {
+                    id: 'M06_basic_fills', label: '4小節フィルのバリエーション3種', criteria: '4分・8分・16分混在のフィルを曲の流れで自然に入れる',
+                    practices: ['STEP1: 4分音符フィル（タム一周）をゆっくり覚える', 'STEP2: 8分音符フィルを同様に', 'STEP3: 16分音符フィルを同様に', 'STEP4: 直前のビートとの繋ぎタイミングを反復練習'],
+                    search_keywords: ['ドラム フィルイン 初心者', 'drum fill beginner tutorial'],
+                },
+                {
+                    id: 'M07_shuffle', label: 'シャッフルが叩ける', criteria: 'ブルース/ジャズ系の3連グルーヴが安定',
+                    practices: ['STEP1: タ・カ・タ（3連符）を手拍子で体に入れる', 'STEP2: シャッフルのハイハットパターンをゆっくり', 'STEP3: スネア・バスドラムを加えてパターンを完成させる', 'STEP4: ブルース12小節を通して80BPMで叩く'],
+                    search_keywords: ['ドラム シャッフル 初心者', 'shuffle drum groove tutorial'],
+                },
+                {
+                    id: 'M08_dynamics', label: 'アクセントとゴーストノートの使い分け', criteria: 'メインアクセントとゴーストノートを明確に区別',
+                    practices: ['STEP1: スネアを大・小の2段階で叩き分ける練習', 'STEP2: ゴーストノートはスティックをヘッドから2〜3cm以内で打つ', 'STEP3: 8ビートに弱音ゴーストノートを挿入してみる', 'STEP4: R&Bのドラム動画を参考に実際のフィールを学ぶ'],
+                    search_keywords: ['ドラム ゴーストノート 練習', 'ghost note drum tutorial'],
+                },
+                {
+                    id: 'M09_metronome_120', label: 'ルーディメンツ各種を120BPMで', criteria: 'シングル・ダブル・パラディドル系を120BPMで正確に',
+                    practices: ['STEP1: 毎日ウォームアップ：シングル→ダブル→パラディドル→フラムの順に各1分', 'STEP2: 100BPMで全て安定させてから120へ', 'STEP3: 各ルーディメンツに強弱アクセントをつける', 'STEP4: 120BPMでの安定を録音で確認'],
+                    search_keywords: ['ドラム ルーディメンツ 一覧', 'drum rudiments 120bpm'],
+                },
             ],
         },
         {
             id: 'phase_song', label: 'Phase 3: 曲を叩く',
             description: '実曲を頭から終わりまで叩けるようになる。約6ヶ月〜1年。',
             milestones: [
-                { id: 'M10_first_full_song', label: '好きな曲を1曲フルで叩ける',          criteria: 'イントロからエンディングまでテンポキープ、フィルも再現' },
-                { id: 'M11_song_x3',         label: '完奏可能曲が3曲',                    criteria: 'レパートリーとして人前で叩ける状態' },
-                { id: 'M12_genre_variety',   label: 'ロック以外のジャンルを1曲',          criteria: 'ファンク・ジャズ・ラテンなどジャンル特有のフィールが出せる' },
-                { id: 'M13_record_playback', label: '自分の演奏を録音して客観評価',         criteria: '録音を聴いて課題点を3つ以上挙げられる' },
+                {
+                    id: 'M10_first_full_song', label: '好きな曲を1曲フルで叩ける', criteria: 'イントロからエンディングまでテンポキープ、フィルも再現',
+                    practices: ['STEP1: テンポ100前後の比較的シンプルな曲を選ぶ', 'STEP2: 10秒ずつ区切って部分練習し、繋いでいく', 'STEP3: フィル・サビ前・転換のタイミングをマーク', 'STEP4: 通し演奏を録音して問題箇所を特定する'],
+                    search_keywords: ['ドラム 初心者 曲 おすすめ', 'easy drum song beginner'],
+                },
+                {
+                    id: 'M11_song_x3', label: '完奏可能曲が3曲', criteria: 'レパートリーとして人前で叩ける状態',
+                    practices: ['STEP1: テンポ・難易度・ジャンルが異なる3曲を選ぶ', 'STEP2: 週1曲を目標にマスターしていく', 'STEP3: 毎回の練習で必ず1曲通し演奏する', 'STEP4: 毎回録音して前回からの改善点を確認'],
+                    search_keywords: ['ドラム カバー 初心者 曲', 'beginner drum cover songs'],
+                },
+                {
+                    id: 'M12_genre_variety', label: 'ロック以外のジャンルを1曲', criteria: 'ファンク・ジャズ・ラテンなどジャンル特有のフィールが出せる',
+                    practices: ['STEP1: ファンク・ジャズ・ラテンから1ジャンル選ぶ', 'STEP2: そのジャンル専門の解説動画でグルーヴの特徴を学ぶ', 'STEP3: 簡単な課題曲を1曲選んで練習する', 'STEP4: ジャンル特有のアクセント位置を意識して叩く'],
+                    search_keywords: ['ドラム ファンク グルーヴ', 'funk drum groove tutorial'],
+                },
+                {
+                    id: 'M13_record_playback', label: '自分の演奏を録音して客観評価', criteria: '録音を聴いて課題点を3つ以上挙げられる',
+                    practices: ['STEP1: スマホを正面に立てて演奏を動画録画する', 'STEP2: 原曲と自分の演奏を聴き比べる', 'STEP3: テンポのズレ・音量バランス・フィルのタイミングをメモする', 'STEP4: 課題点を次回の練習メニューに組み込む'],
+                    search_keywords: ['ドラム 録音 スマホ', 'how to record drum practice'],
+                },
             ],
         },
     ],
@@ -5738,9 +5893,23 @@ function renderDrumRoadmap(data, linksMap) {
         for (const m of (ph.milestones || [])) {
             const inputId = `drum-add-url-${m.id}`;
             const videos = (linksMap && linksMap[m.id]) || [];
+            const practicesHtml = (m.practices && m.practices.length)
+                ? `<div class="drum-practices">
+                    <div class="drum-section-label">📋 練習メニュー</div>
+                    <ol class="drum-practices-list">${m.practices.map(p => `<li>${escapeHtml(p)}</li>`).join('')}</ol>
+                   </div>`
+                : '';
+            const keywordsHtml = (m.search_keywords && m.search_keywords.length)
+                ? `<div class="drum-keywords">
+                    <div class="drum-section-label">🔍 動画検索キーワード</div>
+                    <div class="drum-keyword-tags">${m.search_keywords.map(k => `<a class="drum-keyword-tag" href="https://www.youtube.com/results?search_query=${encodeURIComponent(k)}" target="_blank" rel="noopener">${escapeHtml(k)}</a>`).join('')}</div>
+                   </div>`
+                : '';
             html += `<div class="drum-milestone-row">
                 <div class="drum-milestone-title">${escapeHtml(m.label || '')}</div>
                 ${m.criteria ? `<div class="drum-milestone-criteria">基準: ${escapeHtml(m.criteria)}</div>` : ''}
+                ${practicesHtml}
+                ${keywordsHtml}
                 <div class="drum-videos">
                     ${videos.map(v => renderDrumRoadmapVideo(v)).join('')}
                 </div>
@@ -5812,348 +5981,6 @@ window.deleteDrumRoadmapLink = async (linkId) => {
 };
 
 window.loadDrumRoadmap = loadDrumRoadmap;
-
-// ----- 勉強カード（目標 + 教材/質問 + NotebookLM + セッション時間計測） -----
-let _studyData = { goals: [], items: [] };
-const STUDY_ACTIVE_KEY = 'study_active_sessions';
-let _studyTimerInterval = null;
-
-function _studyActiveSessions() {
-    try { return JSON.parse(localStorage.getItem(STUDY_ACTIVE_KEY) || '{}'); } catch { return {}; }
-}
-function _setStudyActiveSession(itemId, started_at) {
-    const map = _studyActiveSessions();
-    if (started_at) map[itemId] = { started_at };
-    else delete map[itemId];
-    localStorage.setItem(STUDY_ACTIVE_KEY, JSON.stringify(map));
-}
-
-async function loadStudy() {
-    const container = $('#dash-study');
-    if (!container) return;
-    container.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
-    try {
-        const data = await apiFetch('/api/study');
-        if (!data || data.ok === false) {
-            container.innerHTML = '<div class="study-error">サーバから取得できませんでした。サーバ再起動後に再表示してください。</div>';
-            return;
-        }
-        _studyData = { goals: data.goals || [], items: data.items || [] };
-        renderStudy();
-        _ensureStudyTimer();
-    } catch (e) {
-        container.innerHTML = '<div class="study-error">サーバから取得できませんでした。サーバ再起動後に再表示してください。</div>';
-    }
-}
-
-// ----- 勉強カード並び替えヘルパー -----
-const STUDY_GOAL_ORDER_KEY = 'study_goal_order';
-const STUDY_ITEM_ORDER_KEY = (goalId, itemType) => `study_item_order_${goalId || '_none_'}_${itemType}`;
-function _loadStudyGoalOrder() {
-    try { return JSON.parse(localStorage.getItem(STUDY_GOAL_ORDER_KEY) || '[]'); }
-    catch { return []; }
-}
-function _saveStudyGoalOrder(ids) {
-    localStorage.setItem(STUDY_GOAL_ORDER_KEY, JSON.stringify(ids));
-}
-function _loadStudyItemOrder(goalId, itemType) {
-    try { return JSON.parse(localStorage.getItem(STUDY_ITEM_ORDER_KEY(goalId, itemType)) || '[]'); }
-    catch { return []; }
-}
-function _saveStudyItemOrder(goalId, itemType, ids) {
-    localStorage.setItem(STUDY_ITEM_ORDER_KEY(goalId, itemType), JSON.stringify(ids));
-}
-function _sortByOrder(arr, order, keyFn) {
-    return arr.slice().sort((a, b) => {
-        const ia = order.indexOf(keyFn(a));
-        const ib = order.indexOf(keyFn(b));
-        const xa = ia === -1 ? Infinity : ia;
-        const xb = ib === -1 ? Infinity : ib;
-        return xa - xb;
-    });
-}
-
-function renderStudy() {
-    const container = $('#dash-study');
-    if (!container) return;
-    const goals = _studyData.goals || [];
-    const items = _studyData.items || [];
-
-    // 完全に空の状態は親切な案内を表示
-    if (!goals.length && !items.length) {
-        container.innerHTML = '<div class="study-empty">目標がまだ登録されていません。<br>右上の「＋ 目標」から追加してください。</div>';
-        return;
-    }
-
-    // 目標を並び順で整列
-    const goalsOrder = _loadStudyGoalOrder();
-    const sortedGoals = _sortByOrder(goals, goalsOrder, g => g.id);
-
-    const byGoal = new Map();
-    for (const g of sortedGoals) byGoal.set(g.id, []);
-    const noGoal = [];
-    for (const it of items) {
-        if (it.goal_id && byGoal.has(it.goal_id)) byGoal.get(it.goal_id).push(it);
-        else noGoal.push(it);
-    }
-
-    // 各目標ブロック（+ 目標なし）を順に描画
-    let html = '<div class="study-goals-list">';
-    for (const g of sortedGoals) html += renderStudyGoal(g, byGoal.get(g.id) || []);
-    if (noGoal.length) html += renderStudyGoal(null, noGoal);
-    html += '</div>';
-    container.innerHTML = html;
-
-    // 描画後に Sortable を装着
-    _setupStudySortables();
-}
-
-function renderStudyGoal(goal, items) {
-    const goalId = goal ? goal.id : '';
-    const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>`;
-    const title = goal ? escapeHtml(goal.title) : '🗂 目標なし';
-    const due = goal && goal.due_date ? `<span class="study-goal-due">期限: ${escapeHtml(goal.due_date)}</span>` : '';
-    const memo = goal && goal.memo ? `<div class="study-goal-memo">${escapeHtml(goal.memo)}</div>` : '';
-    const editBtn = goal
-        ? `<button class="mini-link" onclick="openStudyGoalModal('${escapeHtml(goalId)}')">編集</button>`
-        : '';
-    const addBtn = `<button class="mini-link" onclick="openStudyItemModal(null, '${escapeHtml(goalId)}')">＋ 項目</button>`;
-
-    const materials = items.filter(it => it.type !== 'question');
-    const questions = items.filter(it => it.type === 'question');
-    const materialOrder = _loadStudyItemOrder(goalId, 'material');
-    const questionOrder = _loadStudyItemOrder(goalId, 'question');
-    const sortedMaterials = _sortByOrder(materials, materialOrder, it => it.id);
-    const sortedQuestions = _sortByOrder(questions, questionOrder, it => it.id);
-
-    let body = '';
-    if (sortedMaterials.length) {
-        body += `<div class="study-section-label">📘 教材</div>`;
-        body += `<div class="study-items-list" data-goal-id="${escapeHtml(goalId)}" data-item-type="material">${sortedMaterials.map(it => renderStudyItem(it)).join('')}</div>`;
-    }
-    if (sortedQuestions.length) {
-        body += `<div class="study-section-label">❓ 質問・苦手</div>`;
-        body += `<div class="study-items-list" data-goal-id="${escapeHtml(goalId)}" data-item-type="question">${sortedQuestions.map(it => renderStudyItem(it)).join('')}</div>`;
-    }
-    if (!sortedMaterials.length && !sortedQuestions.length) {
-        body += `<div class="study-section-label" style="color:var(--text-muted);">項目がありません</div>`;
-    }
-
-    return `<div class="study-goal-block" data-goal-id="${escapeHtml(goalId)}">
-        <div class="study-goal-header">
-            ${dragHandle}
-            <div class="study-goal-title">${title}</div>
-            ${due}
-            ${editBtn}
-            ${addBtn}
-        </div>
-        ${memo}
-        ${body}
-    </div>`;
-}
-
-function renderStudyItem(it) {
-    const active = _studyActiveSessions()[it.id];
-    const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>`;
-    const noteBtn = it.note_url
-        ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(it.note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く">📓 NotebookLM</a>`
-        : '';
-    let sessionBtn;
-    if (it.type === 'question') {
-        sessionBtn = '';  // 質問は時間計測なし
-    } else if (active) {
-        const startedAt = new Date(active.started_at);
-        const elapsedMin = Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 60000));
-        sessionBtn = `<button class="mini-link study-session-btn-end" onclick="studySessionEnd('${escapeHtml(it.id)}')" data-study-elapsed="${escapeHtml(it.id)}">■ 終了 (${elapsedMin}分)</button>`;
-    } else {
-        sessionBtn = `<button class="mini-link study-session-btn-start" onclick="studySessionStart('${escapeHtml(it.id)}')">▶ 開始</button>`;
-    }
-    const memo = it.memo ? `<div class="study-item-memo">${escapeHtml(it.memo)}</div>` : '';
-    return `<div class="study-item" data-item-id="${escapeHtml(it.id)}">
-        ${dragHandle}
-        <span class="study-item-title">${escapeHtml(it.title)}</span>
-        ${noteBtn}
-        ${sessionBtn}
-        <button class="mini-link" onclick="openStudyItemModal('${escapeHtml(it.id)}','${escapeHtml(it.goal_id || '')}')">編集</button>
-        ${memo}
-    </div>`;
-}
-
-function _setupStudySortables() {
-    if (typeof window.Sortable === 'undefined') {
-        setTimeout(_setupStudySortables, 200);
-        return;
-    }
-    // 目標一覧
-    const goalsList = document.querySelector('#dash-study .study-goals-list');
-    if (goalsList) {
-        try { if (goalsList._sortable) { goalsList._sortable.destroy(); goalsList._sortable = null; } } catch {}
-        goalsList._sortable = window.Sortable.create(goalsList, {
-            // 目標ヘッダ内のハンドルだけドラッグ起点に（教材/質問の項目ハンドルは別 Sortable に取られる）
-            handle: '.study-goal-header > .list-item-drag-handle',
-            animation: 150,
-            ghostClass: 'sortable-ghost',
-            chosenClass: 'sortable-chosen',
-            onEnd: () => {
-                const ids = Array.from(goalsList.querySelectorAll(':scope > .study-goal-block'))
-                    .map(el => el.dataset.goalId)
-                    .filter(Boolean);
-                _saveStudyGoalOrder(ids);
-                showToast('並び替えました');
-            },
-        });
-    }
-    // 各 study-items-list（教材・質問それぞれ）
-    for (const list of document.querySelectorAll('#dash-study .study-items-list')) {
-        try { if (list._sortable) { list._sortable.destroy(); list._sortable = null; } } catch {}
-        const goalId = list.dataset.goalId || '';
-        const itemType = list.dataset.itemType || 'material';
-        list._sortable = window.Sortable.create(list, {
-            handle: '.list-item-drag-handle',
-            animation: 150,
-            ghostClass: 'sortable-ghost',
-            chosenClass: 'sortable-chosen',
-            onEnd: () => {
-                const ids = Array.from(list.querySelectorAll(':scope > .study-item'))
-                    .map(el => el.dataset.itemId)
-                    .filter(Boolean);
-                _saveStudyItemOrder(goalId, itemType, ids);
-                showToast('並び替えました');
-            },
-        });
-    }
-}
-
-function _ensureStudyTimer() {
-    if (_studyTimerInterval) return;
-    _studyTimerInterval = setInterval(() => {
-        const active = _studyActiveSessions();
-        if (!Object.keys(active).length) return;
-        // active セッションの経過分だけ書き換え
-        for (const [itemId, info] of Object.entries(active)) {
-            const elapsedMin = Math.max(0, Math.floor((Date.now() - new Date(info.started_at).getTime()) / 60000));
-            const btn = document.querySelector(`[data-study-elapsed="${CSS.escape(itemId)}"]`);
-            if (btn) btn.textContent = `■ 終了 (${elapsedMin}分)`;
-        }
-    }, 30 * 1000);
-}
-
-window.openStudyGoalModal = (goalId) => {
-    const goal = goalId ? (_studyData.goals || []).find(g => g.id === goalId) : null;
-    $('#study-goal-id').value = goal ? goal.id : '';
-    $('#study-goal-title').value = goal ? goal.title : '';
-    $('#study-goal-due').value = goal ? (goal.due_date || '') : '';
-    $('#study-goal-memo').value = goal ? (goal.memo || '') : '';
-    $('#study-goal-modal-title').textContent = goal ? '目標を編集' : '目標を追加';
-    $('#study-goal-delete-btn').style.display = goal ? '' : 'none';
-    $('#study-goal-modal').classList.remove('hidden');
-};
-
-window.closeStudyGoalModal = (e) => {
-    if (e && e.target.closest && e.target.closest('.modal-card')) return;
-    $('#study-goal-modal')?.classList.add('hidden');
-};
-
-window.studyGoalSave = async () => {
-    const id = $('#study-goal-id').value || null;
-    const title = $('#study-goal-title').value.trim();
-    if (!title) { showToast('タイトルを入力してください', true); return; }
-    const body = { id, title, due_date: $('#study-goal-due').value, memo: $('#study-goal-memo').value };
-    try {
-        const data = await apiFetch('/api/study/goal/save', { method: 'POST', body: JSON.stringify(body) });
-        if (!data.ok) { showToast(data.error || '保存失敗', true); return; }
-        $('#study-goal-modal').classList.add('hidden');
-        await loadStudy();
-    } catch (e) { showToast('保存失敗', true); }
-};
-
-window.studyGoalDelete = async () => {
-    const id = $('#study-goal-id').value;
-    if (!id) return;
-    if (!confirm('この目標を削除しますか？（配下の教材・質問は「目標なし」に移動）')) return;
-    try {
-        const data = await apiFetch('/api/study/goal/delete', { method: 'POST', body: JSON.stringify({ id }) });
-        if (!data.ok) { showToast(data.error || '削除失敗', true); return; }
-        $('#study-goal-modal').classList.add('hidden');
-        await loadStudy();
-    } catch (e) { showToast('削除失敗', true); }
-};
-
-window.openStudyItemModal = (itemId, goalId) => {
-    const item = itemId ? (_studyData.items || []).find(it => it.id === itemId) : null;
-    $('#study-item-id').value = item ? item.id : '';
-    $('#study-item-goal-id').value = item ? (item.goal_id || '') : (goalId || '');
-    $('#study-item-type').value = item ? (item.type || 'material') : 'material';
-    $('#study-item-title').value = item ? item.title : '';
-    $('#study-item-note-url').value = item ? (item.note_url || '') : '';
-    $('#study-item-memo').value = item ? (item.memo || '') : '';
-    $('#study-item-modal-title').textContent = item ? '項目を編集' : '項目を追加';
-    $('#study-item-delete-btn').style.display = item ? '' : 'none';
-    $('#study-item-modal').classList.remove('hidden');
-};
-
-window.closeStudyItemModal = (e) => {
-    if (e && e.target.closest && e.target.closest('.modal-card')) return;
-    $('#study-item-modal')?.classList.add('hidden');
-};
-
-window.studyItemSave = async () => {
-    const id = $('#study-item-id').value || null;
-    const title = $('#study-item-title').value.trim();
-    if (!title) { showToast('タイトルを入力してください', true); return; }
-    const body = {
-        id,
-        goal_id: $('#study-item-goal-id').value || null,
-        type: $('#study-item-type').value,
-        title,
-        note_url: $('#study-item-note-url').value,
-        memo: $('#study-item-memo').value,
-    };
-    try {
-        const data = await apiFetch('/api/study/item/save', { method: 'POST', body: JSON.stringify(body) });
-        if (!data.ok) { showToast(data.error || '保存失敗', true); return; }
-        $('#study-item-modal').classList.add('hidden');
-        await loadStudy();
-    } catch (e) { showToast('保存失敗', true); }
-};
-
-window.studyItemDelete = async () => {
-    const id = $('#study-item-id').value;
-    if (!id) return;
-    if (!confirm('この項目を削除しますか？')) return;
-    try {
-        const data = await apiFetch('/api/study/item/delete', { method: 'POST', body: JSON.stringify({ id }) });
-        if (!data.ok) { showToast(data.error || '削除失敗', true); return; }
-        $('#study-item-modal').classList.add('hidden');
-        await loadStudy();
-    } catch (e) { showToast('削除失敗', true); }
-};
-
-window.studySessionStart = async (itemId) => {
-    try {
-        const data = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'start' }) });
-        if (!data.ok) { showToast(data.error || '開始失敗', true); return; }
-        _setStudyActiveSession(itemId, new Date().toISOString());
-        renderStudy();
-        _ensureStudyTimer();
-        showToast(`▶ ${data.activity_name || '勉強'} を開始`);
-    } catch (e) { showToast('開始失敗', true); }
-};
-
-window.studySessionEnd = async (itemId) => {
-    try {
-        const data = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'end' }) });
-        if (!data.ok) { showToast(data.error || '終了失敗', true); return; }
-        const active = _studyActiveSessions()[itemId];
-        const elapsedMin = active ? Math.max(0, Math.floor((Date.now() - new Date(active.started_at).getTime()) / 60000)) : 0;
-        _setStudyActiveSession(itemId, null);
-        renderStudy();
-        showToast(`■ ${elapsedMin}分の勉強を記録しました`);
-    } catch (e) { showToast('終了失敗', true); }
-};
-
-window.loadStudy = loadStudy;
-
 
 // ----- EDINET 決算関連書類 -----
 let _edinetDocs = [];
@@ -6767,7 +6594,7 @@ window.loadDailySummary = async () => {
     }
 };
 
-function renderDailySummaryCard(data) {
+function renderDailySummaryCard(data, opts = {}) {
     const tEl = $('#dash-daily-summary');
     const qEl = $('#dash-daily-summary-questions');
     if (!tEl || !qEl) return;
@@ -6775,6 +6602,7 @@ function renderDailySummaryCard(data) {
     const questions = ((data && data.questions) || []).filter(q => q.status !== 'resolved');
     const displayDate = (data && data.date) || '';
     const isFallback = !!(data && data.fallback);
+    const preserveOnEmpty = !!opts.preserveOnEmpty;
 
     if (text) {
         // 表示中のサマリーの日付ラベル
@@ -6791,9 +6619,10 @@ function renderDailySummaryCard(data) {
             })
             .join('');
         tEl.innerHTML = dateLabel + html;
-    } else {
+    } else if (!preserveOnEmpty) {
         tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。</div>';
     }
+    // preserveOnEmpty=true で text が空のときは tEl を上書きせず、前回の振り返りを残す
 
     if (!questions.length) {
         qEl.innerHTML = '';
@@ -6826,7 +6655,7 @@ function renderDailySummaryCard(data) {
                 </div>
             </div>
         `).join('')}
-        <button class="modal-btn submit" style="width:100%;font-size:0.85rem;margin-top:6px;" onclick="regenerateSummaryWithAnswers('${date}')">回答を反映して再生成</button>
+        <button class="modal-btn submit" style="width:100%;font-size:0.85rem;margin-top:6px;" onclick="regenerateSummaryWithAnswers('${date}')">${text ? '回答を反映して再生成' : '回答を反映して生成'}</button>
     `;
 }
 
@@ -6849,7 +6678,10 @@ window.generateDailySummary = async (finalize, date) => {
             method: 'POST',
             body: JSON.stringify(body),
         });
-        renderDailySummaryCard({ date: result.date, text: result.summary, questions: result.questions });
+        renderDailySummaryCard(
+            { date: result.date, text: result.summary, questions: result.questions },
+            { preserveOnEmpty: true },
+        );
         if (result.saved) {
             showToast('Obsidianに保存しました');
         } else if (result.questions && result.questions.length) {
@@ -6922,17 +6754,27 @@ window.regenerateSummaryWithAnswers = async (date) => {
     if (_dailySummaryGenerating) return;
     _dailySummaryGenerating = true;
     const tEl = $('#dash-daily-summary');
-    if (tEl) tEl.innerHTML = '<div class="loading-placeholder">回答を反映してサマリーを再生成中…</div>';
+    const hadSummary = !!(tEl && tEl.textContent && tEl.textContent.trim()
+        && !tEl.querySelector('.loading-placeholder'));
+    const verb = hadSummary ? '再生成' : '生成';
+    if (tEl) tEl.innerHTML = `<div class="loading-placeholder">回答を反映してサマリーを${verb}中…</div>`;
     try {
         const result = await apiFetch('/api/daily_summary/generate', {
             method: 'POST',
             body: JSON.stringify({ date, answers, finalize: false }),
         });
-        renderDailySummaryCard({ date: result.date, text: result.summary, questions: result.questions });
+        // result.summary が空（質問のみ追加された保留状態）でも、画面上の前回振り返りは保持する
+        renderDailySummaryCard(
+            { date: result.date, text: result.summary, questions: result.questions },
+            { preserveOnEmpty: true },
+        );
         if (result.saved) {
             showToast('Obsidianに保存しました');
         } else if (result.questions && result.questions.length) {
             showToast('まだ確認が必要な点があります。');
+        } else if (!result.summary) {
+            // text空 & 質問もなし。loadDailySummary でフォールバック読込
+            loadDailySummary();
         }
     } catch (e) {
         showToast('生成に失敗しました', true);
@@ -7348,7 +7190,46 @@ const TUTORIAL_SLIDES = [
             <li>🏷️ タグ付け・タグ絞り込み対応</li>
             <li>📅 目標日を設定して管理</li>
             <li>✏️「手動追加」ボタンで直接登録も可能</li>
+            <li>📓 NotebookLM URL を設定すると「📓 NotebookLM」ボタンが表示される（書籍・勉強カード共通）</li>
         </ul>`
+    },
+    {
+        title: '勉強カード',
+        target: 'info',
+        body: `<p>記憶したい知識を管理するカード。書籍カードと同じ仕組みで動きます。</p>
+        <ul>
+            <li>➕「追加」ボタンでタイトルを入力して登録（URLは任意）</li>
+            <li>✏️ 編集モーダルで NotebookLM URL・メモを設定</li>
+            <li>📓 NotebookLM URL を入れると「📓 NotebookLM」ボタンが表示</li>
+            <li>📝 メモは <b>Q&A 形式と箇条書きを混在</b>して書けます</li>
+        </ul>
+        <div class="tut-callout" style="font-size:0.8rem;line-height:1.8;">
+            Q: ○○とは？<br>
+            A: △△のこと<br>
+            - ポイント: ◇◇
+        </div>
+        <p style="margin-top:6px;font-size:0.82rem;color:var(--text-muted);">Q・A は色分け表示、- は箇条書きになります。</p>`
+    },
+    {
+        title: 'ドラム練習ロードマップ',
+        target: 'info',
+        body: `<p>13のマイルストーンで初心者がゴールまで進める練習計画です。</p>
+        <ul>
+            <li>📋 各マイルストーンに <b>STEP1〜4 の具体的な練習メニュー</b>を表示</li>
+            <li>🔍 <b>動画検索キーワード</b>をタップすると YouTube 検索が新タブで開く</li>
+            <li>▶ 参考動画を URL で追加して各マイルストーンに紐付け可能</li>
+        </ul>`
+    },
+    {
+        title: '情報タブ カードの開閉',
+        target: 'info',
+        body: `<p>情報タブの各カードの開閉状態は <b>自動で記憶</b>されます。</p>
+        <ul>
+            <li>カードを開いたまま離れると、次回も開いた状態で表示</li>
+            <li>閉じたカードはリロード後も閉じたまま</li>
+            <li>初回アクセス時はすべて閉じた状態でスタート</li>
+        </ul>
+        <p style="font-size:0.85rem;color:var(--text-muted);">カードが多い場合は、よく使うものだけ開いておくと見やすくなります。</p>`
     },
     {
         title: 'メール受信トレイ',
@@ -7837,10 +7718,18 @@ window.runEarningsSchedule = async () => {
 window.runEarningsDocuments = async () => {
     const ticker = _getTickerInput();
     if (!ticker) return;
+    // 取得は Gemini 検索を経由するため 20〜60 秒かかる。ボタンを押した直後にモーダルを開いて待機中であることを明示する。
+    window.openInvestmentResultModal(
+        `📑 ${ticker} 決算関連資料`,
+        `⌛ **取得中…**\n\n公式IRページや EDINET / SEC EDGAR から最新の決算資料情報を Gemini が収集しています。\n通常 20〜60 秒ほどかかります。このモーダルを閉じずにそのままお待ちください。`,
+    );
     const data = await _callInvestmentApi('/api/investment/earnings_documents', { ticker }, `${ticker} 決算資料`);
     if (data && data.ok) {
         window.openInvestmentResultModal(`📑 ${data.ticker} 決算関連資料`, data.report);
         window.loadInvestmentHistory();
+    } else {
+        const err = (data && (data.error || data.detail)) || '取得に失敗しました。少し時間を置いてからもう一度お試しください。';
+        window.openInvestmentResultModal(`📑 ${ticker} 決算関連資料`, `❌ ${err}`);
     }
 };
 

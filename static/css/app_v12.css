@@ -280,34 +280,6 @@ details.card > summary > .card-header { border-bottom: none; }
 .stocked-link-notebook-btn:visited { color: #fff; }
 
 /* ====== 勉強カード ====== */
-.study-goal-block {
-    padding: 14px 16px;
-    border-top: 1px solid var(--border, rgba(127,127,127,0.18));
-}
-.study-goal-block:first-child { border-top: none; }
-.study-goal-block .study-goal-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    margin-bottom: 4px;
-}
-.study-goal-block .study-goal-title { flex: 1; min-width: 0; font-weight: 600; font-size: 0.95rem; }
-.study-goal-block .study-goal-due { font-size: 0.78rem; color: var(--text-muted); }
-.study-goal-block .study-goal-memo { font-size: 0.8rem; color: var(--text-secondary); margin: 2px 0 6px; }
-.study-section-label { font-size: 0.78rem; color: var(--text-secondary); margin: 10px 0 4px; }
-.study-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding: 10px 14px;
-    margin-top: 6px;
-    background: rgba(127,127,127,0.05);
-    border-radius: 8px;
-}
-.study-item .study-item-title { flex: 1; min-width: 0; font-size: 0.9rem; }
-.study-item .study-item-memo { width: 100%; font-size: 0.78rem; color: var(--text-secondary); }
 .study-empty {
     padding: 18px 16px;
     color: var(--text-secondary);
@@ -321,15 +293,48 @@ details.card > summary > .card-header { border-bottom: none; }
     border-radius: 6px;
     margin: 8px 12px;
 }
-.study-session-btn-start {
-    background: rgba(46,160,67,0.15);
-    border: 1px solid rgba(46,160,67,0.4);
-    color: #2da44e;
+/* ====== 勉強カード メモ表示（Q&A + 箇条書き） ====== */
+.study-memo-block {
+    width: 100%;
+    margin-top: 8px;
+    padding: 10px 12px;
+    background: rgba(127,127,127,0.06);
+    border-radius: 8px;
+    font-size: 0.82rem;
+    line-height: 1.65;
 }
-.study-session-btn-end {
-    background: rgba(217,48,37,0.12);
-    border: 1px solid rgba(217,48,37,0.4);
-    color: #cf222e;
+.study-note-line {
+    margin: 2px 0;
+}
+.study-note-q {
+    display: inline-block;
+    background: rgba(var(--accent-rgb, 0,186,152), 0.18);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 0.72rem;
+    border-radius: 3px;
+    padding: 0 5px;
+    margin-right: 5px;
+    vertical-align: middle;
+}
+.study-note-a {
+    display: inline-block;
+    background: rgba(127,127,127,0.12);
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    border-radius: 3px;
+    padding: 0 5px;
+    margin-right: 5px;
+    margin-left: 10px;
+    vertical-align: middle;
+}
+.study-note-ul {
+    margin: 4px 0 4px 18px;
+    padding: 0;
+    list-style: disc;
+}
+.study-note-ul li {
+    margin: 2px 0;
 }
 
 /* ====== ドラム練習カード ====== */
@@ -348,6 +353,23 @@ details.card > summary > .card-header { border-bottom: none; }
 }
 .drum-milestone-row .drum-milestone-title { font-size: 0.9rem; font-weight: 500; }
 .drum-milestone-row .drum-milestone-criteria { font-size: 0.78rem; color: var(--text-secondary); margin-top: 2px; }
+.drum-section-label { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); margin: 10px 0 4px; }
+.drum-practices { margin-top: 8px; }
+.drum-practices-list { margin: 0; padding-left: 20px; font-size: 0.8rem; color: var(--text-primary); line-height: 1.7; }
+.drum-keywords { margin-top: 8px; }
+.drum-keyword-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+.drum-keyword-tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    background: rgba(var(--accent-rgb, 0,186,152), 0.12);
+    color: var(--accent);
+    border: 1px solid rgba(var(--accent-rgb, 0,186,152), 0.3);
+    text-decoration: none;
+    cursor: pointer;
+}
+.drum-keyword-tag:hover { background: rgba(var(--accent-rgb, 0,186,152), 0.22); }
 .drum-video-row {
     display: flex;
     gap: 8px;

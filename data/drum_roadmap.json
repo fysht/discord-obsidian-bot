@@ -1,6 +1,6 @@
 {
   "instrument": "drum",
-  "version": 1,
+  "version": 2,
   "phases": [
     {
       "id": "phase_basics",
@@ -12,28 +12,56 @@
           "label": "マッチドグリップとリバウンドが安定する",
           "skills": ["matched_grip", "rebound"],
           "est_hours": 5,
-          "criteria": "脱力したグリップで連続したシングルストロークを30秒"
+          "criteria": "脱力したグリップで連続したシングルストロークを30秒",
+          "practices": [
+            "STEP1: 親指と人差し指でスティックをつまみ、残り3本を添える",
+            "STEP2: 肘を軽く曲げ、手首の重さを使って振り下ろす",
+            "STEP3: 膝の上でリバウンドを感じながら左右交互に打つ",
+            "STEP4: 40BPMのメトロノームに合わせて均等なRLを5分/日"
+          ],
+          "search_keywords": ["ドラム グリップ 初心者", "drum matched grip tutorial"]
         },
         {
           "id": "M02_single_double_80bpm",
           "label": "シングル/ダブルストローク 80BPM",
           "skills": ["single_stroke", "double_stroke"],
           "est_hours": 8,
-          "criteria": "メトロノーム80BPMで8分音符の粒が揃う"
+          "criteria": "メトロノーム80BPMで8分音符の粒が揃う",
+          "practices": [
+            "STEP1: 50BPMから均等なRL連打を1分間",
+            "STEP2: 5BPMずつテンポを上げ80BPMを目指す",
+            "STEP3: ダブルストロークはRR LLを同じ手順で練習",
+            "STEP4: ストロークの粒が揃っているか録音して確認"
+          ],
+          "search_keywords": ["ドラム シングルストローク 練習", "single stroke roll beginner"]
         },
         {
           "id": "M03_8beat_80bpm",
           "label": "8ビートを80BPMで30秒キープ",
           "skills": ["8beat"],
           "est_hours": 10,
-          "criteria": "テンポを落とさず安定したダイナミクスでキープできる"
+          "criteria": "テンポを落とさず安定したダイナミクスでキープできる",
+          "practices": [
+            "STEP1: 右手でハイハット8分打ちを安定させる",
+            "STEP2: スネア（2・4拍目）を加える",
+            "STEP3: バスドラム（1・3拍目）を加えて3点同時",
+            "STEP4: 40BPMから始め60→80BPMへ段階的に上げる"
+          ],
+          "search_keywords": ["ドラム 8ビート 初心者", "beginner drum 8 beat pattern"]
         },
         {
           "id": "M04_paradiddle",
           "label": "シングル・パラディドルが叩ける",
           "skills": ["paradiddle"],
           "est_hours": 6,
-          "criteria": "RLRR LRLL を100BPMで連続"
+          "criteria": "RLRR LRLL を100BPMで連続",
+          "practices": [
+            "STEP1: RLRR LRLL のパターンを手拍子で声に出して覚える",
+            "STEP2: 60BPMでパッドに叩く、音粒を均等に",
+            "STEP3: アクセントをRLRLに乗せる",
+            "STEP4: 100BPMまで5BPMずつ上げる"
+          ],
+          "search_keywords": ["ドラム パラディドル 初心者", "paradiddle drum tutorial"]
         }
       ]
     },
@@ -47,35 +75,70 @@
           "label": "16ビートの基本パターン",
           "skills": ["16beat"],
           "est_hours": 12,
-          "criteria": "90BPMで16分のハイハットが安定"
+          "criteria": "90BPMで16分のハイハットが安定",
+          "practices": [
+            "STEP1: 右手だけで16分音符のハイハット連打を安定させる",
+            "STEP2: スネア（2・4拍目）を加える",
+            "STEP3: バスドラムを加えて3点同時",
+            "STEP4: 70BPMから90BPMへ段階的に上げる"
+          ],
+          "search_keywords": ["ドラム 16ビート 初心者", "sixteenth note drum groove"]
         },
         {
           "id": "M06_basic_fills",
           "label": "4小節フィルのバリエーション3種",
           "skills": ["fill"],
           "est_hours": 10,
-          "criteria": "4分・8分・16分混在のフィルを曲の流れで自然に入れる"
+          "criteria": "4分・8分・16分混在のフィルを曲の流れで自然に入れる",
+          "practices": [
+            "STEP1: 4分音符フィル（タム一周）をゆっくり覚える",
+            "STEP2: 8分音符フィルを同様に",
+            "STEP3: 16分音符フィルを同様に",
+            "STEP4: 直前のビートとの繋ぎタイミングを反復練習"
+          ],
+          "search_keywords": ["ドラム フィルイン 初心者", "drum fill beginner tutorial"]
         },
         {
           "id": "M07_shuffle",
           "label": "シャッフルが叩ける",
           "skills": ["shuffle"],
           "est_hours": 8,
-          "criteria": "ブルース/ジャズ系の3連グルーヴが安定"
+          "criteria": "ブルース/ジャズ系の3連グルーヴが安定",
+          "practices": [
+            "STEP1: タ・カ・タ（3連符）を手拍子で体に入れる",
+            "STEP2: シャッフルのハイハットパターンをゆっくり",
+            "STEP3: スネア・バスドラムを加えてパターンを完成させる",
+            "STEP4: ブルース12小節を通して80BPMで叩く"
+          ],
+          "search_keywords": ["ドラム シャッフル 初心者", "shuffle drum groove tutorial"]
         },
         {
           "id": "M08_dynamics",
           "label": "アクセントとゴーストノートの使い分け",
           "skills": ["accent", "ghost_note"],
           "est_hours": 10,
-          "criteria": "メインアクセントとゴーストノートを明確に区別"
+          "criteria": "メインアクセントとゴーストノートを明確に区別",
+          "practices": [
+            "STEP1: スネアを大・小の2段階で叩き分ける練習",
+            "STEP2: ゴーストノートはスティックをヘッドから2〜3cm以内で打つ",
+            "STEP3: 8ビートに弱音ゴーストノートを挿入してみる",
+            "STEP4: R&Bのドラム動画を参考に実際のフィールを学ぶ"
+          ],
+          "search_keywords": ["ドラム ゴーストノート 練習", "ghost note drum tutorial"]
         },
         {
           "id": "M09_metronome_120",
           "label": "ルーディメンツ各種を120BPMで",
           "skills": ["rudiments"],
           "est_hours": 15,
-          "criteria": "シングル・ダブル・パラディドル系を120BPMで正確に"
+          "criteria": "シングル・ダブル・パラディドル系を120BPMで正確に",
+          "practices": [
+            "STEP1: 毎日ウォームアップ：シングル→ダブル→パラディドル→フラムの順に各1分",
+            "STEP2: 100BPMで全て安定させてから120へ",
+            "STEP3: 各ルーディメンツに強弱アクセントをつける",
+            "STEP4: 120BPMでの安定を録音で確認"
+          ],
+          "search_keywords": ["ドラム ルーディメンツ 一覧", "drum rudiments 120bpm"]
         }
       ]
     },
@@ -89,28 +152,56 @@
           "label": "好きな曲を1曲フルで叩ける",
           "skills": ["song_cover"],
           "est_hours": 20,
-          "criteria": "イントロからエンディングまでテンポキープ、フィルも再現"
+          "criteria": "イントロからエンディングまでテンポキープ、フィルも再現",
+          "practices": [
+            "STEP1: テンポ100前後の比較的シンプルな曲を選ぶ",
+            "STEP2: 10秒ずつ区切って部分練習し、繋いでいく",
+            "STEP3: フィル・サビ前・転換のタイミングをマーク",
+            "STEP4: 通し演奏を録音して問題箇所を特定する"
+          ],
+          "search_keywords": ["ドラム 初心者 曲 おすすめ", "easy drum song beginner"]
         },
         {
           "id": "M11_song_x3",
           "label": "完奏可能曲が3曲",
           "skills": ["song_cover"],
           "est_hours": 30,
-          "criteria": "レパートリーとして人前で叩ける状態"
+          "criteria": "レパートリーとして人前で叩ける状態",
+          "practices": [
+            "STEP1: テンポ・難易度・ジャンルが異なる3曲を選ぶ",
+            "STEP2: 週1曲を目標にマスターしていく",
+            "STEP3: 毎回の練習で必ず1曲通し演奏する",
+            "STEP4: 毎回録音して前回からの改善点を確認"
+          ],
+          "search_keywords": ["ドラム カバー 初心者 曲", "beginner drum cover songs"]
         },
         {
           "id": "M12_genre_variety",
           "label": "ロック以外のジャンルを1曲",
           "skills": ["genre_variety"],
           "est_hours": 15,
-          "criteria": "ファンク・ジャズ・ラテンなどジャンル特有のフィールが出せる"
+          "criteria": "ファンク・ジャズ・ラテンなどジャンル特有のフィールが出せる",
+          "practices": [
+            "STEP1: ファンク・ジャズ・ラテンから1ジャンル選ぶ",
+            "STEP2: そのジャンル専門の解説動画でグルーヴの特徴を学ぶ",
+            "STEP3: 簡単な課題曲を1曲選んで練習する",
+            "STEP4: ジャンル特有のアクセント位置を意識して叩く"
+          ],
+          "search_keywords": ["ドラム ファンク グルーヴ", "funk drum groove tutorial"]
         },
         {
           "id": "M13_record_playback",
           "label": "自分の演奏を録音して客観評価",
           "skills": ["recording", "self_review"],
           "est_hours": 5,
-          "criteria": "録音を聴いて課題点を3つ以上挙げられる"
+          "criteria": "録音を聴いて課題点を3つ以上挙げられる",
+          "practices": [
+            "STEP1: スマホを正面に立てて演奏を動画録画する",
+            "STEP2: 原曲と自分の演奏を聴き比べる",
+            "STEP3: テンポのズレ・音量バランス・フィルのタイミングをメモする",
+            "STEP4: 課題点を次回の練習メニューに組み込む"
+          ],
+          "search_keywords": ["ドラム 録音 スマホ", "how to record drum practice"]
         }
       ]
     }

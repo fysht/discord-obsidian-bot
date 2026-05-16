@@ -808,34 +808,52 @@ class InvestmentCog(commands.Cog):
         date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
         filename = f"{date_str}_{_safe_filename(code)}.md"
 
+        ir_page_url = (data.get("ir_page_url") or "").strip()
+        ir_docs_url = (data.get("ir_documents_page_url") or "").strip()
+        edinet_url = (data.get("edinet_search_url") or "").strip()
+        edgar_url = (data.get("edgar_search_url") or "").strip()
+
         # Markdown形式に整形
         lines = [
             f"---\nticker: {code}\nmarket: {market}\ndate: {date_str}\n"
             f"tags: [investment, earnings_docs]\n---\n",
             f"# 📑 {company} ({code}) 決算関連資料",
             "",
-            f"- 公式IR: {data.get('ir_page_url', 'N/A')}",
             f"- 情報源品質: {data.get('source_quality', 'N/A')}",
             f"- 取得日: {date_str}",
             "",
-            "## 📋 資料一覧",
+            "## 🌟 確実に飛べる公式ページ",
+            "下の個別資料リンクは時々リンク切れになることがあります。資料が開けない場合は以下から手動で探してください。",
             "",
         ]
+        if ir_page_url:
+            lines.append(f"- 🏢 **公式IRトップ**: [{ir_page_url}]({ir_page_url})")
+        if ir_docs_url and ir_docs_url != ir_page_url:
+            lines.append(f"- 📚 **決算資料一覧ページ**: [{ir_docs_url}]({ir_docs_url})")
+        if edinet_url:
+            lines.append(f"- 🗃 **EDINET 検索**: [{edinet_url}]({edinet_url})")
+        if edgar_url:
+            lines.append(f"- 🗃 **SEC EDGAR 検索**: [{edgar_url}]({edgar_url})")
+        if not (ir_page_url or ir_docs_url or edinet_url or edgar_url):
+            lines.append("（公式IRページのURLが取得できませんでした。`{code}` で企業名を検索してください）".replace("{code}", code))
+        lines.append("")
+        lines.append("## 📋 個別資料一覧（直リンクは切れていることがあります）")
+        lines.append("")
         documents = data.get("documents") or []
         if not documents:
-            lines.append("（取得できる資料がありませんでした）")
+            lines.append("（個別資料の直リンクは取得できませんでした。上の公式ページから手動でご確認ください）")
         else:
             # URL末尾から file_format を確実に判定（プロンプトの返却が不正な場合のフォールバック）
             def _format_of(url: str, declared: str) -> str:
-                if declared in ("pdf", "html"):
+                if declared in ("pdf", "html", "ir_page"):
                     return declared
                 return "pdf" if isinstance(url, str) and url.lower().split("?")[0].endswith(".pdf") else "html"
 
-            # PDF を先頭に並び替え
+            # PDF を先頭に並び替え（次に html、最後に ir_page）
+            _order = {"pdf": 0, "html": 1, "ir_page": 2}
             def _doc_sort_key(d):
                 fmt = _format_of(d.get("url", ""), d.get("file_format", ""))
-                # PDF を 0、HTML を 1 にして PDF を先頭に
-                return (0 if fmt == "pdf" else 1, d.get("published_date", ""))
+                return (_order.get(fmt, 3), d.get("published_date", ""))
 
             documents = sorted(documents, key=_doc_sort_key)
             for doc in documents:
@@ -846,12 +864,13 @@ class InvestmentCog(commands.Cog):
                 url = doc.get("url", "")
                 lang = doc.get("language", "")
                 fmt = _format_of(url, doc.get("file_format", ""))
-                badge = "📄 PDF" if fmt == "pdf" else "🔗 HTML"
+                badge = {"pdf": "📄 PDF", "html": "🔗 HTML", "ir_page": "📚 IRページ"}.get(fmt, "🔗 HTML")
                 lines.append(f"### {badge} {title}")
                 lines.append(
                     f"- 種別: {doc_type} / 形式: {fmt} / 会計期間: {period} / 公表日: {pub} / 言語: {lang}"
                 )
-                lines.append(f"- URL: {url}")
+                if url:
+                    lines.append(f"- [{url}]({url})")
                 lines.append("")
         notes = data.get("notes")
         if notes:

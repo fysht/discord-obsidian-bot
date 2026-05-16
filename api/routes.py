@@ -3042,16 +3042,18 @@ async def _generate_daily_summary(date_str: str, answers: dict | None = None) ->
         "1. Daily Journal は「Lifelog ＋ 客観データから生成された俯瞰的な振り返り日記」が別途保存されています。\n"
         "   サマリーでは Lifelog の単純な書き起こしは避け、**会話と出来事から見えた重要なトピックのまとめ**にフォーカスしてください。\n"
         "2. AI による洞察 (Insights) や明日のアクション (Next Actions) は別セクションに保存されるため、サマリー本文には含めないでください。\n"
-        "3. サマリーは「朝 / 昼 / 夜」など時間帯ごとに **3〜6行程度の短いダイジェスト** にし、長くしすぎないでください。\n"
-        "4. 推測ではなく事実に基づいて記述してください。\n"
-        "5. **MIT（最重要タスク）の進捗・達成度を必ずサマリー冒頭で 1〜2 行触れること**。未達がある場合は質問でユーザーに理由を聞いてください。\n"
-        "6. 判断に迷う点（例: 出来事の意図、感情の解釈、欠けている情報、MIT 未達の理由）があれば JSON の `questions` フィールドに\n"
+        "3. サマリーは **1日全体を俯瞰する短いダイジェスト（合計 5〜8 行程度）** とし、`## MIT 進捗` `## 朝` `## 昼` `## 夜` のような小見出し（H2/H3）で時間帯やテーマに分割してはいけません。\n"
+        "   見出しなしの箇条書き（`- ` で始まる行）または短い段落で、流れるように記述してください。\n"
+        "4. **冒頭の最初の箇条書き 1〜2 行で必ず MIT（最重要タスク）の進捗・達成度に触れること**。例: `- MIT は 3/3 達成。特に〇〇が早めに片付いた。` のように本文に溶け込ませる。\n"
+        "5. その後に、その日の主要な出来事・会話のハイライト・気づきを淡々と並べる。時系列で並べるのは構わないが「朝/昼/夜」のような明示的なラベルは付けない。\n"
+        "6. 推測ではなく事実に基づいて記述してください。\n"
+        "7. 判断に迷う点（例: 出来事の意図、感情の解釈、欠けている情報、MIT 未達の理由）があれば JSON の `questions` フィールドに\n"
         "   ユーザーへの具体的な質問として列挙してください（質問数は最大 5 件）。**質問が必要な場合は推測で穴埋めせず、必ず質問してください。\n"
         "   質問が 1 件でも残っているなら、ユーザーが回答するまでサマリーは保留扱いになります。**\n\n"
         "## 出力フォーマット (JSON)\n"
         "```json\n"
         "{\n"
-        "  \"summary\": \"## MIT 進捗\\n- ...\\n## 朝\\n- ...\\n## 昼\\n- ...\\n## 夜\\n- ...\",\n"
+        "  \"summary\": \"- MIT は 2/3 達成。残りの〇〇は明日に持ち越し。\\n- 午前は△△の作業に集中。会議では□□が議題に。\\n- 午後は◇◇でリフレッシュ。夕方は▲▲を片付けた。\\n- 全体として◎◎な1日だった。\",\n"
         "  \"questions\": [\"MIT に関する質問1\", \"質問2\"]\n"
         "}\n"
         "```\n\n"
@@ -3080,9 +3082,14 @@ async def _generate_daily_summary(date_str: str, answers: dict | None = None) ->
 
 
 async def _save_daily_summary_to_obsidian(date_str: str, summary_md: str) -> bool:
-    """サマリーを DailyNote の `## 📅 Daily Summary` セクションへ書き込む。"""
+    """サマリーを DailyNote の `## 📅 Daily Summary` セクションへ書き込む。
+
+    既存セクションがどの位置にあっても、いったん削除してから `update_section` で
+    `SECTION_ORDER` に従った正しい位置（振り返りグループの先頭）に再挿入する。
+    """
     import re as _re
     from api import app
+    from utils.obsidian_utils import update_section
     chat_service = getattr(app.state, "chat_service", None)
     if not chat_service or not chat_service.drive_service:
         return False
@@ -3103,13 +3110,15 @@ async def _save_daily_summary_to_obsidian(date_str: str, summary_md: str) -> boo
 
         section_header = "## 📅 Daily Summary"
         clean = (summary_md or "").strip()
-        replacement = f"{section_header}\n{clean}" if clean else section_header
-        pattern = _re.compile(rf"{_re.escape(section_header)}\n.*?(?=\n## |\Z)", _re.DOTALL)
-        if pattern.search(content):
-            new_content = pattern.sub(replacement, content, count=1)
-        else:
-            from utils.obsidian_utils import update_section
-            new_content = update_section(content, clean, section_header)
+        if not clean:
+            # 空文字での上書きは既存サマリーを誤って消す事故になりやすいので、
+            # 何もせず終了する（明示的な削除は手動編集で空保存する経路に任せる）
+            return True
+        # 既存の Daily Summary セクションを削除（位置ズレを是正するため）
+        pattern = _re.compile(rf"{_re.escape(section_header)}\n?.*?(?=\n## |\Z)", _re.DOTALL)
+        content = pattern.sub("", content)
+        # SECTION_ORDER に従って正しい位置（振り返りグループ先頭）に挿入
+        new_content = update_section(content, clean, section_header)
 
         if f_id:
             await chat_service.drive_service.update_text(service, f_id, new_content)
