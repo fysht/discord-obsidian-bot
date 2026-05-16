@@ -157,7 +157,7 @@ window.openSettingsModal = async () => {
                     <details open style="margin-bottom:10px;">
                         <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">💰 運用コスト</summary>
                         <div id="cost-meter-body" style="padding:8px 0;">
-                            <div class="loading-placeholder">読み込み中。</div>
+                            <div class="loading-placeholder">読み込み中…</div>
                         </div>
                     </details>
 
@@ -165,7 +165,7 @@ window.openSettingsModal = async () => {
                     <details style="margin-bottom:10px;">
                         <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">🧠 Gemini モデル選択</summary>
                         <div id="gemini-models-body" style="padding:8px 0;">
-                            <div class="loading-placeholder">読み込み中。</div>
+                            <div class="loading-placeholder">読み込み中…</div>
                         </div>
                     </details>
 
@@ -173,7 +173,7 @@ window.openSettingsModal = async () => {
                     <details style="margin-bottom:10px;">
                         <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">📅 マネージャー連絡スケジュール</summary>
                         <div id="schedules-body" style="padding:8px 0;">
-                            <div class="loading-placeholder">読み込み中。</div>
+                            <div class="loading-placeholder">読み込み中…</div>
                         </div>
                     </details>
 
@@ -205,7 +205,7 @@ const GEMINI_MODEL_OPTIONS = [
 window.loadGeminiModelSettings = async () => {
     const body = $('#gemini-models-body');
     if (!body) return;
-    body.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    body.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/settings/gemini_models');
         if (!data || !data.ok) {
@@ -299,7 +299,7 @@ const SCHEDULE_DOW_OPTIONS = [
 window.loadScheduleSettings = async () => {
     const body = $('#schedules-body');
     if (!body) return;
-    body.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    body.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/settings/schedules');
         if (!data || !data.ok) {
@@ -368,7 +368,7 @@ window.closeSettingsModal = () => {
 window.loadCostMeter = async () => {
     const body = $('#cost-meter-body');
     if (!body) return;
-    body.innerHTML = '<div class="loading-placeholder">読み込み中。</div>';
+    body.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const [s, settings] = await Promise.all([
             apiFetch('/api/cost_summary?days=30'),
@@ -484,6 +484,7 @@ function switchTab(tab) {
     if (titleEl) titleEl.textContent = titles[tab] || 'Manager AI';
 
     if (tab !== 'chat' && tab !== 'invest') loadDashboard();
+    if (tab === 'info' && typeof initInfoCardsSortable === 'function') initInfoCardsSortable();
     // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
@@ -1785,7 +1786,7 @@ window.onBreakdownSourceChange = async () => {
         $('#breakdown-existing-section').style.display = '';
         // 既存タスク一覧を取得
         const sel = $('#breakdown-existing-select');
-        sel.innerHTML = '<option value="">読み込み中...</option>';
+        sel.innerHTML = '<option value="">読み込み中…</option>';
         try {
             const data = await apiFetch('/api/tasks_for_breakdown');
             sel.innerHTML = '';
@@ -2147,7 +2148,7 @@ window.openReadingModal = async () => {
     $('#reading-custom-title').value = '';
     $('#reading-prompt-toggle').checked = false;
     const listEl = $('#reading-book-list');
-    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">候補を読み込み中...</div>';
+    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">候補を読み込み中…</div>';
     try {
         const data = await apiFetch('/api/reading/books');
         renderBookCandidates(data.books || []);
@@ -2342,7 +2343,7 @@ window.openStudyModal = async () => {
     $('#study-modal').classList.remove('hidden');
     $('#study-custom-subject').value = '';
     const listEl = $('#study-subject-list');
-    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">候補を読み込み中...</div>';
+    listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">候補を読み込み中…</div>';
     try {
         const data = await apiFetch('/api/study/subjects');
         renderStudySubjects(data.subjects || []);
@@ -2657,9 +2658,16 @@ window.loadStockedLinks = async () => {
             container.innerHTML = items.map(lk => {
                 const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                 const titleText = (lk.title && lk.title !== 'Untitled') ? lk.title : (lk.url || '(無題)');
-                const titleEl = lk.url
+                const rawTitleEl = lk.url
                     ? `<a class="stocked-link-title" href="${lk.url}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
                     : `<span class="stocked-link-title">${escapeHtml(titleText)}</span>`;
+                // 書籍で NotebookLM 等のノート URL が登録されている場合、タイトル行にワンタッチ起動ボタンを表示
+                const noteBtn = (lk.type === 'book' && lk.linked_note_url)
+                    ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(lk.linked_note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く" onclick="event.stopPropagation();">📓 NotebookLM</a>`
+                    : '';
+                const titleEl = noteBtn
+                    ? `<div class="stocked-link-title-row">${rawTitleEl}${noteBtn}</div>`
+                    : rawTitleEl;
 
                 const chips = [];
                 if (lk.tags) {
@@ -4217,7 +4225,7 @@ window.openCollectionOverlay = async () => {
     document.getElementById('collection-overlay')?.classList.remove('hidden');
     const tabsEl = $('#collection-tabs');
     if (!tabsEl) return;
-    tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--text-muted);">読み込み中...</span>';
+    tabsEl.innerHTML = '<span style="font-size:0.78rem;color:var(--text-muted);">読み込み中…</span>';
     try {
         const data = await apiFetch('/api/messages/collections');
         const labels = data.collections || [];
@@ -4244,7 +4252,7 @@ window.loadCollectionMessages = async (label) => {
     _collectionCurrentLabel = label;
     const results = $('#collection-results');
     if (!results) return;
-    results.innerHTML = '<p class="search-hint">読み込み中...</p>';
+    results.innerHTML = '<p class="search-hint">読み込み中…</p>';
     try {
         const data = await apiFetch(`/api/messages/labeled?label=${encodeURIComponent(label)}`);
         const list = data.messages || [];
@@ -5576,41 +5584,86 @@ window.closeDrumPracticeModal = (e) => {
 };
 
 // ----- ドラム上達ロードマップ（情報タブのカード内） -----
+// ロードマップ本体は静的データ。動画リンクだけサーバから取得する。
+const DRUM_ROADMAP_STATIC = {
+    phases: [
+        {
+            id: 'phase_basics', label: 'Phase 1: 基礎づくり',
+            description: 'スティックコントロールと最も基本的なビートを身体に入れる。約1〜2ヶ月。',
+            milestones: [
+                { id: 'M01_grip_stick_control', label: 'マッチドグリップとリバウンドが安定する', criteria: '脱力したグリップで連続したシングルストロークを30秒' },
+                { id: 'M02_single_double_80bpm', label: 'シングル/ダブルストローク 80BPM', criteria: 'メトロノーム80BPMで8分音符の粒が揃う' },
+                { id: 'M03_8beat_80bpm',         label: '8ビートを80BPMで30秒キープ',     criteria: 'テンポを落とさず安定したダイナミクスでキープできる' },
+                { id: 'M04_paradiddle',          label: 'シングル・パラディドルが叩ける',  criteria: 'RLRR LRLL を100BPMで連続' },
+            ],
+        },
+        {
+            id: 'phase_groove', label: 'Phase 2: グルーヴと表現',
+            description: '8ビート以外のグルーヴ・フィル・ダイナミクスを身につける。約3〜6ヶ月。',
+            milestones: [
+                { id: 'M05_16beat_basic',    label: '16ビートの基本パターン',                criteria: '90BPMで16分のハイハットが安定' },
+                { id: 'M06_basic_fills',     label: '4小節フィルのバリエーション3種',         criteria: '4分・8分・16分混在のフィルを曲の流れで自然に入れる' },
+                { id: 'M07_shuffle',         label: 'シャッフルが叩ける',                    criteria: 'ブルース/ジャズ系の3連グルーヴが安定' },
+                { id: 'M08_dynamics',        label: 'アクセントとゴーストノートの使い分け',   criteria: 'メインアクセントとゴーストノートを明確に区別' },
+                { id: 'M09_metronome_120',   label: 'ルーディメンツ各種を120BPMで',         criteria: 'シングル・ダブル・パラディドル系を120BPMで正確に' },
+            ],
+        },
+        {
+            id: 'phase_song', label: 'Phase 3: 曲を叩く',
+            description: '実曲を頭から終わりまで叩けるようになる。約6ヶ月〜1年。',
+            milestones: [
+                { id: 'M10_first_full_song', label: '好きな曲を1曲フルで叩ける',          criteria: 'イントロからエンディングまでテンポキープ、フィルも再現' },
+                { id: 'M11_song_x3',         label: '完奏可能曲が3曲',                    criteria: 'レパートリーとして人前で叩ける状態' },
+                { id: 'M12_genre_variety',   label: 'ロック以外のジャンルを1曲',          criteria: 'ファンク・ジャズ・ラテンなどジャンル特有のフィールが出せる' },
+                { id: 'M13_record_playback', label: '自分の演奏を録音して客観評価',         criteria: '録音を聴いて課題点を3つ以上挙げられる' },
+            ],
+        },
+    ],
+};
+
 async function loadDrumRoadmap() {
     const container = $('#dash-drum-roadmap');
     if (!container) return;
-    if (container.dataset.loaded === '1') return;  // 重複ロード抑止（再表示は手動ボタン）
-    container.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
+    // ロードマップ本体は静的データなので即レンダリング（API失敗でも表示は壊れない）
+    renderDrumRoadmap(DRUM_ROADMAP_STATIC, {});
+    // 動画リンクだけサーバから取得して上書き
+    let linksMap = {};
+    let linksError = null;
     try {
-        const res = await apiFetch('/api/drum_roadmap');
-        const data = await res.json();
-        if (!data.ok) {
-            container.innerHTML = '<div style="color:#a00;padding:8px;">取得失敗</div>';
-            return;
+        const res = await apiFetch('/api/drum_roadmap/links');
+        if (res.ok) {
+            const data = await res.json();
+            if (data.ok) linksMap = data.links || {};
+            else linksError = data.error || '';
+        } else {
+            linksError = `HTTP ${res.status}`;
         }
-        renderDrumRoadmap(data);
-        container.dataset.loaded = '1';
     } catch (e) {
-        container.innerHTML = '<div style="color:#a00;padding:8px;">取得失敗</div>';
+        linksError = (e && e.message) || 'network';
     }
+    renderDrumRoadmap(DRUM_ROADMAP_STATIC, linksMap, linksError);
 }
 
-function renderDrumRoadmap(data) {
+function renderDrumRoadmap(data, linksMap, linksError) {
     const container = $('#dash-drum-roadmap');
     if (!container) return;
     const phases = data.phases || [];
     let html = '';
+    if (linksError) {
+        html += `<div style="font-size:0.78rem;color:#a26b00;background:#fff8e1;padding:6px 8px;border-radius:6px;margin-bottom:6px;">動画リンクの読込に失敗しました（${escapeHtml(linksError)}）。サーバ再起動後に再表示で取得できます。</div>`;
+    }
     for (const ph of phases) {
         html += `<div style="margin:8px 0 10px;">
             <div style="font-weight:600;font-size:0.95rem;color:var(--text-primary);">${escapeHtml(ph.label || '')}</div>
             <div style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:6px;">${escapeHtml(ph.description || '')}</div>`;
         for (const m of (ph.milestones || [])) {
             const inputId = `drum-add-url-${m.id}`;
+            const videos = (linksMap && linksMap[m.id]) || [];
             html += `<div style="padding:8px 6px;border-top:1px solid var(--border, #eee);">
                 <div style="font-size:0.9rem;font-weight:500;">${escapeHtml(m.label || '')}</div>
                 ${m.criteria ? `<div style="font-size:0.78rem;color:var(--text-secondary);">基準: ${escapeHtml(m.criteria)}</div>` : ''}
                 <div style="margin-top:6px;display:flex;flex-direction:column;gap:6px;">
-                    ${(m.videos || []).map(v => renderDrumRoadmapVideo(m.id, v)).join('')}
+                    ${videos.map(v => renderDrumRoadmapVideo(m.id, v)).join('')}
                 </div>
                 <div style="display:flex;gap:4px;margin-top:6px;">
                     <input type="url" id="${inputId}" placeholder="YouTube URL" style="flex:1;padding:6px 8px;border:1px solid var(--border, #ccc);border-radius:6px;font-size:0.82rem;">
@@ -5682,6 +5735,418 @@ window.deleteDrumRoadmapLink = async (milestoneId, videoId) => {
 
 window.loadDrumRoadmap = loadDrumRoadmap;
 
+// ----- 勉強カード（目標 + 教材/質問 + NotebookLM + セッション時間計測） -----
+let _studyData = { goals: [], items: [] };
+const STUDY_ACTIVE_KEY = 'study_active_sessions';
+let _studyTimerInterval = null;
+
+function _studyActiveSessions() {
+    try { return JSON.parse(localStorage.getItem(STUDY_ACTIVE_KEY) || '{}'); } catch { return {}; }
+}
+function _setStudyActiveSession(itemId, started_at) {
+    const map = _studyActiveSessions();
+    if (started_at) map[itemId] = { started_at };
+    else delete map[itemId];
+    localStorage.setItem(STUDY_ACTIVE_KEY, JSON.stringify(map));
+}
+
+async function loadStudy() {
+    const container = $('#dash-study');
+    if (!container) return;
+    container.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
+    try {
+        const res = await apiFetch('/api/study');
+        const data = await res.json();
+        if (!data.ok) {
+            container.innerHTML = '<div style="padding:8px;color:#a00;">取得失敗</div>';
+            return;
+        }
+        _studyData = { goals: data.goals || [], items: data.items || [] };
+        renderStudy();
+        _ensureStudyTimer();
+    } catch (e) {
+        container.innerHTML = '<div style="padding:8px;color:#a00;">取得失敗</div>';
+    }
+}
+
+function renderStudy() {
+    const container = $('#dash-study');
+    if (!container) return;
+    const goals = _studyData.goals || [];
+    const items = _studyData.items || [];
+    const byGoal = new Map();
+    for (const g of goals) byGoal.set(g.id, []);
+    const noGoal = [];
+    for (const it of items) {
+        if (it.goal_id && byGoal.has(it.goal_id)) byGoal.get(it.goal_id).push(it);
+        else noGoal.push(it);
+    }
+
+    let html = '';
+    for (const g of goals) html += renderStudyGoal(g, byGoal.get(g.id) || []);
+    html += renderStudyGoal(null, noGoal);  // 目標なし
+    container.innerHTML = html;
+}
+
+function renderStudyGoal(goal, items) {
+    const goalId = goal ? goal.id : '';
+    const title = goal ? escapeHtml(goal.title) : '🗂 目標なし';
+    const due = goal && goal.due_date ? `<span style="font-size:0.78rem;color:var(--text-muted);">期限: ${escapeHtml(goal.due_date)}</span>` : '';
+    const memo = goal && goal.memo ? `<div style="font-size:0.78rem;color:var(--text-secondary);">${escapeHtml(goal.memo)}</div>` : '';
+    const editBtn = goal
+        ? `<button class="mini-link" onclick="openStudyGoalModal('${escapeHtml(goalId)}')">編集</button>`
+        : '';
+    const addBtn = `<button class="mini-link" onclick="openStudyItemModal(null, '${escapeHtml(goalId)}')">＋ 項目</button>`;
+
+    const materials = items.filter(it => it.type !== 'question');
+    const questions = items.filter(it => it.type === 'question');
+
+    let body = '';
+    if (materials.length) {
+        body += `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:6px;">📘 教材</div>`;
+        body += materials.map(it => renderStudyItem(it)).join('');
+    }
+    if (questions.length) {
+        body += `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:6px;">❓ 質問・苦手</div>`;
+        body += questions.map(it => renderStudyItem(it)).join('');
+    }
+    if (!materials.length && !questions.length) {
+        body += `<div style="font-size:0.78rem;color:var(--text-muted);margin-top:4px;">項目がありません</div>`;
+    }
+
+    return `<div class="study-goal-block" style="padding:8px 4px;border-top:1px solid var(--border,#eee);">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <div style="font-weight:600;font-size:0.92rem;flex:1;min-width:0;">${title}</div>
+            ${due}
+            ${editBtn}
+            ${addBtn}
+        </div>
+        ${memo}
+        ${body}
+    </div>`;
+}
+
+function renderStudyItem(it) {
+    const active = _studyActiveSessions()[it.id];
+    const noteBtn = it.note_url
+        ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(it.note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く">📓 NotebookLM</a>`
+        : '';
+    let sessionBtn;
+    if (it.type === 'question') {
+        sessionBtn = '';  // 質問は時間計測なし
+    } else if (active) {
+        const startedAt = new Date(active.started_at);
+        const elapsedMin = Math.max(0, Math.floor((Date.now() - startedAt.getTime()) / 60000));
+        sessionBtn = `<button class="mini-link" style="background:#ffe0e0;border-color:#c00;color:#a00;" onclick="studySessionEnd('${escapeHtml(it.id)}')" data-study-elapsed="${escapeHtml(it.id)}">■ 終了 (${elapsedMin}分)</button>`;
+    } else {
+        sessionBtn = `<button class="mini-link" style="background:#e0ffe0;border-color:#0a0;color:#060;" onclick="studySessionStart('${escapeHtml(it.id)}')">▶ 開始</button>`;
+    }
+    const memo = it.memo ? `<div style="font-size:0.74rem;color:var(--text-secondary);">${escapeHtml(it.memo)}</div>` : '';
+    return `<div class="study-item" style="padding:4px 6px;margin-top:2px;background:rgba(127,127,127,0.04);border-radius:6px;">
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <span style="flex:1;min-width:0;font-size:0.88rem;">${escapeHtml(it.title)}</span>
+            ${noteBtn}
+            ${sessionBtn}
+            <button class="mini-link" onclick="openStudyItemModal('${escapeHtml(it.id)}','${escapeHtml(it.goal_id || '')}')">編集</button>
+        </div>
+        ${memo}
+    </div>`;
+}
+
+function _ensureStudyTimer() {
+    if (_studyTimerInterval) return;
+    _studyTimerInterval = setInterval(() => {
+        const active = _studyActiveSessions();
+        if (!Object.keys(active).length) return;
+        // active セッションの経過分だけ書き換え
+        for (const [itemId, info] of Object.entries(active)) {
+            const elapsedMin = Math.max(0, Math.floor((Date.now() - new Date(info.started_at).getTime()) / 60000));
+            const btn = document.querySelector(`[data-study-elapsed="${CSS.escape(itemId)}"]`);
+            if (btn) btn.textContent = `■ 終了 (${elapsedMin}分)`;
+        }
+    }, 30 * 1000);
+}
+
+window.openStudyGoalModal = (goalId) => {
+    const goal = goalId ? (_studyData.goals || []).find(g => g.id === goalId) : null;
+    $('#study-goal-id').value = goal ? goal.id : '';
+    $('#study-goal-title').value = goal ? goal.title : '';
+    $('#study-goal-due').value = goal ? (goal.due_date || '') : '';
+    $('#study-goal-memo').value = goal ? (goal.memo || '') : '';
+    $('#study-goal-modal-title').textContent = goal ? '目標を編集' : '目標を追加';
+    $('#study-goal-delete-btn').style.display = goal ? '' : 'none';
+    $('#study-goal-modal').classList.remove('hidden');
+};
+
+window.closeStudyGoalModal = (e) => {
+    if (e && e.target.closest && e.target.closest('.modal-card')) return;
+    $('#study-goal-modal')?.classList.add('hidden');
+};
+
+window.studyGoalSave = async () => {
+    const id = $('#study-goal-id').value || null;
+    const title = $('#study-goal-title').value.trim();
+    if (!title) { showToast('タイトルを入力してください', true); return; }
+    const body = { id, title, due_date: $('#study-goal-due').value, memo: $('#study-goal-memo').value };
+    try {
+        const res = await apiFetch('/api/study/goal/save', { method: 'POST', body: JSON.stringify(body) });
+        const data = await res.json();
+        if (!data.ok) { showToast(data.error || '保存失敗', true); return; }
+        $('#study-goal-modal').classList.add('hidden');
+        await loadStudy();
+    } catch (e) { showToast('保存失敗', true); }
+};
+
+window.studyGoalDelete = async () => {
+    const id = $('#study-goal-id').value;
+    if (!id) return;
+    if (!confirm('この目標を削除しますか？（配下の教材・質問は「目標なし」に移動）')) return;
+    try {
+        const res = await apiFetch('/api/study/goal/delete', { method: 'POST', body: JSON.stringify({ id }) });
+        const data = await res.json();
+        if (!data.ok) { showToast(data.error || '削除失敗', true); return; }
+        $('#study-goal-modal').classList.add('hidden');
+        await loadStudy();
+    } catch (e) { showToast('削除失敗', true); }
+};
+
+window.openStudyItemModal = (itemId, goalId) => {
+    const item = itemId ? (_studyData.items || []).find(it => it.id === itemId) : null;
+    $('#study-item-id').value = item ? item.id : '';
+    $('#study-item-goal-id').value = item ? (item.goal_id || '') : (goalId || '');
+    $('#study-item-type').value = item ? (item.type || 'material') : 'material';
+    $('#study-item-title').value = item ? item.title : '';
+    $('#study-item-note-url').value = item ? (item.note_url || '') : '';
+    $('#study-item-memo').value = item ? (item.memo || '') : '';
+    $('#study-item-modal-title').textContent = item ? '項目を編集' : '項目を追加';
+    $('#study-item-delete-btn').style.display = item ? '' : 'none';
+    $('#study-item-modal').classList.remove('hidden');
+};
+
+window.closeStudyItemModal = (e) => {
+    if (e && e.target.closest && e.target.closest('.modal-card')) return;
+    $('#study-item-modal')?.classList.add('hidden');
+};
+
+window.studyItemSave = async () => {
+    const id = $('#study-item-id').value || null;
+    const title = $('#study-item-title').value.trim();
+    if (!title) { showToast('タイトルを入力してください', true); return; }
+    const body = {
+        id,
+        goal_id: $('#study-item-goal-id').value || null,
+        type: $('#study-item-type').value,
+        title,
+        note_url: $('#study-item-note-url').value,
+        memo: $('#study-item-memo').value,
+    };
+    try {
+        const res = await apiFetch('/api/study/item/save', { method: 'POST', body: JSON.stringify(body) });
+        const data = await res.json();
+        if (!data.ok) { showToast(data.error || '保存失敗', true); return; }
+        $('#study-item-modal').classList.add('hidden');
+        await loadStudy();
+    } catch (e) { showToast('保存失敗', true); }
+};
+
+window.studyItemDelete = async () => {
+    const id = $('#study-item-id').value;
+    if (!id) return;
+    if (!confirm('この項目を削除しますか？')) return;
+    try {
+        const res = await apiFetch('/api/study/item/delete', { method: 'POST', body: JSON.stringify({ id }) });
+        const data = await res.json();
+        if (!data.ok) { showToast(data.error || '削除失敗', true); return; }
+        $('#study-item-modal').classList.add('hidden');
+        await loadStudy();
+    } catch (e) { showToast('削除失敗', true); }
+};
+
+window.studySessionStart = async (itemId) => {
+    try {
+        const res = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'start' }) });
+        const data = await res.json();
+        if (!data.ok) { showToast(data.error || '開始失敗', true); return; }
+        _setStudyActiveSession(itemId, new Date().toISOString());
+        renderStudy();
+        _ensureStudyTimer();
+        showToast(`▶ ${data.activity_name || '勉強'} を開始`);
+    } catch (e) { showToast('開始失敗', true); }
+};
+
+window.studySessionEnd = async (itemId) => {
+    try {
+        const res = await apiFetch('/api/study/session', { method: 'POST', body: JSON.stringify({ item_id: itemId, status: 'end' }) });
+        const data = await res.json();
+        if (!data.ok) { showToast(data.error || '終了失敗', true); return; }
+        const active = _studyActiveSessions()[itemId];
+        const elapsedMin = active ? Math.max(0, Math.floor((Date.now() - new Date(active.started_at).getTime()) / 60000)) : 0;
+        _setStudyActiveSession(itemId, null);
+        renderStudy();
+        showToast(`■ ${elapsedMin}分の勉強を記録しました`);
+    } catch (e) { showToast('終了失敗', true); }
+};
+
+window.loadStudy = loadStudy;
+
+// ----- 情報タブ：ストックカードの並び替え（習慣トラッカーと同じ SortableJS パターン） -----
+const INFO_CARD_ORDER_KEY = 'info_card_order';
+
+function applyInfoCardsOrder() {
+    const container = document.getElementById('info-cards-sortable');
+    if (!container) return;
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(INFO_CARD_ORDER_KEY) || '[]'); } catch { saved = []; }
+    if (!Array.isArray(saved) || !saved.length) return;
+    const cards = Array.from(container.querySelectorAll('[data-card-key]'));
+    const keyToEl = new Map(cards.map(c => [c.dataset.cardKey, c]));
+    for (const key of saved) {
+        const el = keyToEl.get(key);
+        if (el) { container.appendChild(el); keyToEl.delete(key); }
+    }
+    // 保存済み順序に含まれない新規カードは末尾へ
+    for (const el of keyToEl.values()) container.appendChild(el);
+}
+
+function initInfoCardsSortable() {
+    const container = document.getElementById('info-cards-sortable');
+    if (!container) return;
+    applyInfoCardsOrder();
+    if (container._sortable) return;
+    if (typeof window.Sortable === 'undefined') {
+        // SortableJS は defer ロードなので遅延再試行
+        setTimeout(initInfoCardsSortable, 200);
+        return;
+    }
+    container._sortable = window.Sortable.create(container, {
+        handle: '.card-drag-handle',
+        animation: 150,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        dragClass: 'sortable-drag',
+        onEnd: () => {
+            const order = Array.from(container.querySelectorAll('[data-card-key]')).map(el => el.dataset.cardKey);
+            localStorage.setItem(INFO_CARD_ORDER_KEY, JSON.stringify(order));
+            showToast('並び替えました');
+        },
+    });
+}
+
+window.initInfoCardsSortable = initInfoCardsSortable;
+
+// ----- EDINET 決算関連書類 -----
+let _edinetDocs = [];
+
+window.openEdinetModal = () => {
+    const modal = $('#edinet-modal');
+    if (!modal) return;
+    const tickerInput = $('#edinet-ticker');
+    const current = ($('#invest-ticker-input')?.value || '').trim();
+    if (tickerInput && current) tickerInput.value = current;
+    $('#edinet-results').innerHTML = '';
+    $('#edinet-save-all-btn').style.display = 'none';
+    $('#edinet-status').textContent = '過去N日分の EDINET 提出書類を金融庁公式 API から取得します。検索に数十秒かかることがあります。';
+    _edinetDocs = [];
+    modal.classList.remove('hidden');
+};
+
+window.closeEdinetModal = (e) => {
+    if (e && e.target.closest && e.target.closest('.modal-card')) return;
+    $('#edinet-modal')?.classList.add('hidden');
+};
+
+window.edinetFind = async () => {
+    const ticker = ($('#edinet-ticker')?.value || '').trim();
+    const days = parseInt($('#edinet-days')?.value || '800', 10);
+    const onlyEarnings = $('#edinet-only-earnings')?.checked !== false;
+    if (!ticker) { showToast('証券コードを入力してください', true); return; }
+    const status = $('#edinet-status');
+    const results = $('#edinet-results');
+    results.innerHTML = '<div style="padding:10px;color:var(--text-secondary);">検索中…（最大1分程度かかります）</div>';
+    $('#edinet-save-all-btn').style.display = 'none';
+    if (status) status.textContent = `${ticker} の過去${days}日分を走査中…`;
+    try {
+        const res = await apiFetch('/api/edinet/find', {
+            method: 'POST',
+            body: JSON.stringify({ ticker, days, only_earnings: onlyEarnings }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+            results.innerHTML = `<div style="padding:10px;color:#a00;">${escapeHtml(data.error || '検索失敗')}</div>`;
+            return;
+        }
+        _edinetDocs = data.documents || [];
+        if (status) status.textContent = `${data.ticker || ticker}: ${_edinetDocs.length} 件の書類 (過去${data.days_scanned}日分)`;
+        renderEdinetResults(_edinetDocs);
+        if (_edinetDocs.length > 0) $('#edinet-save-all-btn').style.display = '';
+    } catch (e) {
+        results.innerHTML = `<div style="padding:10px;color:#a00;">エラー: ${escapeHtml(String(e))}</div>`;
+    }
+};
+
+function renderEdinetResults(docs) {
+    const results = $('#edinet-results');
+    if (!results) return;
+    if (!docs || !docs.length) {
+        results.innerHTML = '<div style="padding:10px;color:var(--text-secondary);">該当書類が見つかりませんでした。日数を増やして再検索してみてください。</div>';
+        return;
+    }
+    let html = '';
+    for (const d of docs) {
+        const day = (d.submit_datetime || '').slice(0, 10);
+        const period = [d.period_start, d.period_end].filter(Boolean).join(' 〜 ');
+        html += `<div class="edinet-doc-row" data-doc-id="${escapeHtml(d.doc_id || '')}" style="padding:8px 4px;border-bottom:1px solid var(--border,#eee);">
+            <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start;">
+                <div style="flex:1;min-width:0;">
+                    <div style="font-weight:600;">${escapeHtml(d.doc_type_label || d.doc_type_code || '')}</div>
+                    <div style="font-size:0.8rem;color:var(--text-secondary);">${escapeHtml(d.doc_description || '')}</div>
+                    <div style="font-size:0.75rem;color:var(--text-muted);">提出: ${escapeHtml(day)} ${period ? '/ 対象: ' + escapeHtml(period) : ''}</div>
+                </div>
+                <button class="mini-link" onclick="edinetSaveOne('${escapeHtml(d.doc_id)}')">📥 保存</button>
+            </div>
+            <div class="edinet-save-status" style="font-size:0.75rem;color:var(--text-muted);margin-top:2px;"></div>
+        </div>`;
+    }
+    results.innerHTML = html;
+}
+
+window.edinetSaveOne = async (docId) => {
+    const doc = _edinetDocs.find(d => d.doc_id === docId);
+    if (!doc) return;
+    const row = document.querySelector(`.edinet-doc-row[data-doc-id="${CSS.escape(docId)}"]`);
+    const statusEl = row?.querySelector('.edinet-save-status');
+    if (statusEl) statusEl.textContent = 'ダウンロード中…';
+    try {
+        const res = await apiFetch('/api/edinet/download', {
+            method: 'POST',
+            body: JSON.stringify({
+                doc_id: doc.doc_id,
+                sec_code: doc.sec_code,
+                submit_date: (doc.submit_datetime || '').slice(0, 10),
+                doc_type_label: doc.doc_type_label,
+            }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+            if (statusEl) statusEl.textContent = `✅ 保存: ${data.drive_path} (${Math.round((data.bytes || 0) / 1024)} KB)`;
+        } else {
+            if (statusEl) statusEl.textContent = `❌ ${data.error || '保存失敗'}`;
+        }
+    } catch (e) {
+        if (statusEl) statusEl.textContent = `❌ 例外: ${String(e)}`;
+    }
+};
+
+window.edinetSaveAll = async () => {
+    const btn = $('#edinet-save-all-btn');
+    if (btn) btn.disabled = true;
+    for (const d of _edinetDocs) {
+        await window.edinetSaveOne(d.doc_id);
+    }
+    if (btn) btn.disabled = false;
+    showToast('すべての書類の保存処理が完了しました');
+};
+
 // ----- Fitbit全データ -----
 let _fitbitRows = [];
 let _fitbitChart = null;
@@ -5701,7 +6166,7 @@ const FITBIT_METRIC_LABELS = {
 window.loadFitbitAllData = async (forceRefresh = false) => {
     const el = $('#dash-fitbit-all');
     const tableTarget = el;
-    if (tableTarget) tableTarget.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    if (tableTarget) tableTarget.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const url = '/api/fitbit_all_data?days=14' + (forceRefresh ? '&_=' + Date.now() : '');
         const data = await apiFetch(url);
@@ -5865,7 +6330,7 @@ function closeStarredOverlay(e) {
 async function loadStarredMessages() {
     const results = $('#starred-results');
     if (!results) return;
-    results.innerHTML = '<p class="search-hint">読み込み中...</p>';
+    results.innerHTML = '<p class="search-hint">読み込み中…</p>';
     try {
         const data = await apiFetch('/api/messages/starred');
         const list = data.messages || [];
@@ -5921,7 +6386,7 @@ async function openWeatherLocationPicker() {
     document.getElementById('weather-location-overlay')?.classList.remove('hidden');
     const list = $('#weather-location-list');
     if (!list) return;
-    list.innerHTML = '<p class="search-hint">読み込み中...</p>';
+    list.innerHTML = '<p class="search-hint">読み込み中…</p>';
     try {
         const data = await apiFetch('/api/weather/locations');
         if (Array.isArray(data.regions) && data.regions.length) {
@@ -7277,7 +7742,7 @@ window.openConstitutionEditor = async () => {
     const modal = $('#invest-constitution-modal');
     const textarea = $('#invest-constitution-text');
     if (!modal || !textarea) return;
-    textarea.value = '読み込み中...';
+    textarea.value = '読み込み中…';
     modal.classList.remove('hidden');
     try {
         const data = await apiFetch('/api/investment/constitution');
@@ -7345,7 +7810,7 @@ window.switchInvestHistory = (cat) => {
 window.loadInvestmentHistory = async () => {
     const listEl = $('#invest-history-list');
     if (!listEl) return;
-    listEl.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    listEl.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const data = await apiFetch(`/api/investment/history/${encodeURIComponent(_investHistoryCategory)}?limit=20`);
         if (!data || !data.ok) {
@@ -7370,7 +7835,7 @@ window.loadInvestmentHistory = async () => {
 };
 
 window.openInvestHistoryItem = async (category, fileId, name) => {
-    showToast(`${name} を読み込み中...`);
+    showToast(`${name} を読み込み中…`);
     try {
         const data = await apiFetch(`/api/investment/history/${encodeURIComponent(category)}/${encodeURIComponent(fileId)}`);
         if (!data || !data.ok) {
@@ -7869,7 +8334,7 @@ window.saveScreenerResult = async () => {
 window.loadScreenerSavedList = async () => {
     const el = $('#screener-saved-list');
     if (!el) return;
-    el.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    el.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/investment/screener/runs');
         if (!data || !data.ok) {
@@ -7966,7 +8431,7 @@ window.deleteScreenerRun = async (runId) => {
 window.loadWatchlist = async () => {
     const el = $('#invest-watchlist-list');
     if (!el) return;
-    el.innerHTML = '<div class="loading-placeholder">読み込み中...</div>';
+    el.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/investment/watchlist');
         if (!data || !data.ok) {
@@ -8087,7 +8552,7 @@ let _investHoldingsCache = [];
 window.loadPortfolio = async () => {
     const listEl = $('#invest-portfolio-list');
     if (!listEl) return;
-    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    listEl.innerHTML = '<div class="invest-empty">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/investment/portfolio');
         if (!data || !data.ok) {
@@ -8148,7 +8613,7 @@ window.openHoldingPicker = async (target) => {
     const modal = $('#invest-holding-picker-modal');
     const listEl = $('#invest-holding-picker-list');
     if (!modal || !listEl) return;
-    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    listEl.innerHTML = '<div class="invest-empty">読み込み中…</div>';
     modal.classList.remove('hidden');
     try {
         if (!_investHoldingsCache.length) {
@@ -8195,7 +8660,7 @@ window.openWatchlistPicker = async (target) => {
     const modal = $('#invest-watchlist-picker-modal');
     const listEl = $('#invest-watchlist-picker-list');
     if (!modal || !listEl) return;
-    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    listEl.innerHTML = '<div class="invest-empty">読み込み中…</div>';
     modal.classList.remove('hidden');
     try {
         const data = await apiFetch('/api/investment/watchlist');
@@ -8449,7 +8914,7 @@ window.runRiskAssessment = async () => {
 window.loadJournalList = async () => {
     const listEl = $('#invest-journal-list');
     if (!listEl) return;
-    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    listEl.innerHTML = '<div class="invest-empty">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/investment/journal?limit=50');
         if (!data || !data.ok) {
@@ -8489,7 +8954,7 @@ window.loadJournalList = async () => {
 
 window.openJournalEntry = async (filename, title) => {
     if (!filename) return;
-    showToast(`${title} を読み込み中...`);
+    showToast(`${title} を読み込み中…`);
     // 履歴経由で読み込む (category=journal)
     try {
         // ファイルID取得のため、一覧APIを叩いてfilenameに一致するidを探す
@@ -8614,7 +9079,7 @@ window.runJournalAnalyze = async () => {
 window.loadAlertsList = async () => {
     const listEl = $('#invest-alerts-list');
     if (!listEl) return;
-    listEl.innerHTML = '<div class="invest-empty">読み込み中...</div>';
+    listEl.innerHTML = '<div class="invest-empty">読み込み中…</div>';
     try {
         const data = await apiFetch('/api/investment/alerts');
         if (!data || !data.ok) {

@@ -4866,6 +4866,14 @@ async def _save_drum_roadmap_links(data: dict) -> None:
         await drive.upload_text(service, b_folder, DRUM_ROADMAP_LINKS_FILE, content)
 
 
+@router.get("/drum_roadmap/links", dependencies=[Depends(verify_api_key)])
+async def get_drum_roadmap_links():
+    """マイルストーン別に紐付けられた YouTube リンクのみを返す。
+    ロードマップ本体はクライアント側で静的に持つため、こちらはリンクの差分情報のみ。"""
+    links_map = await _load_drum_roadmap_links()
+    return {"ok": True, "links": links_map}
+
+
 @router.get("/drum_roadmap", dependencies=[Depends(verify_api_key)])
 async def get_drum_roadmap():
     """静的ロードマップ + Drive 上の動画リンクをマージして返す。"""
@@ -4957,3 +4965,326 @@ async def delete_drum_roadmap_link(req: DrumRoadmapLinkDeleteRequest):
     links[req.milestone_id] = after
     await _save_drum_roadmap_links(links)
     return {"ok": True}
+
+
+# ==========================================================
+# 勉強（学習目標 + 教材/質問 + NotebookLM + セッション時間計測）
+# ==========================================================
+
+STUDY_DATA_FILE = "study_data.json"
+
+
+def _empty_study_data() -> dict:
+    return {"goals": [], "items": []}
+
+
+async def _load_study_data() -> dict:
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "drive_service", None):
+        return _empty_study_data()
+    drive = bot.drive_service
+    service = drive.get_service()
+    if not service:
+        return _empty_study_data()
+    folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    if not folder_id:
+        return _empty_study_data()
+    from config import BOT_FOLDER
+    b_folder = await drive.find_file(service, folder_id, BOT_FOLDER)
+    if not b_folder:
+        b_folder = await drive.create_folder(service, folder_id, BOT_FOLDER)
+    f_id = await drive.find_file(service, b_folder, STUDY_DATA_FILE)
+    if not f_id:
+        return _empty_study_data()
+    try:
+        raw = await drive.read_text_file(service, f_id)
+        data = json.loads(raw) or {}
+        data.setdefault("goals", [])
+        data.setdefault("items", [])
+        return data
+    except Exception as e:
+        logging.warning(f"study_data.json 読込失敗: {e}")
+        return _empty_study_data()
+
+
+async def _save_study_data(data: dict) -> None:
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "drive_service", None):
+        return
+    drive = bot.drive_service
+    service = drive.get_service()
+    if not service:
+        return
+    folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    if not folder_id:
+        return
+    from config import BOT_FOLDER
+    b_folder = await drive.find_file(service, folder_id, BOT_FOLDER)
+    if not b_folder:
+        b_folder = await drive.create_folder(service, folder_id, BOT_FOLDER)
+    f_id = await drive.find_file(service, b_folder, STUDY_DATA_FILE)
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    if f_id:
+        await drive.update_text(service, f_id, content)
+    else:
+        await drive.upload_text(service, b_folder, STUDY_DATA_FILE, content)
+
+
+def _gen_id(prefix: str) -> str:
+    return f"{prefix}_{datetime.datetime.now(JST).strftime('%Y%m%d%H%M%S%f')}"
+
+
+@router.get("/study", dependencies=[Depends(verify_api_key)])
+async def study_get():
+    data = await _load_study_data()
+    return {"ok": True, **data}
+
+
+class StudyGoalSaveRequest(BaseModel):
+    id: Optional[str] = None
+    title: str
+    due_date: Optional[str] = ""
+    memo: Optional[str] = ""
+
+
+@router.post("/study/goal/save", dependencies=[Depends(verify_api_key)])
+async def study_goal_save(req: StudyGoalSaveRequest):
+    title = (req.title or "").strip()
+    if not title:
+        return {"ok": False, "error": "タイトルを入力してください"}
+    data = await _load_study_data()
+    goals = data.setdefault("goals", [])
+    if req.id:
+        target = next((g for g in goals if g.get("id") == req.id), None)
+        if not target:
+            return {"ok": False, "error": "対象の目標が見つかりません"}
+        target["title"] = title
+        target["due_date"] = (req.due_date or "").strip()
+        target["memo"] = (req.memo or "").strip()
+        goal = target
+    else:
+        goal = {
+            "id": _gen_id("g"),
+            "title": title,
+            "due_date": (req.due_date or "").strip(),
+            "memo": (req.memo or "").strip(),
+            "created_at": datetime.datetime.now(JST).isoformat(),
+        }
+        goals.append(goal)
+    await _save_study_data(data)
+    return {"ok": True, "goal": goal}
+
+
+class StudyIdRequest(BaseModel):
+    id: str
+
+
+@router.post("/study/goal/delete", dependencies=[Depends(verify_api_key)])
+async def study_goal_delete(req: StudyIdRequest):
+    data = await _load_study_data()
+    goals = data.setdefault("goals", [])
+    after = [g for g in goals if g.get("id") != req.id]
+    if len(after) == len(goals):
+        return {"ok": False, "error": "対象の目標が見つかりません"}
+    data["goals"] = after
+    # 配下のアイテムは「目標なし」に移す（削除しない）
+    for it in data.setdefault("items", []):
+        if it.get("goal_id") == req.id:
+            it["goal_id"] = None
+    await _save_study_data(data)
+    return {"ok": True}
+
+
+class StudyItemSaveRequest(BaseModel):
+    id: Optional[str] = None
+    goal_id: Optional[str] = None
+    type: str  # "material" | "question"
+    title: str
+    note_url: Optional[str] = ""
+    memo: Optional[str] = ""
+
+
+@router.post("/study/item/save", dependencies=[Depends(verify_api_key)])
+async def study_item_save(req: StudyItemSaveRequest):
+    title = (req.title or "").strip()
+    if not title:
+        return {"ok": False, "error": "タイトルを入力してください"}
+    itype = req.type if req.type in ("material", "question") else "material"
+    data = await _load_study_data()
+    items = data.setdefault("items", [])
+    if req.id:
+        target = next((it for it in items if it.get("id") == req.id), None)
+        if not target:
+            return {"ok": False, "error": "対象の項目が見つかりません"}
+        target["goal_id"] = req.goal_id or None
+        target["type"] = itype
+        target["title"] = title
+        target["note_url"] = (req.note_url or "").strip()
+        target["memo"] = (req.memo or "").strip()
+        item = target
+    else:
+        item = {
+            "id": _gen_id("i"),
+            "goal_id": req.goal_id or None,
+            "type": itype,
+            "title": title,
+            "note_url": (req.note_url or "").strip(),
+            "memo": (req.memo or "").strip(),
+            "created_at": datetime.datetime.now(JST).isoformat(),
+        }
+        items.append(item)
+    await _save_study_data(data)
+    return {"ok": True, "item": item}
+
+
+@router.post("/study/item/delete", dependencies=[Depends(verify_api_key)])
+async def study_item_delete(req: StudyIdRequest):
+    data = await _load_study_data()
+    items = data.setdefault("items", [])
+    after = [it for it in items if it.get("id") != req.id]
+    if len(after) == len(items):
+        return {"ok": False, "error": "対象の項目が見つかりません"}
+    data["items"] = after
+    await _save_study_data(data)
+    return {"ok": True}
+
+
+class StudySessionRequest(BaseModel):
+    item_id: str
+    status: str  # "start" | "end"
+
+
+@router.post("/study/session", dependencies=[Depends(verify_api_key)])
+async def study_session(req: StudySessionRequest):
+    """教材の学習セッションを開始/終了。lifelog_activity と同じフォーマットで Obsidian に記録。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        return {"ok": False, "error": "Bot 未初期化"}
+    partner = bot.get_cog("PartnerCog")
+    if not partner:
+        return {"ok": False, "error": "PartnerCog 未ロード"}
+    status = (req.status or "").lower().strip()
+    if status not in ("start", "end"):
+        return {"ok": False, "error": "status は start か end"}
+    data = await _load_study_data()
+    item = next((it for it in data.get("items", []) if it.get("id") == req.item_id), None)
+    if not item:
+        return {"ok": False, "error": "対象の項目が見つかりません"}
+    activity_name = f"勉強：{item.get('title', '')}"
+    try:
+        msg = await partner._log_life_activity_to_obsidian(activity_name, status)
+        return {"ok": True, "message": msg, "activity_name": activity_name}
+    except Exception as e:
+        logging.exception(f"study_session error: {e}")
+        return {"ok": False, "error": "ライフログ記録に失敗"}
+
+
+# ==========================================================
+# EDINET API（金融庁 公式API）— 決算関連書類の検索 + PDF 取得
+# ==========================================================
+
+class EdinetFindRequest(BaseModel):
+    ticker: str
+    days: int = 400
+    only_earnings: bool = True
+
+
+class EdinetDownloadRequest(BaseModel):
+    doc_id: str
+    sec_code: Optional[str] = None
+    submit_date: Optional[str] = None
+    doc_type_label: Optional[str] = None
+
+
+@router.post("/edinet/find", dependencies=[Depends(verify_api_key)])
+async def edinet_find(req: EdinetFindRequest):
+    """指定証券コードの過去 days 日分の EDINET 提出書類を検索する。
+    only_earnings=True なら有報・四半期・半期報告書のみに絞る。"""
+    from services import edinet_service
+    if not edinet_service.get_api_key():
+        return {"ok": False, "error": "サーバ側に EDINET_API_KEY が未設定です。.env に追加して bot を再起動してください。"}
+    try:
+        result = await edinet_service.find_documents_for_security_code(
+            req.ticker, days=req.days, only_earnings=req.only_earnings
+        )
+    except Exception as e:
+        logging.exception(f"edinet_find error: {e}")
+        return {"ok": False, "error": f"EDINET 検索に失敗: {e}"}
+    return result
+
+
+@router.post("/edinet/download", dependencies=[Depends(verify_api_key)])
+async def edinet_download(req: EdinetDownloadRequest):
+    """EDINET から書類 PDF を取得し、Drive 上 Investment/EarningsDocs/EDINET/ に保存する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "drive_service", None):
+        return {"ok": False, "error": "Drive サービス未初期化"}
+
+    from services import edinet_service
+    if not edinet_service.get_api_key():
+        return {"ok": False, "error": "サーバ側に EDINET_API_KEY が未設定です"}
+
+    data = await edinet_service.download_document(req.doc_id, doc_type=2)
+    if not data:
+        return {"ok": False, "error": "EDINET から PDF を取得できませんでした（PDF未提供か API キー無効）"}
+
+    drive = bot.drive_service
+    service = drive.get_service()
+    folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    if not service or not folder_id:
+        return {"ok": False, "error": "Drive 認証/フォルダ未設定"}
+
+    # Investment/EarningsDocs/EDINET/ を確保
+    inv_folder = await drive.find_file(service, folder_id, "Investment")
+    if not inv_folder:
+        inv_folder = await drive.create_folder(service, folder_id, "Investment")
+    docs_folder = await drive.find_file(service, inv_folder, "EarningsDocs")
+    if not docs_folder:
+        docs_folder = await drive.create_folder(service, inv_folder, "EarningsDocs")
+    edinet_folder = await drive.find_file(service, docs_folder, "EDINET")
+    if not edinet_folder:
+        edinet_folder = await drive.create_folder(service, docs_folder, "EDINET")
+
+    # ファイル名生成
+    sec = (req.sec_code or "")[:4] or "unknown"
+    submit_day = (req.submit_date or datetime.datetime.now(JST).strftime("%Y-%m-%d"))[:10]
+    label = req.doc_type_label or ""
+    # ファイル名で使えない文字を除去
+    safe_label = re.sub(r"[\\/:*?\"<>|]", "_", label)[:24]
+    filename = f"EDINET_{sec}_{submit_day}_{safe_label}_{req.doc_id}.pdf".replace("__", "_")
+
+    # tempfile に書き出して drive_service.upload_file で保存
+    import tempfile
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
+        # 既存同名はリプレース（古いを消す方が単純）
+        existing = await drive.find_file(service, edinet_folder, filename)
+        if existing:
+            try:
+                await asyncio.to_thread(lambda: service.files().delete(fileId=existing).execute())
+            except Exception as e:
+                logging.warning(f"EDINET 旧ファイル削除失敗: {e}")
+        file_id = await drive.upload_file(
+            service, edinet_folder, filename, tmp_path, mime_type="application/pdf"
+        )
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    return {
+        "ok": True,
+        "file_id": file_id,
+        "filename": filename,
+        "drive_path": f"Investment/EarningsDocs/EDINET/{filename}",
+        "bytes": len(data),
+    }

@@ -256,6 +256,45 @@ details.card > summary > .card-header { border-bottom: none; }
 .stocked-link-title:visited { color: var(--text); }
 .stocked-link-title:hover { color: var(--accent); }
 
+.stocked-link-title-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.stocked-link-title-row .stocked-link-title { flex: 1; min-width: 0; }
+.stocked-link-notebook-btn {
+    flex-shrink: 0;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #4f8cff 0%, #2f5fd9 100%);
+    color: #fff;
+    text-decoration: none;
+    white-space: nowrap;
+    line-height: 1.2;
+    align-self: center;
+}
+.stocked-link-notebook-btn:hover { opacity: 0.85; }
+.stocked-link-notebook-btn:visited { color: #fff; }
+
+/* 情報タブのカード並び替え用ドラッグハンドル */
+.card-drag-handle {
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    color: var(--text-muted);
+    font-size: 1rem;
+    padding: 4px 6px;
+    margin-right: 2px;
+    letter-spacing: -2px;
+    line-height: 1;
+}
+.card-drag-handle:active { cursor: grabbing; }
+#info-cards-sortable .card.sortable-ghost { opacity: 0.4; }
+#info-cards-sortable .card.sortable-chosen { background-color: rgba(127,127,127,0.06); }
+
 .stocked-link-meta {
     display: flex;
     flex-wrap: wrap;

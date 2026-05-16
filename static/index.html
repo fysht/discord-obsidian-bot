@@ -157,9 +157,11 @@
                         <div id="dash-news" class="card-body list-body"></div>
                     </div>
                     
-                    <details class="card stocked-links-card">
+                    <div id="info-cards-sortable">
+                    <details class="card stocked-links-card" data-card-key="web">
                         <summary>
                             <div class="card-header">
+                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🌐</span>
                                 <span class="card-title">ウェブクリップ</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('web')">全既読</button>
@@ -168,9 +170,10 @@
                         <div id="dash-stocked-web" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" data-card-key="youtube">
                         <summary>
                             <div class="card-header">
+                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">📺</span>
                                 <span class="card-title">YouTube</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('youtube')">全既読</button>
@@ -179,9 +182,10 @@
                         <div id="dash-stocked-youtube" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" data-card-key="map">
                         <summary>
                             <div class="card-header">
+                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🗺️</span>
                                 <span class="card-title">Googleマップ</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('map')">全既読</button>
@@ -190,9 +194,10 @@
                         <div id="dash-stocked-map" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card">
+                    <details class="card stocked-links-card" data-card-key="recipe">
                         <summary>
                             <div class="card-header">
+                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🍳</span>
                                 <span class="card-title">レシピ</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('recipe')">全既読</button>
@@ -201,9 +206,10 @@
                         <div id="dash-stocked-recipe" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card bookshelf-card">
+                    <details class="card bookshelf-card" data-card-key="book">
                         <summary>
                             <div class="card-header">
+                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">📚</span>
                                 <span class="card-title">書籍</span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('book')">全既読</button>
@@ -212,15 +218,29 @@
                         <div id="dash-stocked-book" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card drum-roadmap-card" ontoggle="if(this.open && typeof loadDrumRoadmap === 'function') loadDrumRoadmap()">
+                    <details class="card study-card" data-card-key="study" ontoggle="if(this.open && typeof loadStudy === 'function') loadStudy()">
                         <summary>
                             <div class="card-header">
+                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
+                                <span class="card-icon">🎓</span>
+                                <span class="card-title">勉強</span>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openStudyGoalModal(null)">＋ 目標</button>
+                            </div>
+                        </summary>
+                        <div id="dash-study" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
+                    </details>
+
+                    <details class="card drum-roadmap-card" data-card-key="drum" ontoggle="if(this.open && typeof loadDrumRoadmap === 'function') loadDrumRoadmap()">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>
                                 <span class="card-icon">🥁</span>
-                                <span class="card-title">ドラム上達ロードマップ</span>
+                                <span class="card-title">ドラム練習</span>
                             </div>
                         </summary>
                         <div id="dash-drum-roadmap" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
                     </details>
+                    </div>
                 </div>
             </div>
 
@@ -311,7 +331,7 @@
                             <button class="mini-link" onclick="refreshGmailServer()" title="新着取り込み">📥 取り込み</button>
                             <button class="mini-link" onclick="toggleGmailState()" id="gmail-state-toggle" title="表示中の状態を切替">📬 未処理</button>
                         </div>
-                        <div id="dash-gmail-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div id="dash-gmail-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                     </div>
 
                     <!-- 食事ログ -->
@@ -324,7 +344,7 @@
                             <button class="mini-link" onclick="requestMealAdvice()" title="マネージャーの栄養アドバイス">💬 助言</button>
                         </div>
                         <div id="dash-meals-summary" class="card-body" style="border-bottom:1px solid var(--border-glass);padding:8px 18px;font-size:0.78rem;color:var(--text-muted);"></div>
-                        <div id="dash-meals-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div id="dash-meals-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                         <input type="file" id="meal-image-input" accept="image/*" capture="environment" style="display:none;">
                     </div>
 
@@ -338,7 +358,7 @@
                             <button class="mini-link" onclick="openExpenseThresholdEditor()" title="大きな支出の閾値設定">⚙️ 閾値</button>
                         </div>
                         <div id="dash-expense-summary" class="card-body" style="border-bottom:1px solid var(--border-glass);padding:10px 18px;"></div>
-                        <div id="dash-expense-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div id="dash-expense-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                         <input type="file" id="expense-image-input" accept="image/*" capture="environment" style="display:none;">
                     </div>
 
@@ -512,6 +532,7 @@
                                 <button class="chip-btn" onclick="runStockAudit()">🎯 憲法審査</button>
                                 <button class="chip-btn" onclick="runEarningsSchedule()">📅 決算予定</button>
                                 <button class="chip-btn" onclick="runEarningsDocuments()">📑 決算資料</button>
+                                <button class="chip-btn" onclick="openEdinetModal()">📁 EDINET書類</button>
                                 <button class="chip-btn" onclick="runPeerComparison()">🔬 同業比較</button>
                                 <button class="chip-btn" onclick="runNewsSentiment()">📰 ニュース</button>
                                 <button class="chip-btn" onclick="runDividend()">💴 配当</button>
@@ -564,7 +585,7 @@
                             <button class="mini-link" onclick="loadPortfolio()">更新</button>
                             <button class="mini-link" onclick="runRiskAssessment()">リスク評価</button>
                         </div>
-                        <div id="invest-portfolio-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div id="invest-portfolio-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                         <div style="font-size:0.7rem;color:var(--text-muted);margin:0 12px 10px;">
                             💡 リスク評価の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「リスク評価」で変更できます。
                         </div>
@@ -577,7 +598,7 @@
                             <span class="card-title">注目銘柄</span>
                             <button class="mini-link" onclick="loadWatchlist()">更新</button>
                         </div>
-                        <div id="invest-watchlist-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div id="invest-watchlist-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                         <div style="font-size:0.7rem;color:var(--text-muted);margin:0 12px 10px;">
                             💡 注目銘柄から実行できる各分析の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 →「銘柄スナップショット / 憲法審査 / 同業比較 / ニュースセンチメント」で変更できます。
                         </div>
@@ -592,7 +613,7 @@
                             <button class="mini-link" onclick="loadJournalList()">更新</button>
                             <button class="mini-link" onclick="runJournalAnalyze()">癖を分析</button>
                         </div>
-                        <div id="invest-journal-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div id="invest-journal-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                         <div style="font-size:0.7rem;color:var(--text-muted);margin:0 12px 10px;">
                             💡 「癖を分析」の Gemini モデルは ⚙️設定 → 「Geminiモデル選択」 → 「投資日記分析」で変更できます。
                         </div>
@@ -607,7 +628,7 @@
                             <button class="mini-link" onclick="loadAlertsList()">更新</button>
                             <button class="mini-link" onclick="runAlertsCheck()">今すぐチェック</button>
                         </div>
-                        <div id="invest-alerts-list" class="card-body"><div class="loading-placeholder">読み込み中。</div></div>
+                        <div id="invest-alerts-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                     </div>
 
                     <!-- 投資憲法 -->
@@ -648,7 +669,7 @@
                                 <button class="chip-btn invest-history-tab" data-cat="journal" onclick="switchInvestHistory('journal')">📔 日記</button>
                                 <button class="chip-btn invest-history-tab" data-cat="screening" onclick="switchInvestHistory('screening')">🔎 スクリーナー</button>
                             </div>
-                            <div id="invest-history-list" class="list-body"><div class="loading-placeholder">読み込み中。</div></div>
+                            <div id="invest-history-list" class="list-body"><div class="loading-placeholder">読み込み中…</div></div>
                         </div>
                     </div>
                 </div>
@@ -700,7 +721,7 @@
                 <div style="margin-bottom:10px;">
                     <label style="font-size:0.78rem;color:var(--text-muted);">スタイル <span style="opacity:0.6;">（複数選択可）</span></label>
                     <div id="screener-style-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
-                        <span class="loading-placeholder" style="font-size:0.8rem;">読み込み中...</span>
+                        <span class="loading-placeholder" style="font-size:0.8rem;">読み込み中…</span>
                     </div>
                 </div>
 
@@ -1124,7 +1145,7 @@
                 <div id="breakdown-existing-section" class="input-group" style="display:none;">
                     <label>既存タスクから選択</label>
                     <select id="breakdown-existing-select" class="modern-input" style="padding:10px;" onchange="onBreakdownExistingChange(this)">
-                        <option value="">読み込み中...</option>
+                        <option value="">読み込み中…</option>
                     </select>
                 </div>
 
@@ -1158,7 +1179,7 @@
                     1分間、頭に浮かんだことをひたすら書き出そう。テーマを選んでね。
                 </p>
                 <div id="zt-theme-list" class="modal-list mt-20" style="max-height:50vh;">
-                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中...</div>
+                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中…</div>
                 </div>
                 <div class="input-group mt-10">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">自分でテーマを入力</label>
@@ -1221,7 +1242,7 @@
                     どの本を読む？情報タブの「書籍」とBookNotesから候補を取得したよ。
                 </p>
                 <div id="reading-book-list" class="modal-list mt-20" style="max-height:45vh;">
-                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中...</div>
+                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中…</div>
                 </div>
                 <div class="input-group mt-10">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">手動入力</label>
@@ -1268,7 +1289,7 @@
                     何を勉強する？過去の科目から選ぶか、新しく入力してね。
                 </p>
                 <div id="study-subject-list" class="modal-list mt-20" style="max-height:45vh;">
-                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中...</div>
+                    <div style="padding:20px; text-align:center; color:var(--text-muted);">読み込み中…</div>
                 </div>
                 <div class="input-group mt-10">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">新しい科目</label>
@@ -1344,7 +1365,7 @@
                 </button>
             </div>
             <div class="search-results" id="starred-results">
-                <p class="search-hint">読み込み中...</p>
+                <p class="search-hint">読み込み中…</p>
             </div>
         </div>
     </div>
@@ -1456,6 +1477,83 @@
         </div>
     </div>
 
+    <!-- ========== EDINET 決算資料モーダル ========== -->
+    <div id="edinet-modal" class="modal-overlay hidden" onclick="closeEdinetModal(event)">
+        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:680px;max-height:85vh;display:flex;flex-direction:column;">
+            <h3 style="margin-top:0;">📁 EDINET 決算関連書類</h3>
+            <div style="display:flex;gap:6px;align-items:center;font-size:0.85rem;margin-bottom:8px;flex-wrap:wrap;">
+                <label>証券コード:</label>
+                <input type="text" id="edinet-ticker" class="modern-input" style="width:90px;padding:6px;font-size:0.9rem;" placeholder="例: 7203">
+                <label>過去:</label>
+                <select id="edinet-days" style="padding:6px;font-size:0.9rem;">
+                    <option value="400">約1年（速い）</option>
+                    <option value="800" selected>約2年</option>
+                    <option value="1200">約3年</option>
+                    <option value="1500">約4年（遅い）</option>
+                </select>
+                <label style="display:flex;align-items:center;gap:4px;">
+                    <input type="checkbox" id="edinet-only-earnings" checked>
+                    <span>有報/四半期のみ</span>
+                </label>
+                <button class="modal-btn submit" onclick="edinetFind()" style="margin-left:auto;">検索</button>
+            </div>
+            <div id="edinet-status" style="font-size:0.78rem;color:var(--text-secondary);margin-bottom:6px;">過去N日分の EDINET 提出書類を金融庁公式 API から取得します。検索に数十秒かかることがあります。</div>
+            <div id="edinet-results" style="flex:1;overflow-y:auto;font-size:0.85rem;border-top:1px solid var(--border,#eee);padding-top:8px;"></div>
+            <div class="modal-actions" style="margin-top:8px;">
+                <button class="modal-btn cancel" onclick="closeEdinetModal()">閉じる</button>
+                <button class="modal-btn submit" id="edinet-save-all-btn" onclick="edinetSaveAll()" style="display:none;">📥 すべて保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 勉強: 目標 編集モーダル ========== -->
+    <div id="study-goal-modal" class="modal-overlay hidden" onclick="closeStudyGoalModal(event)">
+        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:420px;">
+            <h3 id="study-goal-modal-title" style="margin-top:0;">目標を追加</h3>
+            <input type="hidden" id="study-goal-id">
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <label style="font-size:0.82rem;color:var(--text-secondary);">目標名（例: TOEIC 900点 / 簿記2級）</label>
+                <input type="text" id="study-goal-title" class="modern-input" style="padding:8px;">
+                <label style="font-size:0.82rem;color:var(--text-secondary);">期限</label>
+                <input type="date" id="study-goal-due" class="modern-input" style="padding:8px;">
+                <label style="font-size:0.82rem;color:var(--text-secondary);">メモ</label>
+                <textarea id="study-goal-memo" class="modern-input" style="padding:8px;min-height:60px;"></textarea>
+            </div>
+            <div class="modal-actions" style="margin-top:12px;">
+                <button class="modal-btn cancel" onclick="closeStudyGoalModal()">キャンセル</button>
+                <button class="modal-btn danger" id="study-goal-delete-btn" onclick="studyGoalDelete()" style="display:none;">削除</button>
+                <button class="modal-btn submit" onclick="studyGoalSave()">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== 勉強: 教材/質問 編集モーダル ========== -->
+    <div id="study-item-modal" class="modal-overlay hidden" onclick="closeStudyItemModal(event)">
+        <div class="modal-card" onclick="event.stopPropagation()" style="max-width:420px;">
+            <h3 id="study-item-modal-title" style="margin-top:0;">項目を追加</h3>
+            <input type="hidden" id="study-item-id">
+            <input type="hidden" id="study-item-goal-id">
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <label style="font-size:0.82rem;color:var(--text-secondary);">種別</label>
+                <select id="study-item-type" class="modern-input" style="padding:8px;">
+                    <option value="material">📘 教材（参考書・問題集など）</option>
+                    <option value="question">❓ 質問・苦手分野</option>
+                </select>
+                <label style="font-size:0.82rem;color:var(--text-secondary);">タイトル</label>
+                <input type="text" id="study-item-title" class="modern-input" style="padding:8px;" placeholder="例: 金のフレーズ / 関係代名詞 vs 関係副詞">
+                <label style="font-size:0.82rem;color:var(--text-secondary);">NotebookLM URL</label>
+                <input type="url" id="study-item-note-url" class="modern-input" style="padding:8px;" placeholder="https://notebooklm.google.com/...">
+                <label style="font-size:0.82rem;color:var(--text-secondary);">メモ</label>
+                <textarea id="study-item-memo" class="modern-input" style="padding:8px;min-height:60px;"></textarea>
+            </div>
+            <div class="modal-actions" style="margin-top:12px;">
+                <button class="modal-btn cancel" onclick="closeStudyItemModal()">キャンセル</button>
+                <button class="modal-btn danger" id="study-item-delete-btn" onclick="studyItemDelete()" style="display:none;">削除</button>
+                <button class="modal-btn submit" onclick="studyItemSave()">保存</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== WEATHER LOCATION PICKER ========== -->
     <div id="weather-location-overlay" class="modal-overlay hidden" onclick="closeWeatherLocationPicker(event)">
         <div class="search-panel" onclick="event.stopPropagation()">
@@ -1466,7 +1564,7 @@
                 </button>
             </div>
             <div class="search-results" id="weather-location-list">
-                <p class="search-hint">読み込み中...</p>
+                <p class="search-hint">読み込み中…</p>
             </div>
         </div>
     </div>
@@ -1529,7 +1627,7 @@
             <div id="save-append-section" style="margin-top:14px; display:none; flex-direction:column; gap:4px;">
                 <label style="font-size:0.8rem; color:var(--text-secondary);">追記先ノート</label>
                 <select id="note-target-select" class="modern-input" style="padding:10px;">
-                    <option value="">読み込み中...</option>
+                    <option value="">読み込み中…</option>
                 </select>
             </div>
 
