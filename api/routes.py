@@ -5,7 +5,7 @@ import asyncio
 import datetime
 import json
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File, Form
 from pydantic import BaseModel
 
 from api.database import (
@@ -1436,6 +1436,74 @@ async def get_notes_list():
         logging.error(f"notes/list StudyLogs error: {e}")
 
     return {"notes": notes}
+
+
+@router.get("/notes/search", dependencies=[Depends(verify_api_key)])
+async def search_notes(q: str = "", limit: int = 8):
+    """永久ノート（Notes フォルダ）からタイトル類似のファイルを検索する。"""
+    from api import app
+
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"candidates": []}
+    service = chat_service.drive_service.get_service()
+    if not service:
+        return {"candidates": []}
+    q = (q or "").strip()
+    if len(q) < 1:
+        return {"candidates": []}
+
+    drive_root = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
+    candidates = []
+    try:
+        notes_folder = await chat_service.drive_service.find_file(service, drive_root, "Notes")
+        if not notes_folder:
+            return {"candidates": []}
+        q_esc = q.replace("'", "\\'")
+        # Drive の name contains は単語単位なので、緩めに前方一致＋全件取得して
+        # Python 側で類似度ソートする。
+        results = await asyncio.to_thread(
+            lambda: service.files().list(
+                q=f"'{notes_folder}' in parents and trashed = false",
+                fields="files(id, name, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=200,
+            ).execute()
+        )
+        files = results.get("files", [])
+
+        def display_name(fname: str) -> str:
+            # 例: 20240517123000-タイトル.md -> タイトル
+            base = fname[:-3] if fname.endswith(".md") else fname
+            import re as _re
+            return _re.sub(r"^\d{8,14}-", "", base)
+
+        q_lower = q.lower()
+        scored = []
+        for f in files:
+            disp = display_name(f["name"])
+            disp_lower = disp.lower()
+            if q_lower in disp_lower:
+                # 前方一致を優先
+                score = 100 - disp_lower.index(q_lower) - (0 if disp_lower.startswith(q_lower) else 10)
+            else:
+                # 文字 overlap 簡易スコア
+                overlap = sum(1 for ch in set(q_lower) if ch in disp_lower)
+                if overlap < max(1, len(set(q_lower)) // 2):
+                    continue
+                score = overlap
+            scored.append((score, {
+                "id": f["id"],
+                "name": disp,
+                "folder": "Notes",
+                "filename": f["name"],
+                "modified": f.get("modifiedTime", ""),
+            }))
+        scored.sort(key=lambda x: (-x[0], x[1]["name"]))
+        candidates = [s[1] for s in scored[:max(1, min(limit, 20))]]
+    except Exception as e:
+        logging.error(f"notes/search error: {e}")
+    return {"candidates": candidates}
 
 
 class SaveNoteRequest(BaseModel):
@@ -4229,6 +4297,32 @@ async def investment_earnings_schedule(req: InvestmentEarningsRequest):
 async def investment_earnings_documents(req: InvestmentTickerRequest):
     cog = _get_investment_cog()
     return await cog.run_earnings_documents(req.ticker)
+
+
+class InvestmentEarningsDocSaveUrlRequest(BaseModel):
+    ticker: str
+    url: str
+    label: str = ""
+
+
+@router.post("/investment/earnings_documents/save_url", dependencies=[Depends(verify_api_key)])
+async def investment_earnings_documents_save_url(req: InvestmentEarningsDocSaveUrlRequest):
+    cog = _get_investment_cog()
+    return await cog.save_earnings_document_from_url(req.ticker, req.url, label=req.label)
+
+
+@router.post("/investment/earnings_documents/save_file", dependencies=[Depends(verify_api_key)])
+async def investment_earnings_documents_save_file(
+    ticker: str = Form(...),
+    label: str = Form(""),
+    file: UploadFile = File(...),
+):
+    cog = _get_investment_cog()
+    content = await file.read()
+    mime = file.content_type or ""
+    return await cog.save_earnings_document_from_bytes(
+        ticker, content, filename=file.filename or "document", label=label, mime=mime
+    )
 
 
 @router.post("/investment/ceo_check", dependencies=[Depends(verify_api_key)])

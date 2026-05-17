@@ -220,6 +220,22 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip() or "untitled"
 
 
+def ext_map_lookup_mime(filename: str) -> str:
+    """ファイル拡張子から代表的な MIME タイプを推測する。"""
+    fname = (filename or "").lower()
+    if fname.endswith(".pdf"):
+        return "application/pdf"
+    if fname.endswith((".html", ".htm")):
+        return "text/html"
+    if fname.endswith(".xlsx"):
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if fname.endswith(".xls"):
+        return "application/vnd.ms-excel"
+    if fname.endswith(".zip"):
+        return "application/zip"
+    return ""
+
+
 def _extract_youtube_id(url: str):
     """YouTube URLからvideo IDを抽出する。"""
     if not url:
@@ -889,6 +905,233 @@ class InvestmentCog(commands.Cog):
             "data": data,
             "saved_as": filename,
             "report": body,
+        }
+
+    async def save_earnings_document_from_url(
+        self, ticker: str, url: str, label: str = ""
+    ) -> dict:
+        """企業サイトの PDF/HTML を Drive の Investment/EarningsDocs/<ticker>/ に保存。"""
+        import aiohttp
+        from urllib.parse import urlparse, unquote
+
+        if not self.drive_service:
+            return {"ok": False, "error": "Drive 未接続"}
+        if not url or not url.lower().startswith(("http://", "https://")):
+            return {"ok": False, "error": "有効な URL を指定してください"}
+        market, code = _resolve_market(ticker)
+        safe_code = _safe_filename(code) or "UNKNOWN"
+
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+        }
+        try:
+            async with aiohttp.ClientSession(headers=headers) as session:
+                async with session.get(
+                    url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=True
+                ) as resp:
+                    if resp.status != 200:
+                        return {
+                            "ok": False,
+                            "error": f"取得失敗 (HTTP {resp.status})",
+                        }
+                    content = await resp.read()
+                    if len(content) == 0:
+                        return {"ok": False, "error": "空のレスポンス"}
+                    if len(content) > 50 * 1024 * 1024:
+                        return {"ok": False, "error": "50MBを超えるファイルは保存できません"}
+                    ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                    cdisp = resp.headers.get("Content-Disposition", "")
+                    final_url = str(resp.url)
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "タイムアウトしました"}
+        except Exception as e:
+            return {"ok": False, "error": f"取得エラー: {e}"}
+
+        # ファイル名決定
+        fname = ""
+        m = re.search(r'filename\*?=(?:UTF-8\'\')?\"?([^;\"]+)\"?', cdisp, re.IGNORECASE)
+        if m:
+            fname = unquote(m.group(1)).strip()
+        if not fname:
+            path = urlparse(final_url).path
+            fname = unquote(path.rsplit("/", 1)[-1]) if path else ""
+        if not fname or fname == "/":
+            fname = "document"
+        fname = _safe_filename(fname) or "document"
+
+        # 拡張子
+        ext_map = {
+            "application/pdf": ".pdf",
+            "text/html": ".html",
+            "application/xhtml+xml": ".html",
+            "application/zip": ".zip",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+            "application/vnd.ms-excel": ".xls",
+        }
+        if "." not in fname:
+            fname += ext_map.get(ctype, ".bin")
+
+        mime = ctype or ext_map_lookup_mime(fname)
+        if not mime:
+            mime = "application/octet-stream"
+
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        final_filename = f"{date_str}_{fname}"
+
+        # アップロード: Investment/EarningsDocs/<code>/<filename>
+        try:
+            service = self.drive_service.get_service()
+            inv_id = await self._get_investment_folder(service)
+            edocs_id = await self._get_or_create_folder(service, inv_id, EARNINGS_DOCS_FOLDER)
+            ticker_id = await self._get_or_create_folder(service, edocs_id, safe_code)
+
+            # 同名があれば末尾に連番を追加
+            existing = await self.drive_service.find_file(service, ticker_id, final_filename)
+            if existing:
+                stem, _, ext = final_filename.rpartition(".")
+                ts = datetime.datetime.now(JST).strftime("%H%M%S")
+                final_filename = f"{stem}_{ts}.{ext}" if ext else f"{final_filename}_{ts}"
+
+            from googleapiclient.http import MediaIoBaseUpload
+            import io as _io
+
+            media = MediaIoBaseUpload(
+                _io.BytesIO(content), mimetype=mime, resumable=True
+            )
+            file_metadata = {
+                "name": final_filename,
+                "parents": [ticker_id],
+                "mimeType": mime,
+            }
+            created = await asyncio.to_thread(
+                lambda: service.files()
+                .create(body=file_metadata, media_body=media, fields="id, webViewLink")
+                .execute()
+            )
+            file_id = created.get("id")
+            view_link = created.get("webViewLink", "")
+        except Exception as e:
+            logging.error(f"決算資料ファイルアップロード失敗: {e}", exc_info=True)
+            return {"ok": False, "error": f"Drive 保存失敗: {e}"}
+
+        # インデックス Markdown へ追記
+        index_filename = f"_index_{safe_code}.md"
+        now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+        entry = (
+            f"\n### 📄 {label or fname}\n"
+            f"- 保存日時: {now_str}\n"
+            f"- 形式: {mime}\n"
+            f"- サイズ: {len(content):,} bytes\n"
+            f"- 元URL: [{final_url}]({final_url})\n"
+            f"- Drive: [{final_filename}]({view_link})\n"
+        )
+        try:
+            service2 = self.drive_service.get_service()
+            existing_idx = await self.drive_service.find_file(service2, ticker_id, index_filename)
+            if existing_idx:
+                cur = await self.drive_service.read_text_file(service2, existing_idx)
+                await self.drive_service.update_text(service2, existing_idx, (cur or "") + entry)
+            else:
+                header = (
+                    f"---\nticker: {safe_code}\ntags: [investment, earnings_docs, manual]\n---\n\n"
+                    f"# 📥 {safe_code} 決算資料（手動保存ログ）\n"
+                )
+                await self.drive_service.upload_text(
+                    service2, ticker_id, index_filename, header + entry
+                )
+        except Exception as e:
+            logging.error(f"決算資料インデックス更新失敗: {e}")
+
+        return {
+            "ok": True,
+            "ticker": safe_code,
+            "filename": final_filename,
+            "size": len(content),
+            "mime": mime,
+            "drive_link": view_link,
+            "folder": f"Investment/{EARNINGS_DOCS_FOLDER}/{safe_code}",
+        }
+
+    async def save_earnings_document_from_bytes(
+        self, ticker: str, content: bytes, filename: str, label: str = "", mime: str = ""
+    ) -> dict:
+        """ローカルアップロード版（フロントから multipart で送られたバイト列を保存）。"""
+        if not self.drive_service:
+            return {"ok": False, "error": "Drive 未接続"}
+        if not content:
+            return {"ok": False, "error": "空のファイルです"}
+        if len(content) > 50 * 1024 * 1024:
+            return {"ok": False, "error": "50MBを超えるファイルは保存できません"}
+        market, code = _resolve_market(ticker)
+        safe_code = _safe_filename(code) or "UNKNOWN"
+        fname = _safe_filename(filename or "document") or "document"
+        if not mime:
+            mime = ext_map_lookup_mime(fname) or "application/octet-stream"
+        date_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        final_filename = f"{date_str}_{fname}"
+        try:
+            service = self.drive_service.get_service()
+            inv_id = await self._get_investment_folder(service)
+            edocs_id = await self._get_or_create_folder(service, inv_id, EARNINGS_DOCS_FOLDER)
+            ticker_id = await self._get_or_create_folder(service, edocs_id, safe_code)
+            existing = await self.drive_service.find_file(service, ticker_id, final_filename)
+            if existing:
+                stem, _, ext = final_filename.rpartition(".")
+                ts = datetime.datetime.now(JST).strftime("%H%M%S")
+                final_filename = f"{stem}_{ts}.{ext}" if ext else f"{final_filename}_{ts}"
+            from googleapiclient.http import MediaIoBaseUpload
+            import io as _io
+            media = MediaIoBaseUpload(_io.BytesIO(content), mimetype=mime, resumable=True)
+            file_metadata = {"name": final_filename, "parents": [ticker_id], "mimeType": mime}
+            created = await asyncio.to_thread(
+                lambda: service.files()
+                .create(body=file_metadata, media_body=media, fields="id, webViewLink")
+                .execute()
+            )
+            view_link = created.get("webViewLink", "")
+        except Exception as e:
+            logging.error(f"決算資料ローカル保存失敗: {e}", exc_info=True)
+            return {"ok": False, "error": f"Drive 保存失敗: {e}"}
+
+        # インデックス
+        index_filename = f"_index_{safe_code}.md"
+        now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+        entry = (
+            f"\n### 📄 {label or fname}\n"
+            f"- 保存日時: {now_str}\n"
+            f"- 形式: {mime} (ローカルアップロード)\n"
+            f"- サイズ: {len(content):,} bytes\n"
+            f"- Drive: [{final_filename}]({view_link})\n"
+        )
+        try:
+            service2 = self.drive_service.get_service()
+            existing_idx = await self.drive_service.find_file(service2, ticker_id, index_filename)
+            if existing_idx:
+                cur = await self.drive_service.read_text_file(service2, existing_idx)
+                await self.drive_service.update_text(service2, existing_idx, (cur or "") + entry)
+            else:
+                header = (
+                    f"---\nticker: {safe_code}\ntags: [investment, earnings_docs, manual]\n---\n\n"
+                    f"# 📥 {safe_code} 決算資料（手動保存ログ）\n"
+                )
+                await self.drive_service.upload_text(
+                    service2, ticker_id, index_filename, header + entry
+                )
+        except Exception as e:
+            logging.error(f"決算資料インデックス更新失敗(local): {e}")
+
+        return {
+            "ok": True,
+            "ticker": safe_code,
+            "filename": final_filename,
+            "size": len(content),
+            "mime": mime,
+            "drive_link": view_link,
+            "folder": f"Investment/{EARNINGS_DOCS_FOLDER}/{safe_code}",
         }
 
     async def run_ceo_crosscheck(

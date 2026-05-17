@@ -105,6 +105,7 @@
                     <div class="action-chips">
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('start')">▶ タスク開始</button>
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">■ タスク終了</button>
+                        <button class="chip-btn special" onclick="openMemoModal()" title="永久ノートに保存">📝 メモ</button>
                         <button class="chip-btn chip-more" onclick="toggleMoreChips()" id="chip-more-toggle">＋ その他</button>
                     </div>
                     <div class="action-chips-more hidden" id="action-chips-more">
@@ -217,6 +218,7 @@
                             <div class="card-header">
                                 <span class="card-icon">🎓</span>
                                 <span class="card-title">勉強</span>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openSrsReviewModal()" title="期限が来た暗記カードを復習">🔁 復習<span id="srs-due-badge" style="margin-left:4px;display:none;background:#ff5468;color:#fff;border-radius:8px;padding:1px 5px;font-size:0.65rem;">0</span></button>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openAddStudyItemModal()">＋ 追加</button>
                             </div>
                         </summary>
@@ -238,31 +240,6 @@
             <!-- ========== LOG TAB (OBSIDIAN/SLEEP/DIARY) ========== -->
             <div id="tab-log" class="tab-pane">
                 <div class="scroll-container">
-                    <div class="card summary-card">
-                        <div class="card-header">
-                            <span class="card-icon">📅</span>
-                            <span class="card-title">今日の振り返り</span>
-                            <button class="mini-link" onclick="generateDailySummaryForDate()" title="日付を指定して生成">📆 日付指定</button>
-                            <button class="mini-link" onclick="openDailySummaryEditor()">編集</button>
-                        </div>
-                        <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
-                        <div id="dash-daily-summary" class="card-body diary-content"></div>
-                    </div>
-                    <div class="card journal-card">
-                        <div class="card-header">
-                            <span class="card-icon">📔</span>
-                            <span class="card-title">デイリーノート</span>
-                            <button class="mini-link" onclick="openDailyJournalEditor()">編集</button>
-                        </div>
-                        <div id="dash-daily-journal" class="card-body diary-content"></div>
-                    </div>
-                    <div class="card diary-card">
-                        <div class="card-header">
-                            <span class="card-icon">📒</span>
-                            <span class="card-title">マネージャーの気づき</span>
-                        </div>
-                        <div id="dash-alter-log" class="card-body diary-content"></div>
-                    </div>
                     <div class="card next-actions-card">
                         <div class="card-header">
                             <span class="card-icon">🚀</span>
@@ -427,6 +404,33 @@
                             </div>
                         </div>
                     </div>
+                    <!-- 以下、振り返り系カード（ログタブ末尾へ移動）
+                         流れ: 主観の日記 → 客観の振り返り → マネージャーのメタ観察 -->
+                    <div class="card journal-card">
+                        <div class="card-header">
+                            <span class="card-icon">📔</span>
+                            <span class="card-title">デイリーノート</span>
+                            <button class="mini-link" onclick="openDailyJournalEditor()">編集</button>
+                        </div>
+                        <div id="dash-daily-journal" class="card-body diary-content"></div>
+                    </div>
+                    <div class="card summary-card">
+                        <div class="card-header">
+                            <span class="card-icon">📅</span>
+                            <span class="card-title">今日の振り返り</span>
+                            <button class="mini-link" onclick="generateDailySummaryForDate()" title="日付を指定して生成">📆 日付指定</button>
+                            <button class="mini-link" onclick="openDailySummaryEditor()">編集</button>
+                        </div>
+                        <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
+                        <div id="dash-daily-summary" class="card-body diary-content"></div>
+                    </div>
+                    <div class="card diary-card">
+                        <div class="card-header">
+                            <span class="card-icon">📒</span>
+                            <span class="card-title">マネージャーの気づき</span>
+                        </div>
+                        <div id="dash-alter-log" class="card-body diary-content"></div>
+                    </div>
                 </div>
             </div>
 
@@ -523,6 +527,7 @@
                                 <button class="chip-btn" onclick="runStockAudit()">🎯 憲法審査</button>
                                 <button class="chip-btn" onclick="runEarningsSchedule()">📅 決算予定</button>
                                 <button class="chip-btn" onclick="runEarningsDocuments()">📑 決算資料</button>
+                                <button class="chip-btn" onclick="openEarningsDocUploadModal()" title="企業サイトのPDF URLを指定してDriveに保存">📥 資料URL保存</button>
                                 <button class="chip-btn" onclick="openEdinetModal()">📁 EDINET書類</button>
                                 <button class="chip-btn" onclick="runPeerComparison()">🔬 同業比較</button>
                                 <button class="chip-btn" onclick="runNewsSentiment()">📰 ニュース</button>
@@ -762,6 +767,10 @@
                 <div style="display:flex;gap:8px;margin-bottom:8px;">
                     <button class="modal-btn submit" style="flex:1;font-size:0.88rem;" onclick="runScreener()">📊 機械スクリーニング</button>
                     <button class="modal-btn cancel" id="screener-analyze-btn" style="flex:1;font-size:0.88rem;" onclick="runScreenerAnalyze()" disabled>🤖 質的分析（選択銘柄）</button>
+                </div>
+                <div style="display:flex;gap:8px;margin-bottom:8px;">
+                    <button class="modal-btn submit" id="screener-gem-btn" style="flex:1;font-size:0.82rem;background:linear-gradient(135deg,#5468ff,#8a4dff);" onclick="openGeminiGemForScreener()" disabled title="銘柄情報をクリップボードへコピーしてGemini Gemを開きます">✨ Gem で質的分析（外部）</button>
+                    <button class="mini-link" style="flex-shrink:0;" onclick="setGeminiGemUrl()" title="Gem の URL を設定">⚙️</button>
                 </div>
                 <div style="display:flex;gap:8px;margin-bottom:10px;">
                     <button class="modal-btn cancel" id="screener-save-btn" style="flex:1;font-size:0.82rem;" onclick="saveScreenerResult()" disabled>💾 結果を保存</button>
@@ -1270,6 +1279,64 @@
         </div>
     </div>
 
+    <!-- ========== EARNINGS DOC UPLOAD MODAL (PDF URL → Drive) ========== -->
+    <div id="earnings-doc-upload-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:520px;">
+            <h3 style="margin-top:0;">📥 決算資料を保存（URL指定 / ファイル）</h3>
+            <p style="color:var(--text-secondary); font-size:0.82rem; margin-top:4px;">
+                企業サイトの PDF / HTML の URL を貼り付けるか、ローカルファイルを選択すると Google Drive の <code>Investment/EarningsDocs/&lt;ticker&gt;/</code> に保存します。
+            </p>
+            <div class="input-group mt-10">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">ティッカー</label>
+                <input type="text" id="edu-ticker" class="modern-input" style="padding:10px;" placeholder="例: 7203">
+            </div>
+            <div class="input-group mt-10">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">資料 URL（PDF/HTML）</label>
+                <input type="url" id="edu-url" class="modern-input" style="padding:10px;" placeholder="https://example.com/ir/2024Q4.pdf">
+            </div>
+            <div class="input-group mt-10">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">タイトル/メモ（任意）</label>
+                <input type="text" id="edu-label" class="modern-input" style="padding:10px;" placeholder="例: 2024年度通期決算説明資料">
+            </div>
+            <div class="input-group mt-10">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">またはローカルファイルを直接アップロード（任意）</label>
+                <input type="file" id="edu-file" accept="application/pdf,.pdf,.html,.htm" style="margin-top:6px;">
+            </div>
+            <div id="edu-status" style="margin-top:10px;font-size:0.8rem;color:var(--text-muted);"></div>
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeEarningsDocUploadModal()">閉じる</button>
+                <button class="modal-btn submit" id="edu-save-btn" onclick="saveEarningsDocFromUrl()">💾 保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== MEMO MODAL (永久ノート) ========== -->
+    <div id="memo-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:520px;">
+            <h3 style="margin-top:0;">📝 メモを永久ノートへ</h3>
+            <p style="color:var(--text-secondary); font-size:0.82rem; margin-top:4px;">
+                タイトルを入力すると、近い既存ノートを候補として提示します。
+            </p>
+            <div class="input-group mt-10">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">タイトル</label>
+                <input type="text" id="memo-title-input" class="modern-input" style="padding:10px;" placeholder="例: 投資憲法の改善メモ" oninput="memoTitleInput()">
+            </div>
+            <div id="memo-suggestions" class="modal-list" style="max-height:24vh;margin-top:6px;display:none;"></div>
+            <div class="input-group mt-10">
+                <label style="font-size:0.8rem; color:var(--text-secondary);">本文</label>
+                <textarea id="memo-body-input" class="modern-input auto-grow-textarea" style="padding:10px; min-height:140px; resize:vertical;" placeholder="メモ本文を入力..."></textarea>
+            </div>
+            <div id="memo-target-banner" style="display:none; margin-top:10px; padding:8px 10px; background:rgba(78,161,255,0.1); border-left:3px solid #4ea1ff; border-radius:4px; font-size:0.82rem;">
+                <span id="memo-target-text"></span>
+                <button class="mini-link" style="margin-left:8px;" onclick="memoClearTarget()">✕ 解除（新規作成）</button>
+            </div>
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeMemoModal()">閉じる</button>
+                <button class="modal-btn submit" id="memo-save-btn" onclick="saveMemoFromModal()">💾 保存</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== STUDY MODAL ========== -->
     <div id="study-modal" class="modal-overlay hidden">
         <div class="modal-card">
@@ -1296,10 +1363,48 @@
             <div id="study-step-active" style="display:none;">
                 <h3 id="study-current-subject">科目名</h3>
                 <div class="reading-timer-display" id="study-timer">00:00</div>
-                <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:14px;">
-                    気づき・要点をメモしよう
-                </p>
-                <textarea id="study-memo-input" class="modern-input" style="padding:10px; height:140px; resize:vertical; margin-top:8px;" placeholder="メモを書く..."></textarea>
+
+                <div class="study-tabs" style="display:flex;gap:4px;margin-top:12px;border-bottom:1px solid var(--border-glass);">
+                    <button type="button" class="study-tab-btn active" data-stab="free" onclick="studySwitchTab('free')" style="flex:1;padding:8px;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--text-primary);font-size:0.82rem;cursor:pointer;">📝 自由メモ</button>
+                    <button type="button" class="study-tab-btn" data-stab="cornell" onclick="studySwitchTab('cornell')" style="flex:1;padding:8px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);font-size:0.82rem;cursor:pointer;">📐 Cornell</button>
+                    <button type="button" class="study-tab-btn" data-stab="qa" onclick="studySwitchTab('qa')" style="flex:1;padding:8px;background:none;border:none;border-bottom:2px solid transparent;color:var(--text-secondary);font-size:0.82rem;cursor:pointer;">🃏 Q&A暗記</button>
+                </div>
+
+                <!-- 自由メモ -->
+                <div id="study-pane-free" class="study-pane" style="margin-top:10px;">
+                    <textarea id="study-memo-input" class="modern-input" style="padding:10px; height:160px; resize:vertical;" placeholder="メモを書く..."></textarea>
+                </div>
+
+                <!-- Cornell式 -->
+                <div id="study-pane-cornell" class="study-pane" style="margin-top:10px;display:none;">
+                    <p style="font-size:0.74rem;color:var(--text-muted);margin:0 0 6px;">右側に詳細ノート、左側にキーワード/質問、最後にサマリーを書く学習法です。</p>
+                    <div style="display:flex;gap:8px;">
+                        <div style="flex:1;min-width:0;">
+                            <label style="font-size:0.74rem;color:var(--text-secondary);">🔑 キーワード/質問</label>
+                            <textarea id="study-cornell-cues" class="modern-input" style="padding:8px;height:160px;width:100%;resize:vertical;font-size:0.85rem;" placeholder="覚えるべき言葉&#10;なぜ?&#10;いつ?"></textarea>
+                        </div>
+                        <div style="flex:1.7;min-width:0;">
+                            <label style="font-size:0.74rem;color:var(--text-secondary);">📓 ノート</label>
+                            <textarea id="study-cornell-notes" class="modern-input" style="padding:8px;height:160px;width:100%;resize:vertical;font-size:0.85rem;" placeholder="詳細を書く..."></textarea>
+                        </div>
+                    </div>
+                    <label style="font-size:0.74rem;color:var(--text-secondary);margin-top:6px;display:block;">📌 サマリー（学習後に自分の言葉で）</label>
+                    <textarea id="study-cornell-summary" class="modern-input" style="padding:8px;height:60px;resize:vertical;font-size:0.85rem;width:100%;" placeholder="この章/トピックの要点を1〜3文で..."></textarea>
+                </div>
+
+                <!-- Q&A 暗記 -->
+                <div id="study-pane-qa" class="study-pane" style="margin-top:10px;display:none;">
+                    <p style="font-size:0.74rem;color:var(--text-muted);margin:0 0 6px;">作成した Q&A は SRS（間隔反復）で復習スケジュールに登録されます。</p>
+                    <div style="display:flex;gap:6px;">
+                        <input type="text" id="study-qa-q" class="modern-input" style="flex:1;padding:8px;font-size:0.85rem;" placeholder="Q: 質問">
+                    </div>
+                    <textarea id="study-qa-a" class="modern-input" style="padding:8px;height:60px;resize:vertical;font-size:0.85rem;margin-top:6px;width:100%;" placeholder="A: 答え"></textarea>
+                    <div style="display:flex;gap:6px;margin-top:6px;">
+                        <button type="button" class="modal-btn submit" style="flex:1;font-size:0.82rem;" onclick="studyAddQA()">＋ カードに追加</button>
+                    </div>
+                    <div id="study-qa-list" style="margin-top:10px;max-height:180px;overflow-y:auto;font-size:0.82rem;"></div>
+                </div>
+
                 <div style="display:flex; gap:8px; margin-top:10px;">
                     <button class="modal-btn cancel" style="flex:1;" onclick="studyAttachImage()">📷 手書きを取り込む</button>
                 </div>
@@ -1311,6 +1416,40 @@
             </div>
         </div>
     </div>
+    <!-- ========== SRS REVIEW MODAL (暗記カード復習) ========== -->
+    <div id="srs-modal" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width:480px;">
+            <h3 style="margin-top:0;">🔁 暗記カード復習</h3>
+            <div id="srs-empty" style="display:none;padding:20px;text-align:center;color:var(--text-muted);">
+                期限が来たカードはありません。<br>👏 おつかれさま！
+            </div>
+            <div id="srs-card-area" style="display:none;">
+                <div id="srs-progress" style="font-size:0.78rem;color:var(--text-muted);margin-bottom:6px;"></div>
+                <div id="srs-subject" style="font-size:0.74rem;color:var(--text-secondary);margin-bottom:6px;"></div>
+                <div style="padding:14px;border:1px solid var(--border-glass);border-radius:8px;margin-bottom:10px;min-height:80px;">
+                    <div style="font-size:0.72rem;color:var(--text-muted);">Q</div>
+                    <div id="srs-q" style="font-size:1.0rem;line-height:1.5;margin-top:4px;"></div>
+                </div>
+                <div id="srs-a-wrap" style="display:none;padding:14px;border:1px solid var(--border-glass);border-radius:8px;margin-bottom:10px;background:rgba(78,161,255,0.07);">
+                    <div style="font-size:0.72rem;color:var(--text-muted);">A</div>
+                    <div id="srs-a" style="font-size:0.95rem;line-height:1.5;margin-top:4px;"></div>
+                </div>
+                <button class="modal-btn submit" id="srs-show-btn" style="width:100%;font-size:0.88rem;" onclick="srsShowAnswer()">答えを見る</button>
+                <div id="srs-grade-row" style="display:none;margin-top:8px;gap:6px;display:none;">
+                    <div style="display:flex;gap:6px;">
+                        <button class="modal-btn cancel" style="flex:1;font-size:0.8rem;" onclick="srsGrade(0)">😖 もう一度</button>
+                        <button class="modal-btn cancel" style="flex:1;font-size:0.8rem;background:#d9a23e;color:#fff;" onclick="srsGrade(1)">🤔 難しい</button>
+                        <button class="modal-btn submit" style="flex:1;font-size:0.8rem;" onclick="srsGrade(2)">👍 普通</button>
+                        <button class="modal-btn submit" style="flex:1;font-size:0.8rem;background:#3aa86b;" onclick="srsGrade(3)">😄 簡単</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-actions mt-20">
+                <button class="modal-btn cancel" onclick="closeSrsReviewModal()">閉じる</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== CELEBRATION MODAL ========== -->
     <div id="celebration-modal" class="modal-overlay hidden" onclick="closeCelebrationModal()">
         <div class="modal-card" style="text-align:center; max-width:320px; padding:40px 32px;">

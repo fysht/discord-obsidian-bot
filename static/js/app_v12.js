@@ -62,8 +62,13 @@ const escapeHtml = t => {
 };
 
 async function apiFetch(path, options = {}) {
-    const headers = { 'Content-Type': 'application/json', 'X-Api-Key': apiKey, ...(options.headers || {}) };
+    const isFormData = (typeof FormData !== 'undefined') && options.body instanceof FormData;
+    const baseHeaders = isFormData
+        ? { 'X-Api-Key': apiKey }
+        : { 'Content-Type': 'application/json', 'X-Api-Key': apiKey };
+    const headers = { ...baseHeaders, ...(options.headers || {}) };
     const fetchOpts = { ...options, headers };
+    delete fetchOpts._isFormData;
     if (options.signal) fetchOpts.signal = options.signal;
     const res = await fetch(`${API_BASE}${path}`, fetchOpts);
     if (res.status === 401) {
@@ -1120,7 +1125,7 @@ async function loadDashboard() {
         const diaryEl = $('#dash-alter-log');
         if (diaryEl) {
             if (data.alter_log) {
-                diaryEl.innerHTML = data.alter_log.replace(/\n/g, '<br>');
+                diaryEl.innerHTML = renderDailyMarkdown(data.alter_log);
             } else {
                 diaryEl.innerHTML = '<div class="loading-placeholder">観察日記はまだ生成されていません。</div>';
             }
@@ -1130,15 +1135,7 @@ async function loadDashboard() {
         const journalEl = $('#dash-daily-journal');
         if (journalEl) {
             if (data.daily_journal) {
-                // 軽量Markdownレンダリング
-                const jLines = data.daily_journal.split('\n');
-                journalEl.innerHTML = jLines.map(line => {
-                    const trimmed = line.trim();
-                    if (trimmed.startsWith('- ')) {
-                        return `<div style="padding:2px 0 2px 12px; border-left:2px solid rgba(0,186,152,0.3); margin:2px 0; font-size:0.88rem;">${escapeHtml(trimmed.slice(2))}</div>`;
-                    }
-                    return escapeHtml(line) + '<br>';
-                }).join('');
+                journalEl.innerHTML = renderDailyMarkdown(data.daily_journal);
             } else {
                 journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません。</div>';
             }
@@ -2356,6 +2353,115 @@ let studyState = {
     timerInterval: null,
 };
 
+// ============ MEMO MODAL (永久ノート) ============
+let _memoSelectedTarget = null;  // {id, folder, filename, name} or null
+let _memoSearchTimer = null;
+
+window.openMemoModal = (preset = {}) => {
+    _memoSelectedTarget = null;
+    const m = $('#memo-modal');
+    if (!m) return;
+    $('#memo-title-input').value = preset.title || '';
+    $('#memo-body-input').value = preset.body || '';
+    $('#memo-suggestions').style.display = 'none';
+    $('#memo-suggestions').innerHTML = '';
+    $('#memo-target-banner').style.display = 'none';
+    m.classList.remove('hidden');
+    setTimeout(() => { $('#memo-title-input')?.focus(); }, 50);
+};
+
+window.closeMemoModal = () => {
+    const m = $('#memo-modal');
+    if (m) m.classList.add('hidden');
+};
+
+window.memoClearTarget = () => {
+    _memoSelectedTarget = null;
+    $('#memo-target-banner').style.display = 'none';
+};
+
+window.memoTitleInput = () => {
+    const q = ($('#memo-title-input')?.value || '').trim();
+    if (_memoSearchTimer) clearTimeout(_memoSearchTimer);
+    if (q.length < 2) {
+        $('#memo-suggestions').style.display = 'none';
+        return;
+    }
+    _memoSearchTimer = setTimeout(async () => {
+        try {
+            const data = await apiFetch(`/api/notes/search?q=${encodeURIComponent(q)}&limit=8`);
+            const list = (data && data.candidates) || [];
+            const el = $('#memo-suggestions');
+            if (!list.length) {
+                el.style.display = 'none';
+                return;
+            }
+            el.innerHTML = list.map(c => `
+                <div class="modal-list-item" style="cursor:pointer;padding:8px 10px;border-bottom:1px solid var(--border-glass);" onclick='memoPickTarget(${JSON.stringify(c).replace(/'/g, "&#39;")})'>
+                    <div style="font-size:0.88rem;">📄 ${escapeHtml(c.name)}</div>
+                    <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(c.filename)}</div>
+                </div>`).join('');
+            el.style.display = 'block';
+        } catch (e) {
+            console.warn('memo search err', e);
+        }
+    }, 300);
+};
+
+window.memoPickTarget = (c) => {
+    if (!c) return;
+    if (!confirm(`既存ノート「${c.name}」に追記しますか？\nキャンセルすると新規ノートとして保存します。`)) {
+        _memoSelectedTarget = null;
+        $('#memo-target-banner').style.display = 'none';
+        return;
+    }
+    _memoSelectedTarget = c;
+    $('#memo-target-text').textContent = `追記先: ${c.name}`;
+    $('#memo-target-banner').style.display = 'block';
+    $('#memo-suggestions').style.display = 'none';
+};
+
+window.saveMemoFromModal = async () => {
+    const title = ($('#memo-title-input')?.value || '').trim();
+    const body = ($('#memo-body-input')?.value || '').trim();
+    if (!title && !body) {
+        showToast('タイトルか本文を入力してください', true);
+        return;
+    }
+    const btn = $('#memo-save-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    try {
+        let payload;
+        if (_memoSelectedTarget) {
+            payload = {
+                mode: 'append',
+                content: (title ? `### ${title}\n` : '') + body,
+                target_folder: _memoSelectedTarget.folder,
+                target_filename: _memoSelectedTarget.filename,
+                target_id: _memoSelectedTarget.id || '',
+            };
+        } else {
+            payload = {
+                mode: 'new',
+                title: title || 'メモ',
+                content: body,
+                category: 'other',
+            };
+        }
+        const data = await apiFetch('/api/save_note', { method: 'POST', body: JSON.stringify(payload) });
+        if (data && (data.status === 'success' || data.ok || data.success)) {
+            showToast(_memoSelectedTarget ? `✏️ 「${_memoSelectedTarget.name}」に追記しました` : '📝 永久ノートに保存しました');
+            closeMemoModal();
+        } else {
+            showToast('保存に失敗しました', true);
+        }
+    } catch (e) {
+        showToast(`通信エラー: ${e.message || e}`, true);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '💾 保存'; }
+    }
+};
+
 window.openStudyModal = async () => {
     studyResetSteps();
     $('#study-modal').classList.remove('hidden');
@@ -2409,6 +2515,14 @@ window.startStudy = async () => {
     studyState.startedAt = Date.now();
     $('#study-current-subject').textContent = subject;
     $('#study-memo-input').value = '';
+    const cc = $('#study-cornell-cues'); if (cc) cc.value = '';
+    const cn = $('#study-cornell-notes'); if (cn) cn.value = '';
+    const cs = $('#study-cornell-summary'); if (cs) cs.value = '';
+    const qq = $('#study-qa-q'); if (qq) qq.value = '';
+    const qa = $('#study-qa-a'); if (qa) qa.value = '';
+    window._studyDraftQA = [];
+    _renderStudyQADraft();
+    studySwitchTab('free');
     $('#study-step-select').style.display = 'none';
     $('#study-step-active').style.display = '';
 
@@ -2464,14 +2578,167 @@ window.abortStudy = () => {
     closeStudyModal();
 };
 
+// ============ STUDY: tabs + Cornell + Q&A + SRS ============
+window._studyDraftQA = []; // [{q, a}]
+
+window.studySwitchTab = (tab) => {
+    document.querySelectorAll('.study-tab-btn').forEach(b => {
+        const active = b.dataset.stab === tab;
+        b.classList.toggle('active', active);
+        b.style.borderBottomColor = active ? 'var(--accent)' : 'transparent';
+        b.style.color = active ? 'var(--text-primary)' : 'var(--text-secondary)';
+    });
+    document.querySelectorAll('.study-pane').forEach(p => { p.style.display = 'none'; });
+    const map = { free: '#study-pane-free', cornell: '#study-pane-cornell', qa: '#study-pane-qa' };
+    const sel = map[tab];
+    if (sel) { const el = $(sel); if (el) el.style.display = 'block'; }
+};
+
+window.studyAddQA = () => {
+    const q = ($('#study-qa-q')?.value || '').trim();
+    const a = ($('#study-qa-a')?.value || '').trim();
+    if (!q || !a) { showToast('Q と A の両方を入力してください', true); return; }
+    window._studyDraftQA.push({ q, a });
+    $('#study-qa-q').value = '';
+    $('#study-qa-a').value = '';
+    _renderStudyQADraft();
+};
+
+function _renderStudyQADraft() {
+    const el = $('#study-qa-list');
+    if (!el) return;
+    if (!window._studyDraftQA.length) { el.innerHTML = '<div style="color:var(--text-muted);font-size:0.78rem;padding:6px;">まだカードはありません。</div>'; return; }
+    el.innerHTML = window._studyDraftQA.map((p, i) => `
+        <div style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:4px;">
+            <div><span style="color:#4ea1ff;font-weight:700;">Q.</span> ${escapeHtml(p.q)}</div>
+            <div><span style="color:#7cd6a0;font-weight:700;">A.</span> ${escapeHtml(p.a)}</div>
+            <button class="mini-link" style="font-size:0.7rem;" onclick="window._studyDraftQA.splice(${i},1);_renderStudyQADraft();">✕ 削除</button>
+        </div>`).join('');
+}
+
+// ============ SRS storage (localStorage) ============
+const SRS_KEY = 'study_srs_cards_v1';
+// interval (days) by repetition stage
+const SRS_INTERVALS = [1, 3, 7, 14, 30, 60, 120];
+
+function _srsLoad() {
+    try { return JSON.parse(localStorage.getItem(SRS_KEY) || '[]'); } catch { return []; }
+}
+function _srsSave(arr) { localStorage.setItem(SRS_KEY, JSON.stringify(arr)); }
+
+function _srsAddCards(subject, qaList) {
+    if (!qaList || !qaList.length) return;
+    const now = Date.now();
+    const arr = _srsLoad();
+    for (const p of qaList) {
+        arr.push({
+            id: `${now}-${Math.random().toString(36).slice(2, 8)}`,
+            subject, q: p.q, a: p.a,
+            stage: 0,
+            due: now + SRS_INTERVALS[0] * 86400000,
+            created: now,
+        });
+    }
+    _srsSave(arr);
+    updateSrsDueBadge();
+}
+
+window.updateSrsDueBadge = () => {
+    const badge = $('#srs-due-badge');
+    if (!badge) return;
+    const due = _srsLoad().filter(c => c.due <= Date.now()).length;
+    if (due > 0) { badge.textContent = String(due); badge.style.display = 'inline-block'; }
+    else { badge.style.display = 'none'; }
+};
+
+let _srsQueue = [];
+let _srsIdx = 0;
+
+window.openSrsReviewModal = () => {
+    _srsQueue = _srsLoad().filter(c => c.due <= Date.now()).sort((a, b) => a.due - b.due);
+    _srsIdx = 0;
+    const m = $('#srs-modal');
+    if (m) m.classList.remove('hidden');
+    _renderSrsCard();
+};
+window.closeSrsReviewModal = () => {
+    const m = $('#srs-modal');
+    if (m) m.classList.add('hidden');
+    updateSrsDueBadge();
+};
+
+function _renderSrsCard() {
+    const empty = $('#srs-empty');
+    const area = $('#srs-card-area');
+    if (_srsIdx >= _srsQueue.length) {
+        if (empty) empty.style.display = 'block';
+        if (area) area.style.display = 'none';
+        return;
+    }
+    if (empty) empty.style.display = 'none';
+    if (area) area.style.display = 'block';
+    const c = _srsQueue[_srsIdx];
+    $('#srs-progress').textContent = `${_srsIdx + 1} / ${_srsQueue.length}`;
+    $('#srs-subject').textContent = `📚 ${c.subject || ''}`;
+    $('#srs-q').textContent = c.q;
+    $('#srs-a').textContent = c.a;
+    $('#srs-a-wrap').style.display = 'none';
+    $('#srs-show-btn').style.display = 'block';
+    $('#srs-grade-row').style.display = 'none';
+}
+
+window.srsShowAnswer = () => {
+    $('#srs-a-wrap').style.display = 'block';
+    $('#srs-show-btn').style.display = 'none';
+    $('#srs-grade-row').style.display = 'flex';
+};
+
+window.srsGrade = (grade) => {
+    // grade: 0=Again, 1=Hard, 2=Good, 3=Easy
+    const cur = _srsQueue[_srsIdx];
+    if (!cur) return;
+    const all = _srsLoad();
+    const idx = all.findIndex(x => x.id === cur.id);
+    if (idx >= 0) {
+        let stage = all[idx].stage;
+        if (grade === 0) stage = 0;
+        else if (grade === 1) stage = Math.max(0, stage); // same stage
+        else if (grade === 2) stage = Math.min(SRS_INTERVALS.length - 1, stage + 1);
+        else if (grade === 3) stage = Math.min(SRS_INTERVALS.length - 1, stage + 2);
+        all[idx].stage = stage;
+        all[idx].due = Date.now() + SRS_INTERVALS[stage] * 86400000;
+        all[idx].lastReviewed = Date.now();
+        _srsSave(all);
+    }
+    if (grade === 0) {
+        // 末尾に再投入
+        _srsQueue.push(cur);
+    }
+    _srsIdx += 1;
+    _renderSrsCard();
+};
+
+// ページロード時にバッジ更新
+document.addEventListener('DOMContentLoaded', () => { try { updateSrsDueBadge(); } catch {} });
+
 window.finishStudy = async () => {
-    const memo = $('#study-memo-input').value.trim();
+    const freeMemo = ($('#study-memo-input')?.value || '').trim();
+    const cCues = ($('#study-cornell-cues')?.value || '').trim();
+    const cNotes = ($('#study-cornell-notes')?.value || '').trim();
+    const cSum = ($('#study-cornell-summary')?.value || '').trim();
+    const cornellBlock = (cCues || cNotes || cSum)
+        ? `\n\n## 📐 Cornell\n### 🔑 Cues\n${cCues || '-'}\n\n### 📓 Notes\n${cNotes || '-'}\n\n### 📌 Summary\n${cSum || '-'}\n`
+        : '';
+    const qaBlock = window._studyDraftQA.length
+        ? '\n\n## 🃏 Q&A 暗記カード\n' + window._studyDraftQA.map(p => `Q: ${p.q}\nA: ${p.a}`).join('\n\n') + '\n'
+        : '';
     const subject = studyState.subject;
     const elapsedMin = studyState.startedAt
         ? Math.round((Date.now() - studyState.startedAt) / 60000)
         : 0;
 
-    if (memo) {
+    const memo = (freeMemo || '') + cornellBlock + qaBlock;
+    if (memo.trim()) {
         try {
             const memoWithTime = elapsedMin > 0
                 ? `${memo}\n\n（学習時間: ${elapsedMin}分）`
@@ -2488,6 +2755,12 @@ window.finishStudy = async () => {
     } else {
         showToast(`お疲れさま！${elapsedMin}分の学習を記録したよ`);
     }
+    // SRS にカード登録
+    if (window._studyDraftQA.length) {
+        _srsAddCards(subject, window._studyDraftQA);
+        showToast(`🃏 ${window._studyDraftQA.length} 枚を復習スケジュールに追加`);
+    }
+    window._studyDraftQA = [];
     sendActionCommandSilent(`「${subject}」の勉強を終了（${elapsedMin}分）`);
     closeStudyModal();
 };
@@ -6594,6 +6867,26 @@ window.loadDailySummary = async () => {
     }
 };
 
+// 共通: デイリー系カードの軽量 Markdown レンダラ
+// 「今日の振り返り」と同じ見た目を「デイリーノート」「マネージャーの気づき」にも適用する。
+function renderDailyMarkdown(text, opts = {}) {
+    const dateLabel = opts.dateLabel
+        ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;">${escapeHtml(opts.dateLabel)}</div>`
+        : '';
+    const html = (text || '')
+        .split('\n')
+        .map(line => {
+            if (/^### /.test(line)) return `<div style="margin:8px 0 4px;font-weight:700;font-size:0.88rem;color:var(--text-primary);">${escapeHtml(line.replace(/^### /, ''))}</div>`;
+            if (/^## /.test(line)) return `<div style="margin:10px 0 4px;font-weight:700;color:var(--accent);font-size:0.9rem;">${escapeHtml(line.replace(/^## /, ''))}</div>`;
+            if (/^# /.test(line)) return `<div style="margin:6px 0;font-weight:700;font-size:1rem;">${escapeHtml(line.replace(/^# /, ''))}</div>`;
+            if (/^[\-*] /.test(line)) return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;">${escapeHtml(line.replace(/^[\-*]\s+/, ''))}</div>`;
+            if (line.trim() === '') return '<div style="height:6px;"></div>';
+            return `<div style="font-size:0.88rem;line-height:1.6;">${escapeHtml(line)}</div>`;
+        })
+        .join('');
+    return dateLabel + html;
+}
+
 function renderDailySummaryCard(data, opts = {}) {
     const tEl = $('#dash-daily-summary');
     const qEl = $('#dash-daily-summary-questions');
@@ -6605,20 +6898,9 @@ function renderDailySummaryCard(data, opts = {}) {
     const preserveOnEmpty = !!opts.preserveOnEmpty;
 
     if (text) {
-        // 表示中のサマリーの日付ラベル
-        const dateLabel = displayDate
-            ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;">📅 ${escapeHtml(displayDate)} の振り返り</div>`
-            : '';
-        const html = text
-            .split('\n')
-            .map(line => {
-                if (/^## /.test(line)) return `<div style="margin:10px 0 4px;font-weight:700;color:var(--accent);font-size:0.9rem;">${escapeHtml(line.replace(/^## /, ''))}</div>`;
-                if (/^# /.test(line)) return `<div style="margin:6px 0;font-weight:700;font-size:1rem;">${escapeHtml(line.replace(/^# /, ''))}</div>`;
-                if (/^[\-*] /.test(line)) return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;">${escapeHtml(line.replace(/^[\-*]\s+/, ''))}</div>`;
-                return `<div style="font-size:0.88rem;line-height:1.6;">${escapeHtml(line)}</div>`;
-            })
-            .join('');
-        tEl.innerHTML = dateLabel + html;
+        tEl.innerHTML = renderDailyMarkdown(text, {
+            dateLabel: displayDate ? `📅 ${displayDate} の振り返り` : '',
+        });
     } else if (!preserveOnEmpty) {
         tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。</div>';
     }
@@ -7715,6 +7997,73 @@ window.runEarningsSchedule = async () => {
     }
 };
 
+window.openEarningsDocUploadModal = () => {
+    const m = $('#earnings-doc-upload-modal');
+    if (!m) return;
+    const t = ($('#invest-ticker-input')?.value || '').trim();
+    $('#edu-ticker').value = t || '';
+    $('#edu-url').value = '';
+    $('#edu-label').value = '';
+    const fileInput = $('#edu-file'); if (fileInput) fileInput.value = '';
+    $('#edu-status').textContent = '';
+    m.classList.remove('hidden');
+};
+
+window.closeEarningsDocUploadModal = () => {
+    const m = $('#earnings-doc-upload-modal');
+    if (m) m.classList.add('hidden');
+};
+
+window.saveEarningsDocFromUrl = async () => {
+    const ticker = ($('#edu-ticker')?.value || '').trim();
+    const url = ($('#edu-url')?.value || '').trim();
+    const label = ($('#edu-label')?.value || '').trim();
+    const fileInput = $('#edu-file');
+    const file = fileInput && fileInput.files && fileInput.files[0];
+    if (!ticker) { showToast('ティッカーを入力してください', true); return; }
+    if (!url && !file) { showToast('URL かファイルのどちらかを指定してください', true); return; }
+
+    const btn = $('#edu-save-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '保存中…'; }
+    $('#edu-status').textContent = 'Drive に保存中…';
+    try {
+        let data;
+        if (file) {
+            const fd = new FormData();
+            fd.append('ticker', ticker);
+            fd.append('label', label);
+            fd.append('file', file);
+            data = await apiFetch('/api/investment/earnings_documents/save_file', {
+                method: 'POST',
+                body: fd,
+                _isFormData: true,
+            });
+        } else {
+            data = await apiFetch('/api/investment/earnings_documents/save_url', {
+                method: 'POST',
+                body: JSON.stringify({ ticker, url, label }),
+            });
+        }
+        if (data && data.ok) {
+            const link = data.drive_link ? `\nDrive: ${data.drive_link}` : '';
+            $('#edu-status').innerHTML = `✅ 保存しました: <code>${escapeHtml(data.filename)}</code><br><small>保存先: ${escapeHtml(data.folder)}</small>` + (data.drive_link ? `<br><a href="${data.drive_link}" target="_blank" class="mini-link">📂 Drive で開く</a>` : '');
+            showToast(`📥 ${data.filename} を保存しました`);
+            $('#edu-url').value = '';
+            $('#edu-label').value = '';
+            if (fileInput) fileInput.value = '';
+        } else {
+            const err = (data && (data.error || data.detail)) || '保存に失敗しました';
+            $('#edu-status').textContent = `❌ ${err}`;
+            showToast(`保存失敗: ${err}`, true);
+        }
+    } catch (e) {
+        $('#edu-status').textContent = `❌ 通信エラー: ${e.message || e}`;
+        showToast(`通信エラー: ${e.message || e}`, true);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '💾 保存'; }
+    }
+};
+
 window.runEarningsDocuments = async () => {
     const ticker = _getTickerInput();
     if (!ticker) return;
@@ -7988,7 +8337,70 @@ function _setScreenerAnalyzeEnabled(enabled) {
         btn.disabled = !enabled;
         btn.style.opacity = enabled ? '1' : '0.5';
     }
+    const gemBtn = $('#screener-gem-btn');
+    if (gemBtn) {
+        gemBtn.disabled = !enabled;
+        gemBtn.style.opacity = enabled ? '1' : '0.5';
+    }
 }
+
+const GEMINI_GEM_URL_KEY = 'gemini_screener_gem_url';
+const GEMINI_GEM_URL_DEFAULT = 'https://gemini.google.com/gems/view';
+
+window.setGeminiGemUrl = () => {
+    const cur = localStorage.getItem(GEMINI_GEM_URL_KEY) || '';
+    const v = prompt('質的分析を行う Gemini Gem の URL を入力してください\n(例: https://gemini.google.com/gem/xxxxxxxxxxxx )', cur);
+    if (v === null) return;
+    const trimmed = v.trim();
+    if (!trimmed) {
+        localStorage.removeItem(GEMINI_GEM_URL_KEY);
+        showToast('Gem URL をクリアしました');
+        return;
+    }
+    if (!/^https?:\/\//i.test(trimmed)) {
+        showToast('URL は http(s):// で始めてください', true);
+        return;
+    }
+    localStorage.setItem(GEMINI_GEM_URL_KEY, trimmed);
+    showToast('Gem URL を保存しました');
+};
+
+window.openGeminiGemForScreener = async () => {
+    if (!_screenerCandidates || !_screenerCandidates.length) {
+        showToast('先に機械スクリーニングを実行してください', true);
+        return;
+    }
+    const checked = Array.from(document.querySelectorAll('.screener-cand-check')).filter(c => c.checked).map(c => parseInt(c.dataset.idx, 10));
+    const selected = (checked.length ? checked : _screenerCandidates.map((_, i) => i)).map(i => _screenerCandidates[i]).filter(Boolean);
+    if (!selected.length) {
+        showToast('銘柄が選択されていません', true);
+        return;
+    }
+    const data = _screenerLastResult || {};
+    const styleLabel = data.style_display || (data.styles || []).join(' / ') || '-';
+    const header = `# 機械スクリーニング結果 (${styleLabel})\n実行: ${data.executed_at || ''} / 基準日: ${data.data_as_of || ''} / 走査 ${data.scanned || '-'} → 通過 ${data.qualified || '-'} → 上位 ${selected.length} 件\n\n`;
+    const rows = selected.map((c, i) => {
+        const ps = c.price_snapshot || {};
+        const sigs = (c.signals || []).map(s => `${s.name}=${s.value}`).join(', ');
+        return `${i + 1}. ${c.code} ${c.name || ''}\n   セクター: ${c.sector || '-'} / スコア: ${c.score}\n   終値: ${ps.close ?? '-'} (${ps.change_pct ?? 0}%) / 52週: ${ps.low_52w ?? '-'}〜${ps.high_52w ?? '-'}\n   シグナル: ${sigs}`;
+    }).join('\n\n');
+    const promptHint = `\n\n---\n上記の銘柄について、直近の IR・ニュース・決算・投資憲法との整合性を踏まえて質的分析をお願いします。`;
+    const text = header + rows + promptHint;
+
+    try {
+        await navigator.clipboard.writeText(text);
+        showToast(`📋 ${selected.length} 銘柄の情報をコピーしました`);
+    } catch (e) {
+        console.warn('clipboard failed', e);
+        showToast('クリップボードへのコピーに失敗しました（ブラウザ権限を確認）', true);
+    }
+
+    const url = localStorage.getItem(GEMINI_GEM_URL_KEY) || GEMINI_GEM_URL_DEFAULT;
+    if (url === GEMINI_GEM_URL_DEFAULT) {
+        showToast('Gem URL が未設定です。⚙️ から固定 Gem の URL を設定してください', true);
+    }
+    window.open(url, '_blank', 'noopener');
+};
 
 function _renderScreenerResults(html) {
     const el = $('#screener-results');
