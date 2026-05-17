@@ -553,7 +553,9 @@ async def dashboard():
         return m.group(1).strip() if m else None
 
     alter_log = extract_alter_log(content)
+    alter_log_date = today_str if alter_log else ""
     daily_journal = extract_section(content, "## 📔 Daily Journal") or ""
+    daily_journal_date = today_str if daily_journal else ""
     next_actions_raw = extract_section(content, "## 🚀 Next Actions") or ""
     next_actions = next_actions_raw
     mit_raw = extract_section(content, "## 🎯 MIT") or ""
@@ -575,10 +577,13 @@ async def dashboard():
                     y_content = await chat_service.drive_service.read_text_file(service, y_fid)
                     if not alter_log:
                         alter_log = extract_alter_log(y_content)
-                        if alter_log: alter_log = f"【昨日の分析】\n{alter_log}"
+                        if alter_log:
+                            alter_log_date = yesterday_str
                     if not daily_journal:
                         dj = extract_section(y_content, "## 📔 Daily Journal")
-                        if dj: daily_journal = f"【昨日のジャーナル】\n{dj}"
+                        if dj:
+                            daily_journal = dj
+                            daily_journal_date = yesterday_str
                     if not next_actions:
                         na = extract_section(y_content, "## 🚀 Next Actions")
                         if na: next_actions = na
@@ -654,6 +659,8 @@ async def dashboard():
         "google_tasks_work": google_tasks_work, "google_tasks_private": google_tasks_private,
         "habits": habits, "weather": weather_data, "news": news, "sleep": sleep_stats,
         "daily_journal": daily_journal,
+        "daily_journal_date": daily_journal_date,
+        "alter_log_date": alter_log_date,
         "next_actions": next_actions,
         "mit": mit_items,
     }

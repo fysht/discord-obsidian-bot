@@ -1125,7 +1125,10 @@ async function loadDashboard() {
         const diaryEl = $('#dash-alter-log');
         if (diaryEl) {
             if (data.alter_log) {
-                diaryEl.innerHTML = renderDailyMarkdown(data.alter_log);
+                const d = data.alter_log_date || '';
+                diaryEl.innerHTML = renderDailyMarkdown(data.alter_log, {
+                    dateLabel: d ? `📅 ${d} のメタ観察` : '',
+                });
             } else {
                 diaryEl.innerHTML = '<div class="loading-placeholder">観察日記はまだ生成されていません。</div>';
             }
@@ -1135,7 +1138,10 @@ async function loadDashboard() {
         const journalEl = $('#dash-daily-journal');
         if (journalEl) {
             if (data.daily_journal) {
-                journalEl.innerHTML = renderDailyMarkdown(data.daily_journal);
+                const d = data.daily_journal_date || '';
+                journalEl.innerHTML = renderDailyMarkdown(data.daily_journal, {
+                    dateLabel: d ? `📅 ${d} のジャーナル` : '',
+                });
             } else {
                 journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません。</div>';
             }
