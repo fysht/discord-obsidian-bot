@@ -106,6 +106,29 @@ class TechnicalSignals:
             return 0.0
         return (new - old) / old
 
+    @staticmethod
+    def avg_wick_ratio(open_s, high, low, close, n: int = 10) -> tuple[float, float]:
+        """直近 n 本の (上ひげ平均比, 下ひげ平均比) を全足レンジ比で返す。
+
+        上ひげ比 = (high - max(open, close)) / (high - low)
+        下ひげ比 = (min(open, close) - low)  / (high - low)
+        """
+        import pandas as pd  # type: ignore
+        if len(close) < n or len(open_s) < n:
+            return 0.0, 0.0
+        o = open_s.tail(n).reset_index(drop=True)
+        h = high.tail(n).reset_index(drop=True)
+        l = low.tail(n).reset_index(drop=True)
+        c = close.tail(n).reset_index(drop=True)
+        rng = (h - l).replace(0, float("nan"))
+        body_high = pd.concat([o, c], axis=1).max(axis=1)
+        body_low = pd.concat([o, c], axis=1).min(axis=1)
+        upper = ((h - body_high) / rng).dropna()
+        lower = ((body_low - l) / rng).dropna()
+        u = float(upper.mean()) if len(upper) else 0.0
+        d = float(lower.mean()) if len(lower) else 0.0
+        return u, d
+
 
 # --- データクラス ---
 
@@ -287,6 +310,9 @@ class CreepingBreakoutStrategy(StyleStrategy):
         FilterDef("low_volatility", "ATR/Close < 3%（低ボラ）", "値動きが激しすぎない", True),
         FilterDef("no_big_pop", "直近10日 大陽線（+5%超）なし", "大跳ねしていない", True),
         FilterDef("no_prev_low_break", "直近5日 前日安値割れなし", "押し目が浅い", True),
+        # 【品質】ひげが長くない（騙し抑制）
+        FilterDef("short_upper_wick", "上ひげ平均 ≤ 35%", "戻り売りに押されていない", True),
+        FilterDef("short_lower_wick", "下ひげ平均 ≤ 35%", "押し戻しが軽い", True),
     ]
 
     def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
@@ -327,6 +353,11 @@ class CreepingBreakoutStrategy(StyleStrategy):
         vol_ratio = TechnicalSignals.volume_surge_ratio(volume, 5, 20)
         ret_5d = TechnicalSignals.return_pct(close, 5)
 
+        open_s = df["Open"] if "Open" in df.columns else close
+        avg_upper_wick, avg_lower_wick = TechnicalSignals.avg_wick_ratio(open_s, high, low, close, n=10)
+        short_upper = avg_upper_wick <= 0.35
+        short_lower = avg_lower_wick <= 0.35
+
         sigs = [
             # 【位置】高値圏
             Signal("52週高値乖離 ≤ 5%", f"{gap * 100:.2f}%", "≤5.00%", is_near),
@@ -344,11 +375,14 @@ class CreepingBreakoutStrategy(StyleStrategy):
             Signal("ATR/Close < 3%（低ボラ）", f"{atr_pct * 100:.2f}%" if atr_pct else "N/A", "<3.00%", low_vol),
             Signal("直近10日 大陽線（+5%超）なし", f"最大{max_daily_ret * 100:+.2f}%", "≤+5.00%", no_big_pop),
             Signal("直近5日 前日安値割れなし", f"{breaks}回" if breaks < 99 else "N/A", "0回", no_prev_low_break),
+            Signal("上ひげ平均 ≤ 35%", f"{avg_upper_wick * 100:.1f}%", "≤35%", short_upper),
+            Signal("下ひげ平均 ≤ 35%", f"{avg_lower_wick * 100:.1f}%", "≤35%", short_lower),
         ]
         signal_keys = [
             "near_high", "above_sma200",
             "up_days", "ret_5d", "vol_increase",
             "low_volatility", "no_big_pop", "no_prev_low_break",
+            "short_upper_wick", "short_lower_wick",
         ]
 
         bonus = 0.0

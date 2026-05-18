@@ -4654,6 +4654,26 @@ async def screener_job(job_id: str):
     return await cog.get_job_status(job_id)
 
 
+class ScreenerCrossFilterRequest(BaseModel):
+    candidates: List[dict]
+    secondary_style: str
+    enabled_filters: Optional[List[str]] = None
+
+
+@router.post("/investment/screener/cross_filter", dependencies=[Depends(verify_api_key)])
+async def screener_cross_filter(req: ScreenerCrossFilterRequest):
+    cog = _get_screener_cog()
+    if not req.candidates:
+        raise HTTPException(status_code=422, detail="candidates は1件以上必要です")
+    if not req.secondary_style:
+        raise HTTPException(status_code=422, detail="secondary_style を指定してください")
+    return await cog.apply_secondary_style(
+        candidates=req.candidates,
+        secondary_style=req.secondary_style,
+        enabled_filters=req.enabled_filters,
+    )
+
+
 # =========================================================
 # 注目銘柄 (Watchlist)
 # =========================================================
@@ -4827,6 +4847,19 @@ def _schedule_setting_key(task_key: str, field: str) -> str:
     return f"schedule.{task_key}.{field}"
 
 
+# 固定時刻（@tasks.loop(time=...) でハードコードされており設定不可）の自動配信一覧。
+# UI で「ここにある」と分かるよう読取専用で見せる。
+FIXED_SCHEDULE_CATALOG = [
+    {"key": "auto_market_sentiment",   "label": "市場の地合い",         "time": "06:30", "note": "保有銘柄基準の朝の地合いレポート"},
+    {"key": "auto_alerts_earnings",    "label": "価格アラート＋決算予定", "time": "07:00", "note": "保有銘柄の当日決算予定通知"},
+    {"key": "fitbit_morning",          "label": "Fitbit 朝同期",       "time": "08:00", "note": "睡眠・心拍などのデータ取得"},
+    {"key": "auto_news_sentiment",     "label": "保有銘柄ニュースセンチメント", "time": "08:30", "note": "ログタブの通知ログに保存"},
+    {"key": "cost_alert",              "label": "コストアラート",       "time": "09:00", "note": "Gemini API 利用コストの監視"},
+    {"key": "fitbit_evening",          "label": "Fitbit 夕同期",       "time": "22:15", "note": "日中アクティビティの取り込み"},
+    {"key": "fitbit_night",            "label": "Fitbit 夜同期",       "time": "23:00", "note": "睡眠開始前の最終同期"},
+]
+
+
 @router.get("/settings/schedules", dependencies=[Depends(verify_api_key)])
 async def settings_schedules_get():
     from api.database import get_app_setting
@@ -4846,7 +4879,7 @@ async def settings_schedules_get():
             "time": time_str,
             "dow": dow if dow in _VALID_DOW else default_dow,
         })
-    return {"ok": True, "items": items}
+    return {"ok": True, "items": items, "fixed": FIXED_SCHEDULE_CATALOG}
 
 
 class SettingsSchedulesRequest(BaseModel):
@@ -4880,6 +4913,60 @@ async def settings_schedules_post(req: SettingsSchedulesRequest):
         # dow
         if "dow" in v and v["dow"] in _VALID_DOW:
             await set_app_setting(_schedule_setting_key(k, "dow"), v["dow"])
+        saved += 1
+    return {"ok": True, "saved": saved}
+
+
+# ==========================================================
+# マネージャー通知ログ（長文の自動通知をチャットから分離）
+# ==========================================================
+
+@router.get("/manager/notices", dependencies=[Depends(verify_api_key)])
+async def manager_notices_get(limit: int = 30):
+    from api.database import list_manager_notices
+    try:
+        items = await list_manager_notices(limit=max(1, min(int(limit), 100)))
+    except Exception as e:
+        logging.error(f"manager_notices fetch error: {e}")
+        items = []
+    return {"ok": True, "items": items}
+
+
+# ==========================================================
+# Gemini Gem URL（設定画面で管理する外部 Gem の URL）
+# ==========================================================
+
+GEM_URL_CATALOG = [
+    ("investment_screener", "スクリーナー質的分析"),
+]
+
+
+@router.get("/settings/gem_urls", dependencies=[Depends(verify_api_key)])
+async def settings_gem_urls_get():
+    from api.database import get_app_setting
+    items = []
+    for key, label in GEM_URL_CATALOG:
+        url = await get_app_setting(f"gem_url.{key}", "")
+        items.append({"key": key, "label": label, "url": url})
+    return {"ok": True, "items": items}
+
+
+class SettingsGemUrlsRequest(BaseModel):
+    values: dict  # {key: url, ...}
+
+
+@router.post("/settings/gem_urls", dependencies=[Depends(verify_api_key)])
+async def settings_gem_urls_post(req: SettingsGemUrlsRequest):
+    from api.database import set_app_setting
+    valid_keys = {k for k, _ in GEM_URL_CATALOG}
+    saved = 0
+    for k, v in (req.values or {}).items():
+        if k not in valid_keys:
+            continue
+        url = (v or "").strip()
+        if url and not re.match(r"^https?://", url, flags=re.IGNORECASE):
+            continue
+        await set_app_setting(f"gem_url.{k}", url)
         saved += 1
     return {"ok": True, "saved": saved}
 

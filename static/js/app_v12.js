@@ -174,6 +174,14 @@ window.openSettingsModal = async () => {
                         </div>
                     </details>
 
+                    <!-- Gemini Gem URL -->
+                    <details style="margin-bottom:10px;">
+                        <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">🔗 Gemini Gem URL</summary>
+                        <div id="gem-urls-body" style="padding:8px 0;">
+                            <div class="loading-placeholder">読み込み中…</div>
+                        </div>
+                    </details>
+
                     <!-- マネージャー連絡スケジュール -->
                     <details style="margin-bottom:10px;">
                         <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:6px 0;">📅 マネージャー連絡スケジュール</summary>
@@ -194,7 +202,56 @@ window.openSettingsModal = async () => {
     modal.classList.remove('hidden');
     loadCostMeter();
     loadGeminiModelSettings();
+    loadGemUrls();
     loadScheduleSettings();
+};
+
+window.loadGemUrls = async () => {
+    const body = document.getElementById('gem-urls-body');
+    if (!body) return;
+    body.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
+    try {
+        const data = await apiFetch('/api/settings/gem_urls');
+        const items = (data && data.items) || [];
+        if (!items.length) {
+            body.innerHTML = '<div class="loading-placeholder">登録対象がありません。</div>';
+            return;
+        }
+        body.innerHTML = items.map(it => `
+            <div style="padding:6px 0;border-bottom:1px solid var(--border-glass);">
+                <div style="font-size:0.82rem;margin-bottom:4px;">${escapeHtml(it.label)}</div>
+                <input type="url" class="modern-input gem-url-input" data-key="${escapeHtml(it.key)}"
+                    value="${escapeHtml(it.url || '')}"
+                    placeholder="https://gemini.google.com/gem/xxxxxxxxxxxx"
+                    style="width:100%;font-size:0.78rem;padding:6px;">
+            </div>
+        `).join('') + `
+            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:6px;">空欄で保存するとクリアされます。Gem URL を設定すると外部 Gem 起動ボタンから直接開けます。</div>
+            <button class="modal-btn submit" style="width:100%;margin-top:10px;" onclick="saveGemUrls()">Gem URL を保存</button>
+        `;
+    } catch {
+        body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
+    }
+};
+
+window.saveGemUrls = async () => {
+    const values = {};
+    document.querySelectorAll('.gem-url-input').forEach(inp => {
+        const k = inp.dataset.key;
+        if (!k) return;
+        values[k] = (inp.value || '').trim();
+    });
+    try {
+        const r = await apiFetch('/api/settings/gem_urls', { method: 'POST', body: JSON.stringify({ values }) });
+        if (r && r.ok) {
+            showToast('Gem URL を保存しました');
+            _gemUrlCache = null; // キャッシュをクリア
+        } else {
+            showToast('保存に失敗しました', true);
+        }
+    } catch (e) {
+        showToast(`通信エラー: ${e.message || e}`, true);
+    }
 };
 
 // Gemini モデル選択肢（バックエンド KNOWN_MODELS と対応）
@@ -332,9 +389,28 @@ window.loadScheduleSettings = async () => {
                 ${desc}
             </div>`;
         }).join('');
+        const fixed = data.fixed || [];
+        const fixedHtml = fixed.length ? `
+            <details style="margin-top:10px;border-top:1px dashed var(--border-glass);padding-top:8px;">
+                <summary style="cursor:pointer;font-size:0.78rem;color:var(--text-secondary);">🔒 自動タスク（時刻固定・読取専用）</summary>
+                <div style="padding:6px 4px;">
+                    ${fixed.map(f => `
+                        <div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-glass);">
+                            <span style="font-family:monospace;font-size:0.78rem;color:#4ea1ff;min-width:46px;">${escapeHtml(f.time)}</span>
+                            <span style="font-size:0.8rem;flex:1;">
+                                <b>${escapeHtml(f.label)}</b>
+                                <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(f.note || '')}</div>
+                            </span>
+                        </div>
+                    `).join('')}
+                    <div style="font-size:0.68rem;color:var(--text-muted);margin-top:6px;">これらは ON/OFF・時刻変更ができないタスクです。コード側で固定されています。</div>
+                </div>
+            </details>
+        ` : '';
         body.innerHTML = rows + `
             <div style="font-size:0.7rem;color:var(--text-muted);margin-top:8px;">⏱ 設定変更は次の実行サイクル（最大1分）から反映されます。Bot 再起動は不要です。</div>
             <button class="modal-btn submit" style="width:100%;margin-top:10px;" onclick="saveScheduleSettings()">スケジュールを保存</button>
+            ${fixedHtml}
         `;
     } catch (e) {
         body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
@@ -1203,9 +1279,40 @@ async function loadDashboard() {
 
         loadStockedLinks();
         loadEnglishPhrases();
+        loadManagerNotices();
 
     } catch (err) { console.error(err); }
 }
+
+window.loadManagerNotices = async () => {
+    const el = document.getElementById('dash-manager-notices');
+    if (!el) return;
+    try {
+        const data = await apiFetch('/api/manager/notices?limit=30');
+        const items = (data && data.items) || [];
+        if (!items.length) {
+            el.innerHTML = '<div class="loading-placeholder">まだ通知ログはありません。</div>';
+            return;
+        }
+        el.innerHTML = items.map(it => {
+            const ts = (it.created_at || '').replace('T', ' ').slice(0, 16);
+            const cat = escapeHtml(it.category || '');
+            const title = escapeHtml(it.title || '通知');
+            const body = renderDailyMarkdown ? renderDailyMarkdown(it.body || '') : escapeHtml(it.body || '');
+            return `<details class="notice-item" style="border-bottom:1px solid var(--border-glass);padding:6px 0;">
+                <summary style="cursor:pointer;display:flex;gap:8px;align-items:center;">
+                    <span style="font-size:0.75rem;color:var(--text-muted);">${ts}</span>
+                    <span class="na-list-badge">${cat}</span>
+                    <b>${title}</b>
+                </summary>
+                <div class="diary-content" style="padding:8px 4px;">${body}</div>
+            </details>`;
+        }).join('');
+    } catch (e) {
+        el.innerHTML = '<div class="loading-placeholder">通知ログの取得に失敗しました。</div>';
+    }
+};
+window.reloadManagerNotices = () => loadManagerNotices();
 
 let _currentWorkTasks = [];
 let _currentPrivateTasks = [];
@@ -7405,8 +7512,8 @@ const TUTORIAL_SLIDES = [
         body: `<p>このアプリは <b>5つのタブ</b>でできています。</p>
         <div class="tut-grid">
             <div class="tut-card"><b>💬 チャット</b><br><small>マネージャーAI と対話</small></div>
-            <div class="tut-card"><b>📅 予定</b><br><small>MIT・カレンダー・タスク</small></div>
-            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・食事・支出・日記</small></div>
+            <div class="tut-card"><b>📅 予定</b><br><small>MIT・次のアクション・カレンダー・タスク</small></div>
+            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・食事・支出・日記・マネージャー通知ログ</small></div>
             <div class="tut-card"><b>📰 情報</b><br><small>天気・ニュース・リンク</small></div>
             <div class="tut-card"><b>💹 投資</b><br><small>銘柄分析・スクリーナー</small></div>
         </div>
@@ -7603,7 +7710,18 @@ const TUTORIAL_SLIDES = [
             <li>📅 <b>今日の振り返り</b>: マネージャーが1日の出来事を要約。今日未生成なら昨日分を表示</li>
             <li>📔 <b>デイリーノート</b>: Obsidian の DailyNotes。「編集」ボタンで内容を書き換え可能</li>
             <li>📒 <b>マネージャーの気づき</b>: 対話から見つけた傾向・パターンの観察ノート</li>
-            <li>🚀 <b>次のアクション</b>: マネージャーが提案する次の一手</li>
+            <li>📨 <b>マネージャー通知ログ</b>: 投資系などの長文自動配信はここに溜まります</li>
+        </ul>`
+    },
+    {
+        title: '予定タブの並び',
+        target: 'schedule',
+        body: `<p>予定タブのカードは次の順に並びます。</p>
+        <ul>
+            <li>🎯 <b>今日のMIT</b> — 今日必ず終わらせたい3件</li>
+            <li>🚀 <b>次のアクション</b> — マネージャーが提案する次の一手（情報タブから移設）</li>
+            <li>📅 <b>カレンダー</b> — Google Calendar の今日の予定</li>
+            <li>💼/🏠 <b>仕事 / プライベート</b> — Google Tasks</li>
         </ul>`
     },
     {
@@ -7634,10 +7752,22 @@ const TUTORIAL_SLIDES = [
         body: `<p>日本株を機械的にフィルタして、注目銘柄を保存できます。</p>
         <ul>
             <li>🔎 「じわじわ高値ブレイク / バリュー / グロース」のスタイル別スクリーニング</li>
+            <li>🕯️ じわじわ高値ブレイクは <b>上ひげ・下ひげが長くない</b>ことも条件に含めて騙しを抑制</li>
             <li>🔗 複数スタイルの <b>AND/OR 検索</b>（OR=いずれか / AND=すべて合致）</li>
+            <li>🔀 <b>別スタイルで再評価</b>：機械スクリーニング結果に対し、別スタイル（例：バリュー）の合否を一括チェック</li>
             <li>⭐ 結果から「注目」ボタンでウォッチリストに追加</li>
             <li>🤖 質的分析ボタンで Gemini が直近 IR・ニュース・決算を補強</li>
             <li>📚 NotebookLM ノートURLを書籍編集モーダルに保存して「↗開く」で起動</li>
+        </ul>`
+    },
+    {
+        title: 'マネージャー通知ログ',
+        target: 'log',
+        body: `<p>📨 朝の市場の地合い・保有銘柄ニュースセンチメントなど <b>長文の自動配信</b> は、チャットを埋めないよう「ログ」タブの「マネージャー通知ログ」に格納されます。</p>
+        <ul>
+            <li>チャットには「更新したよ」という短いお知らせのみ届きます</li>
+            <li>ログタブで日付付きの一覧から本文を確認できます（折りたたみ式）</li>
+            <li>対象：市場の地合い / 価格アラート（多数）/ 保有銘柄ニュースセンチメント など</li>
         </ul>`
     },
     {
@@ -7645,19 +7775,19 @@ const TUTORIAL_SLIDES = [
         target: null,
         body: `<p>⚙ 設定 → 「📅 マネージャー連絡スケジュール」で時刻と有効/無効を編集できます。</p>
         <ul>
-            <li>朝のMIT・朝のルーチン・夜の振り返り・週次レビュー など</li>
+            <li>朝のMIT 06:30 / 朝のルーチン 07:00 / Obsidian振り返り 20:00 / 習慣チェック <b>20:30</b> / 明日の予定 21:00 / 週次レビュー <b>21:30（日）</b> / 夜の振り返り 22:00 など</li>
             <li>各項目を有効/無効化できる（チェックボックス）</li>
             <li>時刻と曜日（毎日/月～日）を変更可能、Bot 再起動不要で即時反映</li>
+            <li>🔒 末尾の「自動タスク（時刻固定）」で Fitbit 同期や投資系朝刊などの固定タスクも一覧できます</li>
         </ul>`
     },
     {
-        title: 'Gemini モデル選択',
+        title: 'Gemini モデル選択 / Gem URL',
         target: null,
-        body: `<p>⚙ 設定 → 「🧠 Gemini モデル選択」で、機能ごとに Gemini モデルを切替できます。</p>
+        body: `<p>⚙ 設定の Gemini 関連は2つ。</p>
         <ul>
-            <li>⚡ Flash 系（低コスト・高速）/ 🧠 Pro 系（高精度）</li>
-            <li>🔬 Preview / カスタム ID 入力にも対応</li>
-            <li>機能例: スクリーナー質的分析・銘柄スナップショット・地合い分析・マネージャー会話 など</li>
+            <li>🧠 <b>Gemini モデル選択</b>: 機能ごとに Flash / Pro / Preview / カスタム ID を切替</li>
+            <li>🔗 <b>Gemini Gem URL</b>: スクリーナー外部質的分析用の Gem URL を保存（旧 ⚙ プロンプト設定はこちらに統合済み）</li>
         </ul>`
     },
     {
@@ -8352,23 +8482,43 @@ function _setScreenerAnalyzeEnabled(enabled) {
 
 const GEMINI_GEM_URL_KEY = 'gemini_screener_gem_url';
 const GEMINI_GEM_URL_DEFAULT = 'https://gemini.google.com/gems/view';
+// 設定画面で保存された Gem URL のキャッシュ {key: url}
+let _gemUrlCache = null;
 
+async function _fetchGemUrls() {
+    try {
+        const data = await apiFetch('/api/settings/gem_urls');
+        const out = {};
+        (data.items || []).forEach(it => { out[it.key] = it.url || ''; });
+        // 旧 localStorage からの自動移行（1回限り）
+        const legacy = localStorage.getItem(GEMINI_GEM_URL_KEY);
+        if (legacy && !out.investment_screener) {
+            try {
+                await apiFetch('/api/settings/gem_urls', {
+                    method: 'POST',
+                    body: JSON.stringify({ values: { investment_screener: legacy } }),
+                });
+                out.investment_screener = legacy;
+            } catch {}
+            localStorage.removeItem(GEMINI_GEM_URL_KEY);
+        }
+        _gemUrlCache = out;
+        return out;
+    } catch {
+        _gemUrlCache = {};
+        return {};
+    }
+}
+
+async function _getGemUrl(key) {
+    if (!_gemUrlCache) await _fetchGemUrls();
+    return (_gemUrlCache || {})[key] || '';
+}
+
+// 旧式（プロンプト）：設定画面へ誘導するのみ
 window.setGeminiGemUrl = () => {
-    const cur = localStorage.getItem(GEMINI_GEM_URL_KEY) || '';
-    const v = prompt('質的分析を行う Gemini Gem の URL を入力してください\n(例: https://gemini.google.com/gem/xxxxxxxxxxxx )', cur);
-    if (v === null) return;
-    const trimmed = v.trim();
-    if (!trimmed) {
-        localStorage.removeItem(GEMINI_GEM_URL_KEY);
-        showToast('Gem URL をクリアしました');
-        return;
-    }
-    if (!/^https?:\/\//i.test(trimmed)) {
-        showToast('URL は http(s):// で始めてください', true);
-        return;
-    }
-    localStorage.setItem(GEMINI_GEM_URL_KEY, trimmed);
-    showToast('Gem URL を保存しました');
+    showToast('Gem URL は ⚙️ 設定 →「🔗 Gemini Gem URL」から登録してください');
+    try { if (typeof openSettingsModal === 'function') openSettingsModal(); } catch {}
 };
 
 window.openGeminiGemForScreener = async () => {
@@ -8401,9 +8551,10 @@ window.openGeminiGemForScreener = async () => {
         showToast('クリップボードへのコピーに失敗しました（ブラウザ権限を確認）', true);
     }
 
-    const url = localStorage.getItem(GEMINI_GEM_URL_KEY) || GEMINI_GEM_URL_DEFAULT;
-    if (url === GEMINI_GEM_URL_DEFAULT) {
-        showToast('Gem URL が未設定です。⚙️ から固定 Gem の URL を設定してください', true);
+    const stored = await _getGemUrl('investment_screener');
+    const url = stored || GEMINI_GEM_URL_DEFAULT;
+    if (!stored) {
+        showToast('Gem URL が未設定です。⚙️ 設定 → 「🔗 Gemini Gem URL」から登録してください', true);
     }
     window.open(url, '_blank', 'noopener');
 };
@@ -8585,6 +8736,96 @@ function _renderScreenerCandidates(data) {
         </div>`;
     }).join('');
     el.innerHTML = andBanner + meta + nearMissBanner + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
+
+    // 副条件（スタイル横断フィルタ）UI: スタイル選択肢の補充とボタン有効化
+    _populateSecondaryStyleSelect();
+    const secBtn = $('#screener-secondary-btn');
+    if (secBtn) {
+        secBtn.disabled = cands.length === 0;
+        secBtn.style.opacity = cands.length ? '1' : '0.5';
+    }
+}
+
+function _populateSecondaryStyleSelect() {
+    const sel = $('#screener-secondary-style');
+    if (!sel || !_screenerStylesCache) return;
+    if (sel.options.length === _screenerStylesCache.length) return;
+    sel.innerHTML = _screenerStylesCache.map(s =>
+        `<option value="${escapeHtml(s.name)}">${escapeHtml(s.display_name)}</option>`
+    ).join('');
+}
+
+window.runScreenerCrossFilter = async () => {
+    if (!_screenerCandidates || !_screenerCandidates.length) {
+        showToast('先に機械スクリーニングを実行してください', true);
+        return;
+    }
+    const sel = $('#screener-secondary-style');
+    const secondary = sel ? sel.value : '';
+    if (!secondary) {
+        showToast('別スタイルを選択してください', true);
+        return;
+    }
+    const checkedOnly = $('#screener-secondary-checked-only')?.checked;
+    let targets = _screenerCandidates;
+    if (checkedOnly) {
+        const checks = Array.from(document.querySelectorAll('.screener-cand-check'))
+            .filter(c => c.checked).map(c => parseInt(c.dataset.idx, 10));
+        targets = checks.map(i => _screenerCandidates[i]).filter(Boolean);
+    }
+    if (!targets.length) {
+        showToast('対象銘柄がありません', true);
+        return;
+    }
+    const btn = $('#screener-secondary-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '🔀 評価中...'; }
+    try {
+        const data = await apiFetch('/api/investment/screener/cross_filter', {
+            method: 'POST',
+            body: JSON.stringify({
+                candidates: targets.map(c => ({ code: c.code, name: c.name, sector: c.sector })),
+                secondary_style: secondary,
+            }),
+        });
+        if (!data || !data.ok) {
+            showToast(`再評価失敗: ${data && data.error || '不明なエラー'}`, true);
+            return;
+        }
+        _renderSecondaryEvaluation(data);
+        if (_screenerLastResult) _screenerLastResult.secondary_evaluation = data;
+    } catch (e) {
+        showToast(`通信エラー: ${e.message || e}`, true);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '🔀 実行'; }
+    }
+};
+
+function _renderSecondaryEvaluation(data) {
+    const el = $('#screener-results');
+    if (!el) return;
+    let host = document.getElementById('screener-secondary-block');
+    if (!host) {
+        host = document.createElement('div');
+        host.id = 'screener-secondary-block';
+        host.style.cssText = 'margin-top:10px;padding:10px;border:1px dashed var(--border-glass);border-radius:6px;';
+        el.appendChild(host);
+    }
+    const items = data.items || [];
+    const passN = items.filter(x => x.secondary_pass).length;
+    const rowsHtml = items.map(it => {
+        const mark = it.secondary_pass ? '🟢 合格' : '🔴 不合格';
+        const sigs = (it.secondary_signals || []).map(s => {
+            const color = s.passed ? '#7cd6a0' : '#ff8a8a';
+            return `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,0.05);color:${color};font-size:0.72rem;">${escapeHtml(s.name)}: ${escapeHtml(s.value)}</span>`;
+        }).join('');
+        return `<details style="border-bottom:1px solid var(--border-glass);padding:4px 0;">
+            <summary style="cursor:pointer;font-size:0.82rem;">
+                <b>${escapeHtml(it.code)}</b> ${escapeHtml(it.name || '')} — ${mark}（スコア ${it.secondary_score ?? '-'}）
+            </summary>
+            <div style="padding:6px 4px;">${sigs || '<span style="color:var(--text-muted);font-size:0.74rem;">シグナル無し</span>'}</div>
+        </details>`;
+    }).join('');
+    host.innerHTML = `<div style="font-size:0.82rem;font-weight:700;margin-bottom:6px;">🔀 副条件：${escapeHtml(data.secondary_display || data.secondary_style)} の合否（合格 ${passN} / ${items.length}）</div>${rowsHtml}`;
 }
 
 window._addScreenerToWatchlist = async (code, name, sector, source) => {

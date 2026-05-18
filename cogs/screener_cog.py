@@ -66,6 +66,18 @@ class ScreenerCog(commands.Cog):
             enabled_filters=enabled_filters,
         )
 
+    async def apply_secondary_style(
+        self,
+        candidates: list[dict],
+        secondary_style: str,
+        enabled_filters: Optional[list[str]] = None,
+    ) -> dict:
+        return await self.service.apply_secondary_style(
+            candidates=candidates,
+            secondary_style=secondary_style,
+            enabled_filters=enabled_filters,
+        )
+
     async def run_multi_screening(
         self,
         styles: list[str],

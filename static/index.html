@@ -235,13 +235,6 @@
                         <div id="dash-drum-roadmap" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
                     </details>
 
-                    <div class="card next-actions-card">
-                        <div class="card-header">
-                            <span class="card-icon">🚀</span>
-                            <span class="card-title">次のアクション</span>
-                        </div>
-                        <div id="dash-next-actions" class="card-body list-body"></div>
-                    </div>
                 </div>
             </div>
 
@@ -432,6 +425,14 @@
                         </div>
                         <div id="dash-alter-log" class="card-body diary-content"></div>
                     </div>
+                    <div class="card manager-notice-card">
+                        <div class="card-header">
+                            <span class="card-icon">📨</span>
+                            <span class="card-title">マネージャー通知ログ</span>
+                            <button class="mini-link" onclick="reloadManagerNotices()">更新</button>
+                        </div>
+                        <div id="dash-manager-notices" class="card-body list-body"><div class="loading-placeholder">読み込み中…</div></div>
+                    </div>
                 </div>
             </div>
 
@@ -446,6 +447,14 @@
                             <button class="mini-link" onclick="openMitModal()">設定</button>
                         </div>
                         <div id="mit-schedule-items" class="card-body"></div>
+                    </div>
+
+                    <div class="card next-actions-card">
+                        <div class="card-header">
+                            <span class="card-icon">🚀</span>
+                            <span class="card-title">次のアクション</span>
+                        </div>
+                        <div id="dash-next-actions" class="card-body list-body"></div>
                     </div>
 
                     <div class="card calendar-card">
@@ -771,10 +780,18 @@
                 </div>
                 <div style="display:flex;gap:8px;margin-bottom:8px;">
                     <button class="modal-btn submit" id="screener-gem-btn" style="flex:1;font-size:0.82rem;background:linear-gradient(135deg,#5468ff,#8a4dff);" onclick="openGeminiGemForScreener()" disabled title="銘柄情報をクリップボードへコピーしてGemini Gemを開きます">✨ Gem で質的分析（外部）</button>
-                    <button class="mini-link" style="flex-shrink:0;" onclick="setGeminiGemUrl()" title="Gem の URL を設定">⚙️</button>
+                    <button class="mini-link" style="flex-shrink:0;" onclick="openSettingsModal()" title="Gem URL を設定画面で編集">⚙️ 設定</button>
                 </div>
                 <div style="display:flex;gap:8px;margin-bottom:10px;">
                     <button class="modal-btn cancel" id="screener-save-btn" style="flex:1;font-size:0.82rem;" onclick="saveScreenerResult()" disabled>💾 結果を保存</button>
+                </div>
+                <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap;">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">別スタイルで再評価:</label>
+                    <select id="screener-secondary-style" class="modern-input" style="padding:6px;font-size:0.82rem;"></select>
+                    <label style="font-size:0.78rem;display:flex;align-items:center;gap:4px;">
+                        <input type="checkbox" id="screener-secondary-checked-only"> チェック銘柄のみ
+                    </label>
+                    <button class="modal-btn cancel" id="screener-secondary-btn" style="font-size:0.82rem;padding:6px 12px;" onclick="runScreenerCrossFilter()" disabled>🔀 実行</button>
                 </div>
 
                 <details style="margin-bottom:8px;">

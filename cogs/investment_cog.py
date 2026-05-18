@@ -305,6 +305,27 @@ class InvestmentCog(commands.Cog):
         except Exception as e:
             logging.error(f"InvestmentCog notify error: {e}")
 
+    async def _notify_long(self, category: str, title: str, body: str):
+        """長文レポートを「マネージャー通知ログ」に保存し、チャットには短いリードのみ送る。
+
+        category 例: market_sentiment / news_sentiment / alerts / weekend_stocks など
+        """
+        if not body:
+            return
+        # 1) DB に全文を保存
+        try:
+            from api.database import add_manager_notice
+            await add_manager_notice(category, title, body)
+        except Exception as e:
+            logging.error(f"manager_notices save error: {e}")
+
+        # 2) チャットには短いリードのみ
+        lead = (
+            f"📨 {title} を更新したよ。"
+            "詳細は「ログ」タブの『マネージャー通知ログ』を見てね。"
+        )
+        await self._notify_routine(lead)
+
     @tasks.loop(time=datetime.time(hour=6, minute=30, tzinfo=JST))
     async def auto_market_sentiment_task(self):
         """毎朝 06:30 (JST) に米国市場クローズ後の地合いを取得して通知する。"""
@@ -320,7 +341,7 @@ class InvestmentCog(commands.Cog):
         if not report:
             return
         header = "🌅 今朝の市場の地合い"
-        await self._notify_routine(f"{header}\n\n{report}")
+        await self._notify_long("market_sentiment", header, report)
 
     @auto_market_sentiment_task.before_loop
     async def _before_auto_market_sentiment(self):
@@ -374,7 +395,12 @@ class InvestmentCog(commands.Cog):
             logging.exception("auto today earnings failed")
 
         if lines:
-            await self._notify_routine("\n".join(lines))
+            joined = "\n".join(lines)
+            # 価格アラート＋決算予定が3行を超えるなら通知ログへ、短い場合はチャットのまま
+            if len(lines) > 3:
+                await self._notify_long("alerts_earnings", "価格アラート・決算予定", joined)
+            else:
+                await self._notify_routine(joined)
 
     @auto_alerts_and_earnings_task.before_loop
     async def _before_auto_alerts_and_earnings(self):
@@ -410,14 +436,14 @@ class InvestmentCog(commands.Cog):
             if not report:
                 continue
             head = (res.get("name") or h.get("name") or code)
-            snippet = report.splitlines()
-            short = "\n".join(snippet[:8])  # 長すぎ防止に先頭8行
-            sections.append(f"📰 {head} ({code})\n{short}")
+            sections.append(f"## {head} ({code})\n{report}")
             await asyncio.sleep(2)
 
         if sections:
-            body = "📰 保有銘柄ニュースセンチメント（朝刊）\n\n" + "\n\n".join(sections)
-            await self._notify_routine(body)
+            body = "\n\n---\n\n".join(sections)
+            await self._notify_long(
+                "news_sentiment", "保有銘柄ニュースセンチメント（朝刊）", body
+            )
 
     @auto_news_sentiment_task.before_loop
     async def _before_auto_news_sentiment(self):

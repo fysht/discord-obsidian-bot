@@ -164,6 +164,80 @@ class ScreenerService:
         }
 
     # =========================================================
+    # スタイル横断フィルタ：既存候補を別スタイルで再評価する
+    # =========================================================
+
+    async def apply_secondary_style(
+        self,
+        candidates: list[dict],
+        secondary_style: str,
+        enabled_filters: Optional[list[str]] = None,
+    ) -> dict:
+        """機械スクリーニング結果（candidates）について、別スタイルの条件で再評価する。
+
+        Returns:
+            {ok, secondary_style, secondary_display, items: [
+                {code, name, sector, secondary_pass, secondary_score, secondary_signals}
+            ]}
+        """
+        strategy = get_strategy(secondary_style)
+        if not strategy:
+            return {"ok": False, "error": f"未知のスタイル: {secondary_style}"}
+
+        enabled_set = set(enabled_filters) if enabled_filters is not None else None
+        needs_fundamentals = secondary_style in ("value", "growth")
+
+        sem = asyncio.Semaphore(6)
+
+        async def _eval_one(c: dict) -> dict:
+            code = c.get("code")
+            name = c.get("name", "")
+            sector = c.get("sector", "")
+            if not code:
+                return {"code": code, "name": name, "sector": sector, "secondary_pass": False, "error": "コード欠落"}
+            async with sem:
+                try:
+                    df = await self.provider.get_ohlcv(code, days=300)
+                except Exception as e:
+                    return {"code": code, "name": name, "sector": sector, "secondary_pass": False, "error": f"OHLCV取得失敗: {e}"}
+                if df is None:
+                    return {"code": code, "name": name, "sector": sector, "secondary_pass": False, "error": "データ無し"}
+                fundamentals = None
+                if needs_fundamentals:
+                    try:
+                        fundamentals = await self.provider.get_fundamentals(code)
+                    except Exception:
+                        fundamentals = None
+                try:
+                    hit = strategy.evaluate(code, name, sector, df, fundamentals, enabled_filters=enabled_set)
+                    if hit is not None:
+                        d = hit.to_dict()
+                        return {
+                            "code": code, "name": name, "sector": sector,
+                            "secondary_pass": True,
+                            "secondary_score": d.get("score"),
+                            "secondary_signals": d.get("signals", []),
+                        }
+                    nm = strategy.evaluate(code, name, sector, df, fundamentals, enabled_filters=enabled_set, near_miss=True)
+                    sigs = nm.to_dict().get("signals", []) if nm is not None else []
+                    return {
+                        "code": code, "name": name, "sector": sector,
+                        "secondary_pass": False,
+                        "secondary_score": (nm.score if nm is not None else 0),
+                        "secondary_signals": sigs,
+                    }
+                except Exception as e:
+                    return {"code": code, "name": name, "sector": sector, "secondary_pass": False, "error": str(e)}
+
+        items = await asyncio.gather(*[_eval_one(c) for c in (candidates or [])])
+        return {
+            "ok": True,
+            "secondary_style": secondary_style,
+            "secondary_display": strategy.display_name,
+            "items": list(items),
+        }
+
+    # =========================================================
     # Phase B/C: Gemini 質的分析（呼び出しは ScreenerCog 側で行う）
     # =========================================================
 

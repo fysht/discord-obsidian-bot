@@ -264,6 +264,20 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_screener_runs_created ON screener_runs(created_at DESC)"
         )
 
+        # マネージャー通知ログ（長文の自動通知をチャットから分離して保存）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS manager_notices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_manager_notices_created ON manager_notices(created_at DESC)"
+        )
+
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
         for ddl in (
             "ALTER TABLE stocked_links ADD COLUMN purpose TEXT DEFAULT ''",
@@ -782,6 +796,31 @@ async def set_app_setting(key: str, value: str) -> None:
             (key, value, now),
         )
         await db.commit()
+
+
+# --- Manager Notices (長文自動通知のログ) ---
+
+async def add_manager_notice(category: str, title: str, body: str) -> int:
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT INTO manager_notices (category, title, body, created_at) VALUES (?, ?, ?, ?)",
+            (category, title, body, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def list_manager_notices(limit: int = 30) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, category, title, body, created_at FROM manager_notices "
+            "ORDER BY created_at DESC LIMIT ?",
+            (int(limit),),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
 
 
 # --- Meals (食事ログ) ---
