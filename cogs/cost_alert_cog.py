@@ -25,6 +25,9 @@ class CostAlertCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=9, minute=0, tzinfo=JST))
     async def cost_alert_loop(self):
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("cost_alert"):
+            return
         await asyncio.sleep(random.randint(0, 120))
         await self._run()
 

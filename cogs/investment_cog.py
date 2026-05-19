@@ -220,6 +220,57 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[\\/:*?\"<>|]", "_", name).strip() or "untitled"
 
 
+def _normalize_news_line(line: str) -> str:
+    """ニュース行の比較用正規化キー。
+    - 行頭の箇条書き記号・番号・空白を除去
+    - 日付（YYYY-MM-DD, M/D 等）と数字単位を緩く除去して、同一トピックを同一視
+    """
+    s = line.strip()
+    s = re.sub(r"^[-*・●◯○■□▶▷>]+\s*", "", s)
+    s = re.sub(r"^\d+[\.\)、]\s*", "", s)
+    s = re.sub(r"\(\s*出典[^\)]*\)", "", s)
+    s = re.sub(r"https?://\S+", "", s)
+    s = re.sub(r"\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?", "", s)
+    s = re.sub(r"\d{1,2}/\d{1,2}", "", s)
+    s = re.sub(r"\s+", "", s)
+    return s.lower()
+
+
+def _extract_news_diff(prev_report: str, curr_report: str) -> list[str]:
+    """前回レポートに無い「新規行」だけを抜き出す。
+    比較は正規化キー（記号/日付/URLを除去した素のテキスト）で行う。
+    見出し行は新規・既存に関わらず文脈用に残す（直後に新規行があるときだけ）。
+    """
+    if not curr_report:
+        return []
+    prev_keys: set[str] = set()
+    for ln in (prev_report or "").splitlines():
+        k = _normalize_news_line(ln)
+        if k:
+            prev_keys.add(k)
+
+    out: list[str] = []
+    pending_header: str | None = None
+    for raw in curr_report.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            continue
+        is_header = line.lstrip().startswith("#") or line.lstrip().startswith("##")
+        if is_header:
+            pending_header = line
+            continue
+        key = _normalize_news_line(line)
+        if not key:
+            continue
+        if key in prev_keys:
+            continue
+        if pending_header is not None:
+            out.append(pending_header)
+            pending_header = None
+        out.append(line)
+    return out
+
+
 def ext_map_lookup_mime(filename: str) -> str:
     """ファイル拡張子から代表的な MIME タイプを推測する。"""
     fname = (filename or "").lower()
@@ -326,9 +377,12 @@ class InvestmentCog(commands.Cog):
         )
         await self._notify_routine(lead)
 
-    @tasks.loop(time=datetime.time(hour=6, minute=30, tzinfo=JST))
+    @tasks.loop(time=datetime.time(hour=6, minute=45, tzinfo=JST))
     async def auto_market_sentiment_task(self):
-        """毎朝 06:30 (JST) に米国市場クローズ後の地合いを取得して通知する。"""
+        """毎朝 06:45 (JST) に米国市場クローズ後の地合いを取得して通知する。"""
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("auto_market_sentiment"):
+            return
         await asyncio.sleep(random.randint(0, 180))
         try:
             result = await self.run_market_sentiment()
@@ -347,9 +401,12 @@ class InvestmentCog(commands.Cog):
     async def _before_auto_market_sentiment(self):
         await self.bot.wait_until_ready()
 
-    @tasks.loop(time=datetime.time(hour=7, minute=0, tzinfo=JST))
+    @tasks.loop(time=datetime.time(hour=7, minute=15, tzinfo=JST))
     async def auto_alerts_and_earnings_task(self):
-        """毎朝 07:00 (JST) に価格アラートをチェックし、保有銘柄の当日決算予定も通知する。"""
+        """毎朝 07:15 (JST) に価格アラートをチェックし、保有銘柄の当日決算予定も通知する。"""
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("auto_alerts_earnings"):
+            return
         await asyncio.sleep(random.randint(0, 180))
         lines = []
 
@@ -408,7 +465,16 @@ class InvestmentCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=8, minute=30, tzinfo=JST))
     async def auto_news_sentiment_task(self):
-        """毎朝 08:30 (JST) に保有銘柄のニュースセンチメントを順次取得して通知する。"""
+        """毎朝 08:30 (JST) に保有銘柄のニュースを取得し、
+        前回配信からの「差分（新規行）」のみを銘柄ごとにまとめて通知する。
+
+        - 銘柄ごとに直近レポートを app_settings に保存し、次回はそれと比較する
+        - 行（箇条書きやヘッダなど）単位で前回に無いものだけ抽出
+        - 全銘柄で新規行ゼロなら通知自体をスキップ（朝刊は出さない）
+        """
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("auto_news_sentiment"):
+            return
         await asyncio.sleep(random.randint(0, 180))
         try:
             holdings = await self._read_json_file(
@@ -420,6 +486,7 @@ class InvestmentCog(commands.Cog):
         if not holdings:
             return
 
+        from api.database import get_app_setting, set_app_setting
         sections = []
         for h in holdings:
             code = h.get("code")
@@ -435,15 +502,33 @@ class InvestmentCog(commands.Cog):
             report = (res.get("report") or "").strip()
             if not report:
                 continue
+
             head = (res.get("name") or h.get("name") or code)
-            sections.append(f"## {head} ({code})\n{report}")
+            setting_key = f"news_sentiment.last.{code}"
+            try:
+                prev_report = await get_app_setting(setting_key, "")
+            except Exception:
+                prev_report = ""
+
+            new_lines = _extract_news_diff(prev_report, report)
+            # 今回の本文は次回比較用に常に保存（変化があってもなくても）
+            try:
+                await set_app_setting(setting_key, report)
+            except Exception:
+                pass
+
+            if new_lines:
+                diff_body = "\n".join(new_lines)
+                sections.append(f"## {head} ({code})\n{diff_body}")
             await asyncio.sleep(2)
 
         if sections:
             body = "\n\n---\n\n".join(sections)
             await self._notify_long(
-                "news_sentiment", "保有銘柄ニュースセンチメント（朝刊）", body
+                "news_sentiment", "保有銘柄ニュース（前回からの変化）", body
             )
+        else:
+            logging.info("auto_news_sentiment: 全銘柄で新規ニュース無し、通知スキップ")
 
     @auto_news_sentiment_task.before_loop
     async def _before_auto_news_sentiment(self):

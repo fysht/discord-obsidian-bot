@@ -296,9 +296,27 @@ async def init_db():
             # Gmail インボックスに「Obsidian保存済み」を示す列を追加
             "ALTER TABLE gmail_inbox ADD COLUMN saved_drive_id TEXT DEFAULT ''",
             "ALTER TABLE gmail_inbox ADD COLUMN saved_at TEXT DEFAULT ''",
+            "ALTER TABLE manager_notices ADD COLUMN is_read INTEGER DEFAULT 0",
         ):
             try:
                 await db.execute(ddl)
+            except aiosqlite.OperationalError:
+                pass
+
+        # 一度きりのキャッシュ無効化: yfinance を auto_adjust=True に切替えたため
+        # 過去にキャッシュした無調整 OHLCV は分割・配当を反映しておらず
+        # チャート（調整済み表示）と乖離する。schema_marker で 1 回だけクリア。
+        cur = await db.execute(
+            "SELECT value FROM app_settings WHERE key = ?", ("stock_ohlcv_adjusted_v1",)
+        )
+        row = await cur.fetchone()
+        if not row:
+            try:
+                await db.execute("DELETE FROM stock_ohlcv")
+                await db.execute(
+                    "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                    ("stock_ohlcv_adjusted_v1", "1"),
+                )
             except aiosqlite.OperationalError:
                 pass
 
@@ -815,12 +833,31 @@ async def list_manager_notices(limit: int = 30) -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, category, title, body, created_at FROM manager_notices "
-            "ORDER BY created_at DESC LIMIT ?",
+            "SELECT id, category, title, body, created_at, COALESCE(is_read, 0) AS is_read "
+            "FROM manager_notices ORDER BY created_at DESC LIMIT ?",
             (int(limit),),
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+
+async def set_manager_notice_read(notice_id: int, is_read: bool) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE manager_notices SET is_read = ? WHERE id = ?",
+            (1 if is_read else 0, int(notice_id)),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def delete_manager_notice(notice_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM manager_notices WHERE id = ?", (int(notice_id),)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
 
 # --- Meals (食事ログ) ---

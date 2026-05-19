@@ -180,16 +180,25 @@ class FitbitCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=8, minute=0, tzinfo=JST))
     async def sleep_report_loop(self):
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("fitbit_morning"):
+            return
         await asyncio.sleep(random.randint(0, 600))
         await self.send_sleep_report()
 
     @tasks.loop(time=datetime.time(hour=22, minute=15, tzinfo=JST))
     async def full_health_report_loop(self):
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("fitbit_evening"):
+            return
         await asyncio.sleep(random.randint(0, 600))
         await self.send_full_health_report()
 
     @tasks.loop(time=datetime.time(hour=23, minute=0, tzinfo=JST))
     async def prefetch_cache_loop(self):
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("fitbit_night"):
+            return
         """23:00 に当日分の Fitbit データを事前取得し、キャッシュへ保存する。
         Web UI が翌日に開かれた際に即座にグラフが描画できるようにする。"""
         if not self.is_ready:

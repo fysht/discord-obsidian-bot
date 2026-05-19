@@ -57,16 +57,34 @@ class StockDataProvider(ABC):
 
         from api.database import get_ohlcv_latest_date, get_ohlcv_range, upsert_ohlcv_rows
 
-        today = datetime.datetime.now(JST).date()
+        now_jst = datetime.datetime.now(JST)
+        today = now_jst.date()
         start_date = (today - datetime.timedelta(days=int(days * 1.5))).strftime("%Y-%m-%d")
+
+        # 東証クローズ(15:00 JST)後は当日終値を必須にする。クローズ前は前営業日まで OK。
+        # 週末・祝日は前営業日(=金曜)分が揃っていれば OK。
+        def _last_expected_close_date(now: datetime.datetime) -> datetime.date:
+            """現時刻時点で、キャッシュに含まれているべき最新営業日を返す。"""
+            d = now.date()
+            # 平日 15:00 以降 → 今日の引け値が確定済み
+            after_close = now.weekday() < 5 and (now.hour, now.minute) >= (15, 0)
+            if not after_close:
+                # 当日終値がまだなので、最新は前営業日
+                d = d - datetime.timedelta(days=1)
+            # 週末を遡って直近の平日へ
+            while d.weekday() >= 5:
+                d = d - datetime.timedelta(days=1)
+            return d
+
+        expected_latest = _last_expected_close_date(now_jst)
 
         latest = None if force_refresh else await get_ohlcv_latest_date(code)
         need_remote = True
         if latest:
             try:
                 latest_date = datetime.date.fromisoformat(latest)
-                # 当日 or 前営業日まで揃っていればリモート不要
-                if (today - latest_date).days <= 1:
+                # キャッシュが想定する最新営業日まで揃っていればリモート不要
+                if latest_date >= expected_latest:
                     need_remote = False
             except ValueError:
                 pass
@@ -175,7 +193,10 @@ class YFinanceProvider(StockDataProvider):
             def _fetch():
                 try:
                     t = yf.Ticker(ticker)
-                    df = t.history(period=period, auto_adjust=False)
+                    # auto_adjust=True で分割・配当を遡及調整した OHLC を取得する。
+                    # こうしないと過去データが歪み、チャート（調整済み表示）と
+                    # スクリーニング判定（無調整）が食い違う原因になる。
+                    df = t.history(period=period, auto_adjust=True)
                     return df
                 except Exception as e:
                     logging.debug(f"yfinance fetch_ohlcv_remote error for {ticker}: {e}")

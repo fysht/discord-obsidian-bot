@@ -69,18 +69,19 @@ class DailySummaryCog(commands.Cog):
 
         if unresolved:
             # 質問が残っている → Obsidian には未保存。マネージャーから声をかける。
-            if partner_cog and new_q_texts:
+            # チャット側でインライン回答UIを描画させるため、マーカー
+            # [QUESTIONS:summary:YYYY-MM-DD] を末尾に付けてそのまま保存する
+            # （Gemini を通すと欠落するリスクがあるため直接保存）。
+            if new_q_texts:
                 msg_lines = ["デイリーサマリーをまとめようとしたんだけど、いくつか確認したい点があるよ📝"]
                 for i, q in enumerate(new_q_texts, 1):
                     msg_lines.append(f"{i}. {q}")
                 msg_lines.append("")
-                msg_lines.append("時間あるときアプリの『ログ → デイリーサマリー』から答えてくれたら、続きを書くね🌙")
-                instruction = (
-                    "以下の内容をユーザーに優しいタメ口で送信してください。改変せずほぼそのまま送ってください。\n\n"
-                    + "\n".join(msg_lines)
-                )
+                msg_lines.append("下の回答欄に書き込んでくれたらサマリーを仕上げるね🌙")
+                msg_lines.append(f"[QUESTIONS:summary:{today_str}]")
                 try:
-                    await partner_cog.generate_and_send_routine_message("", instruction)
+                    from api.notification_service import save_message_and_notify
+                    await save_message_and_notify("assistant", "\n".join(msg_lines))
                 except Exception as e:
                     logging.error(f"DailySummaryCog send error: {e}")
             return

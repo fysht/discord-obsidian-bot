@@ -23,11 +23,14 @@ class TechnicalSignals:
 
     @staticmethod
     def sma(series, n: int):
-        return series.rolling(window=n, min_periods=max(1, n // 2)).mean()
+        # min_periods は n と同じにして、データ不足時は NaN を返す。
+        # 緩めると新規上場銘柄で「200日MA」と称して 100日相当の値が出てしまい
+        # チャート上のMAと食い違う原因になる。
+        return series.rolling(window=n, min_periods=n).mean()
 
     @staticmethod
     def ema(series, n: int):
-        return series.ewm(span=n, adjust=False, min_periods=max(1, n // 2)).mean()
+        return series.ewm(span=n, adjust=False, min_periods=n).mean()
 
     @staticmethod
     def bollinger(close, n: int = 20, k: float = 2.0):
@@ -316,7 +319,9 @@ class CreepingBreakoutStrategy(StyleStrategy):
     ]
 
     def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
-        if df is None or len(df) < 60:
+        # 「200日MA上抜け」「52週高値」を扱うため、最低 200 営業日分は要求する。
+        # 不足する銘柄は除外（短い履歴で誤判定するより安全）。
+        if df is None or len(df) < 200:
             return None
         enabled = self._resolve_enabled(enabled_filters)
         close = df["Close"]

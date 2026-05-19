@@ -26,7 +26,7 @@ class WeeklyReviewCog(commands.Cog):
     @tasks.loop(minutes=1)
     async def weekly_review_task(self):
         from services.schedule_resolver import is_due
-        due, today = await is_due("weekly_review", "21:00", "sunday", self._last_run_date)
+        due, today = await is_due("weekly_review", "21:30", "sunday", self._last_run_date)
         if not due:
             return
         self._last_run_date = today

@@ -432,8 +432,10 @@ async def chat(req: ChatRequest):
             from google.genai import types as _types
             gemini_client = getattr(bot, "gemini_client", None)
             if gemini_client:
+                from services.gemini_model_resolver import resolve_gemini_model as _rgm
+                _m = await _rgm("english_translate", default_pro=False)
                 trans_resp = await gemini_client.aio.models.generate_content(
-                    model="gemini-2.5-flash-preview-04-17",
+                    model=_m,
                     contents=f"Translate the following Japanese text to natural English. Output only the English translation, nothing else.\n\n{req.message}"
                 )
                 translation = trans_resp.text.strip()
@@ -1385,8 +1387,10 @@ async def note_from_image(req: NoteFromImageRequest):
         image_bytes = base64.b64decode(req.image_base64)
         image_part = types.Part.from_bytes(data=image_bytes, mime_type=req.mime_type)
         text_part = types.Part.from_text(text=prompt)
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("memo_image", default_pro=True)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=_m,
             contents=types.Content(role="user", parts=[image_part, text_part]),
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
@@ -1764,8 +1768,10 @@ async def note_from_images(req: NoteFromImagesRequest):
             image_bytes = base64.b64decode(img.image_base64)
             parts.append(types.Part.from_bytes(data=image_bytes, mime_type=img.mime_type))
         parts.append(types.Part.from_text(text=prompt))
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("memo_image", default_pro=True)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=_m,
             contents=types.Content(role="user", parts=parts),
             config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
@@ -2069,8 +2075,10 @@ async def task_breakdown(req: TaskBreakdownRequest):
 
     prompt = PROMPT_TASK_BREAKDOWN.replace("{parent_task}", parent)
     try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("task_breakdown", default_pro=True)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=_m,
             contents=prompt,
             config=gtypes.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -2218,8 +2226,10 @@ async def reading_prompt(req: ReadingPromptRequest):
     ).replace("{previous_prompts}", prev)
 
     try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("book_prompt", default_pro=True)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=_m,
             contents=prompt,
         )
         text = (response.text or "").strip()
@@ -2323,8 +2333,10 @@ async def zerosec_themes(req: ZTThemeRequest):
         "{context}", req.context or "（特になし）"
     )
     try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("zt_themes", default_pro=True)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=_m,
             contents=prompt,
             config=gtypes.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -2355,8 +2367,10 @@ async def zerosec_deep_dive(req: ZTDeepDiveRequest):
               .replace("{original_theme}", req.original_theme or "")
               .replace("{user_memo}", req.user_memo or ""))
     try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("zt_deep_dive", default_pro=True)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=_m,
             contents=prompt,
             config=gtypes.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -2521,8 +2535,10 @@ async def task_triage(req: TaskTriageRequest):
     )
 
     try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("task_organize", default_pro=False)
         response = await gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash", contents=prompt
+            model=_m, contents=prompt
         )
         reply = response.text.strip() if response.text else "分析に失敗しました。"
     except Exception as e:
@@ -2733,8 +2749,10 @@ async def translate_and_save_phrase(req: TranslateSaveRequest):
     if not bot or not bot.gemini_client:
         raise HTTPException(status_code=503, detail="AIサービス未接続")
     try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("english_translate", default_pro=False)
         resp = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash-preview-04-17",
+            model=_m,
             contents=f"Translate the following Japanese text to natural, everyday English. Output only the English translation.\n\n{req.text}"
         )
         translation = resp.text.strip()
@@ -2906,8 +2924,10 @@ async def briefing():
         )
 
     try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("daily_review", default_pro=False)
         response = await gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash", contents=prompt
+            model=_m, contents=prompt
         )
         reply = response.text.strip() if response.text else "ブリーフィング生成に失敗しました。"
     except Exception as e:
@@ -3137,8 +3157,10 @@ async def _generate_daily_summary(date_str: str, answers: dict | None = None) ->
 
     try:
         from google.genai import types as _gt
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("daily_summary", default_pro=True)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-pro",
+            model=_m,
             contents=prompt,
             config=_gt.GenerateContentConfig(response_mime_type="application/json"),
         )
@@ -3702,8 +3724,10 @@ async def expenses_analyze(req: ReceiptAnalyzeRequest):
         image_bytes = base64.b64decode(req.image_base64)
         image_part = _gt.Part.from_bytes(data=image_bytes, mime_type=req.mime_type)
         text_part = _gt.Part.from_text(text=prompt)
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("receipt_ocr", default_pro=False)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model=_m,
             contents=_gt.Content(role="user", parts=[image_part, text_part]),
             config=_gt.GenerateContentConfig(response_mime_type="application/json"),
         )
@@ -3949,8 +3973,10 @@ async def meals_analyze(req: MealAnalyzeRequest):
         image_bytes = base64.b64decode(req.image_base64)
         image_part = _gt.Part.from_bytes(data=image_bytes, mime_type=req.mime_type)
         text_part = _gt.Part.from_text(text=prompt)
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("meal_image", default_pro=False)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model=_m,
             contents=_gt.Content(role="user", parts=[image_part, text_part]),
             config=_gt.GenerateContentConfig(response_mime_type="application/json"),
         )
@@ -4101,8 +4127,10 @@ async def meals_advice(date: str = ""):
     )
     try:
         from google.genai import types as _gt
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("meal_advice", default_pro=False)
         response = await bot.gemini_client.aio.models.generate_content(
-            model="gemini-2.5-flash",
+            model=_m,
             contents=prompt,
             config=_gt.GenerateContentConfig(),
         )
@@ -4790,7 +4818,19 @@ GEMINI_FEATURE_CATALOG = [
     ("investment_review", "憲法レビュー", "投資憲法の定期レビュー", "pro"),
     ("investment_risk", "リスク評価", "ポートフォリオのリスク評価", "pro"),
     ("partner_chat", "マネージャー会話", "PWAチャットでの応答", "pro"),
-    ("routines", "自動ルーチン", "朝MIT・デイリーサマリー・週次レビュー・Gmail要約", "flash"),
+    ("routines", "自動ルーチン", "朝MIT・週次レビュー・Gmail要約・取扱説明書", "flash"),
+    ("memo_image", "メモ画像OCR", "撮影メモ・複数画像メモの構造化", "pro"),
+    ("task_breakdown", "タスク細分化", "タスクをサブタスクに分割", "pro"),
+    ("task_organize", "タスク整理", "タスク一覧の優先度/グルーピング提案", "flash"),
+    ("book_prompt", "読書プロンプト生成", "書籍ごとの深掘り質問生成", "pro"),
+    ("zt_themes", "ZTテーマ生成", "ゼロから100までの詳細テーマ生成", "pro"),
+    ("zt_deep_dive", "ZT深掘り", "メモから追加テーマ5件を生成", "pro"),
+    ("daily_review", "今日の振り返り", "活動サマリー＆明日への提案", "flash"),
+    ("daily_summary", "デイリーサマリー", "1日のチャット/活動を統合し質問抽出", "pro"),
+    ("receipt_ocr", "レシート分析", "レシート画像から店名・金額抽出", "flash"),
+    ("meal_image", "食事画像分析", "料理名・カロリー・PFC推定", "flash"),
+    ("meal_advice", "食事アドバイス", "1日の食事から栄養バランス助言", "flash"),
+    ("english_translate", "英訳", "ENモード・フレーズ帳の日本語→英語変換", "flash"),
 ]
 
 
@@ -4837,83 +4877,62 @@ async def settings_gemini_models_post(req: SettingsGeminiModelRequest):
 
 
 # =========================================================
-# マネージャー連絡スケジュール (時刻 + 有効/無効 + 曜日)
+# マネージャー連絡スケジュール / 自動同期 (ON/OFFのみ・時刻固定)
 # =========================================================
-
-_VALID_DOW = {"daily", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
-
 
 def _schedule_setting_key(task_key: str, field: str) -> str:
     return f"schedule.{task_key}.{field}"
 
 
-# 固定時刻（@tasks.loop(time=...) でハードコードされており設定不可）の自動配信一覧。
-# UI で「ここにある」と分かるよう読取専用で見せる。
-FIXED_SCHEDULE_CATALOG = [
-    {"key": "auto_market_sentiment",   "label": "市場の地合い",         "time": "06:30", "note": "保有銘柄基準の朝の地合いレポート"},
-    {"key": "auto_alerts_earnings",    "label": "価格アラート＋決算予定", "time": "07:00", "note": "保有銘柄の当日決算予定通知"},
-    {"key": "fitbit_morning",          "label": "Fitbit 朝同期",       "time": "08:00", "note": "睡眠・心拍などのデータ取得"},
-    {"key": "auto_news_sentiment",     "label": "保有銘柄ニュースセンチメント", "time": "08:30", "note": "ログタブの通知ログに保存"},
-    {"key": "cost_alert",              "label": "コストアラート",       "time": "09:00", "note": "Gemini API 利用コストの監視"},
-    {"key": "fitbit_evening",          "label": "Fitbit 夕同期",       "time": "22:15", "note": "日中アクティビティの取り込み"},
-    {"key": "fitbit_night",            "label": "Fitbit 夜同期",       "time": "23:00", "note": "睡眠開始前の最終同期"},
-]
+_DOW_LABEL = {
+    "daily": "毎日", "monday": "月", "tuesday": "火", "wednesday": "水",
+    "thursday": "木", "friday": "金", "saturday": "土", "sunday": "日",
+}
 
 
 @router.get("/settings/schedules", dependencies=[Depends(verify_api_key)])
 async def settings_schedules_get():
+    """カタログを 2 グループ（manager / auto）に分けて返す。時刻は固定で読取専用。"""
     from api.database import get_app_setting
     from services.schedule_resolver import SCHEDULE_CATALOG
-    items = []
-    for task_key, label, default_time, default_dow, description in SCHEDULE_CATALOG:
-        enabled = await get_app_setting(_schedule_setting_key(task_key, "enabled"), "1")
-        time_str = await get_app_setting(_schedule_setting_key(task_key, "time"), default_time)
-        dow = await get_app_setting(_schedule_setting_key(task_key, "dow"), default_dow)
-        items.append({
-            "key": task_key,
-            "label": label,
-            "description": description,
-            "default_time": default_time,
-            "default_dow": default_dow,
+    manager = []
+    auto = []
+    for row in SCHEDULE_CATALOG:
+        enabled = await get_app_setting(_schedule_setting_key(row["key"], "enabled"), "1")
+        entry = {
+            "key": row["key"],
+            "label": row["label"],
+            "description": row["description"],
+            "time": row["time"],
+            "dow": row["dow"],
+            "dow_label": _DOW_LABEL.get(row["dow"], row["dow"]),
+            "category": row["category"],
             "enabled": enabled == "1",
-            "time": time_str,
-            "dow": dow if dow in _VALID_DOW else default_dow,
-        })
-    return {"ok": True, "items": items, "fixed": FIXED_SCHEDULE_CATALOG}
+        }
+        if row["category"] == "manager":
+            manager.append(entry)
+        else:
+            auto.append(entry)
+    return {"ok": True, "manager": manager, "auto": auto}
 
 
 class SettingsSchedulesRequest(BaseModel):
-    # {task_key: {"enabled": bool, "time": "HH:MM", "dow": "daily"|"monday"...}}
-    values: dict
-
-
-_TIME_RE = re.compile(r"^[0-2]?\d:[0-5]\d$")
+    values: dict  # {task_key: {"enabled": bool}}
 
 
 @router.post("/settings/schedules", dependencies=[Depends(verify_api_key)])
 async def settings_schedules_post(req: SettingsSchedulesRequest):
+    """ON/OFF のみ受け付ける。時刻・曜日はカタログ固定で変更不可。"""
     from api.database import set_app_setting
     from services.schedule_resolver import SCHEDULE_CATALOG
-    valid_keys = {row[0] for row in SCHEDULE_CATALOG}
+    valid_keys = {row["key"] for row in SCHEDULE_CATALOG}
     saved = 0
     for k, v in (req.values or {}).items():
         if k not in valid_keys or not isinstance(v, dict):
             continue
-        # enabled
         if "enabled" in v:
             await set_app_setting(_schedule_setting_key(k, "enabled"), "1" if v["enabled"] else "0")
-        # time (HH:MM 形式のみ受付)
-        if "time" in v and isinstance(v["time"], str) and _TIME_RE.match(v["time"]):
-            try:
-                h, m = map(int, v["time"].split(":"))
-                if 0 <= h < 24 and 0 <= m < 60:
-                    await set_app_setting(_schedule_setting_key(k, "time"), f"{h:02d}:{m:02d}")
-            except Exception:
-                pass
-        # dow
-        if "dow" in v and v["dow"] in _VALID_DOW:
-            await set_app_setting(_schedule_setting_key(k, "dow"), v["dow"])
-        saved += 1
+            saved += 1
     return {"ok": True, "saved": saved}
 
 
@@ -4929,7 +4948,30 @@ async def manager_notices_get(limit: int = 30):
     except Exception as e:
         logging.error(f"manager_notices fetch error: {e}")
         items = []
-    return {"ok": True, "items": items}
+    unread = sum(1 for it in items if not it.get("is_read"))
+    return {"ok": True, "items": items, "unread": unread}
+
+
+class ManagerNoticeReadRequest(BaseModel):
+    is_read: bool = True
+
+
+@router.post("/manager/notices/{nid}/read", dependencies=[Depends(verify_api_key)])
+async def manager_notice_set_read(nid: int, req: ManagerNoticeReadRequest):
+    from api.database import set_manager_notice_read
+    ok = await set_manager_notice_read(nid, req.is_read)
+    if not ok:
+        raise HTTPException(status_code=404, detail="通知が見つかりません")
+    return {"ok": True}
+
+
+@router.delete("/manager/notices/{nid}", dependencies=[Depends(verify_api_key)])
+async def manager_notice_delete(nid: int):
+    from api.database import delete_manager_notice
+    ok = await delete_manager_notice(nid)
+    if not ok:
+        raise HTTPException(status_code=404, detail="通知が見つかりません")
+    return {"ok": True}
 
 
 # ==========================================================

@@ -346,17 +346,28 @@ window.saveGeminiModelSettings = async () => {
     }
 };
 
-// マネージャー連絡スケジュール 編集
-const SCHEDULE_DOW_OPTIONS = [
-    { value: 'daily',    label: '毎日' },
-    { value: 'monday',   label: '月' },
-    { value: 'tuesday',  label: '火' },
-    { value: 'wednesday',label: '水' },
-    { value: 'thursday', label: '木' },
-    { value: 'friday',   label: '金' },
-    { value: 'saturday', label: '土' },
-    { value: 'sunday',   label: '日' },
-];
+// マネージャー連絡スケジュール / 自動同期 編集（時刻はカタログ固定。ON/OFFのみ）
+function _renderScheduleRow(it) {
+    const checked = it.enabled ? 'checked' : '';
+    const dowLabel = it.dow_label || '';
+    const dowChip = (it.dow && it.dow !== 'daily')
+        ? `<span style="font-size:0.7rem;background:rgba(255,212,84,0.18);color:#ffd454;padding:1px 6px;border-radius:8px;margin-left:4px;">${escapeHtml(dowLabel)}</span>`
+        : '';
+    const desc = it.description
+        ? `<div style="font-size:0.7rem;color:var(--text-muted);margin:2px 0 0 22px;">${escapeHtml(it.description)}</div>`
+        : '';
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--border-glass);">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:5px;flex:1;min-width:140px;cursor:pointer;">
+                <input type="checkbox" class="schedule-enabled" data-key="${escapeHtml(it.key)}" ${checked}>
+                <span style="font-size:0.84rem;color:var(--text-primary);font-weight:600;">${escapeHtml(it.label)}</span>
+            </label>
+            <span style="font-family:monospace;font-size:0.82rem;color:#4ea1ff;min-width:46px;text-align:right;">${escapeHtml(it.time)}</span>
+            ${dowChip}
+        </div>
+        ${desc}
+    </div>`;
+}
 
 window.loadScheduleSettings = async () => {
     const body = $('#schedules-body');
@@ -368,49 +379,27 @@ window.loadScheduleSettings = async () => {
             body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
             return;
         }
-        const items = data.items || [];
-        const rows = items.map(it => {
-            const checked = it.enabled ? 'checked' : '';
-            const dowOpts = SCHEDULE_DOW_OPTIONS.map(o =>
-                `<option value="${o.value}" ${o.value === it.dow ? 'selected' : ''}>${o.label}</option>`
-            ).join('');
-            const desc = it.description ? `<div style="font-size:0.7rem;color:var(--text-muted);margin:2px 0 0 22px;">${escapeHtml(it.description)}</div>` : '';
-            return `<div style="padding:8px 0;border-bottom:1px solid var(--border-glass);">
-                <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                    <label style="display:flex;align-items:center;gap:5px;flex:1;min-width:140px;cursor:pointer;">
-                        <input type="checkbox" class="schedule-enabled" data-key="${escapeHtml(it.key)}" ${checked}>
-                        <span style="font-size:0.84rem;color:var(--text-primary);font-weight:600;">${escapeHtml(it.label)}</span>
-                    </label>
-                    <input type="time" class="schedule-time modern-input" data-key="${escapeHtml(it.key)}" value="${escapeHtml(it.time)}" style="font-size:0.78rem;padding:3px 6px;width:90px;">
-                    <select class="schedule-dow modern-input" data-key="${escapeHtml(it.key)}" style="font-size:0.78rem;padding:3px 4px;width:auto;">
-                        ${dowOpts}
-                    </select>
-                </div>
-                ${desc}
-            </div>`;
-        }).join('');
-        const fixed = data.fixed || [];
-        const fixedHtml = fixed.length ? `
-            <details style="margin-top:10px;border-top:1px dashed var(--border-glass);padding-top:8px;">
-                <summary style="cursor:pointer;font-size:0.78rem;color:var(--text-secondary);">🔒 自動タスク（時刻固定・読取専用）</summary>
-                <div style="padding:6px 4px;">
-                    ${fixed.map(f => `
-                        <div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-glass);">
-                            <span style="font-family:monospace;font-size:0.78rem;color:#4ea1ff;min-width:46px;">${escapeHtml(f.time)}</span>
-                            <span style="font-size:0.8rem;flex:1;">
-                                <b>${escapeHtml(f.label)}</b>
-                                <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(f.note || '')}</div>
-                            </span>
-                        </div>
-                    `).join('')}
-                    <div style="font-size:0.68rem;color:var(--text-muted);margin-top:6px;">これらは ON/OFF・時刻変更ができないタスクです。コード側で固定されています。</div>
-                </div>
-            </details>
-        ` : '';
-        body.innerHTML = rows + `
-            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:8px;">⏱ 設定変更は次の実行サイクル（最大1分）から反映されます。Bot 再起動は不要です。</div>
+        const manager = data.manager || [];
+        const auto = data.auto || [];
+        const managerHtml = manager.length
+            ? manager.map(_renderScheduleRow).join('')
+            : '<div class="loading-placeholder">登録なし</div>';
+        const autoHtml = auto.length
+            ? auto.map(_renderScheduleRow).join('')
+            : '<div class="loading-placeholder">登録なし</div>';
+        body.innerHTML = `
+            <div style="margin-bottom:10px;">
+                <div style="font-size:0.78rem;color:var(--accent);font-weight:700;margin:4px 0;">📨 マネージャー連絡（ユーザーに通知）</div>
+                <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:6px;">時刻は重複しないよう固定。ON/OFFのみ切替できます。</div>
+                ${managerHtml}
+            </div>
+            <div style="margin-top:14px;">
+                <div style="font-size:0.78rem;color:var(--text-secondary);font-weight:700;margin:4px 0;">🔄 自動同期（通知なし・内部処理）</div>
+                <div style="font-size:0.68rem;color:var(--text-muted);margin-bottom:6px;">ユーザーへの通知は行いません。ON/OFFのみ切替できます。</div>
+                ${autoHtml}
+            </div>
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:10px;">⏱ 設定変更は次の実行サイクル（最大1分）から反映されます。Bot 再起動は不要です。</div>
             <button class="modal-btn submit" style="width:100%;margin-top:10px;" onclick="saveScheduleSettings()">スケジュールを保存</button>
-            ${fixedHtml}
         `;
     } catch (e) {
         body.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
@@ -422,13 +411,7 @@ window.saveScheduleSettings = async () => {
     document.querySelectorAll('.schedule-enabled').forEach(chk => {
         const k = chk.dataset.key;
         if (!k) return;
-        const timeInp = document.querySelector(`.schedule-time[data-key="${k}"]`);
-        const dowSel = document.querySelector(`.schedule-dow[data-key="${k}"]`);
-        values[k] = {
-            enabled: chk.checked,
-            time: (timeInp?.value || '').trim(),
-            dow: dowSel?.value || 'daily',
-        };
+        values[k] = { enabled: chk.checked };
     });
     try {
         const r = await apiFetch('/api/settings/schedules', { method: 'POST', body: JSON.stringify({ values }) });
@@ -756,6 +739,14 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         actions.push(payload);
         return '';
     });
+    // [QUESTIONS:summary:YYYY-MM-DD] マーカーを抽出してインライン回答UIを後で描画
+    let questionsScope = null;
+    let questionsDate = null;
+    rawText = rawText.replace(/\[QUESTIONS:([a-z_]+):(\d{4}-\d{2}-\d{2})\]/g, (_, scope, date) => {
+        questionsScope = scope;
+        questionsDate = date;
+        return '';
+    });
     // 内部関数呼び出しの生文字列を除去（「ツールを呼び出す xxx(...)」「tool_call: xxx(...)」など）
     rawText = rawText
         .replace(/^\s*(?:ツールを呼び出す|tool[_ ]?call:?)\s*[\w.]+\([^)]*\)\s*$/gim, '')
@@ -796,10 +787,65 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
     `;
     div.innerHTML = html;
     chatMessages.appendChild(div);
+    if (role === 'assistant' && questionsScope && questionsDate) {
+        renderInlineQuestionForm(div, questionsScope, questionsDate);
+    }
     chatMessages.scrollTop = chatMessages.scrollHeight;
     if (role === 'assistant') notifyManager(content);
     return div;
 }
+
+// [QUESTIONS:scope:YYYY-MM-DD] 付きメッセージにインライン回答UIを描画する
+async function renderInlineQuestionForm(msgDiv, scope, date) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-inline-questions';
+    wrap.style.cssText = 'margin-top:6px;padding:8px 10px;background:rgba(255,212,84,0.08);border:1px solid rgba(255,212,84,0.3);border-radius:8px;';
+    wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">回答欄を読み込み中…</div>';
+    const contentEl = msgDiv.querySelector('.msg-content') || msgDiv;
+    contentEl.appendChild(wrap);
+    try {
+        const data = await apiFetch('/api/daily_questions/pending');
+        const all = (data && data.questions) || [];
+        const items = all.filter(q => q.date === date && (q.scope || 'summary') === scope && q.status !== 'resolved');
+        if (!items.length) {
+            wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">（すべての質問に回答済み）</div>';
+            return;
+        }
+        wrap.innerHTML = items.map(q => `
+            <div class="inline-q" data-qid="${q.id}" style="margin-bottom:8px;">
+                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${escapeHtml(q.question)}</div>
+                <textarea class="modern-input inline-q-answer" rows="2" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;"></textarea>
+                <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
+                    <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${date}', '${scope}')">回答</button>
+                </div>
+            </div>
+        `).join('');
+    } catch (e) {
+        wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">回答欄の読み込みに失敗しました。</div>';
+    }
+}
+
+window.submitInlineAnswer = async (btn, qid, date, scope) => {
+    const row = btn.closest('.inline-q');
+    const ta = row && row.querySelector('.inline-q-answer');
+    const answer = (ta && ta.value || '').trim();
+    if (!answer) {
+        showToast('回答を入力してください', true);
+        return;
+    }
+    btn.disabled = true;
+    try {
+        await apiFetch(`/api/daily_questions/${qid}/answer`, {
+            method: 'POST',
+            body: JSON.stringify({ answer }),
+        });
+        row.innerHTML = `<div style="font-size:0.8rem;color:#7ddf9a;">✓ 回答を保存しました</div>`;
+        showToast('回答を保存しました');
+    } catch (e) {
+        btn.disabled = false;
+        showToast('保存に失敗しました', true);
+    }
+};
 
 function _parseActionPayload(payload) {
     // 例: "calendar_add:summary=会議|start=2026-04-26T14:00:00|end=2026-04-26T15:00:00"
@@ -1284,34 +1330,98 @@ async function loadDashboard() {
     } catch (err) { console.error(err); }
 }
 
+// マネージャー通知ログ：未読バッジ / カード表示 / 既読・未読・削除ボタン
+const _NOTICE_CATEGORY_META = {
+    market_sentiment: { icon: '🌅', label: '地合い' },
+    news_sentiment:   { icon: '📰', label: 'ニュース' },
+    alerts_earnings:  { icon: '🔔', label: 'アラート' },
+    weekend_stocks:   { icon: '📊', label: '週末株' },
+};
+
+function _formatNoticeTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso.replace('T', ' ').slice(0, 16);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday = d.toDateString() === yesterday.toDateString();
+    const hm = d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    if (sameDay) return `今日 ${hm}`;
+    if (isYesterday) return `昨日 ${hm}`;
+    return `${d.getMonth()+1}/${d.getDate()} ${hm}`;
+}
+
 window.loadManagerNotices = async () => {
     const el = document.getElementById('dash-manager-notices');
     if (!el) return;
     try {
         const data = await apiFetch('/api/manager/notices?limit=30');
         const items = (data && data.items) || [];
+        const unread = data && data.unread ? data.unread : 0;
+        const badgeEl = document.getElementById('manager-notices-unread');
+        if (badgeEl) {
+            badgeEl.textContent = unread > 0 ? `未読 ${unread}` : '';
+            badgeEl.style.display = unread > 0 ? '' : 'none';
+        }
         if (!items.length) {
             el.innerHTML = '<div class="loading-placeholder">まだ通知ログはありません。</div>';
             return;
         }
         el.innerHTML = items.map(it => {
-            const ts = (it.created_at || '').replace('T', ' ').slice(0, 16);
-            const cat = escapeHtml(it.category || '');
+            const meta = _NOTICE_CATEGORY_META[it.category] || { icon: '📨', label: it.category || '通知' };
+            const ts = _formatNoticeTime(it.created_at);
             const title = escapeHtml(it.title || '通知');
             const body = renderDailyMarkdown ? renderDailyMarkdown(it.body || '') : escapeHtml(it.body || '');
-            return `<details class="notice-item" style="border-bottom:1px solid var(--border-glass);padding:6px 0;">
-                <summary style="cursor:pointer;display:flex;gap:8px;align-items:center;">
-                    <span style="font-size:0.75rem;color:var(--text-muted);">${ts}</span>
-                    <span class="na-list-badge">${cat}</span>
-                    <b>${title}</b>
+            const unreadCls = it.is_read ? '' : ' notice-unread';
+            const readBtn = it.is_read
+                ? `<button class="notice-action-btn" title="未読に戻す" onclick="event.stopPropagation();setNoticeRead(${it.id}, false)">◯ 未読</button>`
+                : `<button class="notice-action-btn primary" title="既読にする" onclick="event.stopPropagation();setNoticeRead(${it.id}, true)">✓ 既読</button>`;
+            return `<details class="notice-item${unreadCls}" data-id="${it.id}" ontoggle="if(this.open && !${it.is_read?1:0}) setNoticeRead(${it.id}, true)">
+                <summary>
+                    <span class="notice-summary-row">
+                        ${it.is_read ? '' : '<span class="notice-dot" title="未読"></span>'}
+                        <span class="notice-icon">${meta.icon}</span>
+                        <div class="notice-summary-text">
+                            <div class="notice-title">${title}</div>
+                            <div class="notice-meta"><span class="notice-chip">${escapeHtml(meta.label)}</span><span class="notice-ts">${escapeHtml(ts)}</span></div>
+                        </div>
+                    </span>
                 </summary>
-                <div class="diary-content" style="padding:8px 4px;">${body}</div>
+                <div class="notice-body diary-content">${body}</div>
+                <div class="notice-actions">
+                    ${readBtn}
+                    <button class="notice-action-btn danger" title="削除" onclick="event.stopPropagation();deleteNotice(${it.id})">🗑 削除</button>
+                </div>
             </details>`;
         }).join('');
     } catch (e) {
         el.innerHTML = '<div class="loading-placeholder">通知ログの取得に失敗しました。</div>';
     }
 };
+
+window.setNoticeRead = async (id, isRead) => {
+    try {
+        await apiFetch(`/api/manager/notices/${id}/read`, {
+            method: 'POST',
+            body: JSON.stringify({ is_read: !!isRead }),
+        });
+        loadManagerNotices();
+    } catch (e) {
+        showToast('既読状態の更新に失敗しました', true);
+    }
+};
+
+window.deleteNotice = async (id) => {
+    if (!confirm('この通知を削除しますか？')) return;
+    try {
+        await apiFetch(`/api/manager/notices/${id}`, { method: 'DELETE' });
+        loadManagerNotices();
+    } catch (e) {
+        showToast('削除に失敗しました', true);
+    }
+};
+
 window.reloadManagerNotices = () => loadManagerNotices();
 
 let _currentWorkTasks = [];

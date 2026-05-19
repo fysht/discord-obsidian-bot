@@ -308,7 +308,7 @@ class PartnerRoutineCog(commands.Cog):
     @tasks.loop(minutes=1)
     async def weekend_stock_review_task(self):
         from services.schedule_resolver import is_due
-        due, today = await is_due("weekend_stocks", "20:00", "friday", self._last_run_dates.get("weekend_stocks"))
+        due, today = await is_due("weekend_stocks", "20:15", "friday", self._last_run_dates.get("weekend_stocks"))
         if not due:
             return
         self._last_run_dates["weekend_stocks"] = today
@@ -325,7 +325,7 @@ class PartnerRoutineCog(commands.Cog):
     @tasks.loop(minutes=1)
     async def habit_check_task(self):
         from services.schedule_resolver import is_due
-        due, today = await is_due("habit_check", "21:00", "daily", self._last_run_dates.get("habit_check"))
+        due, today = await is_due("habit_check", "20:30", "daily", self._last_run_dates.get("habit_check"))
         if not due:
             return
         self._last_run_dates["habit_check"] = today

@@ -429,9 +429,10 @@
                         <div class="card-header">
                             <span class="card-icon">📨</span>
                             <span class="card-title">マネージャー通知ログ</span>
-                            <button class="mini-link" onclick="reloadManagerNotices()">更新</button>
+                            <span id="manager-notices-unread" class="notice-unread-badge" style="display:none;"></span>
+                            <button class="mini-link" onclick="reloadManagerNotices()" style="margin-left:auto;">更新</button>
                         </div>
-                        <div id="dash-manager-notices" class="card-body list-body"><div class="loading-placeholder">読み込み中…</div></div>
+                        <div id="dash-manager-notices" class="card-body list-body manager-notices-body"><div class="loading-placeholder">読み込み中…</div></div>
                     </div>
                 </div>
             </div>
