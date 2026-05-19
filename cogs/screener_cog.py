@@ -158,27 +158,45 @@ class ScreenerCog(commands.Cog):
         executed_at = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
 
         if combine_mode == "all" and len(ok_styles) > 1:
-            # AND: すべてのスタイルに共通するコードのみ
-            valid_dicts = [d for d in per_style_by_code if d]
-            common_codes: set[str] = set(valid_dicts[0].keys()) if valid_dicts else set()
-            for d in valid_dicts[1:]:
-                common_codes &= set(d.keys())
+            # AND（緩和版）: 完全一致が無くてもマッチ数の多い順に top_n まで返す。
+            # 厳密な AND だと結果ゼロになりやすく実用性が下がるため、
+            # 「マッチしたスタイル数」を第一キー、「合計スコア」を第二キーに並べる。
+            all_codes: set[str] = set()
+            for d in per_style_by_code:
+                all_codes |= set(d.keys())
 
             merged_and: list[dict] = []
-            for code in common_codes:
-                style_cands = [d[code] for d in per_style_by_code if code in d]
+            for code in all_codes:
+                style_cands_with_key = [
+                    (style_key_i, d[code])
+                    for style_key_i, d in zip(styles, per_style_by_code)
+                    if code in d
+                ]
+                if not style_cands_with_key:
+                    continue
+                matched_styles = [k for k, _ in style_cands_with_key]
+                style_cands = [c for _, c in style_cands_with_key]
                 base = dict(style_cands[0])
-                # スコアは全スタイルの合計
                 base["score"] = round(sum(c.get("score", 0) for c in style_cands), 2)
-                # シグナルは全スタイル分を結合
                 base["signals"] = [sig for c in style_cands for sig in (c.get("signals") or [])]
-                base["matched_styles"] = [s for s in styles if s in (d := {d2["code"]: True for d2 in per_style_by_code if code in d2})]
-                base["is_near_miss"] = any(c.get("is_near_miss") for c in style_cands)
+                base["matched_styles"] = matched_styles
+                base["match_count"] = len(matched_styles)
+                base["total_styles"] = len(styles)
+                # 全スタイルに合致しなければ「near miss 扱い」として扱う
+                base["is_near_miss"] = (len(matched_styles) < len(styles)) or any(
+                    c.get("is_near_miss") for c in style_cands
+                )
                 base["failed_filters"] = [f for c in style_cands for f in (c.get("failed_filters") or [])]
                 merged_and.append(base)
 
-            all_cands = sorted(merged_and, key=lambda c: c.get("score", 0), reverse=True)[:top_n]
+            merged_and.sort(
+                key=lambda c: (c.get("match_count", 0), c.get("score", 0)),
+                reverse=True,
+            )
+            all_cands = merged_and[:top_n]
             combine_label = "AND"
+            if all_cands and any(c.get("match_count", 0) < len(styles) for c in all_cands):
+                any_near_miss = True
         else:
             # OR: いずれかのスタイルに合致（従来動作）
             merged: dict[str, dict] = {}

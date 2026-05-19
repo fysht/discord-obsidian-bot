@@ -1524,19 +1524,33 @@ button.is-busy {
 }
 
 /* ========== Next Actions card ========== */
-.next-actions-card .list-item {
+.next-actions-card .list-item.na-row {
+    display: grid;
+    grid-template-columns: 84px 1fr;
+    column-gap: 10px;
+    align-items: center;
     font-size: 0.84rem;
     padding: 8px 18px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
 }
 .next-actions-card .list-item:last-child { border-bottom: none; }
 .na-list-badge {
-    font-size: 0.68rem;
-    padding: 1px 6px;
+    font-size: 0.7rem;
+    padding: 2px 0;
     border-radius: 4px;
     background: rgba(0,186,152,0.15);
     color: var(--accent);
     white-space: nowrap;
+    text-align: center;
+    width: 84px;
+    box-sizing: border-box;
+}
+.na-list-badge-empty {
+    background: transparent;
+}
+.na-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 /* ========== タスクのドラッグ視覚効果 / サブタスク ========== */
@@ -1875,3 +1889,13 @@ button.is-busy {
 .notice-action-btn:hover { background: rgba(255,255,255,0.12); }
 .notice-action-btn.primary { background: rgba(0,186,152,0.18); color: var(--accent); border-color: rgba(0,186,152,0.4); }
 .notice-action-btn.danger:hover { background: rgba(255,90,90,0.18); color: #ff7a7a; }
+
+.inline-q-saved {
+    font-size: 0.7rem;
+    color: #7ddf9a;
+    background: rgba(125,223,154,0.12);
+    padding: 1px 6px;
+    border-radius: 6px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}

@@ -811,15 +811,20 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
             wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">（すべての質問に回答済み）</div>';
             return;
         }
-        wrap.innerHTML = items.map(q => `
+        wrap.innerHTML = items.map(q => {
+            const answered = q.status === 'answered' && q.answer;
+            const savedMark = answered ? '<span class="inline-q-saved">✓ 保存済み（編集可）</span>' : '';
+            return `
             <div class="inline-q" data-qid="${q.id}" style="margin-bottom:8px;">
-                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${escapeHtml(q.question)}</div>
-                <textarea class="modern-input inline-q-answer" rows="2" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;"></textarea>
-                <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
-                    <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${date}', '${scope}')">回答</button>
+                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;display:flex;justify-content:space-between;gap:6px;">
+                    <span>${escapeHtml(q.question)}</span>${savedMark}
                 </div>
-            </div>
-        `).join('');
+                <textarea class="modern-input inline-q-answer" rows="2" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(q.answer || '')}</textarea>
+                <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
+                    <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${date}', '${scope}')">${answered ? '回答を更新' : '回答'}</button>
+                </div>
+            </div>`;
+        }).join('');
     } catch (e) {
         wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">回答欄の読み込みに失敗しました。</div>';
     }
@@ -834,15 +839,27 @@ window.submitInlineAnswer = async (btn, qid, date, scope) => {
         return;
     }
     btn.disabled = true;
+    const origLabel = btn.textContent;
+    btn.textContent = '保存中…';
     try {
         await apiFetch(`/api/daily_questions/${qid}/answer`, {
             method: 'POST',
             body: JSON.stringify({ answer }),
         });
-        row.innerHTML = `<div style="font-size:0.8rem;color:#7ddf9a;">✓ 回答を保存しました</div>`;
+        // 回答欄は維持し、ラベルだけ「更新」に切替。次の質問が来るまで再編集可。
+        btn.textContent = '回答を更新';
+        btn.disabled = false;
+        const header = row.querySelector('div:first-child');
+        if (header && !header.querySelector('.inline-q-saved')) {
+            const mark = document.createElement('span');
+            mark.className = 'inline-q-saved';
+            mark.textContent = '✓ 保存済み（編集可）';
+            header.appendChild(mark);
+        }
         showToast('回答を保存しました');
     } catch (e) {
         btn.disabled = false;
+        btn.textContent = origLabel;
         showToast('保存に失敗しました', true);
     }
 };
@@ -1277,13 +1294,15 @@ async function loadDashboard() {
                 naEl.innerHTML = lines.map(line => {
                     const clean = line.replace(/^-\s*/, '').trim();
                     const listMatch = clean.match(/^\[(.+?)\]\s*(.*)/);
-                    if (listMatch) {
-                        return `<div class="list-item" style="gap:8px;">
-                            <span class="na-list-badge">${escapeHtml(listMatch[1])}</span>
-                            <span>${escapeHtml(listMatch[2])}</span>
-                        </div>`;
-                    }
-                    return `<div class="list-item">${escapeHtml(clean)}</div>`;
+                    const list = listMatch ? listMatch[1] : '';
+                    const text = listMatch ? listMatch[2] : clean;
+                    const badge = list
+                        ? `<span class="na-list-badge">${escapeHtml(list)}</span>`
+                        : `<span class="na-list-badge na-list-badge-empty"></span>`;
+                    return `<div class="list-item na-row">
+                        ${badge}
+                        <span class="na-text">${escapeHtml(text)}</span>
+                    </div>`;
                 }).join('');
             } else {
                 naEl.innerHTML = '<div class="loading-placeholder">次のアクションはまだ生成されていません。</div>';
@@ -7817,10 +7836,10 @@ const TUTORIAL_SLIDES = [
         target: 'log',
         body: `<p>ログタブの最上部に「今日の記録」グループとして並びます。</p>
         <ul>
-            <li>📅 <b>今日の振り返り</b>: マネージャーが1日の出来事を要約。今日未生成なら昨日分を表示</li>
+            <li>📅 <b>今日の振り返り</b>: 毎晩22:00にマネージャーが質問→チャット内の回答欄で答える→翌日の質問が来るまで回答を更新可能。回答後22:00サイクルでサマリー生成・Obsidianへ保存。</li>
             <li>📔 <b>デイリーノート</b>: Obsidian の DailyNotes。「編集」ボタンで内容を書き換え可能</li>
             <li>📒 <b>マネージャーの気づき</b>: 対話から見つけた傾向・パターンの観察ノート</li>
-            <li>📨 <b>マネージャー通知ログ</b>: 投資系などの長文自動配信はここに溜まります</li>
+            <li>📨 <b>マネージャー通知ログ</b>: 朝刊ニュース・地合いなどの長文配信。未読バッジ・既読/未読切替・削除ボタン付き。</li>
         </ul>`
     },
     {
@@ -7863,41 +7882,32 @@ const TUTORIAL_SLIDES = [
         <ul>
             <li>🔎 「じわじわ高値ブレイク / バリュー / グロース」のスタイル別スクリーニング</li>
             <li>🕯️ じわじわ高値ブレイクは <b>上ひげ・下ひげが長くない</b>ことも条件に含めて騙しを抑制</li>
-            <li>🔗 複数スタイルの <b>AND/OR 検索</b>（OR=いずれか / AND=すべて合致）</li>
+            <li>🔗 複数スタイルの <b>AND/OR 検索</b>: AND は完全一致が無くてもマッチしたスタイル数の多い順に top N を表示</li>
             <li>🔀 <b>別スタイルで再評価</b>：機械スクリーニング結果に対し、別スタイル（例：バリュー）の合否を一括チェック</li>
             <li>⭐ 結果から「注目」ボタンでウォッチリストに追加</li>
-            <li>🤖 質的分析ボタンで Gemini が直近 IR・ニュース・決算を補強</li>
-            <li>📚 NotebookLM ノートURLを書籍編集モーダルに保存して「↗開く」で起動</li>
+            <li>🤖 質的分析ボタンで直近 IR・ニュース・決算を補強</li>
+            <li>株価データは分割調整済み（チャートと一致）、当日引け後は当日終値で判定</li>
         </ul>`
     },
     {
         title: 'マネージャー通知ログ',
         target: 'log',
-        body: `<p>📨 朝の市場の地合い・保有銘柄ニュースセンチメントなど <b>長文の自動配信</b> は、チャットを埋めないよう「ログ」タブの「マネージャー通知ログ」に格納されます。</p>
+        body: `<p>📨 朝の市場の地合い・保有銘柄ニュース朝刊などの <b>長文の自動配信</b> は、チャットを埋めないよう「ログ」タブの「マネージャー通知ログ」に格納されます。</p>
         <ul>
-            <li>チャットには「更新したよ」という短いお知らせのみ届きます</li>
-            <li>ログタブで日付付きの一覧から本文を確認できます（折りたたみ式）</li>
-            <li>対象：市場の地合い / 価格アラート（多数）/ 保有銘柄ニュースセンチメント など</li>
+            <li>未読件数バッジ・未読カードのハイライト・カテゴリアイコン・相対時刻表示</li>
+            <li>カードを展開すると自動で既読化。「◯ 未読」ボタンで未読に戻せます</li>
+            <li>「🗑 削除」ボタンで個別削除</li>
+            <li>保有銘柄ニュース朝刊は <b>前回からの変化分のみ</b> 配信されます（毎日同じ記事は出ません）</li>
         </ul>`
     },
     {
         title: 'マネージャー連絡スケジュール',
         target: null,
-        body: `<p>⚙ 設定 → 「📅 マネージャー連絡スケジュール」で時刻と有効/無効を編集できます。</p>
+        body: `<p>⚙ 設定 → 「📅 マネージャー連絡スケジュール」で各タスクの有効/無効を切替できます（時刻は重複しないよう固定）。</p>
         <ul>
-            <li>朝のMIT 06:30 / 朝のルーチン 07:00 / Obsidian振り返り 20:00 / 習慣チェック <b>20:30</b> / 明日の予定 21:00 / 週次レビュー <b>21:30（日）</b> / 夜の振り返り 22:00 など</li>
-            <li>各項目を有効/無効化できる（チェックボックス）</li>
-            <li>時刻と曜日（毎日/月～日）を変更可能、Bot 再起動不要で即時反映</li>
-            <li>🔒 末尾の「自動タスク（時刻固定）」で Fitbit 同期や投資系朝刊などの固定タスクも一覧できます</li>
-        </ul>`
-    },
-    {
-        title: 'Gemini モデル選択 / Gem URL',
-        target: null,
-        body: `<p>⚙ 設定の Gemini 関連は2つ。</p>
-        <ul>
-            <li>🧠 <b>Gemini モデル選択</b>: 機能ごとに Flash / Pro / Preview / カスタム ID を切替</li>
-            <li>🔗 <b>Gemini Gem URL</b>: スクリーナー外部質的分析用の Gem URL を保存（旧 ⚙ プロンプト設定はこちらに統合済み）</li>
+            <li>📨 <b>マネージャー連絡</b>（ユーザーへ通知あり）: 朝のMIT 06:30 / 市場の地合い 06:45 / 朝のルーチン 07:00 / 価格アラート＋決算 07:15 / Fitbit朝レポート 08:00 / 保有銘柄ニュース朝刊 08:30 / コストアラート 09:00 / Obsidian振り返り 20:00 / 週末株レビュー 20:15（金）/ 習慣チェック 20:30 / 明日の予定 21:00 / 週次レビュー 21:30（日）/ 夜の振り返り 22:00 / Fitbit夜レポート 22:15 / ロケーション保存リマインド 22:30 / デイリー整理 23:55</li>
+            <li>🔄 <b>自動同期</b>（通知なし）: Fitbitキャッシュ事前取得 23:00 / 取扱説明書自動更新 23:45</li>
+            <li>ON/OFF のみ切替可能。Bot 再起動不要で即時反映</li>
         </ul>`
     },
     {
@@ -7940,7 +7950,7 @@ const TUTORIAL_SLIDES = [
             <li>🔄 アプリ更新（PWA キャッシュ更新）</li>
             <li>❓ このヘルプを再表示</li>
             <li>🗑 チャット履歴リセット</li>
-            <li>⚙ コスト・Gemini モデル・スケジュールなどの設定</li>
+            <li>⚙ コスト・スケジュールなどの設定</li>
         </ul>`
     },
 ];
@@ -8713,7 +8723,24 @@ function _hideScreenerProgress() {
     _screenerFakeProgressPct = 0;
     const bar = $('#screener-progress-bar');
     if (bar) bar.style.width = '0%';
-    $('#screener-progress')?.classList.add('hidden');
+    const txt = $('#screener-progress-text');
+    if (txt) txt.textContent = '';
+    const wrap = $('#screener-progress');
+    if (wrap) {
+        wrap.classList.add('hidden');
+        wrap.style.display = 'none';
+    }
+}
+
+function _setScreenerProgressDone(label = '完了') {
+    _stopScreenerFakeProgress();
+    _screenerFakeProgressPct = 100;
+    const bar = $('#screener-progress-bar');
+    if (bar) bar.style.width = '100%';
+    const txt = $('#screener-progress-text');
+    if (txt) txt.textContent = label;
+    // 完了表示は0.8秒ほど残してから消す
+    setTimeout(() => _hideScreenerProgress(), 800);
 }
 
 window.runScreener = async () => {
@@ -8743,7 +8770,7 @@ window.runScreener = async () => {
         }
         if (Object.keys(filter_overrides).length) body.filter_overrides = filter_overrides;
         const data = await apiFetch('/api/investment/screener/run', { method: 'POST', body: JSON.stringify(body) });
-        _hideScreenerProgress();
+        _setScreenerProgressDone('スクリーニング完了');
         if (!data || !data.ok) {
             const err = (data && (data.error || data.detail)) || '失敗しました';
             _renderScreenerResults(`エラー: ${err}`);
@@ -8967,7 +8994,7 @@ window.runScreenerAnalyze = async () => {
         return;
     }
     const estSecs = selected.length * 15;
-    if (!confirm(`${selected.length} 銘柄を Gemini で質的分析します（モデルは設定画面の「スクリーナー質的分析」に従う）。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
+    if (!confirm(`${selected.length} 銘柄を Gemini で質的分析します。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
 
     _setScreenerAnalyzeEnabled(false);
     _showScreenerProgress('質的分析中...', 5);

@@ -49,9 +49,11 @@ class LocationLogCog(commands.Cog):
         )
 
         self.process_timeline_json.start()
+        self.location_save_reminder_task.start()
 
     def cog_unload(self):
         self.process_timeline_json.cancel()
+        self.location_save_reminder_task.cancel()
 
     def _get_place_name_from_id(self, place_id: str) -> str:
         if not self.gmaps:
@@ -385,6 +387,39 @@ class LocationLogCog(commands.Cog):
 
     @process_timeline_json.before_loop
     async def before_process(self):
+        await self.bot.wait_until_ready()
+
+    # ==========================================================
+    # 毎日 22:30 にロケーション保存をユーザーへリマインドする
+    # ==========================================================
+    _last_save_reminder_date = None
+
+    @tasks.loop(minutes=1)
+    async def location_save_reminder_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due(
+            "location_save_reminder", "22:30", "daily",
+            self._last_save_reminder_date,
+        )
+        if not due:
+            return
+        self._last_save_reminder_date = today
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog:
+            return
+        instruction = (
+            "次の文章をユーザーに優しいタメ口で送信してください。改変せずほぼそのまま送ってください。\n\n"
+            "📍 今日のロケーション履歴をエクスポートしてDriveの`Timeline/`フォルダにアップロードしておいてね！"
+            "（Google Maps タイムライン → 共有 → JSON エクスポート）\n"
+            "23:55のデイリー整理までに保存しておけば、移動記録が自動で今日のノートに反映されるよ🌙"
+        )
+        try:
+            await partner_cog.generate_and_send_routine_message("", instruction)
+        except Exception as e:
+            logging.error(f"location save reminder send error: {e}")
+
+    @location_save_reminder_task.before_loop
+    async def before_save_reminder(self):
         await self.bot.wait_until_ready()
 
 

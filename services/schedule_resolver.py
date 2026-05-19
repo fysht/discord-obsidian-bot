@@ -32,6 +32,7 @@ SCHEDULE_CATALOG: list[dict] = [
     {"key": "weekly_review",          "label": "週次レビュー",            "time": "21:30", "dow": "sunday", "category": "manager", "description": "日曜の夜に1週間の振り返りを Drive に保存します。"},
     {"key": "evening_review",         "label": "夜の振り返り",            "time": "22:00", "dow": "daily",  "category": "manager", "description": "今日の会話ログ・MIT・翌日情報を統括して夜にレビュー。"},
     {"key": "fitbit_evening",         "label": "Fitbit 夜レポート",       "time": "22:15", "dow": "daily",  "category": "manager", "description": "日中アクティビティを取り込み、夜にレポート。"},
+    {"key": "location_save_reminder", "label": "ロケーション保存リマインド", "time": "22:30", "dow": "daily",  "category": "manager", "description": "Google マップのタイムラインJSON保存をマネージャーがチャットで促します。"},
     {"key": "daily_organize",         "label": "デイリー整理",            "time": "23:55", "dow": "daily",  "category": "manager", "description": "タスク・チャットログ・天気を整理して Obsidian に保存し、おやすみメッセージ送信。"},
 
     # ===== 自動同期（ユーザーには通知せず内部処理のみ）=====
