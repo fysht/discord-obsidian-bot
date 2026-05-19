@@ -313,9 +313,10 @@ async def init_db():
         if not row:
             try:
                 await db.execute("DELETE FROM stock_ohlcv")
+                _now_iso = datetime.datetime.now(JST).isoformat()
                 await db.execute(
-                    "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
-                    ("stock_ohlcv_adjusted_v1", "1"),
+                    "INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+                    ("stock_ohlcv_adjusted_v1", "1", _now_iso),
                 )
             except aiosqlite.OperationalError:
                 pass
