@@ -814,12 +814,24 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
         wrap.innerHTML = items.map(q => {
             const answered = q.status === 'answered' && q.answer;
             const savedMark = answered ? '<span class="inline-q-saved">✓ 保存済み（編集可）</span>' : '';
+            // morning_mit は未回答時、候補リストを回答欄の初期値として流し込む
+            let defaultVal = q.answer || '';
+            let rows = 2;
+            if (!defaultVal && scope === 'morning_mit' && q.context) {
+                try {
+                    const c = JSON.parse(q.context);
+                    if (Array.isArray(c.candidates) && c.candidates.length) {
+                        defaultVal = c.candidates.join('\n');
+                    }
+                } catch (e) { /* context が JSON でなければ無視 */ }
+            }
+            if (scope === 'morning_mit') rows = 3;
             return `
             <div class="inline-q" data-qid="${q.id}" style="margin-bottom:8px;">
                 <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;display:flex;justify-content:space-between;gap:6px;">
                     <span>${escapeHtml(q.question)}</span>${savedMark}
                 </div>
-                <textarea class="modern-input inline-q-answer" rows="2" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(q.answer || '')}</textarea>
+                <textarea class="modern-input inline-q-answer" rows="${rows}" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(defaultVal)}</textarea>
                 <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
                     <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${date}', '${scope}')">${answered ? '回答を更新' : '回答'}</button>
                 </div>

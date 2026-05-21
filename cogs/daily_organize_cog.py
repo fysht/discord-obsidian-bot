@@ -144,7 +144,7 @@ class DailyOrganizeCog(commands.Cog):
         )
         try:
             from api.notification_service import save_message_and_notify as _save_msg
-            await _save_msg("assistant", send_msg)
+            await _save_msg("assistant", send_msg, proactive=True)
         except Exception:
             pass
 

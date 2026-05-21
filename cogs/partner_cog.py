@@ -948,7 +948,12 @@ class PartnerCog(commands.Cog):
             self.user_name, now_str, await self._get_user_manual()
         )
 
-        prompt = f"{routine_prompt}\n\n【状況】\n{context_text}"
+        # context_text が空のときは「【状況】」見出しを付けない
+        # （付けると AI がそのまま出力に混入させてしまうことがあるため）
+        if context_text and context_text.strip():
+            prompt = f"{routine_prompt}\n\n【状況】\n{context_text}"
+        else:
+            prompt = routine_prompt
         try:
             from services.gemini_model_resolver import resolve_gemini_model
             _m = await resolve_gemini_model("routines", default_pro=False)
@@ -960,7 +965,7 @@ class PartnerCog(commands.Cog):
             if response.text:
                 reply_text = response.text.strip()
                 from api.notification_service import save_message_and_notify as _save_msg
-                await _save_msg("assistant", reply_text)
+                await _save_msg("assistant", reply_text, proactive=True)
         except Exception as e:
             logging.error(f"Routine message generation error: {e}")
 

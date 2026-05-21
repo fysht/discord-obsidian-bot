@@ -291,7 +291,7 @@ class PartnerRoutineCog(commands.Cog):
                 from api.notification_service import save_message_and_notify
 
                 reply_text = response.text.strip()
-                await save_message_and_notify("assistant", reply_text)
+                await save_message_and_notify("assistant", reply_text, proactive=True)
                 if partner_cog.drive_service:
                     safe_create_task(
                         backup_db_to_drive(

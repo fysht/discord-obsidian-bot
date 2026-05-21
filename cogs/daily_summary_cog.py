@@ -81,7 +81,7 @@ class DailySummaryCog(commands.Cog):
                 msg_lines.append(f"[QUESTIONS:summary:{today_str}]")
                 try:
                     from api.notification_service import save_message_and_notify
-                    await save_message_and_notify("assistant", "\n".join(msg_lines))
+                    await save_message_and_notify("assistant", "\n".join(msg_lines), proactive=True)
                 except Exception as e:
                     logging.error(f"DailySummaryCog send error: {e}")
             return

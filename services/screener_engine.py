@@ -226,20 +226,39 @@ class StyleStrategy(ABC):
 
     @staticmethod
     def _build_snapshot(df) -> dict:
+        import math
+
+        def _finite(v):
+            """float へ変換し、NaN/Inf は None を返す（JSON 非互換値を排除）。"""
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f if math.isfinite(f) else None
+
+        def _r(v):
+            return round(v, 2) if v is not None else None
+
         try:
-            close = float(df["Close"].iloc[-1])
-            prev_close = float(df["Close"].iloc[-2]) if len(df) >= 2 else close
+            close = _finite(df["Close"].iloc[-1])
+            if close is None:
+                # 上場廃止などで価格データが欠損している銘柄はスナップショット無し
+                return {}
+            prev_close = _finite(df["Close"].iloc[-2]) if len(df) >= 2 else close
+            if prev_close is None:
+                prev_close = close
             change_pct = ((close - prev_close) / prev_close * 100) if prev_close > 0 else 0.0
             window = df["High"].tail(252) if len(df) >= 252 else df["High"]
-            high_52w = float(window.max())
+            high_52w = _finite(window.max())
             low_window = df["Low"].tail(252) if len(df) >= 252 else df["Low"]
-            low_52w = float(low_window.min())
-            volume = int(df["Volume"].iloc[-1]) if df["Volume"].iloc[-1] == df["Volume"].iloc[-1] else 0
+            low_52w = _finite(low_window.min())
+            vol_raw = df["Volume"].iloc[-1]
+            volume = int(vol_raw) if vol_raw == vol_raw else 0
             return {
-                "close": round(close, 2),
-                "change_pct": round(change_pct, 2),
-                "high_52w": round(high_52w, 2),
-                "low_52w": round(low_52w, 2),
+                "close": _r(close),
+                "change_pct": _r(change_pct),
+                "high_52w": _r(high_52w),
+                "low_52w": _r(low_52w),
                 "volume": volume,
             }
         except Exception:

@@ -8,6 +8,9 @@ from discord.ext import commands, tasks
 
 from config import JST
 
+# 朝のMITとして登録する質問テキスト（インライン回答欄のラベルに使われる）
+_MIT_QUESTION_TEXT = "今朝のMIT候補。回答欄で編集（1行に1つ）して回答すると今日のMITに確定するよ。"
+
 
 class MorningMitCog(commands.Cog):
     """毎朝 6:30 JST に、その日のカレンダー予定と昨日の MIT 進捗からマネージャーが
@@ -23,9 +26,19 @@ class MorningMitCog(commands.Cog):
 
     @tasks.loop(minutes=1)
     async def morning_mit_loop(self):
-        from services.schedule_resolver import is_due
-        due, today = await is_due("morning_mit", "06:30", "daily", self._last_run_date)
-        if not due:
+        from services.schedule_resolver import is_enabled
+        now = datetime.datetime.now(JST)
+        today = now.date()
+        # 1日1回。既に実行済みならスキップ
+        if self._last_run_date == today:
+            return
+        # 06:30〜10:00 の時間窓で未実行なら実行する。
+        # 厳密に「06:30 ちょうど」ではなく窓で判定することで、
+        # Bot が 06:30 に停止していて少し後に起動しても取りこぼさない。
+        now_minutes = now.hour * 60 + now.minute
+        if not (6 * 60 + 30 <= now_minutes < 10 * 60):
+            return
+        if not await is_enabled("morning_mit"):
             return
         self._last_run_date = today
         # 一斉スパムにならないよう 0〜90 秒のジッタ
@@ -39,7 +52,6 @@ class MorningMitCog(commands.Cog):
     async def _run(self):
         try:
             from api.database import add_daily_question, get_questions_by_date
-            from api.notification_service import send_push
             from services import cost_meter_service
         except Exception as e:
             logging.error(f"MorningMitCog import error: {e}")
@@ -64,18 +76,11 @@ class MorningMitCog(commands.Cog):
                     context_payload = _json.dumps({"candidates": fallback, "throttled": True}, ensure_ascii=False)
                     await add_daily_question(
                         today_str,
-                        "今朝のMIT候補（コスト節約モード）。カレンダーから自動抽出した予定だよ。",
+                        _MIT_QUESTION_TEXT,
                         scope='morning_mit',
                         context=context_payload,
                     )
-                    try:
-                        await send_push(
-                            title="☀️ 今朝のMIT候補（節約モード）",
-                            body="月額閾値を超えているため AI 推論はスキップ。カレンダー予定を候補として置いておいたよ。",
-                            url="/?openMorningMit=1",
-                        )
-                    except Exception:
-                        pass
+                    await self._announce_in_chat(today_str, fallback, throttled=True)
                 return
         except Exception as e:
             logging.debug(f"MorningMitCog: throttle check failed: {e}")
@@ -86,23 +91,40 @@ class MorningMitCog(commands.Cog):
             return
 
         # 候補リストを context フィールドに JSON で格納（フロントが取り出して編集用に表示）
-        question_text = "今朝のMIT候補を 3 つ用意したよ。アプリで編集・確定してね！"
         context_payload = json.dumps({"candidates": candidates}, ensure_ascii=False)
         try:
-            await add_daily_question(today_str, question_text, scope='morning_mit', context=context_payload)
+            await add_daily_question(today_str, _MIT_QUESTION_TEXT, scope='morning_mit', context=context_payload)
         except Exception as e:
             logging.error(f"MorningMitCog: DB保存エラー: {e}")
             return
 
-        # Web プッシュで通知（タップで /?openMorningMit=1 のような遷移を期待）
+        # 夜の振り返りと同じく、チャットへ回答欄付きメッセージを送る
+        await self._announce_in_chat(today_str, candidates, throttled=False)
+
+    async def _announce_in_chat(self, date_str: str, candidates: list[str], throttled: bool):
+        """今朝のMIT候補をチャットへ送信する。末尾の [QUESTIONS:...] マーカーにより
+        フロント側でインライン回答欄（夜の振り返りと同じUI）が描画される。"""
         try:
-            await send_push(
-                title="☀️ 今朝のMIT候補",
-                body="マネージャーから今日のMIT候補が届いたよ。タップして編集・確定。",
-                url="/?openMorningMit=1",
+            from api.notification_service import save_message_and_notify
+        except Exception as e:
+            logging.error(f"MorningMitCog: import error: {e}")
+            return
+        if throttled:
+            head = "☀️ おはよう、ゆうすけ！今朝のMIT候補だよ（コスト節約モードでカレンダーから自動抽出したよ）。"
+        else:
+            head = "☀️ おはよう、ゆうすけ！今朝のMIT候補を3つ考えてみたよ。"
+        lines = [head]
+        for i, c in enumerate(candidates, 1):
+            lines.append(f"{i}. {c}")
+        lines.append("")
+        lines.append("下の回答欄で自由に編集（1行に1つ）して『回答』を押してね。そのまま今日のMITとして確定するよ💪")
+        lines.append(f"[QUESTIONS:morning_mit:{date_str}]")
+        try:
+            await save_message_and_notify(
+                "assistant", "\n".join(lines), title="☀️ 今朝のMIT候補", proactive=True,
             )
         except Exception as e:
-            logging.error(f"MorningMitCog: push送信エラー: {e}")
+            logging.error(f"MorningMitCog: chat送信エラー: {e}")
 
     async def _build_calendar_only_candidates(self, date_str: str) -> list[str]:
         """AI を使わず、カレンダー予定のタイトルだけから MIT 候補 3 件を作る（節約モード用）。"""

@@ -375,6 +375,12 @@ async def chat(req: ChatRequest):
         # 進行中のキーは仮押さえ（後でレスポンスを上書き保存）
         _CHAT_IDEMPOTENCY_CACHE[req.client_msg_id] = (now_ts, None)
 
+    # ユーザーが反応した → 保留中の定時通知があれば1件放出する
+    try:
+        await notification_service.mark_user_responded()
+    except Exception as e:
+        logging.debug(f"mark_user_responded failed: {e}")
+
     url_match = re.search(r"https?://[^\s]+", req.message)
     if url_match:
         url = url_match.group(0)
@@ -408,9 +414,25 @@ async def chat(req: ChatRequest):
     from google.genai import types
     db_history = await get_history(limit=15)
     history_messages = []
+    _today_date = datetime.datetime.now(JST).date()
     for m in reversed(db_history[1:]):
         role = "model" if m["role"] == "assistant" else "user"
-        history_messages.append(types.Content(role=role, parts=[types.Part.from_text(text=m["content"])]))
+        # 各履歴メッセージに日時タグを付ける。これがないと AI が
+        # 「昨日の朝の『今日の予定』メッセージ」を今日のものと誤認し、
+        # 過去の予定を本日の予定として提示してしまう。
+        text = m["content"]
+        ts = m.get("timestamp")
+        if ts:
+            try:
+                _mdt = datetime.datetime.fromisoformat(ts)
+                if _mdt.date() == _today_date:
+                    _tag = _mdt.strftime("今日 %H:%M")
+                else:
+                    _tag = _mdt.strftime("%Y-%m-%d %H:%M")
+                text = f"[{_tag}]\n{text}"
+            except Exception:
+                pass
+        history_messages.append(types.Content(role=role, parts=[types.Part.from_text(text=text)]))
 
     # 返信先のコンテキストをプロンプト前置で添付
     user_message = req.message
@@ -3454,6 +3476,39 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
     ok = await answer_daily_question(qid, req.answer)
     if not ok:
         raise HTTPException(status_code=404, detail="質問が見つかりません")
+
+    # morning_mit スコープの質問への回答は、そのまま今日の MIT として
+    # Obsidian の DailyNote に確定書き込みする（夜の振り返りと同様の即時反映）。
+    try:
+        pending = await get_pending_questions()
+        q = next((x for x in pending if x.get("id") == qid), None)
+        if q and q.get("scope") == "morning_mit":
+            import re as _re
+            lines = []
+            for ln in (req.answer or "").splitlines():
+                ln = _re.sub(r"^\s*[0-9]+[.)、]\s*", "", ln).strip()
+                ln = _re.sub(r"^[-・*]\s*", "", ln).strip()
+                if ln:
+                    lines.append(ln[:60])
+            items = lines[:3]
+            if items:
+                from api import app
+                bot = getattr(app.state, "bot", None)
+                partner_cog = bot.get_cog("PartnerCog") if bot else None
+                if partner_cog:
+                    result_msg = await partner_cog._set_mit_to_obsidian(items)
+                    await resolve_questions(q["date"], scope="morning_mit")
+                    confirm = (
+                        "📌 今日のMITを確定したよ！\n"
+                        + "\n".join(f"{i}. {it}" for i, it in enumerate(items, 1))
+                        + "\n\n" + (result_msg or "")
+                    ).strip()
+                    await notification_service.save_message_and_notify(
+                        "assistant", confirm, title="📌 今日のMIT確定",
+                    )
+    except Exception as e:
+        logging.error(f"morning_mit answer 反映エラー: {e}")
+
     return {"status": "success"}
 
 
@@ -4646,13 +4701,26 @@ async def screener_universes():
     return await cog.list_universes()
 
 
+def _json_sanitize(obj):
+    """dict/list を再帰的に走査し、NaN/Inf を None に置換して JSON 互換にする。"""
+    import math
+
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_sanitize(v) for v in obj]
+    return obj
+
+
 @router.post("/investment/screener/run", dependencies=[Depends(verify_api_key)])
 async def screener_run(req: ScreenerRunRequest):
     cog = _get_screener_cog()
     styles = req.styles or ([req.style] if req.style else [])
     if not styles:
         raise HTTPException(status_code=422, detail="styles または style を1つ以上指定してください")
-    return await cog.run_multi_screening(
+    result = await cog.run_multi_screening(
         styles=styles,
         top_n=req.top_n,
         universe_name=req.universe,
@@ -4661,6 +4729,8 @@ async def screener_run(req: ScreenerRunRequest):
         filter_overrides=req.filter_overrides,
         combine_mode=req.combine_mode,
     )
+    # NaN/Inf は JSON 非互換でシリアライズに失敗するため None に正規化する
+    return _json_sanitize(result)
 
 
 @router.post("/investment/screener/analyze", dependencies=[Depends(verify_api_key)])

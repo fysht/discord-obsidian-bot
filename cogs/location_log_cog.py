@@ -383,7 +383,7 @@ class LocationLogCog(commands.Cog):
                     )
                 else:
                     from api.notification_service import save_message_and_notify as _save_msg
-                    await _save_msg("assistant", f"📍 {dates_str} の移動記録を保存したよ！")
+                    await _save_msg("assistant", f"📍 {dates_str} の移動記録を保存したよ！", proactive=True)
 
     @process_timeline_json.before_loop
     async def before_process(self):

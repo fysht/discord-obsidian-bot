@@ -90,9 +90,21 @@ async def send_push(title: str, body: str, url: Optional[str] = None) -> int:
     return success
 
 
-async def save_message_and_notify(role: str, content: str, reply_to=None, title: str = "マネージャーからメッセージ") -> int:
-    """assistant メッセージは保存と同時に Web Push 通知を送る共通ヘルパー。
-    user 発言など通知が不要な場合は通常の save_message を直接使うこと。"""
+# ============================================================
+# 定時通知のキューイング
+#   ユーザーが直前のマネージャー通知に未応答のあいだは、後続の定時通知を
+#   保留キューに溜めておき、ユーザーが反応（チャット送信）するたびに
+#   1 件ずつ放出する。これにより「一方的に連投される」状態を防ぐ。
+# ============================================================
+
+_awaiting_user_response = False          # 直近の定時通知にユーザーが未応答か
+_held_notifications: list[dict] = []     # 保留中の定時通知（古い順）
+_HELD_MAX = 30                           # 保留キューの上限（超過時は最古を破棄）
+_queue_lock = asyncio.Lock()
+
+
+async def _deliver(role: str, content: str, reply_to, title: str) -> int:
+    """実際に DB へ保存し Push を送る（キューイング判定を行わない低レベル送信）。"""
     from api.database import save_message
 
     msg_id = await save_message(role, content, reply_to=reply_to)
@@ -102,3 +114,61 @@ async def save_message_and_notify(role: str, content: str, reply_to=None, title:
         except Exception as e:
             logging.error(f"Push 通知送信エラー: {e}")
     return msg_id
+
+
+async def save_message_and_notify(
+    role: str,
+    content: str,
+    reply_to=None,
+    title: str = "マネージャーからメッセージ",
+    proactive: bool = False,
+) -> Optional[int]:
+    """assistant メッセージは保存と同時に Web Push 通知を送る共通ヘルパー。
+
+    proactive=True（定時通知・先回りリマインドなど、ユーザー発言を起点と
+    しないマネージャー通知）の場合、直前の通知にユーザーが未応答であれば
+    保留キューへ積み、送信を見送って None を返す。
+    user 発言など通知が不要な場合は通常の save_message を直接使うこと。
+    """
+    global _awaiting_user_response
+
+    if proactive and role == "assistant" and content and content.strip():
+        async with _queue_lock:
+            if _awaiting_user_response:
+                _held_notifications.append({"content": content, "title": title})
+                if len(_held_notifications) > _HELD_MAX:
+                    _held_notifications.pop(0)
+                logging.info(
+                    f"定時通知を保留（ユーザー未応答）。保留件数={len(_held_notifications)}"
+                )
+                return None
+            # 未応答フラグが立っていない → 今回は送信し、以後は応答待ち状態にする
+            _awaiting_user_response = True
+
+    return await _deliver(role, content, reply_to, title)
+
+
+async def mark_user_responded() -> None:
+    """ユーザーがマネージャーへ反応（チャット送信など）したときに呼ぶ。
+
+    保留キューに通知があれば最古の 1 件だけを放出する。残りは次の応答まで
+    引き続き保留する（1 応答につき 1 通知のペースで小出しにする）。
+    保留が無ければ応答待ち状態を解除する。
+    """
+    global _awaiting_user_response
+
+    async with _queue_lock:
+        if not _held_notifications:
+            _awaiting_user_response = False
+            return
+        nxt = _held_notifications.pop(0)
+        remaining = len(_held_notifications)
+        # まだ保留が残る／今 1 件出すので、応答待ち状態は維持する
+        _awaiting_user_response = True
+
+    content = nxt["content"]
+    try:
+        await _deliver("assistant", content, None, nxt["title"])
+    except Exception as e:
+        logging.error(f"保留通知の放出に失敗: {e}")
+    logging.info(f"保留通知を1件放出。残り保留={remaining}")
