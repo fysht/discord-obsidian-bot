@@ -65,33 +65,30 @@ class MorningMitCog(commands.Cog):
             logging.info("MorningMitCog: 朝の MIT 候補は既に登録済み")
             return
 
+        # 既に今日の MIT が DailyNote に設定済みなら、候補は出さない
+        if await self._mit_already_set(today_str):
+            logging.info("MorningMitCog: 今日の MIT は設定済みのため候補提案をスキップ")
+            return
+
         # コスト閾値を超過している場合は AI 呼び出しをスキップ（頻度調整）
+        throttled = False
         try:
-            if await cost_meter_service.should_throttle_heavy_tasks():
-                logging.info("MorningMitCog: 月額API閾値を超過しているため当日の AI 候補生成をスキップ")
-                # カレンダー予定のみの簡易候補にフォールバック
-                fallback = await self._build_calendar_only_candidates(today_str)
-                if fallback:
-                    import json as _json
-                    context_payload = _json.dumps({"candidates": fallback, "throttled": True}, ensure_ascii=False)
-                    await add_daily_question(
-                        today_str,
-                        _MIT_QUESTION_TEXT,
-                        scope='morning_mit',
-                        context=context_payload,
-                    )
-                    await self._announce_in_chat(today_str, fallback, throttled=True)
-                return
+            throttled = await cost_meter_service.should_throttle_heavy_tasks()
         except Exception as e:
             logging.debug(f"MorningMitCog: throttle check failed: {e}")
 
-        candidates = await self._build_mit_candidates(today_str)
-        if not candidates:
-            logging.info("MorningMitCog: MIT 候補を生成できなかったためスキップ")
-            return
+        if throttled:
+            logging.info("MorningMitCog: 月額API閾値を超過しているため当日の AI 候補生成をスキップ")
+            # カレンダー予定のみの簡易候補にフォールバック（無ければ空のまま）
+            candidates = await self._build_calendar_only_candidates(today_str)
+        else:
+            # カレンダー予定が無ければ無理に候補を作らず、空のままユーザーに回答させる
+            candidates = await self._build_mit_candidates(today_str)
 
         # 候補リストを context フィールドに JSON で格納（フロントが取り出して編集用に表示）
-        context_payload = json.dumps({"candidates": candidates}, ensure_ascii=False)
+        context_payload = json.dumps(
+            {"candidates": candidates, "throttled": throttled}, ensure_ascii=False
+        )
         try:
             await add_daily_question(today_str, _MIT_QUESTION_TEXT, scope='morning_mit', context=context_payload)
         except Exception as e:
@@ -99,7 +96,23 @@ class MorningMitCog(commands.Cog):
             return
 
         # 夜の振り返りと同じく、チャットへ回答欄付きメッセージを送る
-        await self._announce_in_chat(today_str, candidates, throttled=False)
+        await self._announce_in_chat(today_str, candidates, throttled=throttled)
+
+    async def _mit_already_set(self, date_str: str) -> bool:
+        """指定日の DailyNote の MIT セクションに、既にタスク行が書かれているか判定する。"""
+        try:
+            section = await self._read_mit_section(date_str)
+        except Exception:
+            return False
+        if not section:
+            return False
+        # `- [ ] 実際のタスク文` のように、チェックボックス＋本文がある行が
+        # 1つでもあれば設定済みとみなす（空テンプレ行 `- [ ]` のみは未設定扱い）。
+        import re as _re
+        for line in section.splitlines():
+            if _re.match(r"^\s*[-*]\s*\[[ xX]\]\s*\S", line):
+                return True
+        return False
 
     async def _announce_in_chat(self, date_str: str, candidates: list[str], throttled: bool):
         """今朝のMIT候補をチャットへ送信する。末尾の [QUESTIONS:...] マーカーにより
@@ -109,15 +122,22 @@ class MorningMitCog(commands.Cog):
         except Exception as e:
             logging.error(f"MorningMitCog: import error: {e}")
             return
-        if throttled:
-            head = "☀️ おはよう、ゆうすけ！今朝のMIT候補だよ（コスト節約モードでカレンダーから自動抽出したよ）。"
+        if candidates:
+            if throttled:
+                head = "☀️ おはよう、ゆうすけ！今朝のMIT候補だよ（コスト節約モードでカレンダーから自動抽出したよ）。"
+            else:
+                head = "☀️ おはよう、ゆうすけ！今朝のMIT候補を考えてみたよ。"
+            lines = [head]
+            for i, c in enumerate(candidates, 1):
+                lines.append(f"{i}. {c}")
+            lines.append("")
+            lines.append("下の回答欄で自由に編集（1行に1つ）して『回答』を押してね。そのまま今日のMITとして確定するよ💪")
         else:
-            head = "☀️ おはよう、ゆうすけ！今朝のMIT候補を3つ考えてみたよ。"
-        lines = [head]
-        for i, c in enumerate(candidates, 1):
-            lines.append(f"{i}. {c}")
-        lines.append("")
-        lines.append("下の回答欄で自由に編集（1行に1つ）して『回答』を押してね。そのまま今日のMITとして確定するよ💪")
+            # カレンダーに予定がない等で候補なし。ユーザー自身に書いてもらう
+            lines = [
+                "☀️ おはよう、ゆうすけ！今日のMITを決めよう。",
+                "今日は特に提案できる候補がなかったよ。下の回答欄に今日のMITを書いて（1行に1つ）『回答』を押してね💪",
+            ]
         lines.append(f"[QUESTIONS:morning_mit:{date_str}]")
         try:
             await save_message_and_notify(
@@ -159,7 +179,12 @@ class MorningMitCog(commands.Cog):
                     cal_lines.append(f"- {t} {s}")
             except Exception as e:
                 logging.debug(f"MorningMitCog: calendar error: {e}")
-        cal_text = "\n".join(cal_lines) if cal_lines else "（予定なし）"
+        # カレンダーに予定が無ければ無理に候補を作らず、ユーザー自身に
+        # MIT を回答してもらう（AI 呼び出しもスキップ）。
+        if not cal_lines:
+            logging.info("MorningMitCog: 今日のカレンダー予定が無いため候補生成をスキップ")
+            return []
+        cal_text = "\n".join(cal_lines)
 
         # 2) 昨日の MIT 進捗（Daily Note の `## 🎯 MIT` セクション）
         yesterday = (datetime.datetime.strptime(date_str, "%Y-%m-%d") - datetime.timedelta(days=1)).strftime("%Y-%m-%d")

@@ -429,7 +429,8 @@
                             <span class="card-icon">📨</span>
                             <span class="card-title">マネージャー通知ログ</span>
                             <span id="manager-notices-unread" class="notice-unread-badge" style="display:none;"></span>
-                            <button class="mini-link" onclick="reloadManagerNotices()" style="margin-left:auto;">更新</button>
+                            <button class="mini-link" id="notice-bulk-delete-btn" onclick="deleteSelectedNotices()" style="margin-left:auto;display:none;color:#e2574c;">🗑 選択削除</button>
+                            <button class="mini-link" id="notice-refresh-btn" onclick="reloadManagerNotices()" style="margin-left:auto;">更新</button>
                         </div>
                         <div id="dash-manager-notices" class="card-body list-body manager-notices-body"><div class="loading-placeholder">読み込み中…</div></div>
                     </div>

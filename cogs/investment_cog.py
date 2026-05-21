@@ -370,12 +370,20 @@ class InvestmentCog(commands.Cog):
         except Exception as e:
             logging.error(f"manager_notices save error: {e}")
 
-        # 2) チャットには短いリードのみ
+        # 2) チャットには短いリードのみ。末尾の [ACTION:open_notices] により
+        #    フロント側で「マネージャー通知ログを開く」ボタンが描画される。
+        #    AI を通すとアクションタグが欠落するため、リードは直接送信する。
         lead = (
-            f"📨 {title} を更新したよ。"
-            "詳細は「ログ」タブの『マネージャー通知ログ』を見てね。"
+            f"📨 {title} を更新したよ。詳しくは下のボタンからマネージャー通知ログを見てね。\n"
+            "[ACTION:open_notices]"
         )
-        await self._notify_routine(lead)
+        try:
+            from api.notification_service import save_message_and_notify
+            await save_message_and_notify(
+                "assistant", lead, title=f"📨 {title}", proactive=True,
+            )
+        except Exception as e:
+            logging.error(f"InvestmentCog notify_long lead error: {e}")
 
     @tasks.loop(time=datetime.time(hour=6, minute=45, tzinfo=JST))
     async def auto_market_sentiment_task(self):
@@ -525,7 +533,7 @@ class InvestmentCog(commands.Cog):
         if sections:
             body = "\n\n---\n\n".join(sections)
             await self._notify_long(
-                "news_sentiment", "保有銘柄ニュース（前回からの変化）", body
+                "news_sentiment", "保有銘柄ニュース（前日分）", body
             )
         else:
             logging.info("auto_news_sentiment: 全銘柄で新規ニュース無し、通知スキップ")
@@ -2081,7 +2089,8 @@ class InvestmentCog(commands.Cog):
         if not self.gemini_client:
             return {"ok": False, "error": "Geminiクライアント未設定"}
         market, code = _resolve_market(ticker)
-        prompt = PROMPT_NEWS_SENTIMENT.format(ticker=code, market=market)
+        yesterday = (datetime.datetime.now(JST) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+        prompt = PROMPT_NEWS_SENTIMENT.format(ticker=code, market=market, yesterday=yesterday)
         result = await self._gemini_with_search(prompt, feature_key="investment_news")
         if not result:
             return {"ok": False, "error": "ニュース取得に失敗"}

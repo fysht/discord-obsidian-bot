@@ -908,6 +908,7 @@ function describeAction(payload) {
         }
         case 'save_thought_reflection': return `💭 思考整理を保存: ${args.theme || ''}`;
         case 'habit_complete': return `✅ 習慣を完了: ${args.habit_name || ''}`;
+        case 'open_notices': return `📨 マネージャー通知ログを開く`;
         default:             return `▶ ${action} を実行`;
     }
 }
@@ -930,6 +931,16 @@ window.cancelAction = function(btn) {
 window.executeAction = async function(encodedPayload, btn) {
     const payload = decodeURIComponent(encodedPayload);
     const { action, args } = _parseActionPayload(payload);
+    // ナビゲーション系アクション: マネージャー通知ログを開く（ボタンは無効化しない）
+    if (action === 'open_notices') {
+        switchTab('log');
+        setTimeout(() => {
+            if (typeof loadManagerNotices === 'function') loadManagerNotices();
+            const card = document.querySelector('.manager-notice-card');
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        return;
+    }
     if (btn) { btn.disabled = true; btn.textContent = '実行中...'; }
     try {
         if (action === 'calendar_add') {
@@ -1397,6 +1408,7 @@ window.loadManagerNotices = async () => {
         }
         if (!items.length) {
             el.innerHTML = '<div class="loading-placeholder">まだ通知ログはありません。</div>';
+            updateNoticeBulkBtn();
             return;
         }
         el.innerHTML = items.map(it => {
@@ -1411,6 +1423,7 @@ window.loadManagerNotices = async () => {
             return `<details class="notice-item${unreadCls}" data-id="${it.id}" ontoggle="if(this.open && !${it.is_read?1:0}) setNoticeRead(${it.id}, true)">
                 <summary>
                     <span class="notice-summary-row">
+                        <input type="checkbox" class="notice-select-cb" value="${it.id}" title="選択" onclick="event.stopPropagation();updateNoticeBulkBtn();" style="margin-right:6px;flex:none;">
                         ${it.is_read ? '' : '<span class="notice-dot" title="未読"></span>'}
                         <span class="notice-icon">${meta.icon}</span>
                         <div class="notice-summary-text">
@@ -1426,9 +1439,35 @@ window.loadManagerNotices = async () => {
                 </div>
             </details>`;
         }).join('');
+        updateNoticeBulkBtn();
     } catch (e) {
         el.innerHTML = '<div class="loading-placeholder">通知ログの取得に失敗しました。</div>';
     }
+};
+
+// 選択中の通知件数に応じて「選択削除」ボタンの表示を更新する
+window.updateNoticeBulkBtn = () => {
+    const checked = document.querySelectorAll('.notice-select-cb:checked').length;
+    const btn = document.getElementById('notice-bulk-delete-btn');
+    if (!btn) return;
+    btn.style.display = checked > 0 ? '' : 'none';
+    btn.textContent = checked > 0 ? `🗑 選択削除 (${checked})` : '🗑 選択削除';
+};
+
+// チェックした通知をまとめて削除する
+window.deleteSelectedNotices = async () => {
+    const ids = [...document.querySelectorAll('.notice-select-cb:checked')].map(cb => cb.value);
+    if (!ids.length) return;
+    if (!confirm(`選択した ${ids.length} 件の通知を削除しますか？`)) return;
+    let ok = 0;
+    for (const id of ids) {
+        try {
+            await apiFetch(`/api/manager/notices/${id}`, { method: 'DELETE' });
+            ok++;
+        } catch (e) { /* 個別失敗はスキップ */ }
+    }
+    showToast(`${ok} 件の通知を削除しました`);
+    loadManagerNotices();
 };
 
 window.setNoticeRead = async (id, isRead) => {

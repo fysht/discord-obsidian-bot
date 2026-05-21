@@ -180,9 +180,17 @@ class PartnerRoutineCog(commands.Cog):
             min_t = weather_data.get("min_temp", "N/A")
             news_list = await self.info_service.get_news(limit=3)
 
-        news_text = (
-            "\n".join(news_list) if news_list else "（ニュースを取得できませんでした）"
-        )
+        # get_news() は {"title", "link"} の dict リストを返す。文字列が混在しても安全に整形する。
+        if news_list:
+            _news_lines = []
+            for n in news_list:
+                if isinstance(n, dict):
+                    _news_lines.append(f"- {n.get('title', '')}")
+                else:
+                    _news_lines.append(f"- {n}")
+            news_text = "\n".join(_news_lines)
+        else:
+            news_text = "（ニュースを取得できませんでした）"
 
         # 過去の今日（1年前 / 3ヶ月前）
         past_journals = ""
