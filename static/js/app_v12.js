@@ -909,6 +909,7 @@ function describeAction(payload) {
         case 'save_thought_reflection': return `💭 思考整理を保存: ${args.theme || ''}`;
         case 'habit_complete': return `✅ 習慣を完了: ${args.habit_name || ''}`;
         case 'open_notices': return `📨 マネージャー通知ログを開く`;
+        case 'open_link':    return `📂 保存した項目を開く`;
         default:             return `▶ ${action} を実行`;
     }
 }
@@ -939,6 +940,30 @@ window.executeAction = async function(encodedPayload, btn) {
             const card = document.querySelector('.manager-notice-card');
             if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
+        return;
+    }
+    // ナビゲーション系: 保存したストックリンクを直接開く
+    if (action === 'open_link') {
+        const linkId = parseInt(args.id, 10);
+        switchTab('info');
+        try {
+            const data = await apiFetch('/api/links');
+            const link = (data.links || []).find(l => l.id === linkId);
+            if (link && typeof openLinkDetailsModal === 'function') {
+                openLinkDetailsModal(link);
+            } else {
+                const det = link ? document.getElementById(`dash-stocked-${link.type}`) : null;
+                if (det) {
+                    det.open = true;
+                    det.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                    showToast('項目が見つかりませんでした', true);
+                }
+            }
+        } catch (e) {
+            console.error(e);
+            showToast('項目を開けませんでした', true);
+        }
         return;
     }
     if (btn) { btn.disabled = true; btn.textContent = '実行中...'; }
@@ -2448,6 +2473,9 @@ let readingState = {
     promptInterval: null,
     sentPrompts: [],
     enablePrompt: false,
+    bookPasses: [],
+    currentPassIndex: null,
+    planEditMode: false,
 };
 
 window.openReadingModal = async () => {
@@ -2455,6 +2483,10 @@ window.openReadingModal = async () => {
     $('#reading-modal').classList.remove('hidden');
     $('#reading-custom-title').value = '';
     $('#reading-prompt-toggle').checked = false;
+    $('#reading-plan-area').style.display = 'none';
+    readingState.bookPasses = [];
+    readingState.currentPassIndex = null;
+    readingState.planEditMode = false;
     const listEl = $('#reading-book-list');
     listEl.innerHTML = '<div style="padding:20px; text-align:center; color:var(--text-muted);">候補を読み込み中…</div>';
     try {
@@ -2487,6 +2519,123 @@ window.selectBookCand = (el) => {
     document.querySelectorAll('.book-cand-item').forEach(e => e.classList.remove('selected'));
     el.classList.add('selected');
     $('#reading-custom-title').value = el.dataset.title;
+    loadReadingPlan(el.dataset.title);
+};
+
+// 手動入力でも本が確定したらプランを読み込む
+const _readingCustomTitleEl = document.getElementById('reading-custom-title');
+if (_readingCustomTitleEl) {
+    _readingCustomTitleEl.addEventListener('change', (e) => {
+        loadReadingPlan(e.target.value.trim());
+    });
+}
+
+// ===== 多読プラン =====
+async function loadReadingPlan(title) {
+    const area = $('#reading-plan-area');
+    if (!title) { area.style.display = 'none'; return; }
+    readingState.planEditMode = false;
+    $('#reading-plan-edit-actions').style.display = 'none';
+    $('#reading-plan-edit-btn').textContent = '✏️ 段階を編集';
+    area.style.display = '';
+    $('#reading-plan-list').innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem;">読み込み中…</div>';
+    try {
+        const data = await apiFetch(`/api/reading/plan?book_title=${encodeURIComponent(title)}`);
+        readingState.bookPasses = data.passes || [];
+    } catch (e) {
+        readingState.bookPasses = [];
+        $('#reading-plan-list').innerHTML = '<div style="color:var(--text-muted); font-size:0.8rem;">プランを取得できませんでした</div>';
+        return;
+    }
+    // 未読了の最初の段階を初期選択
+    const firstUndone = readingState.bookPasses.findIndex(p => !p.done);
+    readingState.currentPassIndex = firstUndone >= 0 ? firstUndone : 0;
+    renderReadingPlan();
+}
+
+function renderReadingPlan() {
+    const listEl = $('#reading-plan-list');
+    const passes = readingState.bookPasses || [];
+    if (!passes.length) { listEl.innerHTML = ''; return; }
+    if (readingState.planEditMode) {
+        listEl.innerHTML = passes.map((p, i) => `
+            <div style="display:flex; align-items:center; gap:6px; margin:4px 0;">
+                <span style="color:var(--text-muted); font-size:0.8rem; width:1.4em;">${i + 1}.</span>
+                <input type="text" class="modern-input reading-pass-edit" data-idx="${i}" value="${escapeHtml(p.label)}" style="padding:6px; flex:1; font-size:0.85rem;">
+                <button onclick="removeReadingPass(${i})" style="background:none; border:none; color:var(--danger,#e66); cursor:pointer;">✕</button>
+            </div>
+        `).join('');
+    } else {
+        listEl.innerHTML = passes.map((p, i) => {
+            const checked = i === readingState.currentPassIndex ? 'checked' : '';
+            const doneMark = p.done
+                ? `<span style="color:var(--accent); font-size:0.75rem; margin-left:4px;">✓ ${escapeHtml(p.done_at || '読了')}</span>`
+                : '';
+            return `
+                <label style="display:flex; align-items:center; gap:8px; margin:4px 0; cursor:pointer; ${p.done ? 'opacity:0.65;' : ''}">
+                    <input type="radio" name="reading-pass" value="${i}" ${checked} onchange="readingState.currentPassIndex=${i}">
+                    <span style="font-size:0.85rem;">${i + 1}. ${escapeHtml(p.label)}${doneMark}</span>
+                </label>
+            `;
+        }).join('');
+    }
+}
+
+window.toggleReadingPlanEdit = () => {
+    if (readingState.planEditMode) {
+        // 編集モードのまま編集ボタンを押したらキャンセル扱い
+        readingState.planEditMode = false;
+        $('#reading-plan-edit-actions').style.display = 'none';
+        $('#reading-plan-edit-btn').textContent = '✏️ 段階を編集';
+    } else {
+        readingState.planEditMode = true;
+        $('#reading-plan-edit-actions').style.display = 'flex';
+        $('#reading-plan-edit-btn').textContent = '✕ 編集をやめる';
+    }
+    renderReadingPlan();
+};
+
+function syncPassLabelsFromInputs() {
+    document.querySelectorAll('.reading-pass-edit').forEach(inp => {
+        const idx = parseInt(inp.dataset.idx, 10);
+        if (readingState.bookPasses[idx]) {
+            readingState.bookPasses[idx].label = inp.value.trim();
+        }
+    });
+}
+
+window.addReadingPass = () => {
+    syncPassLabelsFromInputs();
+    readingState.bookPasses.push({ label: '新しい段階', done: false, done_at: null });
+    renderReadingPlan();
+};
+
+window.removeReadingPass = (idx) => {
+    syncPassLabelsFromInputs();
+    readingState.bookPasses.splice(idx, 1);
+    renderReadingPlan();
+};
+
+window.saveReadingPlan = async () => {
+    syncPassLabelsFromInputs();
+    const title = $('#reading-custom-title').value.trim();
+    const passes = readingState.bookPasses.filter(p => (p.label || '').trim());
+    if (!title) { showToast('本を選んでね', true); return; }
+    try {
+        await apiFetch('/api/reading/plan', {
+            method: 'PUT',
+            body: JSON.stringify({ book_title: title, passes })
+        });
+        readingState.bookPasses = passes;
+        if (readingState.currentPassIndex >= passes.length) readingState.currentPassIndex = 0;
+        readingState.planEditMode = false;
+        $('#reading-plan-edit-actions').style.display = 'none';
+        $('#reading-plan-edit-btn').textContent = '✏️ 段階を編集';
+        renderReadingPlan();
+        showToast('多読プランを保存したよ');
+    } catch (e) {
+        showToast('保存に失敗', true);
+    }
 };
 
 function readingResetSteps() {
@@ -2506,8 +2655,16 @@ window.closeReadingModal = () => {
         bookTitle: '', startedAt: null,
         timerInterval: null, promptInterval: null,
         sentPrompts: [], enablePrompt: false,
+        bookPasses: [], currentPassIndex: null, planEditMode: false,
     };
 };
+
+// 現在選択中の段階ラベルを返す（無ければ空文字）
+function currentPassLabel() {
+    const i = readingState.currentPassIndex;
+    if (i == null || !readingState.bookPasses[i]) return '';
+    return readingState.bookPasses[i].label || '';
+}
 
 window.startReading = async () => {
     const title = $('#reading-custom-title').value.trim();
@@ -2516,15 +2673,30 @@ window.startReading = async () => {
     readingState.startedAt = Date.now();
     readingState.sentPrompts = [];
     readingState.enablePrompt = $('#reading-prompt-toggle').checked;
+    const passLabel = currentPassLabel();
     $('#reading-current-book').textContent = title;
+    const passEl = $('#reading-current-pass');
+    if (passLabel) {
+        passEl.textContent = `📚 ${readingState.currentPassIndex + 1}回目: ${passLabel}`;
+        passEl.style.display = '';
+        $('#reading-pass-done-row').style.display = 'flex';
+        $('#reading-pass-done').checked = true;
+    } else {
+        passEl.style.display = 'none';
+        $('#reading-pass-done-row').style.display = 'none';
+    }
     $('#reading-memo-input').value = '';
     $('#reading-prompt-area').style.display = 'none';
     $('#reading-prompt-area').textContent = '';
     $('#reading-step-select').style.display = 'none';
     $('#reading-step-active').style.display = '';
 
+    // 過去のメモを折りたたみに後追いで読み込む（タイマー開始はブロックしない）
+    $('#reading-past-memo').open = false;
+    loadReadingPastMemo(title);
+
     // ライフログ start（チャット経由でAIにログを記録させる）
-    sendActionCommandSilent(`「${title}」読書開始`);
+    sendActionCommandSilent(passLabel ? `「${title}」読書開始（${passLabel}）` : `「${title}」読書開始`);
 
     // 経過時間タイマー
     updateReadingTimer();
@@ -2547,13 +2719,32 @@ function updateReadingTimer() {
     if (el) el.textContent = t;
 }
 
+// 書籍ノートの過去メモ（Reading Log）を折りたたみへ読み込む
+async function loadReadingPastMemo(title) {
+    const body = $('#reading-past-memo-body');
+    if (!body) return;
+    body.textContent = '読み込み中…';
+    try {
+        const data = await apiFetch(`/api/reading/log?book_title=${encodeURIComponent(title)}`);
+        const log = (data.log || '').trim();
+        if (log) {
+            body.innerHTML = escapeHtml(log).replace(/\n/g, '<br>');
+        } else {
+            body.innerHTML = '<span style="color:var(--text-muted);">過去のメモはまだありません</span>';
+        }
+    } catch (e) {
+        body.innerHTML = '<span style="color:var(--text-muted);">過去のメモを取得できませんでした</span>';
+    }
+}
+
 async function fetchReadingPrompt() {
     try {
         const data = await apiFetch('/api/reading/prompt', {
             method: 'POST',
             body: JSON.stringify({
                 book_title: readingState.bookTitle,
-                previous_prompts: readingState.sentPrompts
+                previous_prompts: readingState.sentPrompts,
+                current_pass: currentPassLabel()
             })
         });
         const text = (data.prompt || '').trim();
@@ -2607,15 +2798,17 @@ window.abortReading = () => {
 window.finishReading = async () => {
     const memo = $('#reading-memo-input').value.trim();
     const title = readingState.bookTitle;
+    const passLabel = currentPassLabel();
     const elapsedMin = readingState.startedAt
         ? Math.round((Date.now() - readingState.startedAt) / 60000)
         : 0;
 
     if (memo) {
         try {
+            const passPrefix = passLabel ? `【${passLabel}】\n` : '';
             const memoWithTime = elapsedMin > 0
-                ? `${memo}\n\n（読書時間: ${elapsedMin}分）`
-                : memo;
+                ? `${passPrefix}${memo}\n\n（読書時間: ${elapsedMin}分）`
+                : `${passPrefix}${memo}`;
             const data = await apiFetch('/api/reading/save', {
                 method: 'POST',
                 body: JSON.stringify({ book_title: title, memo: memoWithTime })
@@ -2628,12 +2821,32 @@ window.finishReading = async () => {
     } else {
         showToast(`お疲れさま！${elapsedMin}分の読書を記録したよ`);
     }
+
+    // 多読プラン: この段階を読了にする（チェックがオンのとき）
+    const passIdx = readingState.currentPassIndex;
+    if (passLabel && passIdx != null && $('#reading-pass-done')?.checked) {
+        const pass = readingState.bookPasses[passIdx];
+        if (pass) {
+            pass.done = true;
+            pass.done_at = new Date().toISOString().slice(0, 10);
+            try {
+                await apiFetch('/api/reading/plan', {
+                    method: 'PUT',
+                    body: JSON.stringify({ book_title: title, passes: readingState.bookPasses })
+                });
+            } catch (e) {
+                console.debug('reading plan update failed', e);
+            }
+        }
+    }
+
     // ライフログ end（時刻レンジ形式でログ記録）
     const startDate = new Date(readingState.startedAt);
     const endDate = new Date();
     const startTimeStr = startDate.getHours().toString().padStart(2,'0') + ':' + startDate.getMinutes().toString().padStart(2,'0');
     const endTimeStr = endDate.getHours().toString().padStart(2,'0') + ':' + endDate.getMinutes().toString().padStart(2,'0');
-    sendActionCommandSilent(`${startTimeStr}-${endTimeStr} 「${title}」読書終了`);
+    const endSuffix = passLabel ? `読書終了（${passLabel}）` : '読書終了';
+    sendActionCommandSilent(`${startTimeStr}-${endTimeStr} 「${title}」${endSuffix}`);
     closeReadingModal();
 };
 

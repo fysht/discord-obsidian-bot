@@ -19,6 +19,7 @@ from api.database import (
     get_quiz_phrase_pool, record_quiz_attempt,
     add_daily_question, get_pending_questions, get_questions_by_date,
     answer_daily_question, resolve_questions, delete_daily_question,
+    get_reading_plan, update_reading_plan,
 )
 from api import notification_service
 from services.info_service import InfoService
@@ -386,7 +387,7 @@ async def chat(req: ChatRequest):
         url = url_match.group(0)
         try:
             meta = await _fetch_link_meta(url)
-            await add_stocked_link(url, meta["type"], meta["title"])
+            link_id = await add_stocked_link(url, meta["type"], meta["title"])
 
             # Obsidianへの即時作成
             chat_service = getattr(app.state, "chat_service", None)
@@ -395,6 +396,8 @@ async def chat(req: ChatRequest):
 
             type_label = {"web": "🌐 ウェブ", "youtube": "📺 YouTube", "recipe": "🍳 レシピ", "map": "🗺️ マップ", "book": "📚 書籍"}.get(meta["type"], "🔗 リンク")
             reply = f"「{meta['title']}」を{type_label}としてストックし、ノートを作成しました。"
+            if link_id:
+                reply += f"\n[ACTION:open_link(id={link_id})]"
             user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
             asst_id = await notification_service.save_message_and_notify("assistant", reply)
             _resp = ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
@@ -2156,6 +2159,7 @@ class ReadingMemoRequest(BaseModel):
 class ReadingPromptRequest(BaseModel):
     book_title: str
     previous_prompts: List[str] = []
+    current_pass: str = ""
 
 
 @router.get("/reading/books", dependencies=[Depends(verify_api_key)])
@@ -2245,7 +2249,9 @@ async def reading_prompt(req: ReadingPromptRequest):
     prev = "\n".join(f"- {p}" for p in (req.previous_prompts or [])) or "（まだなし）"
     prompt = PROMPT_BOOK_READING_PROMPT.replace(
         "{book_title}", req.book_title or "無題"
-    ).replace("{previous_prompts}", prev)
+    ).replace("{previous_prompts}", prev).replace(
+        "{current_pass}", req.current_pass or "（指定なし）"
+    )
 
     try:
         from services.gemini_model_resolver import resolve_gemini_model as _rgm
@@ -2259,6 +2265,57 @@ async def reading_prompt(req: ReadingPromptRequest):
     except Exception as e:
         logging.error(f"reading_prompt error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/reading/log", dependencies=[Depends(verify_api_key)])
+async def reading_log(book_title: str):
+    """書籍ノートに蓄積された過去の読書メモ（Reading Log セクション）を返す。"""
+    from api import app
+    import re
+    chat_service = getattr(app.state, "chat_service", None)
+    title = (book_title or "").strip()
+    log_text = ""
+    if title and chat_service and chat_service.drive_service:
+        try:
+            service = chat_service.drive_service.get_service()
+            if service:
+                folder_id = await chat_service.drive_service.find_file(
+                    service, chat_service.drive_folder_id, "BookNotes"
+                )
+                if folder_id:
+                    f_id = await chat_service.drive_service.find_file(
+                        service, folder_id, f"{title}.md"
+                    )
+                    if f_id:
+                        content = await chat_service.drive_service.read_text_file(service, f_id)
+                        m = re.search(r"## 📖 Reading Log\n(.*?)(?=\n## |\Z)", content or "", re.DOTALL)
+                        if m:
+                            log_text = m.group(1).strip()
+        except Exception as e:
+            logging.debug(f"reading_log fetch error: {e}")
+    return {"book_title": title, "log": log_text}
+
+
+class ReadingPlanRequest(BaseModel):
+    book_title: str
+    passes: List[dict] = []
+
+
+@router.get("/reading/plan", dependencies=[Depends(verify_api_key)])
+async def reading_plan_get(book_title: str):
+    """書籍の多読プラン（段階リスト）を返す。無ければデフォルト5段階で作成。"""
+    passes = await get_reading_plan(book_title)
+    return {"book_title": (book_title or "").strip(), "passes": passes}
+
+
+@router.put("/reading/plan", dependencies=[Depends(verify_api_key)])
+async def reading_plan_put(req: ReadingPlanRequest):
+    """書籍の多読プランを保存する（段階の編集・完了状態）。"""
+    title = (req.book_title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="book_titleが空です")
+    await update_reading_plan(title, req.passes)
+    return {"status": "success", "book_title": title, "passes": req.passes}
 
 
 # ===== 勉強機能 (Study) =====

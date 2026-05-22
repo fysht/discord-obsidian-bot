@@ -1235,6 +1235,17 @@
                     <input type="checkbox" id="reading-prompt-toggle">
                     <label for="reading-prompt-toggle" style="font-size:0.85rem;">マネージャーから時々問いかけてもらう</label>
                 </div>
+                <div id="reading-plan-area" style="display:none; margin-top:14px; padding:10px; border-radius:8px; border:1px solid var(--border-glass);">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="font-size:0.85rem; font-weight:600;">📚 多読プラン（今回読む段階を選ぶ）</span>
+                        <button id="reading-plan-edit-btn" onclick="toggleReadingPlanEdit()" style="background:none; border:none; color:var(--accent); font-size:0.8rem; cursor:pointer;">✏️ 段階を編集</button>
+                    </div>
+                    <div id="reading-plan-list" style="margin-top:8px;"></div>
+                    <div id="reading-plan-edit-actions" style="display:none; gap:8px; margin-top:8px;">
+                        <button onclick="addReadingPass()" style="background:none; border:1px dashed var(--border-glass); color:var(--text-secondary); font-size:0.8rem; padding:4px 8px; border-radius:6px; cursor:pointer;">＋ 段階を追加</button>
+                        <button onclick="saveReadingPlan()" style="background:var(--accent); border:none; color:#fff; font-size:0.8rem; padding:4px 10px; border-radius:6px; cursor:pointer;">保存</button>
+                    </div>
+                </div>
                 <div class="modal-actions mt-20">
                     <button class="modal-btn cancel" onclick="closeReadingModal()">閉じる</button>
                     <button class="modal-btn submit" onclick="startReading()">▶ 読書開始</button>
@@ -1244,8 +1255,13 @@
             <!-- Step 2: 読書中 -->
             <div id="reading-step-active" style="display:none;">
                 <h3 id="reading-current-book">書籍タイトル</h3>
+                <div id="reading-current-pass" style="display:none; color:var(--accent); font-size:0.82rem; margin-top:2px;"></div>
                 <div class="reading-timer-display" id="reading-timer">00:00</div>
                 <div id="reading-prompt-area" style="display:none; margin-top:12px; padding:10px; border-radius:8px; background:rgba(0,186,152,0.08); border:1px solid rgba(0,186,152,0.25); font-size:0.88rem;"></div>
+                <details id="reading-past-memo" style="margin-top:14px;">
+                    <summary style="cursor:pointer; color:var(--text-muted); font-size:0.85rem;">📓 過去のメモを見る</summary>
+                    <div id="reading-past-memo-body" style="max-height:200px; overflow-y:auto; font-size:0.85rem; margin-top:8px; padding:8px; border-radius:8px; background:rgba(255,255,255,0.03);">読み込み中…</div>
+                </details>
                 <p style="color:var(--text-secondary); font-size:0.85rem; margin-top:14px;">
                     読書中に考えたこと・感じたことをメモしよう
                 </p>
@@ -1254,6 +1270,10 @@
                     <button class="modal-btn cancel" style="flex:1;" onclick="readingAttachImage()">📷 手書きを取り込む</button>
                 </div>
                 <input type="file" id="reading-image-input" accept="image/*" capture="environment" multiple style="display:none;">
+                <div id="reading-pass-done-row" style="display:none; align-items:center; gap:6px; margin-top:12px;">
+                    <input type="checkbox" id="reading-pass-done" checked>
+                    <label for="reading-pass-done" style="font-size:0.85rem;">この段階を読了にする</label>
+                </div>
                 <div class="modal-actions mt-20">
                     <button class="modal-btn cancel" onclick="abortReading()">中断</button>
                     <button class="modal-btn submit" onclick="finishReading()">📚 終了して保存</button>

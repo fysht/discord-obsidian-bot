@@ -197,6 +197,15 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_meals_date ON meals(date)"
         )
 
+        # 多読プラン（書籍ごとの段階的な読み方プラン）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS reading_plans (
+                book_title TEXT PRIMARY KEY,
+                passes_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
         # 株価 OHLCV キャッシュ（日本株スクリーナー用）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS stock_ohlcv (
@@ -479,14 +488,15 @@ async def clear_history():
 # --- Stocked Links 用のCRUD ---
 
 async def add_stocked_link(url: str, link_type: str, title: str = "Untitled"):
-    """リンクをストックする"""
+    """リンクをストックする。新規レコードのIDを返す。"""
     now = datetime.datetime.now(JST).isoformat()
     async with aiosqlite.connect(str(DB_PATH)) as db:
-        await db.execute(
+        cursor = await db.execute(
             "INSERT INTO stocked_links (url, type, title, added_at) VALUES (?, ?, ?, ?)",
             (url, link_type, title, now),
         )
         await db.commit()
+        return cursor.lastrowid
 
 async def get_all_links():
     """ストックリンク一覧を取得（全ステータス、新しい順）"""
@@ -537,6 +547,59 @@ async def delete_stocked_link(link_id: int):
         await db.execute(
             "DELETE FROM stocked_links WHERE id = ?",
             (link_id,)
+        )
+        await db.commit()
+
+
+# --- 多読プラン (Reading Plans) ---
+
+DEFAULT_READING_PASSES = [
+    "目次・全体像をつかむ",
+    "各章のまとめ・結論だけ読む",
+    "気になる章をじっくり読む",
+    "全体を通して読む",
+    "要点を読み返して定着させる",
+]
+
+
+async def get_reading_plan(book_title: str):
+    """書籍の多読プランを取得。無ければデフォルト5段階で作成して返す。"""
+    title = (book_title or "").strip()
+    if not title:
+        return []
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT passes_json FROM reading_plans WHERE book_title = ?", (title,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            try:
+                return json.loads(row[0])
+            except Exception:
+                pass
+        passes = [
+            {"label": label, "done": False, "done_at": None}
+            for label in DEFAULT_READING_PASSES
+        ]
+        now = datetime.datetime.now(JST).isoformat()
+        await db.execute(
+            "INSERT OR REPLACE INTO reading_plans (book_title, passes_json, updated_at) VALUES (?, ?, ?)",
+            (title, json.dumps(passes, ensure_ascii=False), now),
+        )
+        await db.commit()
+        return passes
+
+
+async def update_reading_plan(book_title: str, passes: list):
+    """書籍の多読プラン（段階リスト）を保存する。"""
+    title = (book_title or "").strip()
+    if not title:
+        return
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO reading_plans (book_title, passes_json, updated_at) VALUES (?, ?, ?)",
+            (title, json.dumps(passes or [], ensure_ascii=False), now),
         )
         await db.commit()
 
