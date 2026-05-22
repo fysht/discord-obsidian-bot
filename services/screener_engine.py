@@ -319,10 +319,11 @@ class StyleStrategy(ABC):
 class CreepingBreakoutStrategy(StyleStrategy):
     style_name = "creeping_breakout"
     display_name = "じわじわ高値ブレイク（低ボラ）"
-    description = "52週高値圏でじわじわ上昇し、急騰や下抜けがない、ブレイク前夜の銘柄"
+    description = "52週高値圏でじわじわ上昇し直近で高値を更新、急騰や下抜けがない銘柄"
     filters = [
         # 【位置】高値圏に位置している
         FilterDef("near_high", "52週高値乖離 ≤ 5%", "高値圏に位置している", True),
+        FilterDef("new_high", "直近5日で52週高値を更新", "実際に高値を更新した", True),
         FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
         # 【トレンド】じわじわ上昇している
         FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", True),
@@ -349,6 +350,16 @@ class CreepingBreakoutStrategy(StyleStrategy):
         volume = df["Volume"]
 
         is_near, gap, _high_52w = TechnicalSignals.near_52w_high(close, high, tolerance=0.05)
+
+        # 【位置】直近5営業日で実際に 52週高値を更新したか。
+        # 直近5日の高値が、それ以前（最大52週）の高値以上なら「高値更新」とみなす。
+        high_252 = high.tail(252)
+        if len(high_252) >= 25:
+            prior_max = float(high_252.iloc[:-5].max())
+            recent_max = float(high_252.iloc[-5:].max())
+            made_new_high = bool(recent_max >= prior_max and prior_max > 0)
+        else:
+            made_new_high = False
 
         sma200 = TechnicalSignals.sma(close, 200)
         sma200_val = float(sma200.iloc[-1]) if sma200.iloc[-1] == sma200.iloc[-1] else None
@@ -385,6 +396,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
         sigs = [
             # 【位置】高値圏
             Signal("52週高値乖離 ≤ 5%", f"{gap * 100:.2f}%", "≤5.00%", is_near),
+            Signal("直近5日で52週高値を更新", "更新あり" if made_new_high else "未更新", "更新あり", made_new_high),
             Signal(
                 "200日MA上抜け",
                 f"{((latest_close - sma200_val) / sma200_val * 100):+.2f}%" if sma200_val else "N/A",
@@ -403,7 +415,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
             Signal("下ひげ平均 ≤ 35%", f"{avg_lower_wick * 100:.1f}%", "≤35%", short_lower),
         ]
         signal_keys = [
-            "near_high", "above_sma200",
+            "near_high", "new_high", "above_sma200",
             "up_days", "ret_5d", "vol_increase",
             "low_volatility", "no_big_pop", "no_prev_low_break",
             "short_upper_wick", "short_lower_wick",

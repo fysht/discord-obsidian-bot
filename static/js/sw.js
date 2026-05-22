@@ -1,4 +1,5 @@
-const CACHE_NAME = 'secretary-ai-v31';
+const CACHE_NAME = 'secretary-ai-v32';
+const SHARE_CACHE = 'share-target-cache';
 const ASSETS = [
   '/',
   '/static/css/app_v12.css',
@@ -22,7 +23,69 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
+// Web Share Target (POST) — PayPay 等から共有された画像/テキストを受け取り、
+// SW のキャッシュに退避してからアプリ本体へリダイレクトする。
+async function handleShareTarget(request) {
+  try {
+    const form = await request.formData();
+    const text = form.get('text') || '';
+    const title = form.get('title') || '';
+    const sharedUrl = form.get('url') || '';
+    // パラメータ名に依存せず、最初の画像ファイルを拾う
+    let imageFile = null;
+    for (const value of form.values()) {
+      if (value instanceof File && (value.type || '').startsWith('image/')) {
+        imageFile = value;
+        break;
+      }
+    }
+    const cache = await caches.open(SHARE_CACHE);
+    await cache.put(
+      '/__share_payload__',
+      new Response(
+        JSON.stringify({
+          text: String(text),
+          title: String(title),
+          url: String(sharedUrl),
+          hasImage: !!imageFile,
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    if (imageFile) {
+      await cache.put(
+        '/__share_image__',
+        new Response(imageFile, {
+          headers: { 'Content-Type': imageFile.type || 'image/jpeg' },
+        })
+      );
+    } else {
+      await cache.delete('/__share_image__');
+    }
+  } catch (e) {
+    /* ignore — 失敗してもアプリは開く */
+  }
+  return Response.redirect('/?share-target=1', 303);
+}
+
 self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+
+  // 共有ターゲットの受け口 (POST /share-target)
+  if (event.request.method === 'POST' && url.pathname === '/share-target') {
+    event.respondWith(handleShareTarget(event.request));
+    return;
+  }
+  // 退避した共有ペイロード/画像をアプリ本体へ返す
+  if (url.pathname === '/__share_payload__' || url.pathname === '/__share_image__') {
+    event.respondWith(
+      caches.open(SHARE_CACHE)
+        .then((c) => c.match(url.pathname))
+        .then((r) => r || new Response('', { status: 404 }))
+    );
+    return;
+  }
+
   // API calls should always go to network
   if (event.request.url.includes('/api/')) {
     event.respondWith(fetch(event.request));

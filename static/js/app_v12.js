@@ -828,7 +828,7 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
             if (scope === 'morning_mit') rows = 3;
             return `
             <div class="inline-q" data-qid="${q.id}" style="margin-bottom:8px;">
-                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;display:flex;justify-content:space-between;gap:6px;">
+                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
                     <span>${escapeHtml(q.question)}</span>${savedMark}
                 </div>
                 <textarea class="modern-input inline-q-answer" rows="${rows}" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(defaultVal)}</textarea>
@@ -910,6 +910,7 @@ function describeAction(payload) {
         case 'habit_complete': return `✅ 習慣を完了: ${args.habit_name || ''}`;
         case 'open_notices': return `📨 マネージャー通知ログを開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
+        case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
         default:             return `▶ ${action} を実行`;
     }
 }
@@ -940,6 +941,17 @@ window.executeAction = async function(encodedPayload, btn) {
             const card = document.querySelector('.manager-notice-card');
             if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
+        return;
+    }
+    // ナビゲーション系: 食事ログ登録モーダルを開く（料理名をプレフィル）
+    if (action === 'log_meal') {
+        try {
+            switchTab('info');
+            openMealManualModal(null, { name: args.name || '' });
+        } catch (e) {
+            console.error(e);
+            showToast('食事ログを開けませんでした', true);
+        }
         return;
     }
     // ナビゲーション系: 保存したストックリンクを直接開く
@@ -3993,14 +4005,12 @@ function speakText(text, lang = 'en-US') {
     }
 }
 
-function _handleExpenseShareTarget() {
-    // PWA share_target 経由で PayPay 等から共有されたテキストを支出メモに自動取り込み
-    const params = new URLSearchParams(window.location.search);
-    const text = ((params.get('text') || '') + ' ' + (params.get('title') || '')).trim();
-    if (!text) return false;
+// 共有テキスト（PayPay 等の決済通知文）から支出メモ用の seed を組み立てる
+function _buildExpenseSeedFromText(text) {
+    if (!text) return null;
     // PayPay 系キーワードまたは「○○円」を含む場合のみ反応
     const looksLikePayment = /(PayPay|ペイペイ|pay\s*pay|円)/i.test(text);
-    if (!looksLikePayment) return false;
+    if (!looksLikePayment) return null;
     // 金額抽出: "1,234円" "¥1234" "1234 円" などに対応
     const amountMatch = text.match(/(?:¥|￥)?\s*([0-9][0-9,]{0,9})\s*円/);
     const amount = amountMatch ? parseInt(amountMatch[1].replace(/,/g, ''), 10) : 0;
@@ -4012,20 +4022,95 @@ function _handleExpenseShareTarget() {
     }
     // PayPay 文字列が含まれていれば支払方法に QR をセット
     const isPayPay = /(PayPay|ペイペイ|pay\s*pay)/i.test(text);
-    const seed = {
+    return {
         amount: amount || undefined,
         vendor: vendor || (isPayPay ? 'PayPay 支払い' : ''),
         payment_method: isPayPay ? 'QR' : '',
         memo: text.length <= 200 ? text : text.slice(0, 200),
         category: 'その他',
     };
-    // URL からクエリを除去
+}
+
+function _handleExpenseShareTarget() {
+    // 旧 GET 形式の share_target 互換: クエリ文字列から PayPay 等のテキストを取り込む
+    const params = new URLSearchParams(window.location.search);
+    const text = ((params.get('text') || '') + ' ' + (params.get('title') || '')).trim();
+    const seed = _buildExpenseSeedFromText(text);
+    if (!seed) return false;
     window.history.replaceState({}, '', '/');
-    // モーダルを開いてプレフィル
     setTimeout(() => {
         try { openExpenseManualModal(null, seed); } catch {}
     }, 600);
     return true;
+}
+
+// 共有された画像（PayPay 支払い画面・通販の購入履歴スクショ等）を解析して支出モーダルを開く
+async function _analyzeSharedExpenseImage(blob) {
+    showToast('🧾 共有された画像を解析中…');
+    try {
+        const base64data = await _fileToBase64(blob);
+        _pendingReceiptBase64 = base64data;
+        _pendingReceiptMime = blob.type || 'image/jpeg';
+        _pendingReceiptDriveId = '';
+        const res = await apiFetch('/api/expenses/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ image_base64: base64data, mime_type: _pendingReceiptMime }),
+        });
+        if (!res || !res.ok) { showToast('解析に失敗しました', true); return; }
+        _pendingReceiptAnalysis = res.result || {};
+        openExpenseManualModal(null, _pendingReceiptAnalysis);
+    } catch (e) {
+        showToast('画像の解析に失敗しました', true);
+    }
+}
+
+// PWA Web Share Target (POST) で共有されたペイロードを SW キャッシュ経由で受け取り振り分ける
+async function _handleShareTarget() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('share-target') !== '1') return false;
+    window.history.replaceState({}, '', '/');
+    let payload = null;
+    try {
+        const r = await fetch('/__share_payload__');
+        if (r.ok) payload = await r.json();
+    } catch (e) { /* ignore */ }
+    if (!payload) return false;
+
+    // 画像が共有された → 支出として解析（PayPay 支払い画面・購入履歴スクショ）
+    if (payload.hasImage) {
+        try {
+            const imgResp = await fetch('/__share_image__');
+            if (imgResp.ok) {
+                await _analyzeSharedExpenseImage(await imgResp.blob());
+                return true;
+            }
+        } catch (e) { /* fallthrough */ }
+    }
+
+    const text = ((payload.text || '') + ' ' + (payload.title || '')).trim();
+    // PayPay 等の決済テキスト → 支出メモ
+    const seed = _buildExpenseSeedFromText(text);
+    if (seed) {
+        setTimeout(() => { try { openExpenseManualModal(null, seed); } catch {} }, 500);
+        return true;
+    }
+    // URL を含む → リンクをストック（チャットへ流す）
+    const urlToStock = (payload.url || '') || ((text.match(/https?:\/\/[^\s]+/) || [''])[0]);
+    if (urlToStock) {
+        switchTab('chat');
+        setTimeout(async () => {
+            const msg = payload.title ? `${payload.title}\n${urlToStock}` : urlToStock;
+            appendMsg('user', msg);
+            try {
+                const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: msg }) });
+                appendMsg('assistant', data.reply);
+            } catch (e) {
+                appendMsg('assistant', 'リンクのストックに失敗しました。');
+            }
+        }, 500);
+        return true;
+    }
+    return false;
 }
 
 // 全クリック対象に即時タップフィードバック（押した感を出す）
@@ -4051,8 +4136,8 @@ function initMain() {
     _installGlobalButtonFeedback();
     loadDashboard();
     requestNotificationPermission();
-    // PayPay 等の共有テキストが来ていれば支出モーダルへ
-    if (apiKey) _handleExpenseShareTarget();
+    // PayPay 等の共有が来ていれば支出モーダル/チャットへ振り分け
+    if (apiKey) { _handleExpenseShareTarget(); _handleShareTarget(); }
 
     const params = new URLSearchParams(window.location.search);
     const sharedUrl = params.get('url') || '';
@@ -5562,7 +5647,8 @@ window.openMealManualModal = async (id = null, seed = null) => {
         // 解析結果のフィールド名揺れ吸収
         m.time = m.time || `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
         if (seed) {
-            titleEl.textContent = '🍽 解析結果を確認';
+            // レシート/写真解析（confidence あり）か、チャットからの登録かでタイトルを切替
+            titleEl.textContent = seed.confidence ? '🍽 解析結果を確認' : '🍽 食事を記録';
             confEl.textContent = seed.confidence ? `信頼度: ${seed.confidence}` : '';
         } else {
             titleEl.textContent = '🍽 食事を記録';
@@ -5658,6 +5744,41 @@ window.requestMealAdvice = async () => {
         modal.classList.remove('hidden');
     } catch {
         showToast('アドバイス取得に失敗しました', true);
+    }
+};
+
+// 過去のメニューと空白期間を踏まえた献立提案
+window.openMealSuggestModal = async () => {
+    let modal = $('#meal-suggest-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="meal-suggest-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:520px;">
+                    <h3 style="margin-top:0;">🍳 献立の提案</h3>
+                    <div id="meal-suggest-body" style="white-space:pre-wrap;font-size:0.88rem;line-height:1.7;color:var(--text-primary);"></div>
+                    <div class="modal-actions" style="margin-top:14px;">
+                        <button class="modal-btn cancel" onclick="$('#meal-suggest-modal')?.classList.add('hidden')">閉じる</button>
+                        <button class="modal-btn submit" id="meal-suggest-again" onclick="openMealSuggestModal()">もう一度提案</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#meal-suggest-modal');
+    }
+    const bodyEl = $('#meal-suggest-body');
+    bodyEl.textContent = '🍳 過去のメニューを見て考え中…';
+    modal.classList.remove('hidden');
+    try {
+        const res = await apiFetch('/api/meals/suggest', { method: 'POST' });
+        if (!res || !res.ok) {
+            bodyEl.textContent = res?.error || '提案の取得に失敗しました。';
+            return;
+        }
+        bodyEl.textContent = res.suggestion || '（提案なし）';
+    } catch {
+        bodyEl.textContent = '提案の取得に失敗しました。';
     }
 };
 
@@ -5884,6 +6005,9 @@ window.loadExpenses = async (year = null, month = null) => {
             const bigBadge = e.is_large ? '<span style="background:rgba(255,107,107,0.15);color:#ff6b6b;font-size:0.7rem;padding:1px 6px;border-radius:8px;margin-left:6px;">大きな支出</span>' : '';
             const memoSafe = escapeHtml(e.memo || '');
             const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
+            const breakdownHtml = e.breakdown
+                ? `<details style="margin-top:2px;"><summary style="font-size:0.74rem;color:var(--text-muted);cursor:pointer;">内訳</summary><div style="font-size:0.74rem;color:var(--text-muted);white-space:pre-wrap;margin-top:2px;">${escapeHtml(e.breakdown)}</div></details>`
+                : '';
             const pmSafe = e.payment_method ? escapeHtml(e.payment_method) : '';
             const receiptBtn = e.receipt_drive_id
                 ? `<button class="mini-link" onclick="viewReceipt('${escapeHtml(e.receipt_drive_id)}')" title="レシート表示">📷</button>`
@@ -5898,6 +6022,7 @@ window.loadExpenses = async (year = null, month = null) => {
                             ${escapeHtml(e.date)} ・ ${escapeHtml(e.category)}${pmSafe ? ' ・ ' + pmSafe : ''}
                         </div>
                         ${memoHtml}
+                        ${breakdownHtml}
                     </div>
                     <div class="row-actions" style="display:flex;gap:6px;">
                         ${receiptBtn}
@@ -5995,6 +6120,9 @@ window.openExpenseManualModal = async (id = null, seed = null) => {
                         </div>
                     </div>
 
+                    <label style="font-size:0.78rem;color:var(--text-muted);">内訳（任意・1行に1件「品名 ¥金額」）</label>
+                    <textarea id="exp-breakdown" class="modern-input" rows="3" style="font-family:inherit;margin-bottom:6px;" placeholder="例:&#10;書籍A ¥1200&#10;ケーブル ¥800"></textarea>
+
                     <label style="font-size:0.78rem;color:var(--text-muted);">メモ（任意）</label>
                     <textarea id="exp-memo" class="modern-input" rows="2" style="font-family:inherit;margin-bottom:6px;"></textarea>
 
@@ -6047,11 +6175,20 @@ window.openExpenseManualModal = async (id = null, seed = null) => {
         }
     }
 
+    // 内訳: 編集時は breakdown 列、レシート解析時は items 配列から組み立てる
+    let breakdownText = e.breakdown || '';
+    if (!breakdownText && Array.isArray(e.items) && e.items.length) {
+        breakdownText = e.items
+            .map(it => `${(it.name || '品目').trim()} ¥${Number(it.amount || 0).toLocaleString()}`)
+            .join('\n');
+    }
+
     $('#exp-date').value = e.date || '';
     $('#exp-amount').value = e.amount ?? '';
     $('#exp-vendor').value = e.vendor || '';
     $('#exp-category').value = e.category || 'その他';
     $('#exp-payment').value = e.payment_method || '';
+    $('#exp-breakdown').value = breakdownText;
     $('#exp-memo').value = e.memo || '';
 
     const hintEl = $('#exp-receipt-hint');
@@ -6108,6 +6245,7 @@ window.saveExpenseFromModal = async () => {
             category: $('#exp-category')?.value || 'その他',
             payment_method: $('#exp-payment')?.value || '',
             memo: ($('#exp-memo')?.value || '').trim(),
+            breakdown: ($('#exp-breakdown')?.value || '').trim(),
         };
         if (id) {
             await apiFetch(`/api/expenses/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
@@ -10004,14 +10142,15 @@ window.loadJournalList = async () => {
             const meta = [date+' '+time, ticker, action, emotion].filter(Boolean).join(' / ');
             const safeFn = (it.filename || '').replace(/'/g, "\\'");
             const safeTitle = title.replace(/'/g, '&#39;');
+            const metaAttr = escapeHtml(JSON.stringify(it));
             return `<div class="invest-row" style="display:flex;align-items:flex-start;gap:6px;">
                 <div class="row-main" style="flex:1;min-width:0;cursor:pointer;" onclick="openJournalEntry('${safeFn}', '${safeTitle}')">
                     <div class="row-title">${title}</div>
                     <div class="row-meta">${meta}</div>
                 </div>
                 <div style="display:flex;gap:4px;flex-shrink:0;">
-                    <button class="mini-link" onclick="event.stopPropagation();openJournalEditModal('${safeFn}')" title="編集">✏️</button>
-                    <button class="mini-link" style="color:#ff6b6b;" onclick="event.stopPropagation();deleteJournalEntry('${safeFn}')" title="削除">🗑</button>
+                    <button class="mini-link" data-journal-meta="${metaAttr}" onclick="event.stopPropagation();openJournalEditModal('${safeFn}', JSON.parse(this.dataset.journalMeta))" title="編集">編集</button>
+                    <button class="mini-link" style="color:#ff6b6b;" onclick="event.stopPropagation();deleteJournalEntry('${safeFn}')" title="削除">削除</button>
                 </div>
             </div>`;
         }).join('');
@@ -10055,34 +10194,81 @@ window.openJournalAddModal = () => {
     $('#invest-journal-modal')?.classList.remove('hidden');
 };
 
-window.openJournalEditModal = async (filename) => {
+window.openJournalEditModal = async (filename, meta = null) => {
     if (!filename) return;
+    _journalEditingFile = filename;
+    const titleEl = $('#invest-journal-modal-title');
+    if (titleEl) titleEl.textContent = '✏️ 投資日記を編集';
+    const submitBtn = $('#journal-submit-btn');
+    // メタ情報（一覧から渡されたもの）で先に埋めて即座にモーダルを開く
+    $('#journal-add-title').value = (meta && meta.title) || '';
+    $('#journal-add-ticker').value = (meta && meta.ticker) || '';
+    $('#journal-add-emotion').value = (meta && meta.emotion) || '';
+    const sel = $('#journal-add-action');
+    if (sel) sel.value = (meta && meta.action) || '';
+    const contentEl = $('#journal-add-content');
+    contentEl.value = '';
+    contentEl.disabled = true;
+    contentEl.placeholder = '本文を読み込み中…';
+    if (submitBtn) { submitBtn.textContent = '更新'; submitBtn.disabled = true; }
+    $('#invest-journal-modal')?.classList.remove('hidden');
+
+    // 本文（Drive 取得）は非同期で読み込み、届いたら反映する
     try {
         const data = await apiFetch(`/api/investment/journal/${encodeURIComponent(filename)}`);
+        // 読み込み中に別のモーダルへ切り替わっていたら破棄
+        if (_journalEditingFile !== filename) return;
         if (!data || !data.ok) {
             showToast('読み込み失敗: ' + (data?.error || '不明'), true);
+            closeJournalAddModal();
             return;
         }
-        _journalEditingFile = filename;
-        const titleEl = $('#invest-journal-modal-title');
-        if (titleEl) titleEl.textContent = '✏️ 投資日記を編集';
-        const submitBtn = $('#journal-submit-btn');
-        if (submitBtn) submitBtn.textContent = '更新';
         $('#journal-add-title').value = data.title || '';
         $('#journal-add-ticker').value = data.ticker || '';
         $('#journal-add-emotion').value = data.emotion || '';
-        $('#journal-add-content').value = data.content || '';
-        const sel = $('#journal-add-action');
         if (sel) sel.value = data.action || '';
-        $('#invest-journal-modal')?.classList.remove('hidden');
+        contentEl.value = data.content || '';
     } catch (e) {
         showToast('読み込みエラー: ' + (e.message || e), true);
+        closeJournalAddModal();
+    } finally {
+        contentEl.disabled = false;
+        contentEl.placeholder = '売買理由・観察事項・気づきなど';
+        if (submitBtn) submitBtn.disabled = false;
     }
 };
 
 window.closeJournalAddModal = () => {
     $('#invest-journal-modal')?.classList.add('hidden');
     _journalEditingFile = null;
+};
+
+window.generateJournalTitle = async () => {
+    const content = $('#journal-add-content')?.value?.trim();
+    if (!content) { showToast('先に本文を入力してね', true); return; }
+    const btn = $('#journal-title-gen-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+    try {
+        const data = await apiFetch('/api/investment/journal/suggest_title', {
+            method: 'POST',
+            body: JSON.stringify({
+                content,
+                ticker: $('#journal-add-ticker')?.value?.trim() || '',
+                action: $('#journal-add-action')?.value || '',
+                emotion: $('#journal-add-emotion')?.value?.trim() || '',
+            }),
+        });
+        if (data && data.ok && data.title) {
+            $('#journal-add-title').value = data.title;
+            showToast('タイトルを生成しました');
+        } else {
+            showToast('タイトル生成に失敗', true);
+        }
+    } catch (e) {
+        showToast('タイトル生成に失敗: ' + (e.message || e), true);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '✨ タイトルを生成'; }
+    }
 };
 
 window.submitJournalAdd = async () => {

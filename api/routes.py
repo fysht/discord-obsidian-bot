@@ -397,7 +397,12 @@ async def chat(req: ChatRequest):
             type_label = {"web": "🌐 ウェブ", "youtube": "📺 YouTube", "recipe": "🍳 レシピ", "map": "🗺️ マップ", "book": "📚 書籍"}.get(meta["type"], "🔗 リンク")
             reply = f"「{meta['title']}」を{type_label}としてストックし、ノートを作成しました。"
             if link_id:
-                reply += f"\n[ACTION:open_link(id={link_id})]"
+                reply += f"\n[ACTION:open_link:id={link_id}]"
+            # レシピを保存したら、食事ログへの登録も提案する
+            if meta["type"] == "recipe":
+                _meal_name = re.sub(r"[\[\]|\n]", "", meta["title"]).strip()[:40]
+                if _meal_name:
+                    reply += f"\n[ACTION:log_meal:name={_meal_name}]"
             user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
             asst_id = await notification_service.save_message_and_notify("assistant", reply)
             _resp = ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
@@ -479,6 +484,26 @@ async def chat(req: ChatRequest):
     reply = await partner_cog.generate_response_for_app(
         user_message + english_feedback_hint, history_messages, english_mode=req.english_mode
     )
+
+    # 「〇〇を食べた」系のメッセージを検出 → 食事ログ登録ボタンを添える
+    try:
+        if "[ACTION:log_meal" not in reply:
+            meal_m = re.search(
+                r"([^\s、。!?！？]{1,40}?)\s*を?\s*(?:食べた(?!い)|食べました|食った(?![らり])|いただきました)",
+                req.message,
+            )
+            if meal_m:
+                food = meal_m.group(1)
+                # 「今日は」「昼に」などの前置きを助詞で切り落として料理名を取り出す
+                for _sep in ("は", "に", "で"):
+                    if _sep in food:
+                        food = food.split(_sep)[-1]
+                food = re.sub(r"[\[\]|\n]", "", food).strip("　 、。")
+                if food and len(food) <= 30:
+                    reply += f"\n[ACTION:log_meal:name={food}]"
+    except Exception as e:
+        logging.debug(f"meal action detection failed: {e}")
+
     asst_id = await notification_service.save_message_and_notify("assistant", reply)
 
     if bot.drive_service:
@@ -3819,17 +3844,22 @@ async def expenses_analyze(req: ReceiptAnalyzeRequest):
         raise HTTPException(status_code=503, detail="Gemini未接続")
 
     prompt = (
-        "このレシート画像を読み取り、必ず以下の JSON 形式だけを返してください。前置きや説明は禁止。\n\n"
+        "この画像（レシート、または通販サイトの購入履歴・注文履歴のスクリーンショット）を読み取り、"
+        "必ず以下の JSON 形式だけを返してください。前置きや説明は禁止。\n\n"
         "{\n"
         '  "date": "YYYY-MM-DD（読み取れなければ空文字）",\n'
-        '  "vendor": "店名（読み取れた文字を最大40文字。空可）",\n'
+        '  "vendor": "店名・サイト名（読み取れた文字を最大40文字。空可）",\n'
         '  "amount": 合計金額(int, 円。税込み合計を優先),\n'
         '  "category": "食費 / 交通費 / 娯楽 / 衣服 / 家電 / 医療 / 教育 / 通信 / 光熱費 / 投資 / その他 のいずれか",\n'
         '  "payment_method": "現金 / クレジット / 電子マネー / QR / 不明 のいずれか",\n'
-        '  "memo": "備考（主な購入品 1〜2 個。空可）",\n'
+        '  "memo": "備考（空可）",\n'
+        '  "items": [{"name": "商品名・注文名", "amount": 金額int}],\n'
         '  "confidence": "high / medium / low"\n'
         "}\n"
-        "amount は数字のみ。レシート以外の画像なら confidence='low' で空相当の値を入れる。"
+        "items には、画像から読み取れる個々の商品・注文を「何にいくら使ったか」が分かるよう列挙する"
+        "（複数の注文・商品が写っていれば全て。読み取れなければ空配列）。\n"
+        "amount は items の合計または画像中の合計金額。数字のみ。"
+        "支出に関係ない画像なら confidence='low' で空相当の値を入れる。"
     )
 
     try:
@@ -3909,6 +3939,7 @@ class ExpenseSaveRequest(BaseModel):
     payment_method: str = ""
     memo: str = ""
     receipt_drive_id: str = ""
+    breakdown: str = ""
 
 
 @router.post("/expenses", dependencies=[Depends(verify_api_key)])
@@ -3926,6 +3957,7 @@ async def expenses_save(req: ExpenseSaveRequest):
         date=date, amount=req.amount, category=req.category, vendor=req.vendor,
         payment_method=req.payment_method, memo=req.memo,
         receipt_drive_id=req.receipt_drive_id, is_large=is_large,
+        breakdown=req.breakdown,
     )
 
     # 大きな支出だけ Lifelog と通知（小さなものはノイズになるので除外）
@@ -4001,6 +4033,7 @@ class ExpensePatchRequest(BaseModel):
     vendor: Optional[str] = None
     payment_method: Optional[str] = None
     memo: Optional[str] = None
+    breakdown: Optional[str] = None
 
 
 @router.patch("/expenses/{expense_id}", dependencies=[Depends(verify_api_key)])
@@ -4256,6 +4289,72 @@ async def meals_advice(date: str = ""):
     except Exception as e:
         logging.error(f"meals_advice error: {e}")
         return {"ok": False, "error": "アドバイス生成に失敗しました"}
+
+
+@router.post("/meals/suggest", dependencies=[Depends(verify_api_key)])
+async def meals_suggest():
+    """過去の食事履歴と「最後に食べてからの空白期間」を踏まえて献立を提案する。"""
+    from api import app
+    from api.database import get_meals_by_range
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    today = datetime.datetime.now(JST).date()
+    start = (today - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+    end = today.strftime("%Y-%m-%d")
+    rows = await get_meals_by_range(start, end)
+    if not rows:
+        return {"ok": False, "error": "過去の食事記録がまだありません"}
+
+    # メニュー名ごとに「最後に食べた日」と「回数」を集計
+    history: dict[str, dict] = {}
+    for r in rows:
+        name = (r.get("name") or "").strip()
+        if not name:
+            continue
+        d = r.get("date") or ""
+        h = history.setdefault(name, {"last": d, "count": 0})
+        h["count"] += 1
+        if d > h["last"]:
+            h["last"] = d
+
+    items = []
+    for name, h in history.items():
+        try:
+            last_date = datetime.datetime.strptime(h["last"], "%Y-%m-%d").date()
+            days_ago = (today - last_date).days
+        except Exception:
+            days_ago = 0
+        items.append((days_ago, name, h["count"]))
+    # 空白期間が長い順に並べる
+    items.sort(key=lambda x: x[0], reverse=True)
+    hist_lines = "\n".join(
+        f"- {name}: 最後に食べたのは{days}日前（過去60日で{cnt}回）"
+        for days, name, cnt in items[:40]
+    )
+
+    prompt = (
+        "あなたはユーザー専属のマネージャーです。ユーザーが「今日のごはん何にしよう」と迷っています。\n"
+        "下の『過去の食事履歴』を見て、次の食事の献立を提案してください。\n\n"
+        f"## 過去の食事履歴（最後に食べてからの日数つき）\n{hist_lines}\n\n"
+        "【ルール】\n"
+        "- 提案は3〜4品。最近食べていない（空白期間が長い）メニューを優先的に挙げる\n"
+        "- 各提案に「最後に食べたのは○日前だからそろそろどう？」のように空白期間に触れた一言の理由を書く\n"
+        "- 履歴にある定番だけでなく、履歴の傾向から外れた新しいメニュー案を1つ混ぜてもよい\n"
+        "- 文体はマネージャーらしいタメ口で、全体で短めに\n"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("meal_suggest", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m, contents=prompt,
+        )
+        suggestion = (response.text or "").strip()
+        return {"ok": True, "suggestion": suggestion}
+    except Exception as e:
+        logging.error(f"meals_suggest error: {e}")
+        return {"ok": False, "error": "提案の生成に失敗しました"}
 
 
 # ============================================================
@@ -4660,6 +4759,54 @@ class JournalAnalyzeRequest(BaseModel):
 async def investment_journal_analyze(req: JournalAnalyzeRequest):
     cog = _get_investment_cog()
     return await cog.journal_analyze_pattern(limit=req.limit)
+
+
+class JournalTitleRequest(BaseModel):
+    content: str
+    ticker: str = ""
+    action: str = ""
+    emotion: str = ""
+
+
+@router.post("/investment/journal/suggest_title", dependencies=[Depends(verify_api_key)])
+async def investment_journal_suggest_title(req: JournalTitleRequest):
+    """投資日記の本文から、短いタイトル案を1つ生成する。"""
+    from api import app
+
+    content = (req.content or "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="本文が空です")
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    meta_parts = []
+    if req.ticker:
+        meta_parts.append(f"銘柄: {req.ticker}")
+    if req.action:
+        meta_parts.append(f"アクション: {req.action}")
+    if req.emotion:
+        meta_parts.append(f"感情: {req.emotion}")
+    meta_str = " / ".join(meta_parts) or "（なし）"
+
+    prompt = (
+        "次の投資日記の本文から、内容が一目で分かる簡潔な日本語のタイトルを1つだけ作ってください。\n"
+        "・20文字以内。記号や鉤括弧、前置き・説明は付けず、タイトルの文字列だけを返す。\n"
+        f"【メタ情報】{meta_str}\n"
+        f"【本文】\n{content[:2000]}"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("journal_title", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m, contents=prompt,
+        )
+        title = (response.text or "").strip().strip("「」\"'").splitlines()[0][:40]
+        return {"ok": True, "title": title}
+    except Exception as e:
+        logging.error(f"journal suggest_title error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ----- アラート -----

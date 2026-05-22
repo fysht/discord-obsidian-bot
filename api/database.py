@@ -306,6 +306,8 @@ async def init_db():
             "ALTER TABLE gmail_inbox ADD COLUMN saved_drive_id TEXT DEFAULT ''",
             "ALTER TABLE gmail_inbox ADD COLUMN saved_at TEXT DEFAULT ''",
             "ALTER TABLE manager_notices ADD COLUMN is_read INTEGER DEFAULT 0",
+            # 支出の内訳（何にいくら使ったか）を保持する列
+            "ALTER TABLE expenses ADD COLUMN breakdown TEXT DEFAULT ''",
         ):
             try:
                 await db.execute(ddl)
@@ -961,6 +963,19 @@ async def get_meals_by_date(date: str) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def get_meals_by_range(start_date: str, end_date: str) -> list[dict]:
+    """指定期間の食事ログを取得（新しい日付順）。献立提案などの履歴参照用。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, created_at "
+            "FROM meals WHERE date BETWEEN ? AND ? ORDER BY date DESC, time DESC, id DESC",
+            (start_date, end_date),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
 async def update_meal(meal_id: int, fields: dict) -> bool:
     if not fields:
         return False
@@ -996,15 +1011,15 @@ async def delete_meal(meal_id: int) -> bool:
 async def add_expense(
     date: str, amount: int, category: str = "その他",
     vendor: str = "", payment_method: str = "", memo: str = "",
-    receipt_drive_id: str = "", is_large: bool = False,
+    receipt_drive_id: str = "", is_large: bool = False, breakdown: str = "",
 ) -> int:
     now = datetime.datetime.now(JST).isoformat()
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
-            "INSERT INTO expenses (date, amount, category, vendor, payment_method, memo, receipt_drive_id, is_large, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO expenses (date, amount, category, vendor, payment_method, memo, receipt_drive_id, is_large, breakdown, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (date, int(amount or 0), category or "その他", vendor or "", payment_method or "",
-             memo or "", receipt_drive_id or "", 1 if is_large else 0, now),
+             memo or "", receipt_drive_id or "", 1 if is_large else 0, breakdown or "", now),
         )
         await db.commit()
         return cursor.lastrowid
@@ -1014,7 +1029,7 @@ async def get_expenses_by_range(start_date: str, end_date: str) -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, date, amount, category, vendor, payment_method, memo, receipt_drive_id, is_large, created_at "
+            "SELECT id, date, amount, category, vendor, payment_method, memo, receipt_drive_id, is_large, breakdown, created_at "
             "FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date DESC, id DESC",
             (start_date, end_date),
         )
@@ -1025,7 +1040,7 @@ async def get_expenses_by_range(start_date: str, end_date: str) -> list[dict]:
 async def update_expense(expense_id: int, fields: dict) -> bool:
     if not fields:
         return False
-    allowed = {"date", "amount", "category", "vendor", "payment_method", "memo", "is_large", "receipt_drive_id"}
+    allowed = {"date", "amount", "category", "vendor", "payment_method", "memo", "is_large", "receipt_drive_id", "breakdown"}
     sets = []
     values = []
     for k, v in fields.items():
