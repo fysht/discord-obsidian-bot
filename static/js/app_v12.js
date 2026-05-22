@@ -55,6 +55,46 @@ function showToast(msg, isError = false) {
     }, 3000);
 }
 
+/**
+ * カスタム確認ダイアログ。Promise<boolean> を返す。
+ * 標準の window.confirm() の置き換え。
+ * @param {string} message 本文
+ * @param {{title?: string, okLabel?: string, cancelLabel?: string, danger?: boolean}} opts
+ */
+function confirmDialog(message, opts = {}) {
+    return new Promise(resolve => {
+        const { title = '確認', okLabel = 'OK', cancelLabel = 'キャンセル', danger = false } = opts;
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay confirm-overlay';
+        overlay.innerHTML = `
+            <div class="modal-card confirm-card" role="dialog" aria-modal="true">
+                <h3 class="confirm-title">${escapeHtml(title)}</h3>
+                <div class="confirm-body">${escapeHtml(message).replace(/\n/g, '<br>')}</div>
+                <div class="confirm-actions">
+                    <button class="mini-link confirm-cancel" type="button">${escapeHtml(cancelLabel)}</button>
+                    <button class="mini-link ${danger ? 'btn-danger' : ''} confirm-ok" type="button">${escapeHtml(okLabel)}</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const cleanup = (result) => {
+            try { overlay.remove(); } catch {}
+            document.removeEventListener('keydown', onKey);
+            resolve(result);
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') cleanup(false);
+            else if (e.key === 'Enter') cleanup(true);
+        };
+        overlay.querySelector('.confirm-cancel').addEventListener('click', () => cleanup(false));
+        overlay.querySelector('.confirm-ok').addEventListener('click', () => cleanup(true));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(false); });
+        document.addEventListener('keydown', onKey);
+        // フォーカスを OK ボタンに当てる（Enter で即決可）
+        setTimeout(() => { try { overlay.querySelector('.confirm-ok').focus(); } catch {} }, 0);
+    });
+}
+window.confirmDialog = confirmDialog;
+
 const escapeHtml = t => {
     const d = document.createElement('div');
     d.textContent = t;
@@ -77,7 +117,13 @@ async function apiFetch(path, options = {}) {
         showScreen('login-screen');
         throw new Error('Unauthorized');
     }
-    if (!res.ok) throw new Error(`API Error: ${res.status}`);
+    if (!res.ok) {
+        // エラー詳細をコンソールにも出力（catchで握り潰されても痕跡が残るように）
+        let bodyText = '';
+        try { bodyText = await res.clone().text(); } catch {}
+        console.error(`[apiFetch] ${options.method || 'GET'} ${path} → ${res.status}`, bodyText);
+        throw new Error(`API Error: ${res.status}`);
+    }
     return res.json();
 }
 
@@ -121,7 +167,7 @@ if (pwToggleBtn) {
 const resetChatBtn = $('#reset-chat-btn');
 if (resetChatBtn) {
     resetChatBtn.addEventListener('click', async () => {
-        if (!confirm('チャット履歴を完全に消去しますか？（AI側の短期記憶もクリアされます）')) return;
+        if (!await confirmDialog('チャット履歴を完全に消去しますか？（AI側の短期記憶もクリアされます）')) return;
         try {
             await apiFetch('/api/reset_history', { method: 'POST' });
             if (chatMessages) {
@@ -1495,7 +1541,7 @@ window.updateNoticeBulkBtn = () => {
 window.deleteSelectedNotices = async () => {
     const ids = [...document.querySelectorAll('.notice-select-cb:checked')].map(cb => cb.value);
     if (!ids.length) return;
-    if (!confirm(`選択した ${ids.length} 件の通知を削除しますか？`)) return;
+    if (!await confirmDialog(`選択した ${ids.length} 件の通知を削除しますか？`)) return;
     let ok = 0;
     for (const id of ids) {
         try {
@@ -1520,7 +1566,7 @@ window.setNoticeRead = async (id, isRead) => {
 };
 
 window.deleteNotice = async (id) => {
-    if (!confirm('この通知を削除しますか？')) return;
+    if (!await confirmDialog('この通知を削除しますか？')) return;
     try {
         await apiFetch(`/api/manager/notices/${id}`, { method: 'DELETE' });
         loadManagerNotices();
@@ -1589,6 +1635,7 @@ function renderTaskGroup(container, tasks, listName) {
                 <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}', false)" style="cursor:pointer;"></div>
                 <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
                 <button class="task-due-btn" onclick="openTaskDueEditor('${t.id}', '${listName}', '${escapeHtml(t.title).replace(/'/g, '&#39;')}', '${dueAttr}')" title="締切を編集">📅</button>
+                <button class="mini-link btn-danger" onclick="deleteGoogleTask('${t.id}', '${listName}', '${escapeHtml(t.title).replace(/'/g, '&#39;')}')" title="削除">🗑 削除</button>
             </div>`;
         }),
         ...doneTasks.map(t => `
@@ -1858,6 +1905,23 @@ window.toggleGoogleTask = async (taskId, listName, currentlyCompleted = false) =
         loadDashboard();
     } finally {
         if (item) item.classList.remove('task-syncing');
+    }
+};
+
+window.deleteGoogleTask = async (taskId, listName, title) => {
+    if (!await confirmDialog(`「${title}」を削除しますか？\nGoogleカレンダーのタスクからも削除されます。`)) return;
+    const item = $(`#gtask-item-${taskId}`);
+    if (item) item.style.opacity = '0.3';
+    try {
+        await apiFetch('/api/google_tasks_action', {
+            method: 'POST',
+            body: JSON.stringify({ action: 'delete', task_id: taskId, list_name: listName })
+        });
+        showToast('削除しました');
+        loadDashboard();
+    } catch (e) {
+        showToast('削除に失敗しました', true);
+        if (item) item.style.opacity = '1';
     }
 };
 
@@ -2372,8 +2436,8 @@ window.finishZeroSec = () => {
     ztGoToReview();
 };
 
-window.abortZeroSec = () => {
-    if (!confirm('中断する？メモは破棄されるよ')) return;
+window.abortZeroSec = async () => {
+    if (!await confirmDialog('中断する？メモは破棄されるよ')) return;
     closeZeroSecModal();
 };
 
@@ -2424,7 +2488,7 @@ async function ztSaveCommon() {
         return { theme, memo };
     } catch (e) {
         console.error(e);
-        showToast('保存に失敗', true);
+        showToast('保存に失敗しました', true);
         return null;
     }
 }
@@ -2646,7 +2710,7 @@ window.saveReadingPlan = async () => {
         renderReadingPlan();
         showToast('多読プランを保存したよ');
     } catch (e) {
-        showToast('保存に失敗', true);
+        showToast('保存に失敗しました', true);
     }
 };
 
@@ -2802,8 +2866,8 @@ if (readingImageInput) {
     });
 }
 
-window.abortReading = () => {
-    if (!confirm('中断する？メモは破棄されるよ')) return;
+window.abortReading = async () => {
+    if (!await confirmDialog('中断する？メモは破棄されるよ')) return;
     closeReadingModal();
 };
 
@@ -2827,7 +2891,7 @@ window.finishReading = async () => {
             });
             showToast(data.message || '保存しました');
         } catch (e) {
-            showToast('保存に失敗', true);
+            showToast('保存に失敗しました', true);
             return;
         }
     } else {
@@ -2914,8 +2978,9 @@ window.memoTitleInput = () => {
                 el.style.display = 'none';
                 return;
             }
-            el.innerHTML = list.map(c => `
-                <div class="modal-list-item" style="cursor:pointer;padding:8px 10px;border-bottom:1px solid var(--border-glass);" onclick='memoPickTarget(${JSON.stringify(c).replace(/'/g, "&#39;")})'>
+            window._memoSearchCandidates = list;
+            el.innerHTML = list.map((c, i) => `
+                <div class="modal-list-item" style="cursor:pointer;padding:8px 10px;border-bottom:1px solid var(--border-glass);" onclick="memoPickTarget(window._memoSearchCandidates[${i}])">
                     <div style="font-size:0.88rem;">📄 ${escapeHtml(c.name)}</div>
                     <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(c.filename)}</div>
                 </div>`).join('');
@@ -2926,9 +2991,9 @@ window.memoTitleInput = () => {
     }, 300);
 };
 
-window.memoPickTarget = (c) => {
+window.memoPickTarget = async (c) => {
     if (!c) return;
-    if (!confirm(`既存ノート「${c.name}」に追記しますか？\nキャンセルすると新規ノートとして保存します。`)) {
+    if (!await confirmDialog(`既存ノート「${c.name}」に追記しますか？\nキャンセルすると新規ノートとして保存します。`)) {
         _memoSelectedTarget = null;
         $('#memo-target-banner').style.display = 'none';
         return;
@@ -3091,8 +3156,8 @@ if (studyImageInput) {
     });
 }
 
-window.abortStudy = () => {
-    if (!confirm('中断する？メモは破棄されるよ')) return;
+window.abortStudy = async () => {
+    if (!await confirmDialog('中断する？メモは破棄されるよ')) return;
     closeStudyModal();
 };
 
@@ -3267,7 +3332,7 @@ window.finishStudy = async () => {
             });
             showToast(data.message || '保存しました');
         } catch (e) {
-            showToast('保存に失敗', true);
+            showToast('保存に失敗しました', true);
             return;
         }
     } else {
@@ -3570,8 +3635,9 @@ window.loadStockedLinks = async () => {
                 if (lk.target_date) chips.push(`<span class="stocked-link-chip date">📅 ${escapeHtml(lk.target_date)}</span>`);
                 chips.push(`<span class="stocked-link-chip added">${dateStr}</span>`);
 
-                const lkJson = JSON.stringify(lk).replace(/'/g, "&#39;");
-                // 勉強カードのみ notes（メモ）をQ&A/箇条書き混在形式で展開表示
+                // ID で引けるよう一覧をグローバルに保持（onclick 内で JSON を埋め込む方式は壊れやすいため）
+                window._stockedLinksById = window._stockedLinksById || {};
+                window._stockedLinksById[lk.id] = lk;
                 const memoBlock = (lk.type === 'study' && lk.notes)
                     ? `<div class="study-memo-block">${renderStudyMemo(lk.notes)}</div>`
                     : '';
@@ -3581,8 +3647,8 @@ window.loadStockedLinks = async () => {
                         <div class="stocked-link-meta">${chips.join('')}</div>
                         ${memoBlock}
                         <div class="stocked-link-actions">
-                            <button class="stocked-link-btn edit" onclick='openLinkDetailsModal(${lkJson})'>編集</button>
-                            <button class="stocked-link-btn danger" onclick="deleteStockedLink(${lk.id})">削除</button>
+                            <button class="stocked-link-btn edit" onclick="openLinkDetailsModal(window._stockedLinksById[${lk.id}])">編集</button>
+                            <button class="stocked-link-btn danger" onclick="deleteStockedLink(${lk.id})">🗑 削除</button>
                         </div>
                     </div>
                 `;
@@ -3669,8 +3735,8 @@ window.registerNotebook = () => {
     loadNotebooks();
 };
 
-window.deleteNotebook = (idx) => {
-    if (confirm('削除しますか？')) {
+window.deleteNotebook = async (idx) => {
+    if (await confirmDialog('削除しますか？', { danger: true, okLabel: '削除' })) {
         const notebooks = JSON.parse(localStorage.getItem('mng_notebook_links') || '[]');
         notebooks.splice(idx, 1);
         localStorage.setItem('mng_notebook_links', JSON.stringify(notebooks));
@@ -3802,12 +3868,12 @@ $('#link-save-btn')?.addEventListener('click', async () => {
 });
 
 window.deleteStockedLink = async (linkId) => {
-    if (!confirm('このデータを削除しますか？')) return;
+    if (!await confirmDialog('このデータを削除しますか？')) return;
     try {
         await apiFetch(`/api/links/${linkId}`, { method: 'DELETE' });
         showToast('削除しました');
         loadStockedLinks();
-    } catch (e) { showToast('削除に失敗しました', true); }
+    } catch (e) { console.error('deleteStockedLink failed', e); showToast('削除に失敗しました', true); }
 };
 
 async function registerServiceWorker() {
@@ -4287,10 +4353,12 @@ async function loadHabits() {
 
             const weekdays = Array.isArray(h.weekdays) ? h.weekdays : [];
             const dowLabels = ['月','火','水','木','金','土','日'];
-            const wdEncoded = encodeURIComponent(JSON.stringify(weekdays));
+            // 曜日配列は名前ベースのレジストリで保持（URI エンコード経由は壊れやすいため）
+            window._habitWeekdaysByName = window._habitWeekdaysByName || {};
+            window._habitWeekdaysByName[h.name] = weekdays.slice();
             const wdChip = weekdays.length === 0 || weekdays.length === 7
-                ? `<button class="habit-trigger-add" title="曜日を指定" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}','${wdEncoded}')">📅 毎日</button>`
-                : `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}','${wdEncoded}')">📅 ${weekdays.map(d => dowLabels[d]).join('・')}</span>`;
+                ? `<button class="habit-trigger-add" title="曜日を指定" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}')">📅 毎日</button>`
+                : `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}')">📅 ${weekdays.map(d => dowLabels[d]).join('・')}</span>`;
 
             let freqChip = '';
             if (freq > 1) {
@@ -4311,6 +4379,7 @@ async function loadHabits() {
                         <div class="habit-trigger-row" style="display:flex;gap:6px;flex-wrap:wrap;">${triggerChip}${wdChip}</div>
                     </div>
                     ${streakBadge}
+                    <button class="mini-link btn-danger" onclick="deleteHabit('${h.name.replace(/'/g, "\\'")}')" title="削除">🗑 削除</button>
                 </div>
             `;
         }).join('');
@@ -4336,7 +4405,16 @@ window.completeHabit = async (habitName, hId) => {
         const result = await apiFetch('/api/habits/complete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
         checkMilestone(result.message || '');
         loadHabits();
-    } catch { showToast('失敗しました', true); }
+    } catch (e) { console.error(e); showToast('失敗しました', true); }
+};
+
+window.deleteHabit = async (habitName) => {
+    if (!await confirmDialog(`習慣「${habitName}」を削除しますか？\nGoogleカレンダーのタスク（習慣リスト）からも削除されます。`)) return;
+    try {
+        await apiFetch('/api/habits/delete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
+        showToast('削除しました');
+        loadHabits();
+    } catch (e) { console.error('deleteHabit failed', e); showToast('削除に失敗しました', true); }
 };
 
 window.uncompleteHabit = async (habitName, hId) => {
@@ -4346,12 +4424,15 @@ window.uncompleteHabit = async (habitName, hId) => {
         showToast(`「${habitName}」を未完了に戻しました`);
         await apiFetch('/api/habits/uncomplete', { method: 'POST', body: JSON.stringify({ habit_name: habitName }) });
         loadHabits();
-    } catch { showToast('失敗しました', true); }
+    } catch (e) { console.error(e); showToast('失敗しました', true); }
 };
 
 window.openHabitWeekdaysModal = (habitName, weekdaysEncoded) => {
-    let current = [];
-    try { current = JSON.parse(decodeURIComponent(weekdaysEncoded)) || []; } catch {}
+    // weekdaysEncoded は後方互換のため残しているが、現在はレジストリから取得する
+    let current = (window._habitWeekdaysByName && window._habitWeekdaysByName[habitName]) || [];
+    if (!current.length && weekdaysEncoded) {
+        try { current = JSON.parse(decodeURIComponent(weekdaysEncoded)) || []; } catch {}
+    }
     let modal = $('#habit-weekdays-modal');
     if (!modal) {
         const wrap = document.createElement('div');
@@ -5222,7 +5303,7 @@ async function loadEnglishPhrases() {
                     <div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px;">${date}</div>
                 </div>
                 <button onclick="speakText('${safePhraseAttr}')" style="background:none;border:none;cursor:pointer;font-size:1rem;opacity:0.75;padding:4px;flex-shrink:0;" title="読み上げ">🔊</button>
-                <button onclick="deleteEnglishPhrase(${p.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;opacity:0.45;padding:4px;flex-shrink:0;" title="削除">🗑</button>
+                <button onclick="deleteEnglishPhrase(${p.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;opacity:0.45;padding:4px;flex-shrink:0;color:var(--danger);" title="削除">🗑</button>
             </div>`;
         }).join('');
     } catch {
@@ -5231,7 +5312,7 @@ async function loadEnglishPhrases() {
 }
 
 async function deleteEnglishPhrase(id) {
-    if (!confirm('このフレーズを削除しますか？')) return;
+    if (!await confirmDialog('このフレーズを削除しますか？')) return;
     try {
         await apiFetch(`/api/english_phrases/${id}`, { method: 'DELETE' });
         showToast('削除しました');
@@ -5510,7 +5591,7 @@ window.loadMeals = async () => {
                     </div>
                     <div class="row-actions" style="display:flex;gap:6px;">
                         <button class="mini-link" onclick="openMealManualModal(${m.id})">編集</button>
-                        <button class="mini-link" onclick="deleteMeal(${m.id})" style="color:#ff6b6b;">削除</button>
+                        <button class="mini-link btn-danger" onclick="deleteMeal(${m.id})">🗑 削除</button>
                     </div>
                 </div>
             `;
@@ -5703,7 +5784,7 @@ window.saveMealFromModal = async () => {
 };
 
 window.deleteMeal = async (id) => {
-    if (!confirm('この食事ログを削除しますか？')) return;
+    if (!await confirmDialog('この食事ログを削除しますか？')) return;
     try {
         await apiFetch(`/api/meals/${id}`, { method: 'DELETE' });
         showToast('削除しました');
@@ -5840,7 +5921,7 @@ window.loadGmailInbox = async (state = 'pending') => {
                 ? `
                     ${saveBtn}
                     <button class="mini-link" onclick="markGmailRead('${idAttr}')" title="既読 / アーカイブ">📥 アーカイブ</button>
-                    <button class="mini-link" onclick="trashGmail('${idAttr}')" title="ゴミ箱へ" style="color:#ff6b6b;">🗑 ゴミ箱</button>
+                    <button class="mini-link btn-danger" onclick="trashGmail('${idAttr}')" title="ゴミ箱へ">🗑 ゴミ箱</button>
                 `
                 : `${saveBtn}`;
             return `
@@ -5896,7 +5977,7 @@ window.markGmailRead = async (id) => {
 };
 
 window.trashGmail = async (id) => {
-    if (!confirm('このメールをゴミ箱に移動しますか？（Gmail 側にも反映されます）')) return;
+    if (!await confirmDialog('このメールをゴミ箱に移動しますか？（Gmail 側にも反映されます）')) return;
     try {
         await apiFetch(`/api/gmail/${encodeURIComponent(id)}/trash`, { method: 'POST' });
         showToast('ゴミ箱に移動しました');
@@ -6027,7 +6108,7 @@ window.loadExpenses = async (year = null, month = null) => {
                     <div class="row-actions" style="display:flex;gap:6px;">
                         ${receiptBtn}
                         <button class="mini-link" onclick="openExpenseManualModal(${e.id})">編集</button>
-                        <button class="mini-link" onclick="deleteExpense(${e.id})" style="color:#ff6b6b;">削除</button>
+                        <button class="mini-link btn-danger" onclick="deleteExpense(${e.id})">🗑 削除</button>
                     </div>
                 </div>
             `;
@@ -6270,7 +6351,7 @@ window.saveExpenseFromModal = async () => {
 };
 
 window.deleteExpense = async (id) => {
-    if (!confirm('この支出を削除しますか？')) return;
+    if (!await confirmDialog('この支出を削除しますか？')) return;
     try {
         await apiFetch(`/api/expenses/${id}`, { method: 'DELETE' });
         showToast('削除しました');
@@ -6851,7 +6932,7 @@ function renderDrumRoadmapVideo(v) {
         <div class="drum-video-meta">
             <div class="drum-video-title">${escapeHtml(v.title || v.url || '')}</div>
         </div>
-        <button class="mini-link" style="color:#a00;flex-shrink:0;" onclick="deleteDrumRoadmapLink(${linkId})">削除</button>
+        <button class="mini-link btn-danger" style="flex-shrink:0;" onclick="deleteDrumRoadmapLink(${linkId})">🗑 削除</button>
     </div>`;
 }
 
@@ -6868,7 +6949,7 @@ window.addDrumRoadmapLink = async (milestoneId, inputId) => {
         });
         const linkId = created && created.link_id;
         if (!linkId) {
-            showToast('追加失敗', true);
+            showToast('追加に失敗しました', true);
             return;
         }
         // 2. tags に milestone:<id> を保存
@@ -6882,18 +6963,18 @@ window.addDrumRoadmapLink = async (milestoneId, inputId) => {
         if (input) input.value = '';
         await loadDrumRoadmap();
     } catch (e) {
-        showToast('追加失敗', true);
+        showToast('追加に失敗しました', true);
     }
 };
 
 window.deleteDrumRoadmapLink = async (linkId) => {
     if (!linkId) return;
-    if (!confirm('この動画リンクを削除しますか？')) return;
+    if (!await confirmDialog('この動画リンクを削除しますか？')) return;
     try {
         await apiFetch(`/api/links/${linkId}`, { method: 'DELETE' });
         await loadDrumRoadmap();
     } catch (e) {
-        showToast('削除失敗', true);
+        showToast('削除に失敗しました', true);
     }
 };
 
@@ -7382,7 +7463,7 @@ window.submitLifeLogEdit = async () => {
 
 window.confirmLifeLogDelete = async () => {
     if (!_lifelogEditCtx) return;
-    if (!confirm('このログ行を削除しますか？')) return;
+    if (!await confirmDialog('このログ行を削除しますか？')) return;
     try {
         await apiFetch('/api/task_action', {
             method: 'POST',
@@ -7459,7 +7540,7 @@ $('#link-note-url-input')?.addEventListener('input', (e) => {
 
 // ----- ストックリンク一括既読化 (Phase 3-4) -----
 async function markAllLinksRead(type) {
-    if (!confirm(`${type} カテゴリのリンクをすべて既読にしますか？`)) return;
+    if (!await confirmDialog(`${type} カテゴリのリンクをすべて既読にしますか？`)) return;
     try {
         const data = await apiFetch('/api/links');
         const targetIds = (data.links || [])
@@ -7660,7 +7741,7 @@ window.saveSummaryAnswer = async (qid) => {
 };
 
 window.dismissSummaryQuestion = async (qid) => {
-    if (!confirm('この質問を削除しますか？')) return;
+    if (!await confirmDialog('この質問を削除しますか？')) return;
     try {
         await apiFetch(`/api/daily_questions/${qid}`, { method: 'DELETE' });
         loadDailySummary();
@@ -8797,7 +8878,7 @@ window.saveConstitution = async () => {
 };
 
 window.resetConstitution = async () => {
-    if (!confirm('投資憲法をサンプルで上書きしますか？現在の内容は失われます。')) return;
+    if (!await confirmDialog('投資憲法をサンプルで上書きしますか？現在の内容は失われます。')) return;
     try {
         const data = await apiFetch('/api/investment/constitution/init', {
             method: 'POST',
@@ -8883,6 +8964,7 @@ window.openScreenerModal = async () => {
     const modal = $('#invest-screener-modal');
     if (!modal) return;
     modal.classList.remove('hidden');
+    _hideScreenerProgress();
     await _loadScreenerStyles();
     await _loadScreenerUniverses();
     _renderScreenerResults('スタイルを1つ以上選んで「機械スクリーニング」を実行してください。');
@@ -9396,7 +9478,7 @@ window.runScreenerAnalyze = async () => {
         return;
     }
     const estSecs = selected.length * 15;
-    if (!confirm(`${selected.length} 銘柄を Gemini で質的分析します。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
+    if (!await confirmDialog(`${selected.length} 銘柄を Gemini で質的分析します。約 ${estSecs} 秒かかります。よろしいですか?`)) return;
 
     _setScreenerAnalyzeEnabled(false);
     _showScreenerProgress('質的分析中...', 5);
@@ -9565,7 +9647,7 @@ window.loadScreenerSavedList = async () => {
                     </div>
                     <div style="display:flex;gap:4px;flex-shrink:0;">
                         <button class="mini-link" onclick="restoreScreenerRun(${it.id})">📋 復元</button>
-                        <button class="mini-link" style="color:#ff6b6b;" onclick="deleteScreenerRun(${it.id})">🗑</button>
+                        <button class="mini-link btn-danger" onclick="deleteScreenerRun(${it.id})">🗑 削除</button>
                     </div>
                 </div>
             </div>`;
@@ -9616,14 +9698,14 @@ window.restoreScreenerRun = async (runId) => {
 };
 
 window.deleteScreenerRun = async (runId) => {
-    if (!confirm('この保存済み結果を削除しますか？')) return;
+    if (!await confirmDialog('この保存済み結果を削除しますか？')) return;
     try {
         const data = await apiFetch(`/api/investment/screener/runs/${runId}`, { method: 'DELETE' });
         if (data && data.ok) {
-            showToast('🗑 削除しました');
+            showToast('削除しました');
             loadScreenerSavedList();
         } else {
-            showToast('削除失敗', true);
+            showToast('削除に失敗しました', true);
         }
     } catch (e) {
         showToast('削除失敗: ' + (e.message || e), true);
@@ -9649,9 +9731,10 @@ window.loadWatchlist = async () => {
             el.innerHTML = '<div class="loading-placeholder">注目銘柄はまだありません。スクリーニング結果から⭐ボタンで追加できます。</div>';
             return;
         }
-        el.innerHTML = items.map(it => {
+        el.innerHTML = items.map((it, idx) => {
             const codeJs = it.code.replace(/'/g, "\\'");
-            return `<div style="padding:8px;border-bottom:1px solid var(--border-glass);">
+            const isLast = idx === items.length - 1;
+            return `<div style="padding:10px 0;${isLast ? '' : 'border-bottom:1px solid var(--border-glass);'}">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;">
                     <strong>${escapeHtml(it.code)} ${escapeHtml(it.name || '')}</strong>
                     <span style="font-size:0.72rem;color:var(--text-muted);">${escapeHtml(it.sector || '')}</span>
@@ -9662,7 +9745,7 @@ window.loadWatchlist = async () => {
                     <button class="mini-link" style="font-size:0.72rem;" onclick="runAuditForTicker('${codeJs}')">🎯 審査</button>
                     <button class="mini-link" style="font-size:0.72rem;" onclick="runPeerComparisonForTicker('${codeJs}')">🔬 同業</button>
                     <button class="mini-link" style="font-size:0.72rem;" onclick="runNewsSentimentForTicker('${codeJs}')">📰 ニュース</button>
-                    <button class="mini-link" style="font-size:0.72rem;color:#ff8a8a;margin-left:auto;" onclick="removeFromWatchlist('${codeJs}')">削除</button>
+                    <button class="mini-link btn-danger" style="font-size:0.72rem;margin-left:auto;" onclick="removeFromWatchlist('${codeJs}')">🗑 削除</button>
                 </div>
             </div>`;
         }).join('');
@@ -9672,7 +9755,7 @@ window.loadWatchlist = async () => {
 };
 
 window.removeFromWatchlist = async (code) => {
-    if (!confirm(`${code} を注目銘柄から削除しますか?`)) return;
+    if (!await confirmDialog(`${code} を注目銘柄から削除しますか?`)) return;
     try {
         await apiFetch(`/api/investment/watchlist/${encodeURIComponent(code)}`, { method: 'DELETE' });
         showToast('削除しました');
@@ -9973,7 +10056,7 @@ window.runHoldingAction = async (action) => {
 window.removeHoldingFromAction = async () => {
     const code = _holdingActionCode;
     if (!code) return;
-    if (!confirm(`${code} をポートフォリオから削除しますか？（全数売却扱い）`)) return;
+    if (!await confirmDialog(`${code} をポートフォリオから削除しますか？（全数売却扱い）`)) return;
     try {
         const data = await apiFetch('/api/investment/portfolio/remove', {
             method: 'POST',
@@ -10142,15 +10225,14 @@ window.loadJournalList = async () => {
             const meta = [date+' '+time, ticker, action, emotion].filter(Boolean).join(' / ');
             const safeFn = (it.filename || '').replace(/'/g, "\\'");
             const safeTitle = title.replace(/'/g, '&#39;');
-            const metaAttr = escapeHtml(JSON.stringify(it));
             return `<div class="invest-row" style="display:flex;align-items:flex-start;gap:6px;">
                 <div class="row-main" style="flex:1;min-width:0;cursor:pointer;" onclick="openJournalEntry('${safeFn}', '${safeTitle}')">
                     <div class="row-title">${title}</div>
                     <div class="row-meta">${meta}</div>
                 </div>
                 <div style="display:flex;gap:4px;flex-shrink:0;">
-                    <button class="mini-link" data-journal-meta="${metaAttr}" onclick="event.stopPropagation();openJournalEditModal('${safeFn}', JSON.parse(this.dataset.journalMeta))" title="編集">編集</button>
-                    <button class="mini-link" style="color:#ff6b6b;" onclick="event.stopPropagation();deleteJournalEntry('${safeFn}')" title="削除">削除</button>
+                    <button class="mini-link" onclick="event.stopPropagation();openJournalEditModal('${safeFn}')" title="編集">編集</button>
+                    <button class="mini-link btn-danger" onclick="event.stopPropagation();deleteJournalEntry('${safeFn}')" title="削除">🗑 削除</button>
                 </div>
             </div>`;
         }).join('');
@@ -10200,16 +10282,21 @@ window.openJournalEditModal = async (filename, meta = null) => {
     const titleEl = $('#invest-journal-modal-title');
     if (titleEl) titleEl.textContent = '✏️ 投資日記を編集';
     const submitBtn = $('#journal-submit-btn');
-    // メタ情報（一覧から渡されたもの）で先に埋めて即座にモーダルを開く
-    $('#journal-add-title').value = (meta && meta.title) || '';
-    $('#journal-add-ticker').value = (meta && meta.ticker) || '';
-    $('#journal-add-emotion').value = (meta && meta.emotion) || '';
+    const titleInput = $('#journal-add-title');
+    const tickerInput = $('#journal-add-ticker');
+    const emotionInput = $('#journal-add-emotion');
     const sel = $('#journal-add-action');
-    if (sel) sel.value = (meta && meta.action) || '';
     const contentEl = $('#journal-add-content');
-    contentEl.value = '';
-    contentEl.disabled = true;
-    contentEl.placeholder = '本文を読み込み中…';
+    // メタ情報（一覧から渡されたもの）で先に埋めて即座にモーダルを開く
+    if (titleInput) titleInput.value = (meta && meta.title) || '';
+    if (tickerInput) tickerInput.value = (meta && meta.ticker) || '';
+    if (emotionInput) emotionInput.value = (meta && meta.emotion) || '';
+    if (sel) sel.value = (meta && meta.action) || '';
+    if (contentEl) {
+        contentEl.value = '';
+        contentEl.disabled = true;
+        contentEl.placeholder = '本文を読み込み中…';
+    }
     if (submitBtn) { submitBtn.textContent = '更新'; submitBtn.disabled = true; }
     $('#invest-journal-modal')?.classList.remove('hidden');
 
@@ -10223,17 +10310,19 @@ window.openJournalEditModal = async (filename, meta = null) => {
             closeJournalAddModal();
             return;
         }
-        $('#journal-add-title').value = data.title || '';
-        $('#journal-add-ticker').value = data.ticker || '';
-        $('#journal-add-emotion').value = data.emotion || '';
+        if (titleInput) titleInput.value = data.title || '';
+        if (tickerInput) tickerInput.value = data.ticker || '';
+        if (emotionInput) emotionInput.value = data.emotion || '';
         if (sel) sel.value = data.action || '';
-        contentEl.value = data.content || '';
+        if (contentEl) contentEl.value = data.content || '';
     } catch (e) {
         showToast('読み込みエラー: ' + (e.message || e), true);
         closeJournalAddModal();
     } finally {
-        contentEl.disabled = false;
-        contentEl.placeholder = '売買理由・観察事項・気づきなど';
+        if (contentEl) {
+            contentEl.disabled = false;
+            contentEl.placeholder = '売買理由・観察事項・気づきなど';
+        }
         if (submitBtn) submitBtn.disabled = false;
     }
 };
@@ -10307,11 +10396,11 @@ window.submitJournalAdd = async () => {
 
 window.deleteJournalEntry = async (filename) => {
     if (!filename) return;
-    if (!confirm('この日記を削除しますか？（Driveのファイルもゴミ箱に移動されます）')) return;
+    if (!await confirmDialog('この日記を削除しますか？（Driveのファイルもゴミ箱に移動されます）')) return;
     try {
         const data = await apiFetch(`/api/investment/journal/${encodeURIComponent(filename)}`, { method: 'DELETE' });
         if (data && data.ok) {
-            showToast('🗑 日記を削除しました');
+            showToast('削除しました');
             window.loadJournalList();
         } else {
             showToast('削除失敗: ' + (data?.error || '不明'), true);
@@ -10360,7 +10449,7 @@ window.loadAlertsList = async () => {
                 </div>
                 <div class="row-actions">
                     <button onclick="toggleAlert(${r.id}, ${!enabled})">${onLabel}</button>
-                    <button onclick="removeAlert(${r.id})">削除</button>
+                    <button class="mini-link btn-danger" onclick="removeAlert(${r.id})">🗑 削除</button>
                 </div>
             </div>`;
         }).join('');
@@ -10387,7 +10476,7 @@ window.toggleAlert = async (ruleId, enabled) => {
 };
 
 window.removeAlert = async (ruleId) => {
-    if (!confirm('このアラートを削除しますか？')) return;
+    if (!await confirmDialog('このアラートを削除しますか？')) return;
     try {
         const data = await apiFetch('/api/investment/alerts/remove', {
             method: 'POST',
@@ -10468,7 +10557,7 @@ window.runAlertsCheck = async () => {
 // --- 投資憲法レビュー ---
 
 window.runConstitutionReview = async () => {
-    if (!confirm('過去半年の審査履歴・日記・保有銘柄を読み込んで投資憲法のレビューを実行します。少し時間がかかりますがよろしいですか？')) return;
+    if (!await confirmDialog('過去半年の審査履歴・日記・保有銘柄を読み込んで投資憲法のレビューを実行します。少し時間がかかりますがよろしいですか？')) return;
     const data = await _callInvestmentApi('/api/investment/constitution_review', { lookback_days: 180 }, '憲法レビュー');
     if (data && data.ok) {
         window.openInvestmentResultModal('🔄 投資憲法レビュー', data.report);

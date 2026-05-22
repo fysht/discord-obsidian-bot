@@ -19,6 +19,7 @@ from api.database import (
     get_quiz_phrase_pool, record_quiz_attempt,
     add_daily_question, get_pending_questions, get_questions_by_date,
     answer_daily_question, resolve_questions, delete_daily_question,
+    get_recent_errors,
     get_reading_plan, update_reading_plan,
 )
 from api import notification_service
@@ -376,11 +377,8 @@ async def chat(req: ChatRequest):
         # 進行中のキーは仮押さえ（後でレスポンスを上書き保存）
         _CHAT_IDEMPOTENCY_CACHE[req.client_msg_id] = (now_ts, None)
 
-    # ユーザーが反応した → 保留中の定時通知があれば1件放出する
-    try:
-        await notification_service.mark_user_responded()
-    except Exception as e:
-        logging.debug(f"mark_user_responded failed: {e}")
+    # 注: mark_user_responded() は AI 応答を保存した後に呼ぶ。
+    # 先に呼ぶと、ユーザーのメッセージより前に保留通知が表示されてしまい、流れが悪い。
 
     url_match = re.search(r"https?://[^\s]+", req.message)
     if url_match:
@@ -405,6 +403,10 @@ async def chat(req: ChatRequest):
                     reply += f"\n[ACTION:log_meal:name={_meal_name}]"
             user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
             asst_id = await notification_service.save_message_and_notify("assistant", reply)
+            try:
+                await notification_service.mark_user_responded()
+            except Exception as e:
+                logging.debug(f"mark_user_responded failed: {e}")
             _resp = ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
             if req.client_msg_id:
                 _CHAT_IDEMPOTENCY_CACHE[req.client_msg_id] = (_time_mod.time(), _resp)
@@ -506,6 +508,26 @@ async def chat(req: ChatRequest):
 
     asst_id = await notification_service.save_message_and_notify("assistant", reply)
 
+    # AI 応答送信後に保留通知を放出（順序: ユーザー → AI → 保留通知）
+    try:
+        await notification_service.mark_user_responded()
+    except Exception as e:
+        logging.debug(f"mark_user_responded failed: {e}")
+
+    # 夜の振り返り保留中なら、ユーザーのメッセージを回答として記録し Obsidian へ保存
+    try:
+        _today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        _pending_reflect = await get_questions_by_date(_today, scope='nightly_reflection')
+        _unanswered = [q for q in _pending_reflect if q.get('status') == 'pending']
+        if _unanswered:
+            await answer_daily_question(_unanswered[0]['id'], req.message)
+            safe_create_task(
+                _save_nightly_reflection_to_obsidian(_today),
+                name="nightly-reflection-save",
+            )
+    except Exception as e:
+        logging.debug(f"nightly reflection capture failed: {e}")
+
     if bot.drive_service:
         folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID")
         safe_create_task(
@@ -521,6 +543,12 @@ async def chat(req: ChatRequest):
 @router.get("/history", dependencies=[Depends(verify_api_key)])
 async def history(limit: int = 100):
     return {"messages": await get_history(limit=limit)}
+
+
+@router.get("/error_log", dependencies=[Depends(verify_api_key)])
+async def error_log(limit: int = 100):
+    """直近のバックグラウンドタスク失敗ログ。デバッグ用。"""
+    return {"errors": await get_recent_errors(limit=limit)}
 
 
 class PermanentNoteConfirmRequest(BaseModel):
@@ -1174,8 +1202,28 @@ async def set_habit_trigger(req: HabitTriggerRequest):
     return {"status": "success", "trigger": target["trigger"]}
 
 @router.post("/habits/delete", dependencies=[Depends(verify_api_key)])
-async def delete_habit_endpoint(req: BaseModel):
-    raise HTTPException(status_code=501, detail="この機能は未実装です。")
+async def delete_habit_endpoint(req: HabitCompleteRequest):
+    """習慣を habit_data.json から削除し、Google Tasks の「習慣」リストからも削除する。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    habit_cog = bot.get_cog("HabitCog") if bot else None
+    if not habit_cog:
+        raise HTTPException(status_code=503, detail="HabitCog不在")
+
+    # habit_data.json から削除
+    msg = await habit_cog.delete_habit(req.habit_name)
+
+    # Google Tasks の「習慣」リストからも該当タスクを削除
+    if hasattr(bot, "tasks_service") and bot.tasks_service:
+        try:
+            raw_tasks = await bot.tasks_service.get_raw_tasks("習慣")
+            for t in raw_tasks or []:
+                if (t.get("title") or "").strip().lower() == req.habit_name.strip().lower():
+                    await bot.tasks_service.delete_task(t.get("id"), list_name="習慣")
+        except Exception as e:
+            logging.debug(f"habit GTasks delete failed: {e}")
+
+    return {"status": "success", "message": msg}
 
 @router.get("/habits/history", dependencies=[Depends(verify_api_key)])
 async def get_habit_history(days: int = 28):
@@ -3398,6 +3446,69 @@ async def _save_manager_qa_to_obsidian(date_str: str) -> bool:
         return True
     except Exception as e:
         logging.error(f"_save_manager_qa_to_obsidian error: {e}")
+        return False
+
+
+async def _save_nightly_reflection_to_obsidian(date_str: str) -> bool:
+    """夜の振り返り（scope='nightly_reflection'）の Q&A を `## 🌙 Nightly Reflection` セクションへ保存する。"""
+    import re as _re
+    from api import app
+    from utils.obsidian_utils import update_section
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return False
+    items = await get_questions_by_date(date_str, scope='nightly_reflection')
+    answered = [q for q in items if (q.get("answer") or "").strip()]
+    if not answered:
+        return False
+    lines = []
+    for q in answered:
+        question = (q.get("question") or "").strip()
+        answer = (q.get("answer") or "").strip()
+        if question:
+            lines.append(f"- **Q:** {question}")
+            ans_lines = answer.splitlines() or [answer]
+            lines.append(f"  - **A:** {ans_lines[0]}")
+            for extra in ans_lines[1:]:
+                if extra.strip():
+                    lines.append(f"    {extra}")
+        else:
+            lines.append(answer)
+    body = "\n".join(lines)
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        if not folder_id:
+            folder_id = await chat_service.drive_service.create_folder(
+                service, chat_service.drive_folder_id, "DailyNotes"
+            )
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date_str}.md")
+        if f_id:
+            content = await chat_service.drive_service.read_text_file(service, f_id)
+        else:
+            content = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n"
+
+        section_header = "## 🌙 Nightly Reflection"
+        replacement = f"{section_header}\n{body}"
+        pattern = _re.compile(rf"{_re.escape(section_header)}\n.*?(?=\n## |\Z)", _re.DOTALL)
+        if pattern.search(content):
+            new_content = pattern.sub(replacement, content, count=1)
+        else:
+            new_content = update_section(content, body, section_header)
+
+        if f_id:
+            await chat_service.drive_service.update_text(service, f_id, new_content)
+        else:
+            await chat_service.drive_service.upload_text(
+                service, folder_id, f"{date_str}.md", new_content
+            )
+        # 保存後は質問を resolved に
+        await resolve_questions(date_str, scope='nightly_reflection')
+        return True
+    except Exception as e:
+        logging.error(f"_save_nightly_reflection_to_obsidian error: {e}")
         return False
 
 

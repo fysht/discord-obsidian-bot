@@ -234,11 +234,16 @@ class PartnerRoutineCog(commands.Cog):
             partner_cog.last_interaction = now
 
     # ==========================================
-    # 夜の振り返り（22:00）
+    # 夜の振り返り（22:00）— DailySummaryCog に統合済みのため通常は早期 return
+    # （明日の天気・予定・MIT 質問も DailySummaryCog のメッセージに含まれる）
     # ==========================================
     @tasks.loop(minutes=1)
     async def nightly_reflection_task(self):
-        from services.schedule_resolver import is_due
+        # 統合により無効化。互換性のため関数自体は残す。
+        return
+        # 以下の旧コードは保守の参考用にコメントアウトしてもよいが、
+        # 重複通知を防ぐためここで return している。
+        from services.schedule_resolver import is_due  # noqa: E402,F401  # type: ignore[unreachable]
         due, today = await is_due("evening_review", "22:00", "daily", self._last_run_dates.get("evening_review"))
         if not due:
             return
@@ -300,6 +305,20 @@ class PartnerRoutineCog(commands.Cog):
 
                 reply_text = response.text.strip()
                 await save_message_and_notify("assistant", reply_text, proactive=True)
+                # ユーザーの次の返信を「夜の振り返り回答」として捕捉するため、
+                # 質問レコードを登録しておく（/chat で自動的に答えが紐付き、Obsidian へ保存される）
+                try:
+                    from api.database import add_daily_question, get_questions_by_date
+                    _today_str = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+                    _existing = await get_questions_by_date(_today_str, scope='nightly_reflection')
+                    if not any(q.get('status') == 'pending' for q in _existing):
+                        await add_daily_question(
+                            _today_str,
+                            "今日の振り返り（夜のメッセージへの返信）",
+                            scope='nightly_reflection',
+                        )
+                except Exception as _qe:
+                    logging.debug(f"register nightly_reflection question failed: {_qe}")
                 if partner_cog.drive_service:
                     safe_create_task(
                         backup_db_to_drive(

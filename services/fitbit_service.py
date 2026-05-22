@@ -29,8 +29,9 @@ class FitbitService:
         self.access_token_expires_at = None
         self.session = None
         self._refresh_lock = asyncio.Lock()
-        # 環境変数でトークンが提供済みなら Drive からの上書きをスキップ
-        self._token_initialized = bool(initial_refresh_token)
+        # Drive 上のトークンが常に最新なので、起動時に必ず読み込む。
+        # env の値は Drive にトークンが無い場合のみのフォールバック。
+        self._token_initialized = False
 
     async def _get_session(self):
         if self.session is None or self.session.closed:
@@ -49,6 +50,7 @@ class FitbitService:
                 content = await self.drive_service.read_text_file(service, f_id)
                 if content:
                     self.refresh_token = content.strip()
+                    logging.info("Fitbit: Driveからリフレッシュトークンを読み込みました。")
         except Exception as e:
             logging.error(f"Fitbit Token Load Error: {e}")
 

@@ -133,6 +133,20 @@ async def init_db():
             )
         """)
 
+        # エラーログ（バックグラウンド task の失敗を可視化するため）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS error_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT NOT NULL,
+                source TEXT NOT NULL,
+                message TEXT NOT NULL,
+                traceback TEXT DEFAULT ''
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_error_log_created ON error_log(created_at)"
+        )
+
         # Gmail インボックス（要約キャッシュ + 状態管理）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS gmail_inbox (
@@ -1455,3 +1469,37 @@ async def gmail_count_unnotified_high() -> int:
         )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+# ===== Error log =====
+
+async def record_error(source: str, message: str, traceback_text: str = "") -> None:
+    """バックグラウンドタスクや非同期処理での失敗を可視化するため DB に記録する。"""
+    import datetime as _dt
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            await db.execute(
+                "INSERT INTO error_log (created_at, source, message, traceback) VALUES (?, ?, ?, ?)",
+                (
+                    _dt.datetime.now(JST).isoformat(),
+                    str(source)[:200],
+                    str(message)[:2000],
+                    str(traceback_text or "")[:8000],
+                ),
+            )
+            await db.commit()
+    except Exception:
+        # ログ記録自体が失敗してもアプリは止めない
+        import logging as _logging
+        _logging.exception("record_error itself failed")
+
+
+async def get_recent_errors(limit: int = 100) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, created_at, source, message, traceback FROM error_log ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+

@@ -15,7 +15,11 @@
     --text-primary: #f2f2f5;
     --text-secondary: #a4abbd;
     --text-muted: #626a7a;
-    
+
+    --danger: #ff6b6b;
+    --danger-hover: #ff8585;
+    --warn: #ff8a4c;
+
     --safe-bottom: env(safe-area-inset-bottom, 0px);
     --safe-top: env(safe-area-inset-top, 0px);
     
@@ -189,6 +193,17 @@ details.card > summary > .card-header { border-bottom: none; }
 .card-title { font-weight: 700; font-size: 0.95rem; flex: 1; white-space: nowrap; word-break: keep-all; overflow-wrap: normal; }
 .mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
 .mini-link:hover { background: rgba(0,186,152,0.2); }
+/* 統一: 危険アクション（削除など）。テキストもしくはアイコン付きで使う */
+.mini-link.btn-danger, .btn-danger { color: var(--danger); background: rgba(255,107,107,0.10); }
+.mini-link.btn-danger:hover, .btn-danger:hover { background: rgba(255,107,107,0.20); color: var(--danger-hover); }
+
+/* 統一: カスタム確認ダイアログ */
+.confirm-overlay { z-index: 10000; }
+.confirm-card { max-width: 380px; width: calc(100vw - 32px); }
+.confirm-title { margin: 0 0 12px; font-size: 1.05rem; font-weight: 700; color: var(--text-primary); }
+.confirm-body { font-size: 0.92rem; line-height: 1.55; color: var(--text-secondary); margin-bottom: 20px; white-space: pre-wrap; }
+.confirm-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.confirm-actions .mini-link { padding: 8px 18px; font-size: 0.88rem; }
 
 .card-body { padding: 14px 18px; font-size: 0.95rem; min-height: 40px; }
 .loading-placeholder, .invest-empty {
@@ -1850,14 +1865,16 @@ button.is-busy {
     padding: 2px 8px; border-radius: 10px; margin-left: 8px;
 }
 .notice-item {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid var(--border-glass);
-    border-radius: 10px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border-glass);
+    border-radius: 0;
     padding: 0;
-    transition: background .15s ease, border-color .15s ease;
+    transition: background .15s ease;
 }
-.notice-item[open] { background: rgba(255,255,255,0.06); }
-.notice-item.notice-unread { border-color: rgba(255,138,76,0.55); background: rgba(255,138,76,0.07); }
+.notice-item:last-child { border-bottom: none; }
+.notice-item[open] { background: rgba(255,255,255,0.04); }
+.notice-item.notice-unread { background: rgba(255,138,76,0.07); }
 .notice-item.notice-unread .notice-title { font-weight: 700; color: var(--text-primary); }
 .notice-item summary {
     list-style: none; cursor: pointer; padding: 10px 12px;
