@@ -5091,46 +5091,8 @@ async def screener_cross_filter(req: ScreenerCrossFilterRequest):
 # 注目銘柄 (Watchlist)
 # =========================================================
 
-class WatchlistAddRequest(BaseModel):
-    code: str
-    name: str = ""
-    sector: str = ""
-    source: str = ""
-    memo: str = ""
-
-
-class WatchlistMemoRequest(BaseModel):
-    memo: str
-
-
-@router.get("/investment/watchlist", dependencies=[Depends(verify_api_key)])
-async def watchlist_get():
-    from api.database import watchlist_list
-    items = await watchlist_list()
-    return {"ok": True, "items": items}
-
-
-@router.post("/investment/watchlist", dependencies=[Depends(verify_api_key)])
-async def watchlist_post(req: WatchlistAddRequest):
-    from api.database import watchlist_add
-    if not req.code:
-        raise HTTPException(status_code=422, detail="code は必須です")
-    await watchlist_add(req.code, req.name, req.sector, req.source, req.memo)
-    return {"ok": True}
-
-
-@router.delete("/investment/watchlist/{code}", dependencies=[Depends(verify_api_key)])
-async def watchlist_delete(code: str):
-    from api.database import watchlist_remove
-    ok = await watchlist_remove(code)
-    return {"ok": ok}
-
-
-@router.put("/investment/watchlist/{code}/memo", dependencies=[Depends(verify_api_key)])
-async def watchlist_memo(code: str, req: WatchlistMemoRequest):
-    from api.database import watchlist_update_memo
-    ok = await watchlist_update_memo(code, req.memo)
-    return {"ok": ok}
+# Watchlist 関連エンドポイントは api/routers/investment_watchlist.py へ移動済み
+# （main.py で include_router される）
 
 
 # =========================================================

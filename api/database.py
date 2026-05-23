@@ -133,6 +133,29 @@ async def init_db():
             )
         """)
 
+        # 習慣（旧 habit_data.json から移行）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS habits (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                frequency_days INTEGER DEFAULT 1,
+                weekdays TEXT DEFAULT '[]',
+                trigger TEXT DEFAULT '',
+                sort_order INTEGER DEFAULT 0
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS habit_logs (
+                habit_id TEXT NOT NULL,
+                date TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                PRIMARY KEY (habit_id, date)
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_habit_logs_date ON habit_logs(date)"
+        )
+
         # エラーログ（バックグラウンド task の失敗を可視化するため）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS error_log (
@@ -1503,3 +1526,79 @@ async def get_recent_errors(limit: int = 100) -> list[dict]:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+
+
+# ===== 習慣（habit_data.json から DB へ移行）=====
+
+async def habit_load_all() -> dict:
+    """habit_data.json と互換の形 `{"habits": [...], "logs": {date: [habit_id,...]}}` で返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, name, frequency_days, weekdays, trigger FROM habits ORDER BY sort_order ASC, id ASC"
+        )
+        rows = await cursor.fetchall()
+        habits = []
+        for r in rows:
+            try:
+                wd = json.loads(r["weekdays"] or "[]")
+            except Exception:
+                wd = []
+            habits.append({
+                "id": r["id"],
+                "name": r["name"],
+                "frequency_days": int(r["frequency_days"] or 1),
+                "weekdays": wd,
+                "trigger": r["trigger"] or "",
+            })
+        log_cursor = await db.execute("SELECT habit_id, date FROM habit_logs")
+        logs: dict = {}
+        for r in await log_cursor.fetchall():
+            logs.setdefault(r["date"], []).append(r["habit_id"])
+        return {"habits": habits, "logs": logs}
+
+
+async def habit_save_all(data: dict) -> None:
+    """`{"habits": [...], "logs": {...}}` を DB に丸ごと保存（差分計算はせず置き換え）。"""
+    import datetime as _dt
+    habits = data.get("habits") or []
+    logs = data.get("logs") or {}
+    now_iso = _dt.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        # 既存削除→挿入で同期（件数が少ないため十分高速）
+        await db.execute("DELETE FROM habits")
+        await db.execute("DELETE FROM habit_logs")
+        for idx, h in enumerate(habits):
+            try:
+                wd_json = json.dumps(h.get("weekdays") or [])
+            except Exception:
+                wd_json = "[]"
+            await db.execute(
+                "INSERT INTO habits (id, name, frequency_days, weekdays, trigger, sort_order) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(h.get("id") or idx + 1),
+                    str(h.get("name") or ""),
+                    int(h.get("frequency_days") or 1),
+                    wd_json,
+                    str(h.get("trigger") or ""),
+                    idx,
+                ),
+            )
+        for date_str, ids in logs.items():
+            for hid in ids or []:
+                try:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO habit_logs (habit_id, date, completed_at) VALUES (?, ?, ?)",
+                        (str(hid), str(date_str), now_iso),
+                    )
+                except Exception:
+                    pass
+        await db.commit()
+
+
+async def habit_has_any_data() -> bool:
+    """habits テーブルに 1件でも存在するか。移行判定用。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("SELECT 1 FROM habits LIMIT 1")
+        return (await cursor.fetchone()) is not None

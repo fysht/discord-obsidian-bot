@@ -23,46 +23,39 @@ class HabitCog(commands.Cog):
         self.sync_habits_loop.cancel()
         self.nightly_habit_sync.cancel()
 
-    async def _load_data(self):
-        service = self.drive_service.get_service()
-        if not service:
-            return {"habits": [], "logs": {}}
-        b_folder = await self.drive_service.find_file(
-            service, self.drive_folder_id, BOT_FOLDER
-        )
-        if not b_folder:
-            b_folder = await self.drive_service.create_folder(
-                service, self.drive_folder_id, BOT_FOLDER
-            )
-        f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
-        if f_id:
-            try:
-                return json.loads(
-                    await self.drive_service.read_text_file(service, f_id)
-                )
-            except Exception:
-                pass
-        return {"habits": [], "logs": {}}
-
-    async def _save_data(self, data):
-        service = self.drive_service.get_service()
+    async def _migrate_from_drive_if_needed(self) -> None:
+        """初回のみ Drive の habit_data.json を DB へ取り込む。"""
+        from api.database import habit_has_any_data, habit_save_all
+        if await habit_has_any_data():
+            return
+        # DB が空 → Drive を見る
+        service = self.drive_service.get_service() if self.drive_service else None
         if not service:
             return
-        b_folder = await self.drive_service.find_file(
-            service, self.drive_folder_id, BOT_FOLDER
-        )
-        if not b_folder:
-            b_folder = await self.drive_service.create_folder(
+        try:
+            b_folder = await self.drive_service.find_file(
                 service, self.drive_folder_id, BOT_FOLDER
             )
-        f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
-        content = json.dumps(data, ensure_ascii=False, indent=2)
-        if f_id:
-            await self.drive_service.update_text(service, f_id, content)
-        else:
-            await self.drive_service.upload_text(
-                service, b_folder, HABIT_DATA_FILE, content
-            )
+            if not b_folder:
+                return
+            f_id = await self.drive_service.find_file(service, b_folder, HABIT_DATA_FILE)
+            if not f_id:
+                return
+            raw = await self.drive_service.read_text_file(service, f_id)
+            data = json.loads(raw)
+            await habit_save_all(data)
+            logging.info("[HabitCog] habit_data.json を DB へ移行しました。")
+        except Exception as e:
+            logging.error(f"[HabitCog] Drive→DB 移行に失敗: {e}")
+
+    async def _load_data(self):
+        from api.database import habit_load_all
+        await self._migrate_from_drive_if_needed()
+        return await habit_load_all()
+
+    async def _save_data(self, data):
+        from api.database import habit_save_all
+        await habit_save_all(data)
 
     async def complete_habit(self, habit_name_or_keyword: str, frequency_days: int = 1):
         if hasattr(self.bot, "tasks_service") and self.bot.tasks_service:

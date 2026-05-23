@@ -176,10 +176,13 @@ async def main():
     import uvicorn
     from api import app as fastapi_app
     from api.routes import router as api_router
+    from api.routers.investment_watchlist import router as watchlist_router
     from api.database import init_db, restore_db_from_drive
     from api.chat_service import ChatService
 
     fastapi_app.include_router(api_router)
+    # 段階的に切り出されたサブルーター（routes.py 由来）
+    fastapi_app.include_router(watchlist_router, prefix="/api")
 
     if bot.drive_service and GOOGLE_DRIVE_FOLDER_ID:
         await restore_db_from_drive(bot.drive_service, GOOGLE_DRIVE_FOLDER_ID)
