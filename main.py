@@ -210,6 +210,8 @@ async def main():
     from api.routers.tasks_ai import router as tasks_ai_router
     from api.routers.legacy_study import router as legacy_study_router
     from api.routers.briefing import router as briefing_router
+    from api.routers.core_misc import router as core_misc_router
+    from api.routers.dashboard import router as dashboard_router
     from api.database import init_db, restore_db_from_drive
     from api.chat_service import ChatService
 
@@ -249,6 +251,8 @@ async def main():
     fastapi_app.include_router(tasks_ai_router, prefix="/api")
     fastapi_app.include_router(legacy_study_router, prefix="/api")
     fastapi_app.include_router(briefing_router, prefix="/api")
+    fastapi_app.include_router(core_misc_router, prefix="/api")
+    fastapi_app.include_router(dashboard_router, prefix="/api")
 
     if bot.drive_service and GOOGLE_DRIVE_FOLDER_ID:
         await restore_db_from_drive(bot.drive_service, GOOGLE_DRIVE_FOLDER_ID)
