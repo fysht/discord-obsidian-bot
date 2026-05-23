@@ -9753,22 +9753,24 @@ window.loadWatchlist = async () => {
             const memoBlock = memo
                 ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin:4px 0 6px;white-space:pre-wrap;">📝 ${escapeHtml(memo)}</div>`
                 : '';
-            return `<div class="watchlist-item" data-code="${escapeHtml(it.code)}" style="padding:10px 0;${isLast ? '' : 'border-bottom:1px solid var(--border-glass);'}">
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;">
-                    <span style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.0rem;user-select:none;" class="watchlist-handle" title="長押しして並び替え">⠿</span>
-                    <strong style="flex:1;">${escapeHtml(it.code)} ${escapeHtml(it.name || '')}</strong>
-                    <span style="font-size:0.72rem;color:var(--text-muted);">${escapeHtml(it.sector || '')}</span>
-                </div>
-                ${it.source ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">出典: ${escapeHtml(it.source)}</div>` : ''}
-                ${memoBlock}
-                <div style="display:flex;gap:4px;flex-wrap:wrap;">
-                    <button class="mini-link" style="font-size:0.72rem;" onclick="openTickerHubModal('${codeJs}')">📒 まとめ</button>
-                    <button class="mini-link" style="font-size:0.72rem;" onclick="openWatchlistMemoModal('${codeJs}')">📝 メモ編集</button>
-                    <button class="mini-link" style="font-size:0.72rem;" onclick="runSnapshotForTicker('${codeJs}')">📷 スナップ</button>
-                    <button class="mini-link" style="font-size:0.72rem;" onclick="runAuditForTicker('${codeJs}')">🎯 審査</button>
-                    <button class="mini-link" style="font-size:0.72rem;" onclick="runPeerComparisonForTicker('${codeJs}')">🔬 同業</button>
-                    <button class="mini-link" style="font-size:0.72rem;" onclick="runNewsSentimentForTicker('${codeJs}')">📰 ニュース</button>
-                    <button class="mini-link btn-danger" style="font-size:0.72rem;margin-left:auto;" onclick="removeFromWatchlist('${codeJs}')">🗑 削除</button>
+            return `<div class="watchlist-item invest-row" data-code="${escapeHtml(it.code)}" style="align-items:flex-start;flex-wrap:wrap;${isLast ? 'border-bottom:none;' : ''}">
+                <span class="watchlist-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:0 10px 0 0;user-select:none;" title="長押しして並び替え">⠿</span>
+                <div class="row-main">
+                    <div class="row-title" style="display:flex;justify-content:space-between;gap:8px;">
+                        <span>${escapeHtml(it.code)} ${escapeHtml(it.name || '')}</span>
+                        <span style="font-size:0.72rem;color:var(--text-muted);font-weight:400;">${escapeHtml(it.sector || '')}</span>
+                    </div>
+                    ${it.source ? `<div class="row-meta">出典: ${escapeHtml(it.source)}</div>` : ''}
+                    ${memoBlock}
+                    <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;">
+                        <button class="mini-link" style="font-size:0.72rem;" onclick="openTickerHubModal('${codeJs}')">📒 まとめ</button>
+                        <button class="mini-link" style="font-size:0.72rem;" onclick="openWatchlistMemoModal('${codeJs}')">📝 メモ編集</button>
+                        <button class="mini-link" style="font-size:0.72rem;" onclick="runSnapshotForTicker('${codeJs}')">📷 スナップ</button>
+                        <button class="mini-link" style="font-size:0.72rem;" onclick="runAuditForTicker('${codeJs}')">🎯 審査</button>
+                        <button class="mini-link" style="font-size:0.72rem;" onclick="runPeerComparisonForTicker('${codeJs}')">🔬 同業</button>
+                        <button class="mini-link" style="font-size:0.72rem;" onclick="runNewsSentimentForTicker('${codeJs}')">📰 ニュース</button>
+                        <button class="mini-link btn-danger" style="font-size:0.72rem;margin-left:auto;" onclick="removeFromWatchlist('${codeJs}')">🗑 削除</button>
+                    </div>
                 </div>
             </div>`;
         }).join('');
