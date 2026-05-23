@@ -177,12 +177,70 @@ async def main():
     from api import app as fastapi_app
     from api.routes import router as api_router
     from api.routers.investment_watchlist import router as watchlist_router
+    from api.routers.investment_journal import router as journal_router
+    from api.routers.investment_portfolio import router as portfolio_router
+    from api.routers.investment_alerts import router as alerts_router
+    from api.routers.investment_screener import router as screener_router
+    from api.routers.google_tasks import router as tasks_router
+    from api.routers.habits import router as habits_router
+    from api.routers.gmail import router as gmail_router
+    from api.routers.expenses import router as expenses_router
+    from api.routers.meals import router as meals_router
+    from api.routers.stocked_links import router as stocked_links_router
+    from api.routers.english_phrases import router as english_phrases_router
+    from api.routers.messages import router as messages_router
+    from api.routers.calendar import router as calendar_router
+    from api.routers.notes import router as notes_router
+    from api.routers.daily_summary import router as daily_summary_router
+    from api.routers.fitbit import router as fitbit_router
+    from api.routers.gemini_settings import router as gemini_settings_router
+    from api.routers.manager_notices import router as manager_notices_router
+    from api.routers.push import router as push_router
+    from api.routers.cost import router as cost_router
+    from api.routers.edinet import router as edinet_router
+    from api.routers.investment_analysis import router as investment_analysis_router
+    from api.routers.settings_misc import router as settings_misc_router
+    from api.routers.drum_roadmap import router as drum_roadmap_router
+    from api.routers.study import router as study_router
+    from api.routers.mit_journal import router as mit_journal_router
+    from api.routers.lifelog import router as lifelog_router
+    from api.routers.reading import router as reading_router
+    from api.routers.zerosec import router as zerosec_router
     from api.database import init_db, restore_db_from_drive
     from api.chat_service import ChatService
 
     fastapi_app.include_router(api_router)
     # 段階的に切り出されたサブルーター（routes.py 由来）
     fastapi_app.include_router(watchlist_router, prefix="/api")
+    fastapi_app.include_router(journal_router, prefix="/api")
+    fastapi_app.include_router(portfolio_router, prefix="/api")
+    fastapi_app.include_router(alerts_router, prefix="/api")
+    fastapi_app.include_router(screener_router, prefix="/api")
+    fastapi_app.include_router(tasks_router, prefix="/api")
+    fastapi_app.include_router(habits_router, prefix="/api")
+    fastapi_app.include_router(gmail_router, prefix="/api")
+    fastapi_app.include_router(expenses_router, prefix="/api")
+    fastapi_app.include_router(meals_router, prefix="/api")
+    fastapi_app.include_router(stocked_links_router, prefix="/api")
+    fastapi_app.include_router(english_phrases_router, prefix="/api")
+    fastapi_app.include_router(messages_router, prefix="/api")
+    fastapi_app.include_router(calendar_router, prefix="/api")
+    fastapi_app.include_router(notes_router, prefix="/api")
+    fastapi_app.include_router(daily_summary_router, prefix="/api")
+    fastapi_app.include_router(fitbit_router, prefix="/api")
+    fastapi_app.include_router(gemini_settings_router, prefix="/api")
+    fastapi_app.include_router(manager_notices_router, prefix="/api")
+    fastapi_app.include_router(push_router, prefix="/api")
+    fastapi_app.include_router(cost_router, prefix="/api")
+    fastapi_app.include_router(edinet_router, prefix="/api")
+    fastapi_app.include_router(investment_analysis_router, prefix="/api")
+    fastapi_app.include_router(settings_misc_router, prefix="/api")
+    fastapi_app.include_router(drum_roadmap_router, prefix="/api")
+    fastapi_app.include_router(study_router, prefix="/api")
+    fastapi_app.include_router(mit_journal_router, prefix="/api")
+    fastapi_app.include_router(lifelog_router, prefix="/api")
+    fastapi_app.include_router(reading_router, prefix="/api")
+    fastapi_app.include_router(zerosec_router, prefix="/api")
 
     if bot.drive_service and GOOGLE_DRIVE_FOLDER_ID:
         await restore_db_from_drive(bot.drive_service, GOOGLE_DRIVE_FOLDER_ID)

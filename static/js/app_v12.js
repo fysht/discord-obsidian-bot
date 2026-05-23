@@ -1308,11 +1308,9 @@ async function loadDashboard() {
 
         const obTaskEl = $('#dash-tasks');
         if (obTaskEl && data.tasks) {
+            // F-15 委譲化: 各行のテキスト/index を dataset に格納し、コンテナ 1 listener で編集モーダル起動
+            window._lifelogRowsCache = data.tasks.slice();
             obTaskEl.innerHTML = data.tasks.length ? data.tasks.map((t, idx) => {
-                const isLog = t.is_log || false;
-                const isRunning = isLog && t.text.includes('▶');
-                const rawAttr = t.text.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-                // 時刻 / マーク / 本文 に構造化して列幅を固定
                 const m = t.text.match(/^\s*(\d{1,2}:\d{2}|\?\?:\?\?)(?:\s*[-–~〜]\s*(\d{1,2}:\d{2}))?\s*([▶■])?\s*(.*)$/);
                 let inner;
                 if (m) {
@@ -1334,12 +1332,12 @@ async function loadDashboard() {
                     inner = `<span class="lifelog-body" style="grid-column: 1 / -1;">${escapeHtml(t.text)}</span>`;
                 }
                 return `
-                    <div class="list-item lifelog-row" style="border-left: 3px solid rgba(255,255,255,0.1); cursor: pointer; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}"
-                         onclick="editLifeLog(${idx}, '${rawAttr}')">
+                    <div class="list-item lifelog-row" data-lifelog-idx="${idx}" style="border-left: 3px solid rgba(255,255,255,0.1); cursor: pointer; ${t.done ? 'text-decoration:line-through; opacity:0.5;' : ''}">
                         ${inner}
                     </div>
                 `;
             }).join('') : '<div class="loading-placeholder">ログはまだありません。</div>';
+            _bindLifeLogDelegation(obTaskEl);
         }
 
         loadHabits();
@@ -9823,7 +9821,7 @@ window.loadScreenerSavedList = async () => {
         el.innerHTML = items.map(it => {
             const date = (it.created_at || '').replace('T', ' ').slice(0, 16);
             const reportTag = it.has_report ? '<span style="color:#7cd6a0;font-size:0.7rem;margin-left:6px;">🤖 質的分析あり</span>' : '';
-            return `<div style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
+            return `<div class="screener-saved-row" data-run-id="${it.id}" style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
                 <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;flex-wrap:wrap;">
                     <div style="flex:1;min-width:0;">
                         <div style="font-weight:600;font-size:0.84rem;word-break:break-word;">${escapeHtml(it.title || '(無題)')}${reportTag}</div>
@@ -9832,16 +9830,37 @@ window.loadScreenerSavedList = async () => {
                         </div>
                     </div>
                     <div style="display:flex;gap:4px;flex-shrink:0;">
-                        <button class="mini-link" onclick="restoreScreenerRun(${it.id})">📋 復元</button>
-                        <button class="mini-link btn-danger" onclick="deleteScreenerRun(${it.id})">🗑 削除</button>
+                        <button class="mini-link" data-saved-action="restore">📋 復元</button>
+                        <button class="mini-link btn-danger" data-saved-action="delete">🗑 削除</button>
                     </div>
                 </div>
             </div>`;
         }).join('');
+        _bindScreenerSavedDelegation(el);
     } catch (e) {
+        console.error('loadScreenerSavedList failed', e);
         el.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
     }
 };
+
+/**
+ * F-14: 保存済みスクリーニングのイベント委譲。data-saved-action="restore|delete"。
+ */
+function _bindScreenerSavedDelegation(container) {
+    if (!container || container._screenerSavedDelegationBound) return;
+    container._screenerSavedDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-saved-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('.screener-saved-row');
+        const rid = parseInt(row?.dataset?.runId, 10);
+        if (isNaN(rid)) return;
+        e.stopPropagation();
+        const action = el.dataset.savedAction;
+        if (action === 'restore') window.restoreScreenerRun(rid);
+        else if (action === 'delete') window.deleteScreenerRun(rid);
+    });
+}
 
 window.restoreScreenerRun = async (runId) => {
     try {
@@ -9970,6 +9989,26 @@ window.loadWatchlist = async () => {
         el.innerHTML = `<div class="loading-placeholder">通信エラー: ${escapeHtml(e.message || e)}</div>`;
     }
 };
+
+/**
+ * F-15: ライフログ行のイベント委譲。
+ * 行クリックで editLifeLog(idx, rawText) を起動。rawText はキャッシュから取得。
+ */
+function _bindLifeLogDelegation(container) {
+    if (!container || container._lifelogDelegationBound) return;
+    container._lifelogDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const row = e.target.closest('.lifelog-row');
+        if (!row || !container.contains(row)) return;
+        const idx = parseInt(row.dataset.lifelogIdx, 10);
+        if (isNaN(idx)) return;
+        const cache = window._lifelogRowsCache || [];
+        const t = cache[idx];
+        if (!t) return;
+        e.stopPropagation();
+        window.editLifeLog(idx, t.text);
+    });
+}
 
 /**
  * F-11: ストックリンクのイベント委譲。data-link-action="edit|delete"。
@@ -11034,21 +11073,46 @@ window.loadAlertsList = async () => {
             const enabled = !!r.enabled;
             const cls = enabled ? '' : 'disabled';
             const onLabel = enabled ? '無効化' : '有効化';
-            return `<div class="invest-row ${cls}">
+            return `<div class="invest-row alert-row ${cls}" data-alert-id="${r.id}" data-enabled="${enabled ? '1' : '0'}">
                 <div class="row-main">
                     <div class="row-title">${ticker} — ${type} (${threshold})</div>
                     <div class="row-meta">${memo || '(メモなし)'}</div>
                 </div>
                 <div class="row-actions">
-                    <button onclick="toggleAlert(${r.id}, ${!enabled})">${onLabel}</button>
-                    <button class="mini-link btn-danger" onclick="removeAlert(${r.id})">🗑 削除</button>
+                    <button data-alert-action="toggle">${onLabel}</button>
+                    <button class="mini-link btn-danger" data-alert-action="delete">🗑 削除</button>
                 </div>
             </div>`;
         }).join('');
+        _bindAlertDelegation(listEl);
     } catch (e) {
+        console.error('loadAlertsList failed', e);
         listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
     }
 };
+
+/**
+ * F-13: アラート設定リストのイベント委譲。data-alert-action="toggle|delete"。
+ */
+function _bindAlertDelegation(container) {
+    if (!container || container._alertDelegationBound) return;
+    container._alertDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-alert-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('.alert-row');
+        const rid = parseInt(row?.dataset?.alertId, 10);
+        if (isNaN(rid)) return;
+        e.stopPropagation();
+        const action = el.dataset.alertAction;
+        if (action === 'toggle') {
+            const enabled = row.dataset.enabled === '1';
+            window.toggleAlert(rid, !enabled);
+        } else if (action === 'delete') {
+            window.removeAlert(rid);
+        }
+    });
+}
 
 window.toggleAlert = async (ruleId, enabled) => {
     try {

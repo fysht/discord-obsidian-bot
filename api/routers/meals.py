@@ -1,0 +1,286 @@
+"""食事ログ（Meals）関連エンドポイント。Vision 解析 / 保存 / 一覧 / 編集 / 削除 / アドバイス / 提案。"""
+
+import base64
+import datetime
+import json
+import logging
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from api.routes import verify_api_key
+from config import JST
+
+router = APIRouter(prefix="/meals", tags=["meals"])
+
+
+class MealAnalyzeRequest(BaseModel):
+    image_base64: str
+    mime_type: str = "image/jpeg"
+    hint: str = ""
+
+
+class MealSaveRequest(BaseModel):
+    name: str
+    time: Optional[str] = None
+    date: Optional[str] = None
+    meal_type: str = ""
+    calories: int = 0
+    protein_g: float = 0.0
+    fat_g: float = 0.0
+    carbs_g: float = 0.0
+    memo: str = ""
+    image_drive_id: str = ""
+
+
+class MealPatchRequest(BaseModel):
+    date: Optional[str] = None
+    time: Optional[str] = None
+    meal_type: Optional[str] = None
+    name: Optional[str] = None
+    calories: Optional[int] = None
+    protein_g: Optional[float] = None
+    fat_g: Optional[float] = None
+    carbs_g: Optional[float] = None
+    memo: Optional[str] = None
+
+
+@router.post("/analyze", dependencies=[Depends(verify_api_key)])
+async def meals_analyze(req: MealAnalyzeRequest):
+    """食事の写真から料理名・推定カロリー・PFC を抽出（保存はしない）。"""
+    from google.genai import types as _gt
+    from api import app
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    hint_text = f"\n補足: {req.hint}" if req.hint else ""
+    prompt = (
+        "この食事の写真から栄養情報を推定し、必ず以下の JSON 形式だけを返してください。\n"
+        f"前置きや説明は禁止。{hint_text}\n\n"
+        "{\n"
+        '  "name": "料理名（複数なら『+』でつなぐ。例: 唐揚げ定食 + 味噌汁）",\n'
+        '  "meal_type": "breakfast / lunch / dinner / snack のいずれか（時間帯がわからなければ best effort）",\n'
+        '  "calories": 推定カロリー(kcal, int),\n'
+        '  "protein_g": タンパク質(g, number),\n'
+        '  "fat_g": 脂質(g, number),\n'
+        '  "carbs_g": 炭水化物(g, number),\n'
+        '  "confidence": "high / medium / low",\n'
+        '  "memo": "気づいたこと（量が多い・野菜が少ない 等）を1〜2行"\n'
+        "}\n"
+        "推定根拠が乏しいときは confidence='low' とし、数値は控えめに。"
+    )
+
+    try:
+        image_bytes = base64.b64decode(req.image_base64)
+        image_part = _gt.Part.from_bytes(data=image_bytes, mime_type=req.mime_type)
+        text_part = _gt.Part.from_text(text=prompt)
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("meal_image", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[image_part, text_part]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        return {"ok": True, "result": json.loads(response.text)}
+    except Exception as e:
+        logging.error(f"meals_analyze error: {e}")
+        raise HTTPException(status_code=500, detail=f"解析失敗: {str(e)}")
+
+
+@router.post("", dependencies=[Depends(verify_api_key)])
+async def meals_save(req: MealSaveRequest):
+    """食事ログを保存。Lifelog にも `- HH:MM 🍽 ...` で追記する。"""
+    from api import app
+    from api.database import add_meal
+
+    now = datetime.datetime.now(JST)
+    date = req.date or now.strftime("%Y-%m-%d")
+    time = req.time or now.strftime("%H:%M")
+    name = (req.name or "").strip() or "食事"
+
+    meal_id = await add_meal(
+        date=date, time=time, name=name,
+        meal_type=(req.meal_type or "").strip(),
+        calories=req.calories,
+        protein_g=req.protein_g, fat_g=req.fat_g, carbs_g=req.carbs_g,
+        memo=req.memo or "",
+        image_drive_id=req.image_drive_id or "",
+    )
+
+    try:
+        if date == now.strftime("%Y-%m-%d"):
+            chat_service = getattr(app.state, "chat_service", None)
+            bot = getattr(app.state, "bot", None)
+            partner_cog = bot.get_cog("PartnerCog") if bot else None
+            if partner_cog and chat_service and chat_service.drive_service:
+                kcal_text = f"（推定{req.calories}kcal）" if req.calories else ""
+                line = f"- {time} 🍽 {name}{kcal_text}"
+                note_content = await partner_cog._get_todays_obsidian_note()
+                if not note_content:
+                    note_content = f"# Daily Note {date}\n"
+                from utils.obsidian_utils import update_section
+                updated = update_section(note_content, line, "## 🪟 Lifelog")
+                await partner_cog._save_todays_obsidian_note(updated)
+    except Exception as e:
+        logging.debug(f"meals_save lifelog append failed: {e}")
+
+    return {"ok": True, "id": meal_id, "date": date, "time": time}
+
+
+@router.get("", dependencies=[Depends(verify_api_key)])
+async def meals_list(date: str = ""):
+    from api.database import get_meals_by_date
+    if not date:
+        date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    rows = await get_meals_by_date(date)
+    total = {
+        "calories": sum(r["calories"] or 0 for r in rows),
+        "protein_g": round(sum(r["protein_g"] or 0 for r in rows), 1),
+        "fat_g": round(sum(r["fat_g"] or 0 for r in rows), 1),
+        "carbs_g": round(sum(r["carbs_g"] or 0 for r in rows), 1),
+    }
+    return {"date": date, "meals": rows, "total": total}
+
+
+@router.patch("/{meal_id}", dependencies=[Depends(verify_api_key)])
+async def meals_patch(meal_id: int, req: MealPatchRequest):
+    from api.database import update_meal
+    fields = {k: v for k, v in req.model_dump().items() if v is not None}
+    ok = await update_meal(meal_id, fields)
+    if not ok:
+        raise HTTPException(status_code=404, detail="食事が見つかりません")
+    return {"ok": True}
+
+
+@router.delete("/{meal_id}", dependencies=[Depends(verify_api_key)])
+async def meals_delete(meal_id: int):
+    from api.database import delete_meal
+    ok = await delete_meal(meal_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="食事が見つかりません")
+    return {"ok": True}
+
+
+@router.post("/advice", dependencies=[Depends(verify_api_key)])
+async def meals_advice(date: str = ""):
+    """指定日（既定: 今日）の食事ログを Gemini に渡し、栄養観点でのマネージャーアドバイスを返す。"""
+    from api import app
+    from api.database import get_meals_by_date
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+    if not date:
+        date = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    meals = await get_meals_by_date(date)
+    if not meals:
+        return {"ok": False, "error": "食事の記録がまだありません"}
+    lines = []
+    total_kcal = total_p = total_f = total_c = 0
+    for m in meals:
+        lines.append(
+            f"- {m['time']} {m['name']}: {m['calories']}kcal "
+            f"(P{m['protein_g']}/F{m['fat_g']}/C{m['carbs_g']})"
+            + (f" — {m['memo']}" if m["memo"] else "")
+        )
+        total_kcal += m["calories"] or 0
+        total_p += m["protein_g"] or 0
+        total_f += m["fat_g"] or 0
+        total_c += m["carbs_g"] or 0
+    body = "\n".join(lines)
+    prompt = (
+        "あなたはユーザー専属のマネージャー兼栄養アドバイザーです。\n"
+        f"今日（{date}）の食事ログから、栄養バランスの観点で短くアドバイスしてください。\n\n"
+        f"## 食事ログ\n{body}\n\n"
+        f"## 当日合計\nカロリー: {total_kcal}kcal / P: {total_p:.0f}g / F: {total_f:.0f}g / C: {total_c:.0f}g\n\n"
+        "【ルール】\n"
+        "- 文体はマネージャーらしいタメ口で 3〜5 行\n"
+        "- 「足りない/多い」を 1 つだけ具体的に指摘し、明日に向けた小さな提案を 1 つ\n"
+        "- カロリー数値だけでなくPFCバランスにも触れる\n"
+        "- 否定的な強い言葉は使わず、励まし基調で\n"
+    )
+    try:
+        from google.genai import types as _gt
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("meal_advice", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=prompt,
+            config=_gt.GenerateContentConfig(),
+        )
+        advice = (response.text or "").strip()
+        return {"ok": True, "advice": advice, "total": {
+            "calories": total_kcal,
+            "protein_g": round(total_p, 1),
+            "fat_g": round(total_f, 1),
+            "carbs_g": round(total_c, 1),
+        }}
+    except Exception as e:
+        logging.error(f"meals_advice error: {e}")
+        return {"ok": False, "error": "アドバイス生成に失敗しました"}
+
+
+@router.post("/suggest", dependencies=[Depends(verify_api_key)])
+async def meals_suggest():
+    """過去の食事履歴と「最後に食べてからの空白期間」を踏まえて献立を提案する。"""
+    from api import app
+    from api.database import get_meals_by_range
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    today = datetime.datetime.now(JST).date()
+    start = (today - datetime.timedelta(days=60)).strftime("%Y-%m-%d")
+    end = today.strftime("%Y-%m-%d")
+    rows = await get_meals_by_range(start, end)
+    if not rows:
+        return {"ok": False, "error": "過去の食事記録がまだありません"}
+
+    history: dict[str, dict] = {}
+    for r in rows:
+        name = (r.get("name") or "").strip()
+        if not name:
+            continue
+        d = r.get("date") or ""
+        h = history.setdefault(name, {"last": d, "count": 0})
+        h["count"] += 1
+        if d > h["last"]:
+            h["last"] = d
+
+    items = []
+    for name, h in history.items():
+        try:
+            last_date = datetime.datetime.strptime(h["last"], "%Y-%m-%d").date()
+            days_ago = (today - last_date).days
+        except Exception:
+            days_ago = 0
+        items.append((days_ago, name, h["count"]))
+    items.sort(key=lambda x: x[0], reverse=True)
+    hist_lines = "\n".join(
+        f"- {name}: 最後に食べたのは{days}日前（過去60日で{cnt}回）"
+        for days, name, cnt in items[:40]
+    )
+
+    prompt = (
+        "あなたはユーザー専属のマネージャーです。ユーザーが「今日のごはん何にしよう」と迷っています。\n"
+        "下の『過去の食事履歴』を見て、次の食事の献立を提案してください。\n\n"
+        f"## 過去の食事履歴（最後に食べてからの日数つき）\n{hist_lines}\n\n"
+        "【ルール】\n"
+        "- 提案は3〜4品。最近食べていない（空白期間が長い）メニューを優先的に挙げる\n"
+        "- 各提案に「最後に食べたのは○日前だからそろそろどう？」のように空白期間に触れた一言の理由を書く\n"
+        "- 履歴にある定番だけでなく、履歴の傾向から外れた新しいメニュー案を1つ混ぜてもよい\n"
+        "- 文体はマネージャーらしいタメ口で、全体で短めに\n"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("meal_suggest", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m, contents=prompt,
+        )
+        suggestion = (response.text or "").strip()
+        return {"ok": True, "suggestion": suggestion}
+    except Exception as e:
+        logging.error(f"meals_suggest error: {e}")
+        return {"ok": False, "error": "提案の生成に失敗しました"}
