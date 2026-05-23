@@ -206,6 +206,10 @@ async def main():
     from api.routers.lifelog import router as lifelog_router
     from api.routers.reading import router as reading_router
     from api.routers.zerosec import router as zerosec_router
+    from api.routers.environment import router as environment_router
+    from api.routers.tasks_ai import router as tasks_ai_router
+    from api.routers.legacy_study import router as legacy_study_router
+    from api.routers.briefing import router as briefing_router
     from api.database import init_db, restore_db_from_drive
     from api.chat_service import ChatService
 
@@ -241,6 +245,10 @@ async def main():
     fastapi_app.include_router(lifelog_router, prefix="/api")
     fastapi_app.include_router(reading_router, prefix="/api")
     fastapi_app.include_router(zerosec_router, prefix="/api")
+    fastapi_app.include_router(environment_router, prefix="/api")
+    fastapi_app.include_router(tasks_ai_router, prefix="/api")
+    fastapi_app.include_router(legacy_study_router, prefix="/api")
+    fastapi_app.include_router(briefing_router, prefix="/api")
 
     if bot.drive_service and GOOGLE_DRIVE_FOLDER_ID:
         await restore_db_from_drive(bot.drive_service, GOOGLE_DRIVE_FOLDER_ID)
