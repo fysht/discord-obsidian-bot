@@ -9726,21 +9726,44 @@ window.loadWatchlist = async () => {
             el.innerHTML = '<div class="loading-placeholder">取得に失敗しました。</div>';
             return;
         }
-        const items = data.items || [];
+        let items = data.items || [];
         if (!items.length) {
-            el.innerHTML = '<div class="loading-placeholder">注目銘柄はまだありません。スクリーニング結果から⭐ボタンで追加できます。</div>';
+            el.innerHTML = '<div class="loading-placeholder">注目銘柄はまだありません。「+追加」ボタンか、スクリーニング結果の⭐ボタンから追加できます。</div>';
             return;
         }
+        // 保存済み並び順を適用
+        const savedOrder = _getWatchlistOrder();
+        if (savedOrder.length) {
+            items = items.slice().sort((a, b) => {
+                const ai = savedOrder.indexOf(a.code || '');
+                const bi = savedOrder.indexOf(b.code || '');
+                if (ai === -1 && bi === -1) return 0;
+                if (ai === -1) return 1;
+                if (bi === -1) return -1;
+                return ai - bi;
+            });
+        }
+        // 名前ベースのキャッシュ（per-ticker view / メモ編集モーダルから引くため）
+        window._watchlistByCode = window._watchlistByCode || {};
+        items.forEach(it => { window._watchlistByCode[(it.code || '').toUpperCase()] = it; });
         el.innerHTML = items.map((it, idx) => {
             const codeJs = it.code.replace(/'/g, "\\'");
             const isLast = idx === items.length - 1;
-            return `<div style="padding:10px 0;${isLast ? '' : 'border-bottom:1px solid var(--border-glass);'}">
+            const memo = (it.memo || '').trim();
+            const memoBlock = memo
+                ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin:4px 0 6px;white-space:pre-wrap;">📝 ${escapeHtml(memo)}</div>`
+                : '';
+            return `<div class="watchlist-item" data-code="${escapeHtml(it.code)}" style="padding:10px 0;${isLast ? '' : 'border-bottom:1px solid var(--border-glass);'}">
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;">
-                    <strong>${escapeHtml(it.code)} ${escapeHtml(it.name || '')}</strong>
+                    <span style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.0rem;user-select:none;" class="watchlist-handle" title="長押しして並び替え">⠿</span>
+                    <strong style="flex:1;">${escapeHtml(it.code)} ${escapeHtml(it.name || '')}</strong>
                     <span style="font-size:0.72rem;color:var(--text-muted);">${escapeHtml(it.sector || '')}</span>
                 </div>
                 ${it.source ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-bottom:4px;">出典: ${escapeHtml(it.source)}</div>` : ''}
+                ${memoBlock}
                 <div style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="openTickerHubModal('${codeJs}')">📒 まとめ</button>
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="openWatchlistMemoModal('${codeJs}')">📝 メモ編集</button>
                     <button class="mini-link" style="font-size:0.72rem;" onclick="runSnapshotForTicker('${codeJs}')">📷 スナップ</button>
                     <button class="mini-link" style="font-size:0.72rem;" onclick="runAuditForTicker('${codeJs}')">🎯 審査</button>
                     <button class="mini-link" style="font-size:0.72rem;" onclick="runPeerComparisonForTicker('${codeJs}')">🔬 同業</button>
@@ -9749,6 +9772,7 @@ window.loadWatchlist = async () => {
                 </div>
             </div>`;
         }).join('');
+        initWatchlistSortable(el);
     } catch (e) {
         el.innerHTML = `<div class="loading-placeholder">通信エラー: ${escapeHtml(e.message || e)}</div>`;
     }
@@ -9761,9 +9785,229 @@ window.removeFromWatchlist = async (code) => {
         showToast('削除しました');
         loadWatchlist();
     } catch (e) {
+        console.error('removeFromWatchlist failed', e);
         showToast('削除に失敗しました', true);
     }
 };
+
+// === 注目銘柄 手動追加モーダル ===
+window.openWatchlistAddModal = () => {
+    let modal = $('#watchlist-add-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="watchlist-add-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:420px;">
+                    <h3 style="margin-top:0;">⭐ 注目銘柄を追加</h3>
+                    <div style="display:flex;flex-direction:column;gap:10px;">
+                        <input id="wl-add-code" class="modern-input" placeholder="ティッカー (例: 7203 / AAPL) ※必須" />
+                        <input id="wl-add-name" class="modern-input" placeholder="銘柄名 (任意)" />
+                        <input id="wl-add-sector" class="modern-input" placeholder="セクター (任意)" />
+                        <textarea id="wl-add-memo" class="modern-input" rows="3" placeholder="メモ (任意)"></textarea>
+                    </div>
+                    <div class="modal-actions" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;">
+                        <button class="mini-link" onclick="closeWatchlistAddModal()">キャンセル</button>
+                        <button class="mini-link" onclick="submitWatchlistAdd()" style="background:var(--accent-glow);color:var(--accent);font-weight:700;">追加</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#watchlist-add-modal');
+    }
+    ['wl-add-code','wl-add-name','wl-add-sector','wl-add-memo'].forEach(id => { const el = $('#'+id); if (el) el.value = ''; });
+    modal.classList.remove('hidden');
+};
+window.closeWatchlistAddModal = () => $('#watchlist-add-modal')?.classList.add('hidden');
+
+window.submitWatchlistAdd = async () => {
+    const code = $('#wl-add-code')?.value?.trim();
+    if (!code) { showToast('ティッカーは必須です', true); return; }
+    const body = {
+        code,
+        name: $('#wl-add-name')?.value?.trim() || '',
+        sector: $('#wl-add-sector')?.value?.trim() || '',
+        source: '手動追加',
+        memo: $('#wl-add-memo')?.value?.trim() || '',
+    };
+    try {
+        await apiFetch('/api/investment/watchlist', { method: 'POST', body: JSON.stringify(body) });
+        showToast(`${code} を追加しました`);
+        closeWatchlistAddModal();
+        loadWatchlist();
+    } catch (e) {
+        console.error('watchlist add failed', e);
+        showToast('追加に失敗しました', true);
+    }
+};
+
+// === 注目銘柄 メモ編集モーダル ===
+window.openWatchlistMemoModal = (code) => {
+    const item = (window._watchlistByCode || {})[(code || '').toUpperCase()];
+    const current = item ? (item.memo || '') : '';
+    let modal = $('#watchlist-memo-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="watchlist-memo-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:420px;">
+                    <h3 style="margin-top:0;">📝 メモを編集</h3>
+                    <div id="wl-memo-target" style="font-size:0.85rem;color:var(--text-muted);margin-bottom:8px;"></div>
+                    <textarea id="wl-memo-text" class="modern-input" rows="5" placeholder="自由メモ"></textarea>
+                    <div class="modal-actions" style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end;">
+                        <button class="mini-link" onclick="closeWatchlistMemoModal()">キャンセル</button>
+                        <button class="mini-link" onclick="submitWatchlistMemo()" style="background:var(--accent-glow);color:var(--accent);font-weight:700;">保存</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#watchlist-memo-modal');
+    }
+    modal.dataset.code = code;
+    $('#wl-memo-target').textContent = `対象: ${code}${item && item.name ? ' ' + item.name : ''}`;
+    $('#wl-memo-text').value = current;
+    modal.classList.remove('hidden');
+};
+window.closeWatchlistMemoModal = () => $('#watchlist-memo-modal')?.classList.add('hidden');
+
+window.submitWatchlistMemo = async () => {
+    const modal = $('#watchlist-memo-modal');
+    const code = modal?.dataset?.code;
+    if (!code) return;
+    const memo = $('#wl-memo-text')?.value?.trim() || '';
+    try {
+        await apiFetch(`/api/investment/watchlist/${encodeURIComponent(code)}/memo`, {
+            method: 'PUT',
+            body: JSON.stringify({ memo }),
+        });
+        showToast('メモを保存しました');
+        closeWatchlistMemoModal();
+        loadWatchlist();
+    } catch (e) {
+        console.error('watchlist memo failed', e);
+        showToast('保存に失敗しました', true);
+    }
+};
+
+// === 銘柄まとめビュー（メモ・日記の集約） ===
+window.openTickerHubModal = async (code) => {
+    const tickerUp = (code || '').toUpperCase();
+    let modal = $('#ticker-hub-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="ticker-hub-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:560px;max-height:85vh;display:flex;flex-direction:column;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 id="ticker-hub-title" style="margin:0;">📒 銘柄まとめ</h3>
+                        <button class="mini-link" onclick="closeTickerHubModal()">✕ 閉じる</button>
+                    </div>
+                    <div id="ticker-hub-body" style="overflow-y:auto;margin-top:12px;flex:1;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#ticker-hub-modal');
+    }
+    $('#ticker-hub-title').textContent = `📒 ${code} まとめ`;
+    $('#ticker-hub-body').innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
+    modal.classList.remove('hidden');
+
+    // データ収集: watchlist memo / portfolio notes / journal entries
+    const wlItem = (window._watchlistByCode || {})[tickerUp];
+    const phItem = (window._investHoldingsCache || []).find(h => (h.code || '').toUpperCase() === tickerUp);
+
+    let journalItems = [];
+    try {
+        const j = await apiFetch('/api/investment/journal?limit=200');
+        if (j && j.ok) {
+            journalItems = (j.items || []).filter(it => (it.ticker || '').toUpperCase() === tickerUp);
+        }
+    } catch (e) { console.error('ticker hub journal fetch failed', e); }
+
+    const sections = [];
+    if (phItem) {
+        const notes = (phItem.notes || '').trim();
+        sections.push(`
+            <div style="margin-bottom:14px;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;">
+                <div style="font-size:0.85rem;font-weight:700;margin-bottom:6px;">💼 保有銘柄メモ</div>
+                <div style="font-size:0.82rem;color:var(--text-secondary);white-space:pre-wrap;">
+                    ${notes ? escapeHtml(notes) : '<span style="color:var(--text-muted);">（メモ未入力）</span>'}
+                </div>
+                <div style="font-size:0.72rem;color:var(--text-muted);margin-top:6px;">
+                    ${phItem.shares || 0}株 @ ${phItem.avg_cost || 0} ${escapeHtml(phItem.currency || '')}
+                </div>
+            </div>`);
+    }
+    if (wlItem) {
+        const memo = (wlItem.memo || '').trim();
+        sections.push(`
+            <div style="margin-bottom:14px;padding:10px;background:rgba(255,255,255,0.04);border-radius:8px;">
+                <div style="font-size:0.85rem;font-weight:700;margin-bottom:6px;">⭐ 注目銘柄メモ</div>
+                <div style="font-size:0.82rem;color:var(--text-secondary);white-space:pre-wrap;">
+                    ${memo ? escapeHtml(memo) : '<span style="color:var(--text-muted);">（メモ未入力）</span>'}
+                </div>
+                <div style="margin-top:6px;">
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="closeTickerHubModal();openWatchlistMemoModal('${(wlItem.code || '').replace(/'/g, "\\'")}')">📝 編集</button>
+                </div>
+            </div>`);
+    }
+    if (journalItems.length) {
+        const rows = journalItems.map(it => {
+            const title = escapeHtml(it.title || '(無題)');
+            const date = escapeHtml(it.date || '');
+            const action = escapeHtml(it.action || '');
+            const emotion = escapeHtml(it.emotion || '');
+            const meta = [date, action, emotion].filter(Boolean).join(' / ');
+            const safeFn = (it.filename || '').replace(/'/g, "\\'");
+            return `<div style="padding:8px 6px;border-bottom:1px solid var(--border-glass);">
+                <div style="cursor:pointer;" onclick="closeTickerHubModal();openJournalEntry('${safeFn}', '${title.replace(/'/g, '&#39;')}')">
+                    <div style="font-size:0.86rem;font-weight:600;">${title}</div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);">${meta}</div>
+                </div>
+            </div>`;
+        }).join('');
+        sections.push(`
+            <div style="margin-bottom:14px;">
+                <div style="font-size:0.85rem;font-weight:700;margin-bottom:6px;">📔 投資日記 (${journalItems.length}件)</div>
+                ${rows}
+            </div>`);
+    } else {
+        sections.push(`<div style="color:var(--text-muted);font-size:0.82rem;">この銘柄に紐づく投資日記はまだありません。</div>`);
+    }
+    if (!phItem && !wlItem && !journalItems.length) {
+        $('#ticker-hub-body').innerHTML = `<div class="loading-placeholder">${code} に関する情報がありません。</div>`;
+        return;
+    }
+    $('#ticker-hub-body').innerHTML = sections.join('');
+};
+window.closeTickerHubModal = () => $('#ticker-hub-modal')?.classList.add('hidden');
+
+// === 注目銘柄 並び替え順序の永続化 ===
+function _getWatchlistOrder() {
+    try { return JSON.parse(localStorage.getItem('watchlist_order') || '[]'); } catch { return []; }
+}
+function _saveWatchlistOrder(codes) {
+    try { localStorage.setItem('watchlist_order', JSON.stringify(codes)); } catch {}
+}
+function initWatchlistSortable(container) {
+    if (!container || !window.Sortable) {
+        if (container) setTimeout(() => initWatchlistSortable(container), 200);
+        return;
+    }
+    if (container._sortable) { try { container._sortable.destroy(); } catch {} }
+    container._sortable = window.Sortable.create(container, {
+        handle: '.watchlist-handle',
+        animation: 150,
+        delay: 200,
+        delayOnTouchOnly: true,
+        ghostClass: 'sortable-ghost',
+        onEnd: () => {
+            const codes = Array.from(container.querySelectorAll('.watchlist-item'))
+                .map(el => el.dataset.code).filter(Boolean);
+            _saveWatchlistOrder(codes);
+            showToast('順序を保存しました');
+        },
+    });
+}
 
 window.runSnapshotForTicker = async (ticker) => {
     const data = await _callInvestmentApi('/api/investment/snapshot', { ticker }, `${ticker} スナップショット`);
@@ -9869,6 +10113,7 @@ window.loadPortfolio = async () => {
         }
         listEl.innerHTML = holdings.map(h => {
             const ticker = escapeHtml(h.code || '?');
+            const tickerJs = (h.code || '').replace(/'/g, '&#39;');
             const name = escapeHtml(h.name || ticker);
             const sector = escapeHtml(h.sector || '');
             const shares = h.shares || 0;
@@ -9876,14 +10121,20 @@ window.loadPortfolio = async () => {
             const currency = escapeHtml(h.currency || '');
             const market = escapeHtml(h.market || '');
             const meta = `${shares}株 @ ${cost} ${currency} / ${market}${sector ? ' / ' + sector : ''}`;
-            return `<div class="invest-row" data-code="${ticker.replace(/"/g, '&quot;')}" style="cursor:pointer;" onclick="openHoldingActionModal('${ticker.replace(/'/g, '&#39;')}')">
+            const memo = (h.notes || '').trim();
+            const memoBlock = memo
+                ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;white-space:pre-wrap;">📝 ${escapeHtml(memo)}</div>`
+                : '';
+            return `<div class="invest-row" data-code="${ticker.replace(/"/g, '&quot;')}" style="cursor:pointer;flex-wrap:wrap;" onclick="openHoldingActionModal('${tickerJs}')">
                 <span class="portfolio-handle" onclick="event.stopPropagation();" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:10px 10px 10px 0;user-select:none;" title="長押しして並び替え">⠿</span>
                 <div class="row-main">
                     <div class="row-title">${name} (${ticker})</div>
                     <div class="row-meta">${meta}</div>
+                    ${memoBlock}
                 </div>
-                <div class="row-actions">
-                    <button onclick="event.stopPropagation(); openHoldingActionModal('${ticker.replace(/'/g, '&#39;')}')">▾ 操作</button>
+                <div class="row-actions" style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <button class="mini-link" style="font-size:0.72rem;" onclick="event.stopPropagation();openTickerHubModal('${tickerJs}')" title="メモと日記をまとめて見る">📒 まとめ</button>
+                    <button onclick="event.stopPropagation(); openHoldingActionModal('${tickerJs}')">▾ 操作</button>
                 </div>
             </div>`;
         }).join('');
@@ -10338,11 +10589,20 @@ window.generateJournalTitle = async () => {
     const btn = $('#journal-title-gen-btn');
     if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
     try {
+        const ticker = $('#journal-add-ticker')?.value?.trim() || '';
+        // ticker から保有銘柄/注目銘柄の名前を逆引きしてサーバーへも渡す
+        let name = '';
+        if (ticker) {
+            const tUp = ticker.toUpperCase();
+            const fromHoldings = (_investHoldingsCache || []).find(h => (h.code || '').toUpperCase() === tUp);
+            if (fromHoldings && fromHoldings.name) name = fromHoldings.name;
+        }
         const data = await apiFetch('/api/investment/journal/suggest_title', {
             method: 'POST',
             body: JSON.stringify({
                 content,
-                ticker: $('#journal-add-ticker')?.value?.trim() || '',
+                ticker,
+                name,
                 action: $('#journal-add-action')?.value || '',
                 emotion: $('#journal-add-emotion')?.value?.trim() || '',
             }),

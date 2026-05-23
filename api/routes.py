@@ -4877,6 +4877,7 @@ class JournalTitleRequest(BaseModel):
     ticker: str = ""
     action: str = ""
     emotion: str = ""
+    name: str = ""  # 銘柄名（あれば優先してタイトルに含める）
 
 
 @router.post("/investment/journal/suggest_title", dependencies=[Depends(verify_api_key)])
@@ -4892,20 +4893,59 @@ async def investment_journal_suggest_title(req: JournalTitleRequest):
     if not bot or not getattr(bot, "gemini_client", None):
         raise HTTPException(status_code=503, detail="Gemini未接続")
 
+    # 銘柄名の決定: name > watchlist/portfolio から ticker で逆引き > ticker そのまま
+    ticker = (req.ticker or "").strip()
+    stock_label = (req.name or "").strip()
+    if ticker and not stock_label:
+        try:
+            from api.database import watchlist_list
+            wl = await watchlist_list()
+            found = next((w for w in wl if (w.get("code") or "").upper() == ticker.upper()), None)
+            if found and found.get("name"):
+                stock_label = found["name"]
+        except Exception as e:
+            logging.debug(f"suggest_title watchlist lookup failed: {e}")
+    if not stock_label:
+        stock_label = ticker
+
     meta_parts = []
-    if req.ticker:
-        meta_parts.append(f"銘柄: {req.ticker}")
+    if ticker:
+        meta_parts.append(f"銘柄コード: {ticker}")
+    if stock_label and stock_label != ticker:
+        meta_parts.append(f"銘柄名: {stock_label}")
     if req.action:
         meta_parts.append(f"アクション: {req.action}")
     if req.emotion:
         meta_parts.append(f"感情: {req.emotion}")
     meta_str = " / ".join(meta_parts) or "（なし）"
 
+    # 銘柄ラベル提示: name があれば「銘柄名(コード)」、なければコードのみ
+    if stock_label and ticker and stock_label != ticker:
+        stock_tag = f"【{stock_label}({ticker})】"
+    elif ticker:
+        stock_tag = f"【{ticker}】"
+    else:
+        stock_tag = ""
+
+    rule_lines = [
+        "次の投資日記の本文から、内容が一目で分かる簡潔な日本語のタイトルを1つだけ作ってください。",
+        "・25文字以内。タイトルの文字列だけを返す（前置き・説明は不要）。",
+    ]
+    if stock_tag:
+        rule_lines.append(
+            f"・**必須**: タイトルの先頭に必ず `{stock_tag}` を付ける。"
+            "この銘柄ラベルは省略・改変せずそのまま含めること。"
+        )
+        rule_lines.append(
+            "・銘柄ラベルの後に半角スペースを1つ入れ、続けて本文の要約（15文字以内目安）を書く。"
+        )
+    else:
+        rule_lines.append("・銘柄情報がない場合は内容の要約のみを書く。")
+
     prompt = (
-        "次の投資日記の本文から、内容が一目で分かる簡潔な日本語のタイトルを1つだけ作ってください。\n"
-        "・20文字以内。記号や鉤括弧、前置き・説明は付けず、タイトルの文字列だけを返す。\n"
-        f"【メタ情報】{meta_str}\n"
-        f"【本文】\n{content[:2000]}"
+        "\n".join(rule_lines)
+        + f"\n【メタ情報】{meta_str}\n"
+        + f"【本文】\n{content[:2000]}"
     )
     try:
         from services.gemini_model_resolver import resolve_gemini_model as _rgm
