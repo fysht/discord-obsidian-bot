@@ -1501,12 +1501,12 @@ window.loadManagerNotices = async () => {
             const body = renderDailyMarkdown ? renderDailyMarkdown(it.body || '') : escapeHtml(it.body || '');
             const unreadCls = it.is_read ? '' : ' notice-unread';
             const readBtn = it.is_read
-                ? `<button class="notice-action-btn" title="未読に戻す" onclick="event.stopPropagation();setNoticeRead(${it.id}, false)">◯ 未読</button>`
-                : `<button class="notice-action-btn primary" title="既読にする" onclick="event.stopPropagation();setNoticeRead(${it.id}, true)">✓ 既読</button>`;
-            return `<details class="notice-item${unreadCls}" data-id="${it.id}" ontoggle="if(this.open && !${it.is_read?1:0}) setNoticeRead(${it.id}, true)">
+                ? `<button class="notice-action-btn" title="未読に戻す" data-notice-action="unread">◯ 未読</button>`
+                : `<button class="notice-action-btn primary" title="既読にする" data-notice-action="read">✓ 既読</button>`;
+            return `<details class="notice-item${unreadCls}" data-id="${it.id}" data-is-read="${it.is_read ? '1' : '0'}">
                 <summary>
                     <span class="notice-summary-row">
-                        <input type="checkbox" class="notice-select-cb" value="${it.id}" title="選択" onclick="event.stopPropagation();updateNoticeBulkBtn();" style="margin-right:6px;flex:none;">
+                        <input type="checkbox" class="notice-select-cb" value="${it.id}" title="選択" data-notice-action="select-cb" style="margin-right:6px;flex:none;">
                         ${it.is_read ? '' : '<span class="notice-dot" title="未読"></span>'}
                         <span class="notice-icon">${meta.icon}</span>
                         <div class="notice-summary-text">
@@ -1518,15 +1518,56 @@ window.loadManagerNotices = async () => {
                 <div class="notice-body diary-content">${body}</div>
                 <div class="notice-actions">
                     ${readBtn}
-                    <button class="notice-action-btn danger" title="削除" onclick="event.stopPropagation();deleteNotice(${it.id})">🗑 削除</button>
+                    <button class="notice-action-btn danger" title="削除" data-notice-action="delete">🗑 削除</button>
                 </div>
             </details>`;
         }).join('');
+        _bindNoticeDelegation(el);
         updateNoticeBulkBtn();
     } catch (e) {
+        console.error('loadManagerNotices failed', e);
         el.innerHTML = '<div class="loading-placeholder">通知ログの取得に失敗しました。</div>';
     }
 };
+
+/**
+ * F-5: マネージャー通知ログのイベント委譲（click + toggle 両対応）。
+ * onclick / ontoggle インライン属性を撤廃。
+ */
+function _bindNoticeDelegation(container) {
+    if (!container || container._noticeDelegationBound) return;
+    container._noticeDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-notice-action]');
+        if (!el || !container.contains(el)) return;
+        const itemEl = el.closest('.notice-item');
+        const id = itemEl?.dataset?.id;
+        if (!id) return;
+        const action = el.dataset.noticeAction;
+        if (action === 'select-cb') {
+            e.stopPropagation();
+            window.updateNoticeBulkBtn();
+            return;
+        }
+        e.stopPropagation();
+        const nid = parseInt(id, 10);
+        if (action === 'read') window.setNoticeRead(nid, true);
+        else if (action === 'unread') window.setNoticeRead(nid, false);
+        else if (action === 'delete') window.deleteNotice(nid);
+    });
+    // <details> の open 切替を捕捉して、未読なら自動で既読化
+    container.addEventListener('toggle', (e) => {
+        const d = e.target;
+        if (!d || d.tagName !== 'DETAILS' || !d.classList.contains('notice-item')) return;
+        if (d.open && d.dataset.isRead === '0') {
+            const nid = parseInt(d.dataset.id, 10);
+            if (!isNaN(nid)) {
+                window.setNoticeRead(nid, true);
+                d.dataset.isRead = '1';
+            }
+        }
+    }, true);
+}
 
 // 選択中の通知件数に応じて「選択削除」ボタンの表示を更新する
 window.updateNoticeBulkBtn = () => {
@@ -1622,32 +1663,59 @@ function renderTaskGroup(container, tasks, listName) {
         }
     }
 
+    // F-3 委譲化: title/due は dataset で持ち、ハンドラは container 側で 1 つ
     container.innerHTML = [
         ...orderedActive.map(t => {
             const dueLabel = t.due ? _formatDueLabel(t.due) : '';
             const dueAttr = t.due ? t.due.slice(0, 10) : '';
             const indent = t._depth ? 'margin-left:24px;' : '';
             const childMark = t._depth ? '<span style="color:var(--text-muted);margin-right:2px;">└</span>' : '';
+            const titleAttr = escapeHtml(t.title);
             return `
-            <div class="list-item gtask-item" style="gap:6px;${indent}" id="gtask-item-${t.id}" data-task-id="${t.id}" data-list="${listName}" data-parent="${t.parent || ''}">
+            <div class="list-item gtask-item" style="gap:6px;${indent}" id="gtask-item-${t.id}" data-task-id="${t.id}" data-list="${listName}" data-parent="${t.parent || ''}" data-title="${titleAttr}" data-due="${dueAttr}" data-completed="0">
                 <span class="gtask-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:12px 10px;margin-left:-8px;user-select:none;" title="長押しして並び替え">⠿</span>
                 ${childMark}
-                <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}', false)" style="cursor:pointer;"></div>
-                <div class="li-text" style="flex:1;">${escapeHtml(t.title)}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
-                <button class="task-due-btn" onclick="openTaskDueEditor('${t.id}', '${listName}', '${escapeHtml(t.title).replace(/'/g, '&#39;')}', '${dueAttr}')" title="締切を編集">📅</button>
-                <button class="mini-link btn-danger" onclick="deleteGoogleTask('${t.id}', '${listName}', '${escapeHtml(t.title).replace(/'/g, '&#39;')}')" title="削除">🗑 削除</button>
+                <div class="checkbox-custom" data-gt-action="toggle" style="cursor:pointer;"></div>
+                <div class="li-text" style="flex:1;">${titleAttr}${dueLabel ? `<span class="task-due-chip">${escapeHtml(dueLabel)}</span>` : ''}</div>
+                <button class="task-due-btn" data-gt-action="due" title="締切を編集">📅</button>
+                <button class="mini-link btn-danger" data-gt-action="delete" title="削除">🗑 削除</button>
             </div>`;
         }),
         ...doneTasks.map(t => `
-            <div class="list-item" style="gap:6px; opacity:0.5;" id="gtask-item-${t.id}">
-                <div class="checkbox-custom" onclick="toggleGoogleTask('${t.id}', '${listName}', true)" style="background:var(--accent); border-color:var(--accent); cursor:pointer; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;" title="未完了に戻す">✓</div>
+            <div class="list-item gtask-item" style="gap:6px; opacity:0.5;" id="gtask-item-${t.id}" data-task-id="${t.id}" data-list="${listName}" data-title="${escapeHtml(t.title)}" data-completed="1">
+                <div class="checkbox-custom" data-gt-action="toggle" style="background:var(--accent); border-color:var(--accent); cursor:pointer; display:flex; align-items:center; justify-content:center; color:#fff; font-size:0.7rem;" title="未完了に戻す">✓</div>
                 <div class="li-text" style="flex:1; text-decoration:line-through; color:var(--text-muted);">${escapeHtml(t.title)}</div>
             </div>
         `)
     ].join('');
 
-    // SortableJS でモバイル対応の並び替えを設定
     initTaskSortable(container, listName);
+    _bindTaskDelegation(container);
+}
+
+/**
+ * F-3: タスクカードのイベント委譲。
+ * data-gt-action="toggle|due|delete" を持つ要素のクリックを 1 listener で受ける。
+ * 引数 (task_id, list, title, due) は item の dataset から取り出す。
+ */
+function _bindTaskDelegation(container) {
+    if (!container || container._gtDelegationBound) return;
+    container._gtDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-gt-action]');
+        if (!el || !container.contains(el)) return;
+        const itemEl = el.closest('.gtask-item');
+        if (!itemEl) return;
+        const taskId = itemEl.dataset.taskId;
+        const listName = itemEl.dataset.list;
+        const title = itemEl.dataset.title || '';
+        const due = itemEl.dataset.due || '';
+        const completed = itemEl.dataset.completed === '1';
+        const action = el.dataset.gtAction;
+        if (action === 'toggle') window.toggleGoogleTask(taskId, listName, completed);
+        else if (action === 'due') window.openTaskDueEditor(taskId, listName, title, due);
+        else if (action === 'delete') window.deleteGoogleTask(taskId, listName, title);
+    });
 }
 
 function initHabitSortable(container) {
@@ -3642,17 +3710,18 @@ window.loadStockedLinks = async () => {
                     ? `<div class="study-memo-block">${renderStudyMemo(lk.notes)}</div>`
                     : '';
                 return `
-                    <div class="stocked-link" id="stocked-link-${lk.id}">
+                    <div class="stocked-link" data-link-id="${lk.id}" id="stocked-link-${lk.id}">
                         ${titleEl}
                         <div class="stocked-link-meta">${chips.join('')}</div>
                         ${memoBlock}
                         <div class="stocked-link-actions">
-                            <button class="stocked-link-btn edit" onclick="openLinkDetailsModal(window._stockedLinksById[${lk.id}])">編集</button>
-                            <button class="stocked-link-btn danger" onclick="deleteStockedLink(${lk.id})">🗑 削除</button>
+                            <button class="stocked-link-btn edit" data-link-action="edit">編集</button>
+                            <button class="stocked-link-btn danger" data-link-action="delete">🗑 削除</button>
                         </div>
                     </div>
                 `;
             }).join('');
+            _bindStockedLinkDelegation(container);
         };
 
         renderGroup(webEl, webLinks);
@@ -4348,8 +4417,8 @@ async function loadHabits() {
 
             const trigger = (h.trigger || '').trim();
             const triggerChip = trigger
-                ? `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '${escapeHtml(trigger)}')">⏰ ${escapeHtml(trigger)}</span>`
-                : `<button class="habit-trigger-add" title="いつやるかを設定" onclick="event.stopPropagation(); openHabitTriggerModal('${escapeHtml(h.name)}', '')">＋いつ</button>`;
+                ? `<span class="habit-trigger-chip" title="クリックで変更" data-habit-action="trigger" data-trigger="${escapeHtml(trigger)}">⏰ ${escapeHtml(trigger)}</span>`
+                : `<button class="habit-trigger-add" title="いつやるかを設定" data-habit-action="trigger" data-trigger="">＋いつ</button>`;
 
             const weekdays = Array.isArray(h.weekdays) ? h.weekdays : [];
             const dowLabels = ['月','火','水','木','金','土','日'];
@@ -4357,8 +4426,8 @@ async function loadHabits() {
             window._habitWeekdaysByName = window._habitWeekdaysByName || {};
             window._habitWeekdaysByName[h.name] = weekdays.slice();
             const wdChip = weekdays.length === 0 || weekdays.length === 7
-                ? `<button class="habit-trigger-add" title="曜日を指定" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}')">📅 毎日</button>`
-                : `<span class="habit-trigger-chip" title="クリックで変更" onclick="event.stopPropagation(); openHabitWeekdaysModal('${escapeHtml(h.name)}')">📅 ${weekdays.map(d => dowLabels[d]).join('・')}</span>`;
+                ? `<button class="habit-trigger-add" title="曜日を指定" data-habit-action="weekdays">📅 毎日</button>`
+                : `<span class="habit-trigger-chip" title="クリックで変更" data-habit-action="weekdays">📅 ${weekdays.map(d => dowLabels[d]).join('・')}</span>`;
 
             let freqChip = '';
             if (freq > 1) {
@@ -4371,20 +4440,21 @@ async function loadHabits() {
 
             const dimmed = !dueToday && !isDone;
             return `
-                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}" data-task-id="${h.task_id || ''}" data-name="${escapeHtml(h.name)}" style="${dimmed ? 'opacity:0.45;' : ''}">
+                <div class="habit-item ${isDone ? 'done' : ''}" id="habit-item-${h.id}" data-task-id="${h.task_id || ''}" data-habit-id="${h.id}" data-name="${escapeHtml(h.name)}" data-done="${isDone ? '1' : '0'}" style="${dimmed ? 'opacity:0.45;' : ''}">
                     <span class="habit-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:12px 10px;margin-left:-8px;user-select:none;" title="長押しして並び替え">⠿</span>
-                    <button class="habit-check-btn" onclick="${isDone ? `uncompleteHabit('${h.name}', '${h.id}')` : `completeHabit('${h.name}', '${h.id}')`}" ${!isDone && !dueToday ? 'disabled' : ''} style="${isDone ? 'opacity:0.8;' : ''}">✔</button>
+                    <button class="habit-check-btn" data-habit-action="toggle" ${!isDone && !dueToday ? 'disabled' : ''} style="${isDone ? 'opacity:0.8;' : ''}">✔</button>
                     <div class="habit-name-wrap" style="flex:1; display:flex; flex-direction:column; gap:2px; min-width:0;">
                         <div class="habit-name">${escapeHtml(h.name)}${freqChip ? ' ' + freqChip : ''}</div>
                         <div class="habit-trigger-row" style="display:flex;gap:6px;flex-wrap:wrap;">${triggerChip}${wdChip}</div>
                     </div>
                     ${streakBadge}
-                    <button class="mini-link btn-danger" onclick="deleteHabit('${h.name.replace(/'/g, "\\'")}')" title="削除">🗑 削除</button>
+                    <button class="mini-link btn-danger" data-habit-action="delete" title="削除">🗑 削除</button>
                 </div>
             `;
         }).join('');
 
         initHabitSortable(container);
+        _bindHabitDelegation(container);
 
         // 全完了チェック（初期ロード時は発火しない）
         const isInitialLoad = (window._prevHabitDoneCount === undefined);
@@ -5294,21 +5364,42 @@ async function loadEnglishPhrases() {
         }
         el.innerHTML = data.phrases.map(p => {
             const date = new Date(p.created_at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric' });
-            const safePhraseAttr = escapeHtml(p.phrase).replace(/'/g, "&#39;");
             return `
-            <div class="phrase-item" style="display:flex;align-items:flex-start;gap:8px;padding:10px 18px;border-bottom:1px solid rgba(255,255,255,0.04);">
+            <div class="phrase-item" data-phrase-id="${p.id}" data-phrase-text="${escapeHtml(p.phrase)}" style="display:flex;align-items:flex-start;gap:8px;padding:10px 18px;border-bottom:1px solid rgba(255,255,255,0.04);">
                 <div style="flex:1;min-width:0;">
                     <div style="font-size:0.9rem;font-weight:600;color:var(--text-primary);line-height:1.4;">${escapeHtml(p.phrase)}</div>
                     ${p.translation ? `<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:2px;">${escapeHtml(p.translation)}</div>` : ''}
                     <div style="font-size:0.72rem;color:var(--text-muted);margin-top:3px;">${date}</div>
                 </div>
-                <button onclick="speakText('${safePhraseAttr}')" style="background:none;border:none;cursor:pointer;font-size:1rem;opacity:0.75;padding:4px;flex-shrink:0;" title="読み上げ">🔊</button>
-                <button onclick="deleteEnglishPhrase(${p.id})" style="background:none;border:none;cursor:pointer;font-size:0.85rem;opacity:0.45;padding:4px;flex-shrink:0;color:var(--danger);" title="削除">🗑</button>
+                <button data-phrase-action="speak" style="background:none;border:none;cursor:pointer;font-size:1rem;opacity:0.75;padding:4px;flex-shrink:0;" title="読み上げ">🔊</button>
+                <button data-phrase-action="delete" style="background:none;border:none;cursor:pointer;font-size:0.85rem;opacity:0.45;padding:4px;flex-shrink:0;color:var(--danger);" title="削除">🗑</button>
             </div>`;
         }).join('');
-    } catch {
+        _bindPhraseDelegation(el);
+    } catch (e) {
+        console.error('loadEnglishPhrases failed', e);
         el.innerHTML = '<div class="loading-placeholder">フレーズ帳の読み込みに失敗しました</div>';
     }
+}
+
+/**
+ * F-10: 英語フレーズリストのイベント委譲。
+ */
+function _bindPhraseDelegation(container) {
+    if (!container || container._phraseDelegationBound) return;
+    container._phraseDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-phrase-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('.phrase-item');
+        if (!row) return;
+        const id = parseInt(row.dataset.phraseId, 10);
+        const text = row.dataset.phraseText || '';
+        const action = el.dataset.phraseAction;
+        e.stopPropagation();
+        if (action === 'speak') window.speakText(text);
+        else if (action === 'delete') deleteEnglishPhrase(id);
+    });
 }
 
 async function deleteEnglishPhrase(id) {
@@ -5581,7 +5672,7 @@ window.loadMeals = async () => {
             const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
             const adviceHtml = m.advice ? `<div style="font-size:0.74rem;color:var(--accent);margin-top:2px;">💬 ${escapeHtml(m.advice)}</div>` : '';
             return `
-                <div class="invest-row" style="cursor:default;">
+                <div class="invest-row meal-row" data-meal-id="${m.id}" style="cursor:default;">
                     <div class="row-main" style="flex:1;">
                         <div class="row-title">${escapeHtml(m.time)} ${escapeHtml(m.name)}</div>
                         <div class="row-sub" style="font-size:0.78rem;color:var(--text-secondary);">
@@ -5590,16 +5681,60 @@ window.loadMeals = async () => {
                         ${memoHtml}${adviceHtml}
                     </div>
                     <div class="row-actions" style="display:flex;gap:6px;">
-                        <button class="mini-link" onclick="openMealManualModal(${m.id})">編集</button>
-                        <button class="mini-link btn-danger" onclick="deleteMeal(${m.id})">🗑 削除</button>
+                        <button class="mini-link" data-meal-action="edit">編集</button>
+                        <button class="mini-link btn-danger" data-meal-action="delete">🗑 削除</button>
                     </div>
                 </div>
             `;
         }).join('');
-    } catch {
+        _bindMealDelegation(listEl);
+    } catch (e) {
+        console.error('loadMeals failed', e);
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
 };
+
+/**
+ * F-8: 食事ログのイベント委譲。data-meal-action="edit|delete"。
+ */
+function _bindMealDelegation(container) {
+    if (!container || container._mealDelegationBound) return;
+    container._mealDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-meal-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('.meal-row');
+        const mid = parseInt(row?.dataset?.mealId, 10);
+        if (isNaN(mid)) return;
+        e.stopPropagation();
+        const action = el.dataset.mealAction;
+        if (action === 'edit') window.openMealManualModal(mid);
+        else if (action === 'delete') window.deleteMeal(mid);
+    });
+}
+
+/**
+ * F-9: 出費のイベント委譲。data-exp-action="receipt|edit|delete"。
+ */
+function _bindExpenseDelegation(container) {
+    if (!container || container._expDelegationBound) return;
+    container._expDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-exp-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('.expense-row');
+        const eid = parseInt(row?.dataset?.expenseId, 10);
+        if (isNaN(eid)) return;
+        e.stopPropagation();
+        const action = el.dataset.expAction;
+        if (action === 'edit') window.openExpenseManualModal(eid);
+        else if (action === 'delete') window.deleteExpense(eid);
+        else if (action === 'receipt') {
+            const rid = row.dataset.receiptId;
+            if (rid) window.viewReceipt(rid);
+        }
+    });
+}
 
 // 写真撮影 → Vision で解析 → 編集モーダル
 window.openMealCaptureModal = () => {
@@ -5911,21 +6046,22 @@ window.loadGmailInbox = async (state = 'pending') => {
             const received = m.received_at ? escapeHtml(m.received_at.replace('T', ' ').slice(5, 16)) : '';
             const idAttr = escapeHtml(m.id);
             const threadAttr = escapeHtml(m.thread_id || '');
+            const savedDriveId = escapeHtml(m.saved_drive_id || '');
             const savedBadge = m.saved_drive_id
                 ? '<span style="background:rgba(0,186,152,0.18);color:var(--accent);font-size:0.7rem;padding:1px 6px;border-radius:8px;margin-left:6px;">📌 保存済み</span>'
                 : '';
             const saveBtn = m.saved_drive_id
-                ? `<button class="mini-link" onclick="openSavedEmail('${escapeHtml(m.saved_drive_id)}')" title="保存先を開く" style="color:var(--accent);">📂 保存先</button>`
-                : `<button class="mini-link" onclick="saveGmailToObsidian('${idAttr}')" title="重要メールとして保存">📌 保存</button>`;
+                ? `<button class="mini-link" data-gmail-action="open-saved" title="保存先を開く" style="color:var(--accent);">📂 保存先</button>`
+                : `<button class="mini-link" data-gmail-action="save" title="重要メールとして保存">📌 保存</button>`;
             const actions = currentGmailState === 'pending'
                 ? `
                     ${saveBtn}
-                    <button class="mini-link" onclick="markGmailRead('${idAttr}')" title="既読 / アーカイブ">📥 アーカイブ</button>
-                    <button class="mini-link btn-danger" onclick="trashGmail('${idAttr}')" title="ゴミ箱へ">🗑 ゴミ箱</button>
+                    <button class="mini-link" data-gmail-action="archive" title="既読 / アーカイブ">📥 アーカイブ</button>
+                    <button class="mini-link btn-danger" data-gmail-action="trash" title="ゴミ箱へ">🗑 ゴミ箱</button>
                 `
                 : `${saveBtn}`;
             return `
-                <div class="invest-row" style="cursor:default;align-items:flex-start;">
+                <div class="invest-row gmail-row" data-id="${idAttr}" data-thread="${threadAttr}" data-saved-drive="${savedDriveId}" style="cursor:default;align-items:flex-start;">
                     <div class="row-main" style="flex:1;min-width:0;">
                         <div class="row-title" style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">
                             <span style="font-size:0.74rem;color:${importanceColor};font-weight:600;flex-shrink:0;">${importanceLabel}</span>
@@ -5941,15 +6077,42 @@ window.loadGmailInbox = async (state = 'pending') => {
                     </div>
                     <div class="row-actions" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
                         ${actions}
-                        <button class="mini-link" onclick="openGmail('${idAttr}', '${threadAttr}')" title="Gmail で開く">↗ Gmail</button>
+                        <button class="mini-link" data-gmail-action="open-gmail" title="Gmail で開く">↗ Gmail</button>
                     </div>
                 </div>
             `;
         }).join('');
-    } catch {
+        _bindGmailDelegation(listEl);
+    } catch (e) {
+        console.error('loadGmailInbox failed', e);
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
 };
+
+/**
+ * F-7: Gmail インボックスのイベント委譲。
+ * data-gmail-action="save|open-saved|archive|trash|open-gmail" を 1 listener で。
+ */
+function _bindGmailDelegation(container) {
+    if (!container || container._gmailDelegationBound) return;
+    container._gmailDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-gmail-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('.gmail-row');
+        const id = row?.dataset?.id;
+        if (!id) return;
+        const thread = row.dataset.thread || '';
+        const savedDriveId = row.dataset.savedDrive || '';
+        const action = el.dataset.gmailAction;
+        e.stopPropagation();
+        if (action === 'save') window.saveGmailToObsidian(id);
+        else if (action === 'open-saved' && savedDriveId) window.openSavedEmail(savedDriveId);
+        else if (action === 'archive') window.markGmailRead(id);
+        else if (action === 'trash') window.trashGmail(id);
+        else if (action === 'open-gmail') window.openGmail(id, thread);
+    });
+}
 
 window.refreshGmailServer = async () => {
     showToast('📥 Gmail を再ポーリング中…');
@@ -6083,18 +6246,19 @@ window.loadExpenses = async (year = null, month = null) => {
         }
 
         listEl.innerHTML = expenses.map(e => {
-            const bigBadge = e.is_large ? '<span style="background:rgba(255,107,107,0.15);color:#ff6b6b;font-size:0.7rem;padding:1px 6px;border-radius:8px;margin-left:6px;">大きな支出</span>' : '';
+            const bigBadge = e.is_large ? '<span style="background:rgba(255,107,107,0.15);color:var(--danger);font-size:0.7rem;padding:1px 6px;border-radius:8px;margin-left:6px;">大きな支出</span>' : '';
             const memoSafe = escapeHtml(e.memo || '');
             const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
             const breakdownHtml = e.breakdown
                 ? `<details style="margin-top:2px;"><summary style="font-size:0.74rem;color:var(--text-muted);cursor:pointer;">内訳</summary><div style="font-size:0.74rem;color:var(--text-muted);white-space:pre-wrap;margin-top:2px;">${escapeHtml(e.breakdown)}</div></details>`
                 : '';
             const pmSafe = e.payment_method ? escapeHtml(e.payment_method) : '';
+            const receiptId = escapeHtml(e.receipt_drive_id || '');
             const receiptBtn = e.receipt_drive_id
-                ? `<button class="mini-link" onclick="viewReceipt('${escapeHtml(e.receipt_drive_id)}')" title="レシート表示">📷</button>`
+                ? `<button class="mini-link" data-exp-action="receipt" title="レシート表示">📷</button>`
                 : '';
             return `
-                <div class="invest-row" style="cursor:default;">
+                <div class="invest-row expense-row" data-expense-id="${e.id}" data-receipt-id="${receiptId}" style="cursor:default;">
                     <div class="row-main" style="flex:1;">
                         <div class="row-title">
                             ¥${e.amount.toLocaleString()} ${escapeHtml(e.vendor || e.category)}${bigBadge}
@@ -6107,13 +6271,15 @@ window.loadExpenses = async (year = null, month = null) => {
                     </div>
                     <div class="row-actions" style="display:flex;gap:6px;">
                         ${receiptBtn}
-                        <button class="mini-link" onclick="openExpenseManualModal(${e.id})">編集</button>
-                        <button class="mini-link btn-danger" onclick="deleteExpense(${e.id})">🗑 削除</button>
+                        <button class="mini-link" data-exp-action="edit">編集</button>
+                        <button class="mini-link btn-danger" data-exp-action="delete">🗑 削除</button>
                     </div>
                 </div>
             `;
         }).join('');
-    } catch {
+        _bindExpenseDelegation(listEl);
+    } catch (e) {
+        console.error('loadExpenses failed', e);
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
 };
@@ -6921,19 +7087,39 @@ function renderDrumRoadmap(data, linksMap) {
     }
     if (!html) html = '<div class="study-empty">ロードマップが空です</div>';
     container.innerHTML = html;
+    _bindDrumRoadmapDelegation(container);
 }
 
 function renderDrumRoadmapVideo(v) {
     const linkId = v.link_id;
-    return `<div class="drum-video-row">
+    return `<div class="drum-video-row" data-drum-link-id="${linkId}">
         <a href="${escapeHtml(v.url || '')}" target="_blank" rel="noopener">
             <img loading="lazy" src="${escapeHtml(v.thumbnail || '')}" alt="">
         </a>
         <div class="drum-video-meta">
             <div class="drum-video-title">${escapeHtml(v.title || v.url || '')}</div>
         </div>
-        <button class="mini-link btn-danger" style="flex-shrink:0;" onclick="deleteDrumRoadmapLink(${linkId})">🗑 削除</button>
+        <button class="mini-link btn-danger" style="flex-shrink:0;" data-drum-action="delete">🗑 削除</button>
     </div>`;
+}
+
+/**
+ * F-12: ドラム ロードマップ動画のイベント委譲。
+ * 親コンテナ #dash-drum-roadmap は再描画されるので、init を呼ぶ場所が動画追加直後ではなく
+ * renderDrumRoadmap 内に置く。
+ */
+function _bindDrumRoadmapDelegation(container) {
+    if (!container || container._drumDelegationBound) return;
+    container._drumDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-drum-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('[data-drum-link-id]');
+        const lid = parseInt(row?.dataset?.drumLinkId, 10);
+        if (isNaN(lid)) return;
+        e.stopPropagation();
+        if (el.dataset.drumAction === 'delete') window.deleteDrumRoadmapLink(lid);
+    });
 }
 
 window.addDrumRoadmapLink = async (milestoneId, inputId) => {
@@ -9753,32 +9939,151 @@ window.loadWatchlist = async () => {
             const memoBlock = memo
                 ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin:4px 0 6px;white-space:pre-wrap;">📝 ${escapeHtml(memo)}</div>`
                 : '';
-            return `<div class="watchlist-item invest-row" data-code="${escapeHtml(it.code)}" style="align-items:flex-start;flex-wrap:wrap;${isLast ? 'border-bottom:none;' : ''}">
+            // F-1 パイロット: onclick="..." を data-wl-action="..." に置換し、
+            // コンテナ側で1つの click listener から委譲（CSP対応・bug耐性向上）
+            const code = escapeHtml(it.code);
+            return `<div class="watchlist-item invest-row" data-code="${code}" style="align-items:flex-start;flex-wrap:wrap;${isLast ? 'border-bottom:none;' : ''}">
                 <span class="watchlist-handle" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:0 10px 0 0;user-select:none;" title="長押しして並び替え">⠿</span>
                 <div class="row-main">
                     <div class="row-title" style="display:flex;justify-content:space-between;gap:8px;">
-                        <span>${escapeHtml(it.code)} ${escapeHtml(it.name || '')}</span>
+                        <span>${code} ${escapeHtml(it.name || '')}</span>
                         <span style="font-size:0.72rem;color:var(--text-muted);font-weight:400;">${escapeHtml(it.sector || '')}</span>
                     </div>
                     ${it.source ? `<div class="row-meta">出典: ${escapeHtml(it.source)}</div>` : ''}
                     ${memoBlock}
                     <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;">
-                        <button class="mini-link" style="font-size:0.72rem;" onclick="openTickerHubModal('${codeJs}')">📒 まとめ</button>
-                        <button class="mini-link" style="font-size:0.72rem;" onclick="openWatchlistMemoModal('${codeJs}')">📝 メモ編集</button>
-                        <button class="mini-link" style="font-size:0.72rem;" onclick="runSnapshotForTicker('${codeJs}')">📷 スナップ</button>
-                        <button class="mini-link" style="font-size:0.72rem;" onclick="runAuditForTicker('${codeJs}')">🎯 審査</button>
-                        <button class="mini-link" style="font-size:0.72rem;" onclick="runPeerComparisonForTicker('${codeJs}')">🔬 同業</button>
-                        <button class="mini-link" style="font-size:0.72rem;" onclick="runNewsSentimentForTicker('${codeJs}')">📰 ニュース</button>
-                        <button class="mini-link btn-danger" style="font-size:0.72rem;margin-left:auto;" onclick="removeFromWatchlist('${codeJs}')">🗑 削除</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="hub">📒 まとめ</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="memo">📝 メモ編集</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="snapshot">📷 スナップ</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="audit">🎯 審査</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="peer">🔬 同業</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="news">📰 ニュース</button>
+                        <button class="mini-link btn-danger" style="font-size:0.72rem;margin-left:auto;" data-wl-action="delete">🗑 削除</button>
                     </div>
                 </div>
             </div>`;
         }).join('');
         initWatchlistSortable(el);
+        _bindWatchlistDelegation(el);
     } catch (e) {
+        console.error('loadWatchlist failed', e);
         el.innerHTML = `<div class="loading-placeholder">通信エラー: ${escapeHtml(e.message || e)}</div>`;
     }
 };
+
+/**
+ * F-11: ストックリンクのイベント委譲。data-link-action="edit|delete"。
+ */
+function _bindStockedLinkDelegation(container) {
+    if (!container || container._stockedLinkDelegationBound) return;
+    container._stockedLinkDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-link-action]');
+        if (!el || !container.contains(el)) return;
+        const row = el.closest('.stocked-link');
+        const lid = parseInt(row?.dataset?.linkId, 10);
+        if (isNaN(lid)) return;
+        e.stopPropagation();
+        const action = el.dataset.linkAction;
+        if (action === 'edit') {
+            const lk = (window._stockedLinksById || {})[lid];
+            if (lk) window.openLinkDetailsModal(lk);
+        } else if (action === 'delete') {
+            window.deleteStockedLink(lid);
+        }
+    });
+}
+
+/**
+ * F-4: 習慣カードのイベント委譲。
+ * data-habit-action="toggle|delete|trigger|weekdays" を 1 listener で処理。
+ */
+function _bindHabitDelegation(container) {
+    if (!container || container._habitDelegationBound) return;
+    container._habitDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-habit-action]');
+        if (!el || !container.contains(el)) return;
+        const itemEl = el.closest('.habit-item');
+        if (!itemEl) return;
+        const name = itemEl.dataset.name || '';
+        const habitId = itemEl.dataset.habitId || '';
+        const isDone = itemEl.dataset.done === '1';
+        const action = el.dataset.habitAction;
+        e.stopPropagation();
+        if (action === 'toggle') {
+            if (isDone) window.uncompleteHabit(name, habitId);
+            else window.completeHabit(name, habitId);
+        } else if (action === 'delete') {
+            window.deleteHabit(name);
+        } else if (action === 'trigger') {
+            const trig = el.dataset.trigger || '';
+            window.openHabitTriggerModal(name, trig);
+        } else if (action === 'weekdays') {
+            window.openHabitWeekdaysModal(name);
+        }
+    });
+}
+
+/**
+ * F-1: 保有銘柄カードのイベント委譲。
+ * data-pf-action 属性で行/ボタンのアクションを記述し、コンテナ1つの listener で受ける。
+ * 'nop' はアクションなし（ドラッグハンドル等で行クリックを抑止するため）。
+ */
+function _bindPortfolioDelegation(container) {
+    if (!container || container._pfDelegationBound) return;
+    container._pfDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-pf-action]');
+        if (!el || !container.contains(el)) return;
+        const itemEl = el.closest('.portfolio-item');
+        const code = itemEl?.dataset?.code;
+        if (!code) return;
+        const action = el.dataset.pfAction;
+        if (action === 'nop') { e.stopPropagation(); return; }
+        // 行全体クリックと、行内のボタンクリックを分けて扱う
+        const handler = {
+            open: () => window.openHoldingActionModal(code),
+            hub: () => window.openTickerHubModal(code),
+        }[action];
+        if (typeof handler === 'function') {
+            e.stopPropagation();
+            handler();
+        }
+    });
+}
+
+/**
+ * F-1: 注目銘柄カードのイベント委譲。
+ * data-wl-action="..." を持つボタン (`.watchlist-item` 配下) のクリックを
+ * コンテナ1つの listener で受ける。コンテナごとに 1度だけ bind する。
+ * 利点: onclick="..." HTML埋め込み廃止、CSP厳格化に対応、動的描画の安全性向上。
+ */
+function _bindWatchlistDelegation(container) {
+    if (!container || container._wlDelegationBound) return;
+    container._wlDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-wl-action]');
+        if (!btn || !container.contains(btn)) return;
+        const itemEl = btn.closest('.watchlist-item');
+        const code = itemEl?.dataset?.code;
+        if (!code) return;
+        const action = btn.dataset.wlAction;
+        const handler = {
+            hub: () => window.openTickerHubModal(code),
+            memo: () => window.openWatchlistMemoModal(code),
+            snapshot: () => window.runSnapshotForTicker(code),
+            audit: () => window.runAuditForTicker(code),
+            peer: () => window.runPeerComparisonForTicker(code),
+            news: () => window.runNewsSentimentForTicker(code),
+            delete: () => window.removeFromWatchlist(code),
+        }[action];
+        if (typeof handler === 'function') {
+            e.stopPropagation();
+            handler();
+        }
+    });
+}
 
 window.removeFromWatchlist = async (code) => {
     if (!await confirmDialog(`${code} を注目銘柄から削除しますか?`)) return;
@@ -10115,7 +10420,6 @@ window.loadPortfolio = async () => {
         }
         listEl.innerHTML = holdings.map(h => {
             const ticker = escapeHtml(h.code || '?');
-            const tickerJs = (h.code || '').replace(/'/g, '&#39;');
             const name = escapeHtml(h.name || ticker);
             const sector = escapeHtml(h.sector || '');
             const shares = h.shares || 0;
@@ -10127,20 +10431,22 @@ window.loadPortfolio = async () => {
             const memoBlock = memo
                 ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;white-space:pre-wrap;">📝 ${escapeHtml(memo)}</div>`
                 : '';
-            return `<div class="invest-row" data-code="${ticker.replace(/"/g, '&quot;')}" style="cursor:pointer;flex-wrap:wrap;" onclick="openHoldingActionModal('${tickerJs}')">
-                <span class="portfolio-handle" onclick="event.stopPropagation();" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:10px 10px 10px 0;user-select:none;" title="長押しして並び替え">⠿</span>
+            // F-1 委譲化: onclick を撤廃し data-pf-action で記述
+            return `<div class="invest-row portfolio-item" data-code="${ticker.replace(/"/g, '&quot;')}" data-pf-action="open" style="cursor:pointer;flex-wrap:wrap;">
+                <span class="portfolio-handle" data-pf-action="nop" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:10px 10px 10px 0;user-select:none;" title="長押しして並び替え">⠿</span>
                 <div class="row-main">
                     <div class="row-title">${name} (${ticker})</div>
                     <div class="row-meta">${meta}</div>
                     ${memoBlock}
                 </div>
                 <div class="row-actions" style="display:flex;gap:4px;flex-wrap:wrap;">
-                    <button class="mini-link" style="font-size:0.72rem;" onclick="event.stopPropagation();openTickerHubModal('${tickerJs}')" title="メモと日記をまとめて見る">📒 まとめ</button>
-                    <button onclick="event.stopPropagation(); openHoldingActionModal('${tickerJs}')">▾ 操作</button>
+                    <button class="mini-link" style="font-size:0.72rem;" data-pf-action="hub" title="メモと日記をまとめて見る">📒 まとめ</button>
+                    <button data-pf-action="open">▾ 操作</button>
                 </div>
             </div>`;
         }).join('');
         initPortfolioSortable(listEl);
+        _bindPortfolioDelegation(listEl);
     } catch (e) {
         listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
         _investHoldingsCache = [];
@@ -10468,6 +10774,7 @@ window.loadJournalList = async () => {
             listEl.innerHTML = '<div class="loading-placeholder">日記がまだありません。「追加」から書いてみましょう。</div>';
             return;
         }
+        // F-6 委譲化: filename/title は dataset で持ち、ハンドラは container 1つ
         listEl.innerHTML = items.map(it => {
             const title = escapeHtml(it.title || '(無題)');
             const date = escapeHtml(it.date || '');
@@ -10476,23 +10783,46 @@ window.loadJournalList = async () => {
             const action = escapeHtml(it.action || '');
             const emotion = escapeHtml(it.emotion || '');
             const meta = [date+' '+time, ticker, action, emotion].filter(Boolean).join(' / ');
-            const safeFn = (it.filename || '').replace(/'/g, "\\'");
-            const safeTitle = title.replace(/'/g, '&#39;');
-            return `<div class="invest-row" style="display:flex;align-items:flex-start;gap:6px;">
-                <div class="row-main" style="flex:1;min-width:0;cursor:pointer;" onclick="openJournalEntry('${safeFn}', '${safeTitle}')">
+            const fnAttr = escapeHtml(it.filename || '');
+            return `<div class="invest-row journal-row" data-filename="${fnAttr}" data-title="${title}" style="display:flex;align-items:flex-start;gap:6px;">
+                <div class="row-main" style="flex:1;min-width:0;cursor:pointer;" data-journal-action="open">
                     <div class="row-title">${title}</div>
                     <div class="row-meta">${meta}</div>
                 </div>
                 <div style="display:flex;gap:4px;flex-shrink:0;">
-                    <button class="mini-link" onclick="event.stopPropagation();openJournalEditModal('${safeFn}')" title="編集">編集</button>
-                    <button class="mini-link btn-danger" onclick="event.stopPropagation();deleteJournalEntry('${safeFn}')" title="削除">🗑 削除</button>
+                    <button class="mini-link" data-journal-action="edit" title="編集">編集</button>
+                    <button class="mini-link btn-danger" data-journal-action="delete" title="削除">🗑 削除</button>
                 </div>
             </div>`;
         }).join('');
+        _bindJournalDelegation(listEl);
     } catch (e) {
+        console.error('loadJournalList failed', e);
         listEl.innerHTML = `<div class="loading-placeholder">エラー: ${escapeHtml(e.message || String(e))}</div>`;
     }
 };
+
+/**
+ * F-6: 投資日記リストのイベント委譲。
+ * data-journal-action="open|edit|delete" + dataset の filename/title から処理。
+ */
+function _bindJournalDelegation(container) {
+    if (!container || container._journalDelegationBound) return;
+    container._journalDelegationBound = true;
+    container.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-journal-action]');
+        if (!el || !container.contains(el)) return;
+        const itemEl = el.closest('.journal-row');
+        const filename = itemEl?.dataset?.filename;
+        const title = itemEl?.dataset?.title || '';
+        if (!filename) return;
+        e.stopPropagation();
+        const action = el.dataset.journalAction;
+        if (action === 'open') window.openJournalEntry(filename, title);
+        else if (action === 'edit') window.openJournalEditModal(filename);
+        else if (action === 'delete') window.deleteJournalEntry(filename);
+    });
+}
 
 window.openJournalEntry = async (filename, title) => {
     if (!filename) return;
