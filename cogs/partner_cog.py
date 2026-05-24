@@ -324,14 +324,20 @@ class PartnerCog(commands.Cog):
             logging.error(f"Contextual log error: {e}")
 
     def _get_function_tools(self, enable_search: bool = False):
-        """関数呼び出しツールの一覧を返す。enable_search=True なら Gemini の
-        Google 検索 grounding ツールも併せて返す（Gemini 2.5+ は併用可能）。"""
-        tools = []
+        """ツール一覧を返す。
+        Gemini API 仕様上 `google_search` と function_declarations を同時に
+        指定すると "Please enable tool_config.include_server_side_tool_invocations"
+        エラーになるため、**排他的**に切り替える:
+        - enable_search=True  → google_search のみ（検索系の質問に特化）
+        - enable_search=False → function_declarations のみ（既存挙動）
+        """
         if enable_search:
             try:
-                tools.append(types.Tool(google_search=types.GoogleSearch()))
+                return [types.Tool(google_search=types.GoogleSearch())]
             except Exception as e:
                 logging.warning(f"google_search ツール構築失敗（model 未対応の可能性）: {e}")
+                # フォールバック: 関数呼び出しに戻す
+        tools = []
         tools.append(types.Tool(
                 function_declarations=[
                     types.FunctionDeclaration(
