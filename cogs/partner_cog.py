@@ -325,19 +325,17 @@ class PartnerCog(commands.Cog):
 
     def _get_function_tools(self, enable_search: bool = False):
         """ツール一覧を返す。
-        Gemini API 仕様上 `google_search` と function_declarations を同時に
-        指定すると "Please enable tool_config.include_server_side_tool_invocations"
-        エラーになるため、**排他的**に切り替える:
-        - enable_search=True  → google_search のみ（検索系の質問に特化）
-        - enable_search=False → function_declarations のみ（既存挙動）
+        enable_search=True なら、Google 検索と関数呼び出しの両方を返す
+        （Gemini に検索→そのデータでカレンダー登録などの連動アクションをさせるため）。
+        併用時は generate_response_for_app 側で
+        `tool_config.include_server_side_tool_invocations=True` を併せて設定する。
         """
+        tools = []
         if enable_search:
             try:
-                return [types.Tool(google_search=types.GoogleSearch())]
+                tools.append(types.Tool(google_search=types.GoogleSearch()))
             except Exception as e:
                 logging.warning(f"google_search ツール構築失敗（model 未対応の可能性）: {e}")
-                # フォールバック: 関数呼び出しに戻す
-        tools = []
         tools.append(types.Tool(
                 function_declarations=[
                     types.FunctionDeclaration(
@@ -931,20 +929,36 @@ class PartnerCog(commands.Cog):
         try:
             from services.gemini_model_resolver import resolve_gemini_model
             _m = await resolve_gemini_model("partner_chat", default_pro=True)
+
+            # 検索＋関数呼び出し併用時は include_server_side_tool_invocations が必要
+            # （Gemini API の制約）。SDK バージョン差を吸収するため try/except で構築。
+            cfg_kwargs = {
+                "system_instruction": system_prompt,
+                "tools": self._get_function_tools(enable_search=enable_search),
+            }
+            if enable_search:
+                try:
+                    cfg_kwargs["tool_config"] = types.ToolConfig(
+                        include_server_side_tool_invocations=True,
+                    )
+                except TypeError:
+                    # SDK が当該フィールドを未サポート → 検索のみのフォールバック
+                    cfg_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
+                    logging.info("SDK が include_server_side_tool_invocations 未対応のため、検索のみで実行")
+
             response = await self.gemini_client.aio.models.generate_content(
                 model=_m,
                 contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    tools=self._get_function_tools(enable_search=enable_search),
-                ),
+                config=types.GenerateContentConfig(**cfg_kwargs),
             )
 
             if response.function_calls:
                 contents.append(response.candidates[0].content)
                 f_responses = []
+                tool_result_texts: list[str] = []
                 for fc in response.function_calls:
                     res = await self._dispatch_tool_call(fc)
+                    tool_result_texts.append(str(res))
                     f_responses.append(
                         types.Part.from_function_response(
                             name=fc.name, response={"result": str(res)}
@@ -952,21 +966,39 @@ class PartnerCog(commands.Cog):
                     )
 
                 contents.append(types.Content(role="user", parts=f_responses))
+                # 二回目の生成では [ACTION:...] マーカーを文面に保つよう明示指示する。
+                # これがないと Gemini が「登録したよ！」のように言うだけで
+                # 確認ボタン用マーカーを省略してしまい、実際の登録が行われない事故が起こる。
+                second_instruction = system_prompt + (
+                    "\n\n【重要】ツールの戻り値に `[ACTION:...]` マーカーが含まれている場合、"
+                    "**必ずそのマーカーを返信文の末尾にそのままコピーして残してください**。"
+                    "このマーカーはユーザーの画面に確認ボタンを表示するために使われます。"
+                    "勝手に『登録したよ』『追加したよ』のように完了形で答えてはいけません。"
+                    "実際の登録/追加はユーザーがボタンを押して初めて行われます。"
+                )
                 final_res = await self.gemini_client.aio.models.generate_content(
                     model=_m,
                     contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_prompt
-                    ),
+                    config=types.GenerateContentConfig(system_instruction=second_instruction),
                 )
-                # Gemini最終応答が空の場合、ツール実行結果から返答を組み立てる
                 if final_res.text and final_res.text.strip():
                     reply_text = final_res.text.strip()
                 else:
-                    # ツール結果をまとめてフォールバック返答にする
-                    tool_results = [str(r.function_response.response.get("result", "")) for r in f_responses if hasattr(r, "function_response")]
-                    fallback = " / ".join(r for r in tool_results if r and r != "None")
+                    fallback = " / ".join(r for r in tool_result_texts if r and r != "None")
                     reply_text = fallback if fallback else "処理したよ！"
+
+                # 安全網: ツール結果に [ACTION:...] が含まれているのに、
+                # 最終返信から欠落していたら自動で末尾に補完する。
+                import re as _re
+                action_pat = _re.compile(r"\[ACTION:[^\]]+\]")
+                missing_actions = []
+                for tr in tool_result_texts:
+                    for m in action_pat.findall(tr or ""):
+                        if m not in reply_text:
+                            missing_actions.append(m)
+                if missing_actions:
+                    reply_text = reply_text.rstrip() + "\n\n" + "\n".join(missing_actions)
+                    logging.info(f"[partner] 欠落していた ACTION マーカーを {len(missing_actions)} 件補完")
             else:
                 reply_text = response.text.strip() if response.text else "了解！"
 

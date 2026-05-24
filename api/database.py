@@ -227,12 +227,31 @@ async def init_db():
                 memo TEXT DEFAULT '',
                 image_drive_id TEXT DEFAULT '',
                 advice TEXT DEFAULT '',
+                restaurant TEXT DEFAULT '',
+                ordered_items TEXT DEFAULT '',
+                price INTEGER DEFAULT 0,
+                source TEXT DEFAULT '',
+                companions TEXT DEFAULT '',
+                rating INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL
             )
         """)
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_meals_date ON meals(date)"
         )
+        # 既存DBのマイグレーション（後付け列を ALTER で追加。存在すれば無視）
+        for col, ddl in [
+            ("restaurant", "ALTER TABLE meals ADD COLUMN restaurant TEXT DEFAULT ''"),
+            ("ordered_items", "ALTER TABLE meals ADD COLUMN ordered_items TEXT DEFAULT ''"),
+            ("price", "ALTER TABLE meals ADD COLUMN price INTEGER DEFAULT 0"),
+            ("source", "ALTER TABLE meals ADD COLUMN source TEXT DEFAULT ''"),
+            ("companions", "ALTER TABLE meals ADD COLUMN companions TEXT DEFAULT ''"),
+            ("rating", "ALTER TABLE meals ADD COLUMN rating INTEGER DEFAULT 0"),
+        ]:
+            try:
+                await db.execute(ddl)
+            except Exception:
+                pass  # 列がすでに存在
 
         # 多読プラン（書籍ごとの段階的な読み方プラン）
         await db.execute("""
@@ -975,25 +994,39 @@ async def add_meal(
     memo: str = "",
     image_drive_id: str = "",
     advice: str = "",
+    restaurant: str = "",
+    ordered_items: str = "",
+    price: int = 0,
+    source: str = "",
+    companions: str = "",
+    rating: int = 0,
 ) -> int:
     now = datetime.datetime.now(JST).isoformat()
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
-            "INSERT INTO meals (date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO meals "
+            "(date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, "
+            " restaurant, ordered_items, price, source, companions, rating, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (date, time, meal_type, name, int(calories or 0), float(protein_g or 0), float(fat_g or 0),
-             float(carbs_g or 0), memo, image_drive_id, advice, now),
+             float(carbs_g or 0), memo, image_drive_id, advice,
+             restaurant, ordered_items, int(price or 0), source, companions, int(rating or 0), now),
         )
         await db.commit()
         return cursor.lastrowid
+
+
+_MEAL_COLS = (
+    "id, date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, "
+    "restaurant, ordered_items, price, source, companions, rating, created_at"
+)
 
 
 async def get_meals_by_date(date: str) -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, created_at "
-            "FROM meals WHERE date = ? ORDER BY time ASC, id ASC",
+            f"SELECT {_MEAL_COLS} FROM meals WHERE date = ? ORDER BY time ASC, id ASC",
             (date,),
         )
         rows = await cursor.fetchall()
@@ -1005,8 +1038,7 @@ async def get_meals_by_range(start_date: str, end_date: str) -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, created_at "
-            "FROM meals WHERE date BETWEEN ? AND ? ORDER BY date DESC, time DESC, id DESC",
+            f"SELECT {_MEAL_COLS} FROM meals WHERE date BETWEEN ? AND ? ORDER BY date DESC, time DESC, id DESC",
             (start_date, end_date),
         )
         rows = await cursor.fetchall()
@@ -1016,7 +1048,10 @@ async def get_meals_by_range(start_date: str, end_date: str) -> list[dict]:
 async def update_meal(meal_id: int, fields: dict) -> bool:
     if not fields:
         return False
-    allowed = {"date", "time", "meal_type", "name", "calories", "protein_g", "fat_g", "carbs_g", "memo", "advice"}
+    allowed = {
+        "date", "time", "meal_type", "name", "calories", "protein_g", "fat_g", "carbs_g", "memo", "advice",
+        "restaurant", "ordered_items", "price", "source", "companions", "rating",
+    }
     sets = []
     values = []
     for k, v in fields.items():

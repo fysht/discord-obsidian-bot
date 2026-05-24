@@ -32,6 +32,13 @@ class MealSaveRequest(BaseModel):
     carbs_g: float = 0.0
     memo: str = ""
     image_drive_id: str = ""
+    # 外食関連（任意）
+    restaurant: str = ""        # 店名
+    ordered_items: str = ""     # 注文内容（複数行可）
+    price: int = 0              # 金額（円）
+    source: str = ""            # 自炊 / 外食 / デリバリー / 中食 / その他
+    companions: str = ""        # 同席者（家族・友人・一人 等）
+    rating: int = 0             # 満足度 1〜5（0=未評価）
 
 
 class MealPatchRequest(BaseModel):
@@ -44,6 +51,12 @@ class MealPatchRequest(BaseModel):
     fat_g: Optional[float] = None
     carbs_g: Optional[float] = None
     memo: Optional[str] = None
+    restaurant: Optional[str] = None
+    ordered_items: Optional[str] = None
+    price: Optional[int] = None
+    source: Optional[str] = None
+    companions: Optional[str] = None
+    rating: Optional[int] = None
 
 
 @router.post("/analyze", dependencies=[Depends(verify_api_key)])
@@ -108,22 +121,41 @@ async def meals_save(req: MealSaveRequest):
         protein_g=req.protein_g, fat_g=req.fat_g, carbs_g=req.carbs_g,
         memo=req.memo or "",
         image_drive_id=req.image_drive_id or "",
+        restaurant=(req.restaurant or "").strip(),
+        ordered_items=(req.ordered_items or "").strip(),
+        price=int(req.price or 0),
+        source=(req.source or "").strip(),
+        companions=(req.companions or "").strip(),
+        rating=int(req.rating or 0),
     )
 
+    # Obsidian の対象日 DailyNote の `## 🪟 Lifelog` に追記する。
+    # 外食時は店名・注文・金額・★を併記して見返しやすくする。
     try:
-        if date == now.strftime("%Y-%m-%d"):
-            chat_service = getattr(app.state, "chat_service", None)
-            bot = getattr(app.state, "bot", None)
-            partner_cog = bot.get_cog("PartnerCog") if bot else None
-            if partner_cog and chat_service and chat_service.drive_service:
-                kcal_text = f"（推定{req.calories}kcal）" if req.calories else ""
-                line = f"- {time} 🍽 {name}{kcal_text}"
-                note_content = await partner_cog._get_todays_obsidian_note()
-                if not note_content:
-                    note_content = f"# Daily Note {date}\n"
-                from utils.obsidian_utils import update_section
-                updated = update_section(note_content, line, "## 🪟 Lifelog")
-                await partner_cog._save_todays_obsidian_note(updated)
+        from api.routers._obsidian_helpers import append_lifelog_line
+        parts = [f"- {time} 🍽"]
+        if req.restaurant:
+            parts.append(f"@{req.restaurant.strip()}")
+        parts.append(name)
+        extras = []
+        if req.calories:
+            extras.append(f"推定{req.calories}kcal")
+        if req.price:
+            extras.append(f"¥{int(req.price):,}")
+        if req.rating and req.rating > 0:
+            extras.append("★" * max(1, min(5, int(req.rating))))
+        if req.companions:
+            extras.append(f"with {req.companions.strip()}")
+        head_line = " ".join(parts) + (f"（{' / '.join(extras)}）" if extras else "")
+        # 注文内容は箇条書きでサブ行に
+        sub_lines = []
+        if req.ordered_items:
+            for it in (req.ordered_items or "").splitlines():
+                it = it.strip().lstrip("-・*").strip()
+                if it:
+                    sub_lines.append(f"    - {it}")
+        full_line = head_line + ("\n" + "\n".join(sub_lines) if sub_lines else "")
+        await append_lifelog_line(date, full_line)
     except Exception as e:
         logging.debug(f"meals_save lifelog append failed: {e}")
 

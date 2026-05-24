@@ -5738,6 +5738,24 @@ window.loadMeals = async () => {
             const memoSafe = escapeHtml(m.memo || '');
             const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
             const adviceHtml = m.advice ? `<div style="font-size:0.74rem;color:var(--accent);margin-top:2px;">💬 ${escapeHtml(m.advice)}</div>` : '';
+            // 外食情報: 店名・形態・金額・★・同席者・注文内容
+            const diningBits = [];
+            if (m.source) diningBits.push(escapeHtml(m.source));
+            if (m.restaurant) diningBits.push('@' + escapeHtml(m.restaurant));
+            if (m.price) diningBits.push(`¥${Number(m.price).toLocaleString()}`);
+            if (m.rating && m.rating > 0) diningBits.push('★'.repeat(Math.max(1, Math.min(5, m.rating))));
+            if (m.companions) diningBits.push('with ' + escapeHtml(m.companions));
+            const diningHead = diningBits.length
+                ? `<div style="font-size:0.74rem;color:var(--text-secondary);margin-top:2px;">🍴 ${diningBits.join(' / ')}</div>`
+                : '';
+            let orderedHtml = '';
+            if (m.ordered_items && m.ordered_items.trim()) {
+                const items = m.ordered_items.split('\n').map(s => s.trim()).filter(Boolean);
+                if (items.length) {
+                    orderedHtml = '<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;padding-left:10px;">' +
+                        items.map(it => `・${escapeHtml(it)}`).join('<br>') + '</div>';
+                }
+            }
             return `
                 <div class="invest-row meal-row" data-meal-id="${m.id}" style="cursor:default;">
                     <div class="row-main" style="flex:1;">
@@ -5745,7 +5763,7 @@ window.loadMeals = async () => {
                         <div class="row-sub" style="font-size:0.78rem;color:var(--text-secondary);">
                             ${m.calories || 0}kcal ・ P${m.protein_g || 0} / F${m.fat_g || 0} / C${m.carbs_g || 0}
                         </div>
-                        ${memoHtml}${adviceHtml}
+                        ${diningHead}${orderedHtml}${memoHtml}${adviceHtml}
                     </div>
                     <div class="row-actions" style="display:flex;gap:6px;">
                         <button class="mini-link" data-meal-action="edit">編集</button>
@@ -5972,6 +5990,10 @@ window.openMealManualModal = async (id = null, seed = null) => {
 
                     <div style="display:flex;gap:8px;margin-bottom:8px;">
                         <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">日付</label>
+                            <input id="meal-date" type="date" class="modern-input">
+                        </div>
+                        <div style="flex:1;">
                             <label style="font-size:0.78rem;color:var(--text-muted);">時刻</label>
                             <input id="meal-time" type="time" class="modern-input">
                         </div>
@@ -6006,6 +6028,52 @@ window.openMealManualModal = async (id = null, seed = null) => {
                         </div>
                     </div>
 
+                    <details style="margin:4px 0 8px;">
+                        <summary style="font-size:0.82rem;color:var(--text-secondary);cursor:pointer;padding:4px 0;">🍴 外食情報を入力（任意）</summary>
+                        <div style="padding:6px 0;">
+                            <div style="display:flex;gap:6px;margin-bottom:6px;">
+                                <div style="flex:1;">
+                                    <label style="font-size:0.74rem;color:var(--text-muted);">店名</label>
+                                    <input id="meal-restaurant" class="modern-input" placeholder="例: スターバックス 渋谷店">
+                                </div>
+                                <div style="flex:1;">
+                                    <label style="font-size:0.74rem;color:var(--text-muted);">形態</label>
+                                    <select id="meal-source" class="modern-input">
+                                        <option value="">未指定</option>
+                                        <option value="自炊">自炊</option>
+                                        <option value="外食">外食</option>
+                                        <option value="デリバリー">デリバリー</option>
+                                        <option value="中食">中食（テイクアウト/惣菜）</option>
+                                        <option value="その他">その他</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <label style="font-size:0.74rem;color:var(--text-muted);">注文したもの（1行1品）</label>
+                            <textarea id="meal-ordered" class="modern-input" rows="2" style="font-family:inherit;margin-bottom:6px;" placeholder="例:&#10;カフェラテ Tall&#10;ベーグル"></textarea>
+                            <div style="display:flex;gap:6px;margin-bottom:4px;">
+                                <div style="flex:1;">
+                                    <label style="font-size:0.74rem;color:var(--text-muted);">金額（円）</label>
+                                    <input id="meal-price" type="number" min="0" class="modern-input" placeholder="例: 1200">
+                                </div>
+                                <div style="flex:1;">
+                                    <label style="font-size:0.74rem;color:var(--text-muted);">同席者</label>
+                                    <input id="meal-companions" class="modern-input" placeholder="例: 一人 / 家族 / 友人">
+                                </div>
+                                <div style="flex:0 0 80px;">
+                                    <label style="font-size:0.74rem;color:var(--text-muted);">満足度</label>
+                                    <select id="meal-rating" class="modern-input">
+                                        <option value="0">—</option>
+                                        <option value="1">★</option>
+                                        <option value="2">★★</option>
+                                        <option value="3">★★★</option>
+                                        <option value="4">★★★★</option>
+                                        <option value="5">★★★★★</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </details>
+
                     <label style="font-size:0.78rem;color:var(--text-muted);">メモ（任意）</label>
                     <textarea id="meal-memo" class="modern-input" rows="2" style="font-family:inherit;margin-bottom:8px;"></textarea>
 
@@ -6028,9 +6096,10 @@ window.openMealManualModal = async (id = null, seed = null) => {
 
     let m = {};
     if (id) {
-        // 既存編集 → サーバから取得して反映
+        // 既存編集 → 現在表示中の日付の一覧を引いて当該IDを取得（日付は m.date に含まれる）
         try {
-            const data = await apiFetch('/api/meals');
+            const date = _mealsViewDate || _todayStr();
+            const data = await apiFetch(`/api/meals?date=${encodeURIComponent(date)}`);
             m = (data.meals || []).find(x => x.id === id) || {};
             titleEl.textContent = '🍽 食事を編集';
             confEl.textContent = '';
@@ -6040,10 +6109,10 @@ window.openMealManualModal = async (id = null, seed = null) => {
     } else {
         const now = new Date();
         m = seed ? { ...seed } : {};
-        // 解析結果のフィールド名揺れ吸収
         m.time = m.time || `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        // 既定日付は「表示中の日付」（未設定なら今日）
+        m.date = m.date || _mealsViewDate || _todayStr();
         if (seed) {
-            // レシート/写真解析（confidence あり）か、チャットからの登録かでタイトルを切替
             titleEl.textContent = seed.confidence ? '🍽 解析結果を確認' : '🍽 食事を記録';
             confEl.textContent = seed.confidence ? `信頼度: ${seed.confidence}` : '';
         } else {
@@ -6053,6 +6122,7 @@ window.openMealManualModal = async (id = null, seed = null) => {
     }
 
     $('#meal-name').value = m.name || '';
+    $('#meal-date').value = m.date || _todayStr();
     $('#meal-time').value = m.time || '';
     $('#meal-type').value = m.meal_type || '';
     $('#meal-kcal').value = m.calories ?? '';
@@ -6060,6 +6130,13 @@ window.openMealManualModal = async (id = null, seed = null) => {
     $('#meal-f').value = m.fat_g ?? '';
     $('#meal-c').value = m.carbs_g ?? '';
     $('#meal-memo').value = m.memo || '';
+    // 外食情報
+    if ($('#meal-restaurant')) $('#meal-restaurant').value = m.restaurant || '';
+    if ($('#meal-ordered')) $('#meal-ordered').value = m.ordered_items || '';
+    if ($('#meal-price')) $('#meal-price').value = m.price ?? '';
+    if ($('#meal-source')) $('#meal-source').value = m.source || '';
+    if ($('#meal-companions')) $('#meal-companions').value = m.companions || '';
+    if ($('#meal-rating')) $('#meal-rating').value = String(m.rating ?? 0);
 
     modal.classList.remove('hidden');
 };
@@ -6071,9 +6148,11 @@ window.closeMealEditModal = () => {
 
 window.saveMealFromModal = async () => {
     const btn = $('#meal-save-btn');
+    if (!btn || btn.disabled) return;
     const id = btn?.dataset.mealId ? parseInt(btn.dataset.mealId, 10) : null;
     const payload = {
         name: ($('#meal-name')?.value || '').trim(),
+        date: $('#meal-date')?.value || '',
         time: $('#meal-time')?.value || '',
         meal_type: $('#meal-type')?.value || '',
         calories: parseInt($('#meal-kcal')?.value || '0', 10) || 0,
@@ -6081,8 +6160,17 @@ window.saveMealFromModal = async () => {
         fat_g: parseFloat($('#meal-f')?.value || '0') || 0,
         carbs_g: parseFloat($('#meal-c')?.value || '0') || 0,
         memo: ($('#meal-memo')?.value || '').trim(),
+        restaurant: ($('#meal-restaurant')?.value || '').trim(),
+        ordered_items: ($('#meal-ordered')?.value || '').trim(),
+        price: parseInt($('#meal-price')?.value || '0', 10) || 0,
+        source: $('#meal-source')?.value || '',
+        companions: ($('#meal-companions')?.value || '').trim(),
+        rating: parseInt($('#meal-rating')?.value || '0', 10) || 0,
     };
     if (!payload.name) { showToast('料理名を入力してください', true); return; }
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = id ? '更新中…' : '保存中…';
     try {
         if (id) {
             await apiFetch(`/api/meals/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
@@ -6092,9 +6180,19 @@ window.saveMealFromModal = async () => {
             showToast('食事を記録しました');
         }
         closeMealEditModal();
+        // 編集/追加した日付に表示を合わせる（過去日付を入れた場合もその日を表示）
+        if (payload.date) {
+            _mealsViewDate = payload.date;
+            const picker = $('#meals-date-picker');
+            if (picker) picker.value = payload.date;
+        }
         loadMeals();
-    } catch {
+    } catch (e) {
+        console.error('saveMealFromModal failed', e);
         showToast('保存に失敗しました', true);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 };
 

@@ -160,27 +160,33 @@ async def save_message_and_notify(
     """
     global _awaiting_user_response
 
+    # proactive 通知は保留せず、その場で送信する（ユーザー設定で「定時通知」モードに変更）。
+    # かつて「未応答なら保留→次の発話で1件ずつ放出」というキューイングをしていたが、
+    # 日をまたいでの文脈ズレ等の不都合があり廃止。マーク用フラグだけ管理する。
     if proactive and role == "assistant" and content and content.strip():
         async with _queue_lock:
-            if _awaiting_user_response:
-                _held_notifications.append({
-                    "content": content,
-                    "title": title,
-                    "created_at": datetime.datetime.now(JST),
-                })
-                if len(_held_notifications) > _HELD_MAX:
-                    _held_notifications.pop(0)
-                logging.info(
-                    f"定時通知を保留（ユーザー未応答）。保留件数={len(_held_notifications)}"
-                )
-                return None
-            # 未応答フラグが立っていない → 今回は送信し、以後は応答待ち状態にする
             _awaiting_user_response = True
 
     return await _deliver(role, content, reply_to, title)
 
 
 async def flush_stale_held_notifications() -> int:
+    """保留キュー廃止後は常に 0 を返す（互換のため関数は残す）。"""
+    async with _queue_lock:
+        if not _held_notifications:
+            return 0
+        # 念のため残骸があれば即送出
+        items = list(_held_notifications)
+        _held_notifications.clear()
+    for item in items:
+        try:
+            await _deliver("assistant", item["content"], None, item.get("title", "マネージャーからメッセージ"))
+        except Exception:
+            pass
+    return len(items)
+
+
+async def _legacy_flush_stale_held_notifications() -> int:
     """保留キューを走査し、`_HELD_AUTO_FLUSH_MINUTES` より古い項目を
     proactive push として一気に送り出す。
 
@@ -220,43 +226,8 @@ async def flush_stale_held_notifications() -> int:
 
 
 async def mark_user_responded() -> None:
-    """ユーザーがマネージャーへ反応（チャット送信など）したときに呼ぶ。
-
-    保留キューに通知があれば最古の 1 件だけを放出する。残りは次の応答まで
-    引き続き保留する（1 応答につき 1 通知のペースで小出しにする）。
-    保留が無ければ応答待ち状態を解除する。
-    """
+    """ユーザーがマネージャーへ反応したときに呼ぶ。
+    保留キュー廃止後は実質 no-op。互換のため呼び出し側は変更しない。"""
     global _awaiting_user_response
-
-    now = datetime.datetime.now(JST)
-    discard_threshold = now - datetime.timedelta(hours=_HELD_DISCARD_HOURS)
-    discarded = 0
-
     async with _queue_lock:
-        # 古すぎる保留は文脈不一致になるため破棄する
-        while _held_notifications:
-            head = _held_notifications[0]
-            ts = head.get("created_at") or now
-            if ts <= discard_threshold:
-                _held_notifications.pop(0)
-                discarded += 1
-            else:
-                break
-
-        if not _held_notifications:
-            _awaiting_user_response = False
-            if discarded:
-                logging.info(f"古い保留通知を {discarded} 件破棄（{_HELD_DISCARD_HOURS}h 超）")
-            return
-        nxt = _held_notifications.pop(0)
-        remaining = len(_held_notifications)
-        _awaiting_user_response = True
-
-    if discarded:
-        logging.info(f"古い保留通知を {discarded} 件破棄してから放出")
-    content = nxt["content"]
-    try:
-        await _deliver("assistant", content, None, nxt["title"])
-    except Exception as e:
-        logging.error(f"保留通知の放出に失敗: {e}")
-    logging.info(f"保留通知を1件放出。残り保留={remaining}")
+        _awaiting_user_response = False

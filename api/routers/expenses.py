@@ -176,25 +176,22 @@ async def expenses_save(req: ExpenseSaveRequest):
         breakdown=req.breakdown,
     )
 
-    if is_large:
-        try:
-            bot = getattr(app.state, "bot", None)
-            partner_cog = bot.get_cog("PartnerCog") if bot else None
-            if partner_cog and date == now.strftime("%Y-%m-%d"):
-                note_content = await partner_cog._get_todays_obsidian_note()
-                if not note_content:
-                    note_content = f"# Daily Note {date}\n"
-                time_str = now.strftime("%H:%M")
-                vendor_str = req.vendor or req.category or "支出"
-                line = f"- {time_str} 💴 大きな支出: {vendor_str} ¥{req.amount:,}"
-                if req.memo:
-                    line += f"（{req.memo}）"
-                from utils.obsidian_utils import update_section
-                updated = update_section(note_content, line, "## 🪟 Lifelog")
-                await partner_cog._save_todays_obsidian_note(updated)
-        except Exception as e:
-            logging.debug(f"expenses_save lifelog append failed: {e}")
+    # 支出はすべて Obsidian の対象日 DailyNote の `## 🪟 Lifelog` に
+    # 統一フォーマット `- HH:MM 💴 名前 ¥金額（メモ）` で追記する。
+    # 大きな支出には `💴⚠️` を付けて視認性を上げる。
+    try:
+        from api.routers._obsidian_helpers import append_lifelog_line
+        time_str = now.strftime("%H:%M")
+        vendor_str = req.vendor or req.category or "支出"
+        icon = "💴⚠️" if is_large else "💴"
+        line = f"- {time_str} {icon} {vendor_str} ¥{req.amount:,}"
+        if req.memo:
+            line += f"（{req.memo}）"
+        await append_lifelog_line(date, line)
+    except Exception as e:
+        logging.debug(f"expenses_save lifelog append failed: {e}")
 
+    if is_large:
         try:
             await notification_service.send_push(
                 title="💴 大きな支出を記録",
