@@ -7989,10 +7989,8 @@ function renderDailySummaryCard(data, opts = {}) {
     const preserveOnEmpty = !!opts.preserveOnEmpty;
 
     if (text) {
-        // 最新の振り返りを常に表示。fallback (過去の振り返り) のときはバッジで明示する
-        const label = isFallback && displayDate
-            ? `📅 ${displayDate} の振り返り（最新の保存分）`
-            : (displayDate ? `📅 ${displayDate} の振り返り` : '');
+        // デイリーノート・マネージャーの気づきと統一感を持たせるためシンプルに日付ラベルのみ
+        const label = displayDate ? `📅 ${displayDate} の振り返り` : '';
         tEl.innerHTML = renderDailyMarkdown(text, { dateLabel: label });
     } else if (!preserveOnEmpty) {
         tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。<span class="muted-hint">「回答を反映して生成」または「✓ 確定保存」で作成できます。</span></div>';

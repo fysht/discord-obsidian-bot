@@ -78,17 +78,24 @@ body {
     top: 0;
     z-index: 100;
 }
-.header-partner { display: flex; align-items: center; gap: 12px; }
+.header-partner { display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-width: 0; }
 .partner-avatar { position: relative; width: 34px; height: 34px; flex-shrink: 0; }
 .partner-avatar img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid var(--accent); display: block; }
 .status-indicator { position: absolute; bottom: 2px; right: 2px; width: 10px; height: 10px; background: #00ba98; border: 2px solid var(--bg-dark); border-radius: 50%; }
 .version-tag { font-size: 0.6rem; color: var(--text-muted); opacity: 0.5; margin: 0 5px; }
 .partner-info { display: flex; flex-direction: column; }
-.partner-name { font-size: 0.95rem; font-weight: 700; line-height: 1.2; }
-.partner-status { font-size: 0.7rem; color: var(--text-muted); font-weight: 500; }
+.partner-name { font-size: 0.95rem; font-weight: 700; line-height: 1.2; white-space: nowrap; }
+.partner-status { font-size: 0.7rem; color: var(--text-muted); font-weight: 500; white-space: nowrap; }
 
-.header-right { display: flex; align-items: center; gap: 4px; }
-.icon-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px; border-radius: 50%; transition: 0.2s; display: flex; align-items: center; justify-content: center; }
+.header-right { display: flex; align-items: center; gap: 4px; flex-shrink: 1; min-width: 0; }
+.icon-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; padding: 6px; border-radius: 50%; transition: 0.2s; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+/* スマホでは横幅が足りないため、利用頻度の低いアイコンを隠す */
+@media (max-width: 600px) {
+    .header-right { gap: 2px; }
+    .icon-btn { padding: 4px; }
+    .header-right #reload-btn,
+    .header-right #tutorial-btn { display: none; }
+}
 .icon-btn svg { width: 20px; height: 20px; }
 .icon-btn:hover { background: rgba(255,255,255,0.05); color: #fff; }
 
@@ -186,12 +193,13 @@ details.card > summary::after {
 details[open].card > summary { border-bottom-color: var(--border-glass); }
 details[open].card > summary::after { transform: rotate(180deg); }
 
-.card-header { padding: 14px 18px; display: flex; align-items: center; gap: 10px; flex: 1; border-bottom: 1px solid var(--border-glass); }
+/* スマホで右側ボタンが詰まると文字が縦書きになるため、必要に応じて改行を許可する */
+.card-header { padding: 14px 18px; display: flex; align-items: center; gap: 10px; flex: 1; border-bottom: 1px solid var(--border-glass); flex-wrap: wrap; row-gap: 6px; }
 details.card > summary > .card-header { border-bottom: none; }
 
 .card-icon { font-size: 1rem; flex-shrink: 0; background: rgba(255,255,255,0.05); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px;}
 .card-title { font-weight: 700; font-size: 0.95rem; flex: 1; white-space: nowrap; word-break: keep-all; overflow-wrap: normal; }
-.mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; }
+.mini-link { font-size: 0.8rem; color: var(--accent); text-decoration: none; padding: 6px 12px; background: rgba(0,186,152,0.1); border-radius: 8px; font-weight: 600; border: none; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
 .mini-link:hover { background: rgba(0,186,152,0.2); }
 /* 統一: 危険アクション（削除など）。テキストもしくはアイコン付きで使う */
 .mini-link.btn-danger, .btn-danger { color: var(--danger); background: rgba(255,107,107,0.10); }
