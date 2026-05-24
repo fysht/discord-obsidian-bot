@@ -635,6 +635,7 @@ const chatForm = $('#chat-form');
 let _pendingReplyToId = null;
 let _pendingReplyContent = null;
 let _isEnglishMode = false;
+let _isSearchMode = false;
 
 // ENモードのチェックボックスを監視してフラグと視覚フィードバックを更新
 const _engCheckbox = $('#english-mode-checkbox');
@@ -644,6 +645,23 @@ if (_engCheckbox) {
         const toggle = _engCheckbox.closest('.eng-mode-toggle');
         if (toggle) toggle.style.opacity = _isEnglishMode ? '1' : '0.5';
     });
+}
+
+// 🔍 検索モードトグル
+const _searchToggleBtn = $('#search-mode-toggle');
+if (_searchToggleBtn) {
+    const updateSearchUi = () => {
+        _searchToggleBtn.style.opacity = _isSearchMode ? '1' : '0.45';
+        _searchToggleBtn.style.background = _isSearchMode ? 'rgba(78,161,255,0.18)' : 'transparent';
+        _searchToggleBtn.title = _isSearchMode
+            ? '🔍 検索モードON（ネット検索を必ず使用）'
+            : '🔍 検索モード（ON で必ずネット検索を使用。OFF でも質問内容によっては自動で検索）';
+    };
+    _searchToggleBtn.addEventListener('click', () => {
+        _isSearchMode = !_isSearchMode;
+        updateSearchUi();
+    });
+    updateSearchUi();
 }
 
 // iOS Safari fix: 送信ボタンをタップするとtextareaがblurしてキーボードが閉じ、
@@ -701,7 +719,7 @@ if (chatForm) {
         try {
             const data = await apiFetch('/api/chat', {
                 method: 'POST',
-                body: JSON.stringify({ message: msg, reply_to_id: replyTo, english_mode: _isEnglishMode, client_msg_id: clientMsgId }),
+                body: JSON.stringify({ message: msg, reply_to_id: replyTo, english_mode: _isEnglishMode, search_mode: _isSearchMode, client_msg_id: clientMsgId }),
                 signal: _chatAbortCtrl.signal,
             });
             if (userEl && data.user_message_id) userEl.dataset.msgId = String(data.user_message_id);

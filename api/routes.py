@@ -145,6 +145,7 @@ class ChatRequest(BaseModel):
     message: str
     reply_to_id: Optional[int] = None
     english_mode: bool = False
+    search_mode: bool = False  # 🔍 ON 時に Gemini の Google Search grounding を強制有効化
     client_msg_id: Optional[str] = None  # 二重送信防止用の冪等キー（フロントから付与）
 
 # 冪等キー → (timestamp, ChatResponse) のキャッシュ。5 秒以内の同 ID 再送は弾く
@@ -484,7 +485,8 @@ async def chat(req: ChatRequest):
         english_feedback_hint = "\n\n[SYSTEM HINT: The user has written in English. Naturally include brief, encouraging feedback on their English (grammar, naturalness, word choice) within your response. Keep feedback short and positive.]"
 
     reply = await partner_cog.generate_response_for_app(
-        user_message + english_feedback_hint, history_messages, english_mode=req.english_mode
+        user_message + english_feedback_hint, history_messages,
+        english_mode=req.english_mode, search_mode=req.search_mode,
     )
 
     # 「〇〇を食べた」系のメッセージを検出 → 食事ログ登録ボタンを添える

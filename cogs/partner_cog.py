@@ -323,9 +323,16 @@ class PartnerCog(commands.Cog):
         except Exception as e:
             logging.error(f"Contextual log error: {e}")
 
-    def _get_function_tools(self):
-        return [
-            types.Tool(
+    def _get_function_tools(self, enable_search: bool = False):
+        """関数呼び出しツールの一覧を返す。enable_search=True なら Gemini の
+        Google 検索 grounding ツールも併せて返す（Gemini 2.5+ は併用可能）。"""
+        tools = []
+        if enable_search:
+            try:
+                tools.append(types.Tool(google_search=types.GoogleSearch()))
+            except Exception as e:
+                logging.warning(f"google_search ツール構築失敗（model 未対応の可能性）: {e}")
+        tools.append(types.Tool(
                 function_declarations=[
                     types.FunctionDeclaration(
                         name="create_calendar_event",
@@ -637,8 +644,8 @@ class PartnerCog(commands.Cog):
                         ),
                     ),
                 ]
-            )
-        ]
+            ))
+        return tools
 
     async def _set_mit_to_obsidian(self, items: list[str]) -> str:
         """今日の DailyNote の `## 🎯 MIT` セクションに MIT を書き込む。"""
@@ -869,9 +876,36 @@ class PartnerCog(commands.Cog):
             return f"ツールエラー: {e}"
         return "不明なツールです。"
 
-    async def generate_response_for_app(self, text: str, history_messages: list, english_mode: bool = False):
-        """PWAアプリから呼び出されるAI応答生成"""
+    @staticmethod
+    def _looks_like_search_query(text: str) -> bool:
+        """ユーザー発話が「ネット検索が必要そう」か簡易判定する。
+        最新情報・知識系の問い合わせや明示的な指示（「調べて」等）を拾う。"""
+        if not text:
+            return False
+        t = text.strip()
+        # 明示的なキーワード
+        triggers = (
+            "調べて", "ググって", "検索して", "最新", "今の", "現在の",
+            "ニュース", "とは何", "とは？", "について教えて", "の意味",
+            "は誰", "はいつ", "はどこ", "の使い方", "の価格", "の評判",
+            "おすすめ", "比較", "の方法",
+        )
+        if any(k in t for k in triggers):
+            return True
+        # 末尾が「？」かつ短く事実っぽい問い合わせ
+        if (t.endswith("？") or t.endswith("?")) and len(t) <= 60:
+            return True
+        return False
+
+    async def generate_response_for_app(
+        self, text: str, history_messages: list,
+        english_mode: bool = False, search_mode: bool = False,
+    ):
+        """PWAアプリから呼び出されるAI応答生成。
+        search_mode=True または発話が検索クエリ風なら Google Search grounding を有効化。"""
         self.last_interaction = datetime.datetime.now(JST)
+        # 明示指定 or 自動判定で検索 grounding を有効化
+        enable_search = bool(search_mode) or self._looks_like_search_query(text)
 
         now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
         system_prompt = get_system_prompt(
@@ -896,7 +930,7 @@ class PartnerCog(commands.Cog):
                 contents=contents,
                 config=types.GenerateContentConfig(
                     system_instruction=system_prompt,
-                    tools=self._get_function_tools(),
+                    tools=self._get_function_tools(enable_search=enable_search),
                 ),
             )
 
@@ -929,6 +963,22 @@ class PartnerCog(commands.Cog):
                     reply_text = fallback if fallback else "処理したよ！"
             else:
                 reply_text = response.text.strip() if response.text else "了解！"
+
+            # Google Search grounding が走った場合、citation を簡易付与
+            try:
+                gmeta = getattr(response.candidates[0], "grounding_metadata", None) if response.candidates else None
+                if gmeta:
+                    chunks = getattr(gmeta, "grounding_chunks", None) or []
+                    sources = []
+                    for ch in chunks[:5]:
+                        web = getattr(ch, "web", None)
+                        if web and getattr(web, "uri", None):
+                            title = getattr(web, "title", None) or web.uri
+                            sources.append(f"- [{title}]({web.uri})")
+                    if sources:
+                        reply_text = reply_text + "\n\n🔎 参考:\n" + "\n".join(sources)
+            except Exception as _se:
+                logging.debug(f"grounding citation extract failed: {_se}")
 
             safe_create_task(
                 self._save_contextual_user_log(text, reply_text),
