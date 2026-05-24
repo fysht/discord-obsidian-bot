@@ -852,7 +852,11 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
     try {
         const data = await apiFetch('/api/daily_questions/pending');
         const all = (data && data.questions) || [];
-        const items = all.filter(q => q.date === date && (q.scope || 'summary') === scope && q.status !== 'resolved');
+        // API は id DESC で返すが、チャット本文の質問番号 (1,2,3...) と順序を揃えるため
+        // ここで id ASC に並べ替える
+        const items = all
+            .filter(q => q.date === date && (q.scope || 'summary') === scope && q.status !== 'resolved')
+            .sort((a, b) => (a.id || 0) - (b.id || 0));
         if (!items.length) {
             wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">（すべての質問に回答済み）</div>';
             return;
@@ -5640,28 +5644,75 @@ window.saveMitFromModal = async () => {
 
 let _pendingMealAnalysis = null;
 
-// ダッシュボードに今日の食事一覧を表示
+// 食事ログのカード表示で参照する日付（YYYY-MM-DD）。未指定なら今日。
+let _mealsViewDate = null;
+
+function _todayStr() {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+window.onMealsDateChange = () => {
+    const picker = $('#meals-date-picker');
+    if (picker && picker.value) {
+        _mealsViewDate = picker.value;
+        loadMeals();
+    }
+};
+
+window.navMealsDate = (deltaDays) => {
+    const cur = _mealsViewDate || _todayStr();
+    const d = new Date(cur + 'T00:00:00');
+    d.setDate(d.getDate() + deltaDays);
+    _mealsViewDate = d.toISOString().slice(0, 10);
+    const picker = $('#meals-date-picker');
+    if (picker) picker.value = _mealsViewDate;
+    loadMeals();
+};
+
+window.navMealsToToday = () => {
+    _mealsViewDate = _todayStr();
+    const picker = $('#meals-date-picker');
+    if (picker) picker.value = _mealsViewDate;
+    loadMeals();
+};
+
+// ダッシュボードに指定日（既定: 今日）の食事一覧を表示
 window.loadMeals = async () => {
     const listEl = $('#dash-meals-list');
     const sumEl = $('#dash-meals-summary');
     if (!listEl) return;
+    // 初回ロード時は今日に設定
+    if (!_mealsViewDate) {
+        _mealsViewDate = _todayStr();
+        const picker = $('#meals-date-picker');
+        if (picker && !picker.value) picker.value = _mealsViewDate;
+    }
+    const isToday = _mealsViewDate === _todayStr();
     try {
-        const data = await apiFetch('/api/meals');
+        const data = await apiFetch(`/api/meals?date=${encodeURIComponent(_mealsViewDate)}`);
         const meals = data.meals || [];
         const total = data.total || {};
 
         if (sumEl) {
+            const dateLabel = isToday ? '本日' : _mealsViewDate;
             if (meals.length) {
                 sumEl.innerHTML =
-                    `本日合計 <b style="color:var(--text-primary);">${total.calories || 0}kcal</b> ` +
+                    `${dateLabel}合計 <b style="color:var(--text-primary);">${total.calories || 0}kcal</b> ` +
                     `(P${total.protein_g || 0} / F${total.fat_g || 0} / C${total.carbs_g || 0})`;
             } else {
-                sumEl.innerHTML = '本日の記録はまだありません。';
+                sumEl.innerHTML = `${dateLabel}の記録はまだありません。`;
             }
         }
 
         if (!meals.length) {
-            listEl.innerHTML = '<div class="loading-placeholder">食事が記録されていません。<span class="muted-hint">「📷 写真」または「✏️ 手動」から追加。</span></div>';
+            const hint = isToday
+                ? '<span class="muted-hint">「📷 写真」または「✏️ 手動」から追加。</span>'
+                : '<span class="muted-hint">「📅 履歴」で過去の食事を月別に確認できます。</span>';
+            listEl.innerHTML = `<div class="loading-placeholder">${isToday ? '食事が記録されていません。' : 'この日の食事は記録されていません。'}${hint}</div>`;
             return;
         }
 
@@ -5690,6 +5741,119 @@ window.loadMeals = async () => {
         console.error('loadMeals failed', e);
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
+};
+
+// ===== 食事ログ：月単位カレンダー履歴 =====
+let _mealsCalendarYM = null; // YYYY-MM 形式の現在表示月
+
+window.openMealCalendarModal = () => {
+    let modal = $('#meal-calendar-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="meal-calendar-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:480px;width:calc(100vw - 32px);">
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;">
+                        <button class="mini-link" onclick="navMealCalendar(-1)">◀</button>
+                        <h3 id="meal-cal-title" style="margin:0;font-size:1rem;">📅 食事履歴</h3>
+                        <button class="mini-link" onclick="navMealCalendar(1)">▶</button>
+                        <button class="mini-link" onclick="closeMealCalendarModal()">✕</button>
+                    </div>
+                    <div id="meal-cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;font-size:0.78rem;">
+                        <div class="loading-placeholder" style="grid-column:span 7;">読み込み中…</div>
+                    </div>
+                    <div style="font-size:0.72rem;color:var(--text-muted);margin-top:10px;">
+                        日付をタップすると、その日の食事ログを表示します。
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#meal-calendar-modal');
+    }
+    if (!_mealsCalendarYM) {
+        const today = new Date();
+        _mealsCalendarYM = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}`;
+    }
+    modal.classList.remove('hidden');
+    _renderMealCalendar();
+};
+window.closeMealCalendarModal = () => $('#meal-calendar-modal')?.classList.add('hidden');
+
+window.navMealCalendar = (deltaMonths) => {
+    const [y, m] = _mealsCalendarYM.split('-').map(Number);
+    const d = new Date(y, m - 1 + deltaMonths, 1);
+    _mealsCalendarYM = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    _renderMealCalendar();
+};
+
+async function _renderMealCalendar() {
+    const titleEl = $('#meal-cal-title');
+    const grid = $('#meal-cal-grid');
+    if (!titleEl || !grid) return;
+    const [y, m] = _mealsCalendarYM.split('-').map(Number);
+    titleEl.textContent = `📅 ${y}年${m}月の食事履歴`;
+    grid.innerHTML = '<div class="loading-placeholder" style="grid-column:span 7;">読み込み中…</div>';
+
+    // 月初〜月末の日付を取得して、各日の合計を集約表示
+    const monthStart = `${y}-${String(m).padStart(2,'0')}-01`;
+    const lastDay = new Date(y, m, 0).getDate();
+    const monthEnd = `${y}-${String(m).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+
+    let countsByDate = {};
+    try {
+        // 1日ずつ叩くと重いため、API には get_meals_by_range があるが UI には未公開。
+        // ここでは簡易に範囲API を新設せず、月のうちサンプリングで対応する代わりに
+        // すでにある /api/meals を日単位で呼び出す（最大31回、軽量）
+        const dates = [];
+        for (let d = 1; d <= lastDay; d++) {
+            dates.push(`${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`);
+        }
+        // 並列で取得（CPUより I/O 待ち）
+        const results = await Promise.all(dates.map(async ds => {
+            try {
+                const r = await apiFetch(`/api/meals?date=${encodeURIComponent(ds)}`);
+                return [ds, (r.meals || []).length, (r.total && r.total.calories) || 0];
+            } catch { return [ds, 0, 0]; }
+        }));
+        for (const [ds, cnt, kcal] of results) countsByDate[ds] = { cnt, kcal };
+    } catch (e) {
+        console.error('meal calendar fetch failed', e);
+        grid.innerHTML = '<div class="loading-placeholder" style="grid-column:span 7;">取得失敗</div>';
+        return;
+    }
+
+    // 曜日ヘッダ
+    const dows = ['日','月','火','水','木','金','土'];
+    const cells = dows.map(d => `<div style="text-align:center;font-weight:700;color:var(--text-muted);padding:4px 0;">${d}</div>`);
+    // 1日の曜日に合わせて空セルを埋める
+    const firstDow = new Date(y, m-1, 1).getDay();
+    for (let i = 0; i < firstDow; i++) cells.push('<div></div>');
+
+    const todayStr = _todayStr();
+    for (let d = 1; d <= lastDay; d++) {
+        const ds = `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+        const stat = countsByDate[ds] || { cnt: 0, kcal: 0 };
+        const has = stat.cnt > 0;
+        const isToday = ds === todayStr;
+        const bg = isToday ? 'rgba(0,186,152,0.18)' : (has ? 'rgba(255,255,255,0.04)' : 'transparent');
+        const border = isToday ? 'border:1px solid var(--accent);' : (has ? 'border:1px solid var(--border-glass);' : 'border:1px solid transparent;');
+        const label = has ? `${stat.cnt}件<br><span style="font-size:0.62rem;color:var(--text-muted);">${stat.kcal}kcal</span>` : '';
+        cells.push(`
+            <button onclick="pickMealCalendarDate('${ds}')" style="background:${bg};${border}border-radius:6px;padding:6px 2px;cursor:pointer;color:var(--text-primary);font-size:0.78rem;text-align:center;min-height:48px;">
+                <div style="font-weight:700;">${d}</div>
+                ${label}
+            </button>
+        `);
+    }
+    grid.innerHTML = cells.join('');
+}
+
+window.pickMealCalendarDate = (dateStr) => {
+    _mealsViewDate = dateStr;
+    const picker = $('#meals-date-picker');
+    if (picker) picker.value = dateStr;
+    closeMealCalendarModal();
+    loadMeals();
 };
 
 /**
@@ -7807,11 +7971,13 @@ function renderDailySummaryCard(data, opts = {}) {
     const preserveOnEmpty = !!opts.preserveOnEmpty;
 
     if (text) {
-        tEl.innerHTML = renderDailyMarkdown(text, {
-            dateLabel: displayDate ? `📅 ${displayDate} の振り返り` : '',
-        });
+        // 最新の振り返りを常に表示。fallback (過去の振り返り) のときはバッジで明示する
+        const label = isFallback && displayDate
+            ? `📅 ${displayDate} の振り返り（最新の保存分）`
+            : (displayDate ? `📅 ${displayDate} の振り返り` : '');
+        tEl.innerHTML = renderDailyMarkdown(text, { dateLabel: label });
     } else if (!preserveOnEmpty) {
-        tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。</div>';
+        tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。<span class="muted-hint">「回答を反映して生成」または「✓ 確定保存」で作成できます。</span></div>';
     }
     // preserveOnEmpty=true で text が空のときは tEl を上書きせず、前回の振り返りを残す
 
@@ -7846,9 +8012,47 @@ function renderDailySummaryCard(data, opts = {}) {
                 </div>
             </div>
         `).join('')}
-        <button class="modal-btn submit" style="width:100%;font-size:0.85rem;margin-top:6px;" onclick="regenerateSummaryWithAnswers('${date}')">${text ? '回答を反映して再生成' : '回答を反映して生成'}</button>
+        <div style="display:flex;gap:6px;margin-top:6px;">
+            <button class="modal-btn submit" style="flex:1;font-size:0.85rem;" onclick="regenerateSummaryWithAnswers('${date}')">${text ? '回答を反映して再生成' : '回答を反映して生成'}</button>
+            <button class="modal-btn" style="flex:1;font-size:0.85rem;background:rgba(255,212,84,0.15);color:#ffd454;font-weight:700;" onclick="finalizeSummaryWithAnswers('${date}')" title="質問が残っていてもこのまま確定して Obsidian へ保存">✓ 確定保存</button>
+        </div>
     `;
 }
+
+// 「✓ 確定保存」ボタン。未回答質問が残っていても finalize=true で保存させる。
+window.finalizeSummaryWithAnswers = async (date) => {
+    const answers = {};
+    document.querySelectorAll('.summary-question').forEach(row => {
+        const qid = row.dataset.qid;
+        const ta = row.querySelector('.summary-question-answer');
+        const v = (ta && ta.value || '').trim();
+        if (qid && v) answers[qid] = v;
+    });
+    if (_dailySummaryGenerating) return;
+    _dailySummaryGenerating = true;
+    const tEl = $('#dash-daily-summary');
+    if (tEl) tEl.innerHTML = '<div class="loading-placeholder">回答を反映して確定保存中…</div>';
+    try {
+        const result = await apiFetch('/api/daily_summary/generate', {
+            method: 'POST',
+            body: JSON.stringify({ date, answers, finalize: true }),
+        });
+        renderDailySummaryCard(
+            { date: result.date, text: result.summary, questions: result.questions },
+            { preserveOnEmpty: true },
+        );
+        if (result.saved) {
+            showToast('Obsidianに保存しました');
+        } else {
+            showToast('保存に失敗しました', true);
+        }
+    } catch (e) {
+        console.error('finalizeSummaryWithAnswers failed', e);
+        showToast('確定保存に失敗しました', true);
+    } finally {
+        _dailySummaryGenerating = false;
+    }
+};
 
 let _summaryQuestionsHidden = false;
 window.toggleSummaryQuestions = () => {

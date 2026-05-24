@@ -42,6 +42,14 @@ class ProactiveAlertCog(commands.Cog):
 
     @tasks.loop(minutes=15)
     async def proactive_check_task(self):
+        # 保留通知が長く溜まり続けるのを防ぐため、深夜帯でも flush を試みる。
+        # 60分以上前の保留は会話に紛れさせると不自然なので proactive push へ送り出す。
+        try:
+            from api import notification_service
+            await notification_service.flush_stale_held_notifications()
+        except Exception as e:
+            logging.error(f"flush_stale_held_notifications error: {e}", exc_info=True)
+
         partner_cog = self.bot.get_cog("PartnerCog")
         if not partner_cog:
             return

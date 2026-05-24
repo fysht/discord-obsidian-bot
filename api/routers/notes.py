@@ -274,11 +274,19 @@ async def save_note(req: SaveNoteRequest):
                 existing = f"# {filename.replace('.md','')}\n"
 
             if folder_name == "DailyNotes":
-                section = "## 💡 Insights & Thoughts"
+                # DailyNote は構造化された日次ノートなので、従来通り
+                # `## 💡 Insights & Thoughts` セクションに整列して追記する
+                new_content = update_section(
+                    existing, f"*{now_str} 追記*\n{req.content}", "## 💡 Insights & Thoughts"
+                )
             else:
-                section = "## 📝 Learning Log"
-
-            new_content = update_section(existing, f"*{now_str} 追記*\n{req.content}", section)
+                # StudyLogs/BookNotes 等の永続ノートはセクション見出しを使わず、
+                # 「日時 → 空行 → 本文 → 空行」のシンプルなブロックを末尾に追記する。
+                # （見返したときの体裁を整えるため、タイトルや "Learning Log" 等の
+                #   セクション見出しは付けない）
+                base = (existing or "").rstrip()
+                block = f"\n\n---\n\n**{now_str}**\n\n{req.content}\n"
+                new_content = base + block
 
             if file_id:
                 await chat_service.drive_service.update_text(service, file_id, new_content)

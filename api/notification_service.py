@@ -13,7 +13,10 @@ import re
 import json
 import logging
 import asyncio
+import datetime
 from typing import Optional
+
+from config import JST
 
 # AI が誤って返信冒頭に付けてしまう日時タグ（[今日 HH:MM] / [2026-05-20 HH:MM]）を除去する。
 # これらのタグは履歴を読ませるための内部注釈であり、表示メッセージには不要。
@@ -116,8 +119,12 @@ async def send_push(title: str, body: str, url: Optional[str] = None) -> int:
 # ============================================================
 
 _awaiting_user_response = False          # 直近の定時通知にユーザーが未応答か
-_held_notifications: list[dict] = []     # 保留中の定時通知（古い順）
+_held_notifications: list[dict] = []     # 保留中の定時通知（古い順）。各要素は {content, title, created_at(datetime)}
 _HELD_MAX = 30                           # 保留キューの上限（超過時は最古を破棄）
+# しきい値: これより古い保留は「会話に紛れさせると不自然」なので
+# proactive push で送り切る（または放出時に破棄する）。
+_HELD_AUTO_FLUSH_MINUTES = 60            # 60 分以内に応答がなければ proactive push へ
+_HELD_DISCARD_HOURS = 6                  # 6 時間超過した保留は放出時に破棄
 _queue_lock = asyncio.Lock()
 
 
@@ -156,7 +163,11 @@ async def save_message_and_notify(
     if proactive and role == "assistant" and content and content.strip():
         async with _queue_lock:
             if _awaiting_user_response:
-                _held_notifications.append({"content": content, "title": title})
+                _held_notifications.append({
+                    "content": content,
+                    "title": title,
+                    "created_at": datetime.datetime.now(JST),
+                })
                 if len(_held_notifications) > _HELD_MAX:
                     _held_notifications.pop(0)
                 logging.info(
@@ -169,6 +180,45 @@ async def save_message_and_notify(
     return await _deliver(role, content, reply_to, title)
 
 
+async def flush_stale_held_notifications() -> int:
+    """保留キューを走査し、`_HELD_AUTO_FLUSH_MINUTES` より古い項目を
+    proactive push として一気に送り出す。
+
+    背景: 夜に保留した「お疲れさま」のような通知を、ユーザーが翌朝にチャットを
+    送るまで保持し続けると、朝に届いて文脈が破綻する。一定時間で会話の中に
+    紛れさせるのを諦め、定時通知として送ってしまう方が自然。
+
+    定期タスク（proactive_alert_cog の 15 分ループ等）から定期的に呼び出す。
+    返り値は送出した件数。
+    """
+    global _awaiting_user_response
+    now = datetime.datetime.now(JST)
+    threshold = now - datetime.timedelta(minutes=_HELD_AUTO_FLUSH_MINUTES)
+
+    to_flush: list[dict] = []
+    async with _queue_lock:
+        remaining: list[dict] = []
+        for item in _held_notifications:
+            ts = item.get("created_at") or now
+            if ts <= threshold:
+                to_flush.append(item)
+            else:
+                remaining.append(item)
+        _held_notifications[:] = remaining
+        # 全部捌けた場合は応答待ち状態を解除（会話再開時の余計な発射を避ける）
+        if not _held_notifications and to_flush:
+            _awaiting_user_response = False
+
+    for item in to_flush:
+        try:
+            await _deliver("assistant", item["content"], None, item.get("title", "マネージャーからメッセージ"))
+        except Exception as e:
+            logging.error(f"stale 保留通知の放出に失敗: {e}")
+    if to_flush:
+        logging.info(f"古い保留通知を {len(to_flush)} 件 proactive 送出した")
+    return len(to_flush)
+
+
 async def mark_user_responded() -> None:
     """ユーザーがマネージャーへ反応（チャット送信など）したときに呼ぶ。
 
@@ -178,15 +228,32 @@ async def mark_user_responded() -> None:
     """
     global _awaiting_user_response
 
+    now = datetime.datetime.now(JST)
+    discard_threshold = now - datetime.timedelta(hours=_HELD_DISCARD_HOURS)
+    discarded = 0
+
     async with _queue_lock:
+        # 古すぎる保留は文脈不一致になるため破棄する
+        while _held_notifications:
+            head = _held_notifications[0]
+            ts = head.get("created_at") or now
+            if ts <= discard_threshold:
+                _held_notifications.pop(0)
+                discarded += 1
+            else:
+                break
+
         if not _held_notifications:
             _awaiting_user_response = False
+            if discarded:
+                logging.info(f"古い保留通知を {discarded} 件破棄（{_HELD_DISCARD_HOURS}h 超）")
             return
         nxt = _held_notifications.pop(0)
         remaining = len(_held_notifications)
-        # まだ保留が残る／今 1 件出すので、応答待ち状態は維持する
         _awaiting_user_response = True
 
+    if discarded:
+        logging.info(f"古い保留通知を {discarded} 件破棄してから放出")
     content = nxt["content"]
     try:
         await _deliver("assistant", content, None, nxt["title"])

@@ -93,8 +93,10 @@ async def daily_summary_get(date: str = ""):
         text = await _read_summary_for_date(chat_service, date)
         fallback_date = None
         if not text and not explicit_date:
+            # 最新の保存分を「デイリーノート」「マネージャーの気づき」と同様に
+            # できるだけ広い範囲で探す（過去 30 日まで遡る）
             base = datetime.datetime.strptime(date, "%Y-%m-%d").date()
-            for offset in range(1, 8):
+            for offset in range(1, 31):
                 prev = (base - datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
                 t = await _read_summary_for_date(chat_service, prev)
                 if t:

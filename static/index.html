@@ -305,6 +305,14 @@
                             <button class="mini-link" onclick="openMealManualModal()" title="手動で記録">✏️ 手動</button>
                             <button class="mini-link" onclick="requestMealAdvice()" title="マネージャーの栄養アドバイス">💬 助言</button>
                             <button class="mini-link" onclick="openMealSuggestModal()" title="過去のメニューと空白期間から献立を提案">🍳 献立提案</button>
+                            <button class="mini-link" onclick="openMealCalendarModal()" title="月単位のカレンダーで過去の食事を見る">📅 履歴</button>
+                        </div>
+                        <!-- 日付ナビゲーター -->
+                        <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px 18px;border-bottom:1px solid var(--border-glass);">
+                            <button class="mini-link" onclick="navMealsDate(-1)" title="前日">◀</button>
+                            <input type="date" id="meals-date-picker" class="modern-input" style="flex:1;min-width:0;padding:6px;font-size:0.85rem;" onchange="onMealsDateChange()">
+                            <button class="mini-link" onclick="navMealsDate(1)" title="翌日">▶</button>
+                            <button class="mini-link" onclick="navMealsToToday()" title="今日へ">今日</button>
                         </div>
                         <div id="dash-meals-summary" class="card-body" style="border-bottom:1px solid var(--border-glass);padding:8px 18px;font-size:0.78rem;color:var(--text-muted);"></div>
                         <div id="dash-meals-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
