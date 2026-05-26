@@ -39,6 +39,7 @@ class MealSaveRequest(BaseModel):
     source: str = ""            # 自炊 / 外食 / デリバリー / 中食 / その他
     companions: str = ""        # 同席者（家族・友人・一人 等）
     rating: int = 0             # 満足度 1〜5（0=未評価）
+    restaurant_url: str = ""    # Google Maps 等の店舗 URL
 
 
 class MealPatchRequest(BaseModel):
@@ -57,6 +58,7 @@ class MealPatchRequest(BaseModel):
     source: Optional[str] = None
     companions: Optional[str] = None
     rating: Optional[int] = None
+    restaurant_url: Optional[str] = None
 
 
 @router.post("/analyze", dependencies=[Depends(verify_api_key)])
@@ -127,6 +129,7 @@ async def meals_save(req: MealSaveRequest):
         source=(req.source or "").strip(),
         companions=(req.companions or "").strip(),
         rating=int(req.rating or 0),
+        restaurant_url=(req.restaurant_url or "").strip(),
     )
 
     # Obsidian の対象日 DailyNote の `## 🪟 Lifelog` に追記する。

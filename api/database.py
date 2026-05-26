@@ -233,6 +233,7 @@ async def init_db():
                 source TEXT DEFAULT '',
                 companions TEXT DEFAULT '',
                 rating INTEGER DEFAULT 0,
+                restaurant_url TEXT DEFAULT '',
                 created_at TEXT NOT NULL
             )
         """)
@@ -247,6 +248,7 @@ async def init_db():
             ("source", "ALTER TABLE meals ADD COLUMN source TEXT DEFAULT ''"),
             ("companions", "ALTER TABLE meals ADD COLUMN companions TEXT DEFAULT ''"),
             ("rating", "ALTER TABLE meals ADD COLUMN rating INTEGER DEFAULT 0"),
+            ("restaurant_url", "ALTER TABLE meals ADD COLUMN restaurant_url TEXT DEFAULT ''"),
         ]:
             try:
                 await db.execute(ddl)
@@ -1000,17 +1002,19 @@ async def add_meal(
     source: str = "",
     companions: str = "",
     rating: int = 0,
+    restaurant_url: str = "",
 ) -> int:
     now = datetime.datetime.now(JST).isoformat()
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
             "INSERT INTO meals "
             "(date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, "
-            " restaurant, ordered_items, price, source, companions, rating, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " restaurant, ordered_items, price, source, companions, rating, restaurant_url, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (date, time, meal_type, name, int(calories or 0), float(protein_g or 0), float(fat_g or 0),
              float(carbs_g or 0), memo, image_drive_id, advice,
-             restaurant, ordered_items, int(price or 0), source, companions, int(rating or 0), now),
+             restaurant, ordered_items, int(price or 0), source, companions, int(rating or 0),
+             restaurant_url, now),
         )
         await db.commit()
         return cursor.lastrowid
@@ -1018,7 +1022,7 @@ async def add_meal(
 
 _MEAL_COLS = (
     "id, date, time, meal_type, name, calories, protein_g, fat_g, carbs_g, memo, image_drive_id, advice, "
-    "restaurant, ordered_items, price, source, companions, rating, created_at"
+    "restaurant, ordered_items, price, source, companions, rating, restaurant_url, created_at"
 )
 
 
@@ -1050,7 +1054,7 @@ async def update_meal(meal_id: int, fields: dict) -> bool:
         return False
     allowed = {
         "date", "time", "meal_type", "name", "calories", "protein_g", "fat_g", "carbs_g", "memo", "advice",
-        "restaurant", "ordered_items", "price", "source", "companions", "rating",
+        "restaurant", "ordered_items", "price", "source", "companions", "rating", "restaurant_url",
     }
     sets = []
     values = []

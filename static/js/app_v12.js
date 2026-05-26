@@ -101,6 +101,30 @@ const escapeHtml = t => {
     return d.innerHTML;
 };
 
+// HTML 属性値として安全な形にエスケープ（href="..." の中で使う想定）
+const escapeAttr = t => String(t == null ? '' : t)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+// テキスト中の URL を <a> タグに変換する。XSS 対策で URL 以外は escapeHtml する。
+function linkifyText(text) {
+    if (!text) return '';
+    const re = /(https?:\/\/[^\s<>"'）)】]+)/g;
+    let result = '';
+    let lastIdx = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        result += escapeHtml(text.slice(lastIdx, m.index));
+        const url = m[1];
+        result += `<a href="${escapeAttr(url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;word-break:break-all;">${escapeHtml(url)}</a>`;
+        lastIdx = m.index + url.length;
+    }
+    result += escapeHtml(text.slice(lastIdx));
+    return result.replace(/\n/g, '<br>');
+}
+
 async function apiFetch(path, options = {}) {
     const isFormData = (typeof FormData !== 'undefined') && options.body instanceof FormData;
     const baseHeaders = isFormData
@@ -5749,13 +5773,26 @@ window.loadMeals = async () => {
         }
 
         listEl.innerHTML = meals.map(m => {
-            const memoSafe = escapeHtml(m.memo || '');
-            const memoHtml = memoSafe ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">${memoSafe}</div>` : '';
+            // メモ内の URL を自動でリンク化（保存済みレシピから流し込んだURLもここでクリック可能になる）
+            const memoHtml = m.memo
+                ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;word-break:break-word;">${linkifyText(m.memo)}</div>`
+                : '';
             const adviceHtml = m.advice ? `<div style="font-size:0.74rem;color:var(--accent);margin-top:2px;">💬 ${escapeHtml(m.advice)}</div>` : '';
             // 外食情報: 店名・形態・金額・★・同席者・注文内容
             const diningBits = [];
             if (m.source) diningBits.push(escapeHtml(m.source));
-            if (m.restaurant) diningBits.push('@' + escapeHtml(m.restaurant));
+            if (m.restaurant) {
+                const restName = escapeHtml(m.restaurant);
+                const url = (m.restaurant_url || '').trim();
+                if (url && /^https?:\/\//i.test(url)) {
+                    diningBits.push(`@<a href="${escapeAttr(url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;">${restName}</a>`);
+                } else {
+                    diningBits.push('@' + restName);
+                }
+            } else if ((m.restaurant_url || '').trim() && /^https?:\/\//i.test(m.restaurant_url)) {
+                // 店名未設定で URL だけある場合も飛べるようにする
+                diningBits.push(`📍<a href="${escapeAttr(m.restaurant_url)}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;">店舗を開く</a>`);
+            }
             if (m.price) diningBits.push(`¥${Number(m.price).toLocaleString()}`);
             if (m.rating && m.rating > 0) diningBits.push('★'.repeat(Math.max(1, Math.min(5, m.rating))));
             if (m.companions) diningBits.push('with ' + escapeHtml(m.companions));
@@ -6067,6 +6104,8 @@ window.openMealManualModal = async (id = null, seed = null) => {
                                     </select>
                                 </div>
                             </div>
+                            <label style="font-size:0.74rem;color:var(--text-muted);">店舗URL（Google Maps など・任意）</label>
+                            <input id="meal-restaurant-url" class="modern-input" style="margin-bottom:6px;" placeholder="https://maps.app.goo.gl/...">
                             <label style="font-size:0.74rem;color:var(--text-muted);">注文したもの（1行1品）</label>
                             <textarea id="meal-ordered" class="modern-input" rows="2" style="font-family:inherit;margin-bottom:6px;" placeholder="例:&#10;カフェラテ Tall&#10;ベーグル"></textarea>
                             <div style="display:flex;gap:6px;margin-bottom:4px;">
@@ -6168,6 +6207,7 @@ window.openMealManualModal = async (id = null, seed = null) => {
     $('#meal-memo').value = m.memo || '';
     // 外食情報
     if ($('#meal-restaurant')) $('#meal-restaurant').value = m.restaurant || '';
+    if ($('#meal-restaurant-url')) $('#meal-restaurant-url').value = m.restaurant_url || '';
     if ($('#meal-ordered')) $('#meal-ordered').value = m.ordered_items || '';
     if ($('#meal-price')) $('#meal-price').value = m.price ?? '';
     if ($('#meal-source')) $('#meal-source').value = m.source || '';
@@ -6220,6 +6260,7 @@ window.saveMealFromModal = async () => {
         carbs_g: parseFloat($('#meal-c')?.value || '0') || 0,
         memo: ($('#meal-memo')?.value || '').trim(),
         restaurant: ($('#meal-restaurant')?.value || '').trim(),
+        restaurant_url: ($('#meal-restaurant-url')?.value || '').trim(),
         ordered_items: ($('#meal-ordered')?.value || '').trim(),
         price: parseInt($('#meal-price')?.value || '0', 10) || 0,
         source: $('#meal-source')?.value || '',
@@ -8840,8 +8881,13 @@ const TUTORIAL_SLIDES = [
         <ul>
             <li>📷 写真撮影 → AI が料理名・カロリー・PFC を推定</li>
             <li>✏️ 手動入力も可能</li>
+            <li>📂 <b>保存済みレシピから選択</b>: モーダル上部のプルダウンで、ストックリンクに保存したレシピを引き出して料理名・URL を自動入力</li>
+            <li>📍 <b>外食情報に店舗URL</b>: Google Maps などの URL を入れると、一覧の店名がタップで店舗ページへ飛ぶリンクになります</li>
+            <li>🔗 メモ欄に貼った URL（レシピなど）は自動でクリック可能なリンクに変換</li>
+            <li>◀ ▶ で日付を移動。📅 「履歴」で月単位カレンダーから過去日を表示</li>
             <li>🥗 1 日の合計カロリー・PFC をカード上部に表示</li>
             <li>💬「アドバイス」ボタンで栄養バランスのフィードバック</li>
+            <li>🍳「献立提案」で過去の食事履歴と空白期間から次のごはん候補を提案</li>
         </ul>`
     },
     {
@@ -8880,9 +8926,10 @@ const TUTORIAL_SLIDES = [
         target: 'log',
         body: `<p>ログタブの最上部に「今日の記録」グループとして並びます。</p>
         <ul>
-            <li>📅 <b>今日の振り返り</b>: 毎晩22:00にマネージャーが質問→チャット内の回答欄で答える→翌日の質問が来るまで回答を更新可能。回答後22:00サイクルでサマリー生成・Obsidianへ保存。</li>
+            <li>📅 <b>今日の振り返り</b>: 毎晩22:00にマネージャーが質問→チャット内の回答欄で全部答えると <b>自動でサマリー生成・Obsidianへ保存</b>（確定保存ボタンを押す必要なし）。残った質問を放置した場合はカード上の「✓ 確定保存」で強制保存も可能。</li>
             <li>📔 <b>デイリーノート</b>: Obsidian の DailyNotes。「編集」ボタンで内容を書き換え可能</li>
             <li>📒 <b>マネージャーの気づき</b>: 対話から見つけた傾向・パターンの観察ノート</li>
+            <li>🎨 3カードとも左ボーダー付きで見た目を統一</li>
             <li>📨 <b>マネージャー通知ログ</b>: 朝刊ニュース・地合いなどの長文配信。未読バッジ・既読/未読切替・削除ボタン付き。</li>
         </ul>`
     },
@@ -8892,7 +8939,7 @@ const TUTORIAL_SLIDES = [
         body: `<p>予定タブのカードは次の順に並びます。</p>
         <ul>
             <li>🎯 <b>今日のMIT</b> — 今日必ず終わらせたい3件</li>
-            <li>🚀 <b>次のアクション</b> — マネージャーが提案する次の一手（情報タブから移設）</li>
+            <li>🚀 <b>次のアクション</b> — マネージャーが提案する次の一手。タスクへは <b>自動登録されず</b>、夜の整理メッセージにボタン形式で出るので、タップ承認で初めて Google Tasks に追加されます。</li>
             <li>📅 <b>カレンダー</b> — Google Calendar の今日の予定</li>
             <li>💼/🏠 <b>仕事 / プライベート</b> — Google Tasks</li>
         </ul>`
@@ -8925,7 +8972,7 @@ const TUTORIAL_SLIDES = [
         body: `<p>日本株を機械的にフィルタして、注目銘柄を保存できます。</p>
         <ul>
             <li>🔎 「じわじわ高値ブレイク / バリュー / グロース」のスタイル別スクリーニング</li>
-            <li>🕯️ じわじわ高値ブレイクは <b>上ひげ・下ひげが長くない</b>ことも条件に含めて騙しを抑制</li>
+            <li>🕯️ じわじわ高値ブレイクは <b>連続陽線 ≥3本</b>＋<b>上ひげ・下ひげが長くない</b>ことも条件に含めて騙しを抑制</li>
             <li>🔗 複数スタイルの <b>AND/OR 検索</b>: AND は完全一致が無くてもマッチしたスタイル数の多い順に top N を表示</li>
             <li>🔀 <b>別スタイルで再評価</b>：機械スクリーニング結果に対し、別スタイル（例：バリュー）の合否を一括チェック</li>
             <li>⭐ 結果から「注目」ボタンでウォッチリストに追加</li>
@@ -8941,7 +8988,8 @@ const TUTORIAL_SLIDES = [
             <li>未読件数バッジ・未読カードのハイライト・カテゴリアイコン・相対時刻表示</li>
             <li>カードを展開すると自動で既読化。「◯ 未読」ボタンで未読に戻せます</li>
             <li>「🗑 削除」ボタンで個別削除</li>
-            <li>保有銘柄ニュース朝刊は <b>前回からの変化分のみ</b> 配信されます（毎日同じ記事は出ません）</li>
+            <li>保有銘柄ニュース朝刊は <b>前回からの変化分のみ</b> 配信されます（毎日同じ記事は出ません）。さらに AI が <b>取り上げるべきニュースがある銘柄だけ</b> を抜き出し、好材料／悪材料／中立と今後の影響を 2〜4 行で要約した <b>短いダイジェスト形式</b> で届きます。</li>
+            <li>📍 22:30 の「ロケーション履歴エクスポート促し」「同期完了」通知には <b>「ロケーションログを開く」ボタン</b> が付きます。タップでログタブのロケーションログカードへジャンプ。</li>
         </ul>`
     },
     {

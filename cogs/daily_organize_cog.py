@@ -119,29 +119,39 @@ class DailyOrganizeCog(commands.Cog):
 
         await self._execute_organization(result, today_str)
 
-        if result.get("next_actions") and self.tasks_service:
+        # 「次のアクション」は自動でタスク登録せず、チャット上で個別に承認してもらう。
+        # [ACTION:task_add:...] をメッセージ末尾に付けることで、UI 側で「タスクに追加するね、OK？」
+        # ボタンとしてレンダリングされ、ユーザーがタップするまで Google Tasks へは書き込まれない。
+        proposed_actions: list[str] = []
+        if result.get("next_actions"):
             for act_data in result["next_actions"]:
                 if isinstance(act_data, str):
                     act_title = re.sub(r"^-\s*", "", act_data).strip()
-                    list_name = None
+                    list_name = ""
                 elif isinstance(act_data, dict):
-                    act_title = act_data.get("title", "").strip()
-                    list_name = act_data.get("list")
+                    act_title = (act_data.get("title") or "").strip()
+                    list_name = (act_data.get("list") or "").strip()
                 else:
                     continue
-
-                if act_title:
-                    try:
-                        await self.tasks_service.add_task(
-                            title=act_title, list_name=list_name
-                        )
-                    except Exception as e:
-                        logging.error(f"Google Tasks自動登録エラー: {e}")
+                if not act_title:
+                    continue
+                # ACTION ペイロードは `|` と `=` を含むため、タイトル中のそれらは除去する
+                safe_title = act_title.replace("|", " ").replace("=", " ")
+                safe_list = list_name.replace("|", " ").replace("=", " ")
+                proposed_actions.append(
+                    f"[ACTION:task_add:title={safe_title}|list_name={safe_list}]"
+                )
 
         send_msg = result.get(
             "message",
             "（今日の会話とデータをノートにまとめたよ🌙 今日も一日お疲れ様、おやすみ！）",
         )
+        if proposed_actions:
+            send_msg = (
+                send_msg.rstrip()
+                + "\n\n📝 次のアクション候補だよ。タスクに追加していい？\n"
+                + "\n".join(proposed_actions)
+            )
         try:
             from api.notification_service import save_message_and_notify as _save_msg
             await _save_msg("assistant", send_msg, proactive=True)
