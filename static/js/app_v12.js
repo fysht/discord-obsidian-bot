@@ -9864,6 +9864,8 @@ window.runScreener = async () => {
     const minMcapOku = parseInt($('#screener-min-mcap')?.value || '0', 10);
     const minMcapJpy = (minMcapOku && minMcapOku > 0) ? minMcapOku * 100000000 : null;
 
+    // 新しいスクリーニングを開始するので、前回のジョブ ID は破棄する
+    try { localStorage.removeItem(SCREENER_ACTIVE_JOB_KEY); } catch {}
     _renderScreenerResults('スクリーニングをキューに登録中...');
     _showScreenerProgress('キューに登録中...', 5);
     _setScreenerAnalyzeEnabled(false);
@@ -9894,12 +9896,14 @@ window.runScreener = async () => {
         }
         const jobId = startData.job_id;
         try { localStorage.setItem(SCREENER_ACTIVE_JOB_KEY, jobId); } catch {}
-        _renderScreenerResults(
-            `<div style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;background:rgba(78,161,255,0.08);font-size:0.82rem;color:var(--text-secondary);">
-                🕒 スクリーニングをバックグラウンドで実行中… (job: <code>${escapeHtml(jobId)}</code>)<br>
-                <span style="color:var(--text-muted);font-size:0.78rem;">アプリを離れても大丈夫。完了したらプッシュ通知でお知らせします。</span>
-            </div>`
-        );
+        _renderScreenerStatusBox({
+            icon: '🕒',
+            title: 'スクリーニングをバックグラウンドで実行中…',
+            jobId,
+            hint: 'アプリを離れても大丈夫。完了したらプッシュ通知でお知らせします。',
+            accent: 'rgba(78,161,255,0.5)',
+            bg: 'rgba(78,161,255,0.08)',
+        });
         _showScreenerProgress('実行中…', 10);
         _startScreenerJobPolling(jobId, { showToast: true });
     } catch (e) {
@@ -9931,10 +9935,11 @@ function _startScreenerJobPolling(jobId, opts = {}) {
                 return;
             }
             _stopScreenerJobPolling();
-            try { localStorage.removeItem(SCREENER_ACTIVE_JOB_KEY); } catch {}
             if (status === 'error') {
+                // エラー時のみ localStorage をクリア。done は次回復元できるよう残す。
+                try { localStorage.removeItem(SCREENER_ACTIVE_JOB_KEY); } catch {}
                 _hideScreenerProgress();
-                _renderScreenerResults(`エラー: ${escapeHtml(data.error || '失敗しました')}`);
+                _renderScreenerResults(`エラー: ${data.error || '失敗しました'}`);
                 if (notifyOnDone) showToast(`スクリーニング失敗: ${data.error || ''}`, true);
                 return;
             }
@@ -9968,6 +9973,21 @@ function _startScreenerJobPolling(jobId, opts = {}) {
     _screenerPollTimer = setInterval(poll, 5000);
 }
 
+// HTML 文字列で「実行中／完了済み」などのステータスボックスを描画する。
+// _renderScreenerResults は文字列を escapeHtml するため直接 innerHTML を書く。
+function _renderScreenerStatusBox({ icon, title, jobId, hint, accent, bg }) {
+    const el = $('#screener-results');
+    if (!el) return;
+    const safeJob = jobId ? escapeHtml(jobId) : '';
+    el.innerHTML = `
+        <div style="padding:10px 12px;border:1px solid ${accent || 'var(--border-glass)'};border-radius:8px;background:${bg || 'rgba(255,255,255,0.04)'};font-size:0.85rem;line-height:1.5;color:var(--text-primary);">
+            <div style="font-weight:700;margin-bottom:4px;">${escapeHtml(icon || '')} ${escapeHtml(title || '')}</div>
+            ${safeJob ? `<div style="font-size:0.74rem;color:var(--text-muted);">job: <code>${safeJob}</code></div>` : ''}
+            ${hint ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:6px;">${escapeHtml(hint)}</div>` : ''}
+        </div>
+    `;
+}
+
 // ページ復帰時 / 投資タブ表示時に未完了ジョブがあれば自動でポーリング再開
 window.resumeScreenerJobIfAny = () => {
     let jobId = null;
@@ -9978,11 +9998,14 @@ window.resumeScreenerJobIfAny = () => {
         jobId = localStorage.getItem(SCREENER_ACTIVE_JOB_KEY);
     }
     if (!jobId) return;
-    _renderScreenerResults(
-        `<div style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;background:rgba(78,161,255,0.08);font-size:0.82rem;color:var(--text-secondary);">
-            🕒 前回のスクリーニング (job: <code>${escapeHtml(jobId)}</code>) の状況を確認中…
-        </div>`
-    );
+    _renderScreenerStatusBox({
+        icon: '🕒',
+        title: '前回のスクリーニングの状況を確認中…',
+        jobId,
+        hint: '結果が見つかれば自動で表示します。',
+        accent: 'rgba(78,161,255,0.5)',
+        bg: 'rgba(78,161,255,0.08)',
+    });
     _showScreenerProgress('状況確認中…', 10);
     _startScreenerJobPolling(jobId, { showToast: false });
 };
