@@ -100,6 +100,25 @@ async def screener_run(req: ScreenerRunRequest):
     return _json_sanitize(result)
 
 
+@router.post("/run_async", dependencies=[Depends(verify_api_key)])
+async def screener_run_async(req: ScreenerRunRequest):
+    """機械スクリーニングをバックグラウンドで起動。job_id を返すので、
+    /jobs/{job_id} で進捗をポーリングする。完了時に Push 通知が飛ぶ。"""
+    cog = _get_screener_cog()
+    styles = req.styles or ([req.style] if req.style else [])
+    if not styles:
+        raise HTTPException(status_code=422, detail="styles または style を1つ以上指定してください")
+    return await cog.start_machine_screening(
+        styles=styles,
+        top_n=req.top_n,
+        universe_name=req.universe,
+        min_market_cap_jpy=req.min_market_cap_jpy,
+        exclude_sectors=req.exclude_sectors,
+        filter_overrides=req.filter_overrides,
+        combine_mode=req.combine_mode,
+    )
+
+
 @router.post("/analyze", dependencies=[Depends(verify_api_key)])
 async def screener_analyze(req: ScreenerAnalyzeRequest):
     cog = _get_screener_cog()

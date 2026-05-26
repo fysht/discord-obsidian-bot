@@ -233,6 +233,134 @@ class ScreenerCog(commands.Cog):
         }
 
     # ==========================================================
+    # 非同期 API (Phase A: 機械スクリーニングをバックグラウンドで)
+    # ==========================================================
+
+    async def start_machine_screening(
+        self,
+        styles: list[str],
+        top_n: int = 10,
+        universe_name: str = "topix500",
+        min_market_cap_jpy: Optional[int] = None,
+        exclude_sectors: Optional[list[str]] = None,
+        filter_overrides: Optional[dict[str, list[str]]] = None,
+        combine_mode: str = "any",
+    ) -> dict:
+        """機械スクリーニング (Phase A) をバックグラウンドで実行し job_id を返す。
+        全銘柄ユニバースのように時間がかかるケース向け。完了時に Push 通知。"""
+        from api.database import screener_job_count_active, screener_job_create
+        import json as _json
+
+        if not styles:
+            return {"ok": False, "error": "スタイルを1つ以上指定してください"}
+
+        active = await screener_job_count_active()
+        if active >= MAX_CONCURRENT_JOBS:
+            return {
+                "ok": False,
+                "error": f"既に {active} 件のジョブが実行中です。完了をお待ちください。",
+            }
+
+        style_key = "machine:" + ",".join(styles)
+        job_id = f"scrA_{datetime.datetime.now(JST).strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+        # candidates_json にリクエスト条件もメタとして保持しておく（再現用）
+        await screener_job_create(job_id, style_key, 0)
+
+        request_meta = {
+            "styles": styles,
+            "top_n": int(top_n),
+            "universe": universe_name,
+            "min_market_cap_jpy": min_market_cap_jpy,
+            "exclude_sectors": exclude_sectors or [],
+            "filter_overrides": filter_overrides or {},
+            "combine_mode": combine_mode,
+        }
+        try:
+            from api.database import screener_job_update
+            await screener_job_update(job_id, candidates_json=_json.dumps(
+                {"_request": request_meta}, ensure_ascii=False,
+            ))
+        except Exception:
+            pass
+
+        from utils.async_utils import safe_create_task
+        safe_create_task(
+            self._run_machine_screening_job(
+                job_id=job_id,
+                styles=styles, top_n=top_n, universe_name=universe_name,
+                min_market_cap_jpy=min_market_cap_jpy,
+                exclude_sectors=exclude_sectors,
+                filter_overrides=filter_overrides,
+                combine_mode=combine_mode,
+            ),
+            name=f"screener_machine_{job_id}",
+        )
+
+        return {
+            "ok": True,
+            "job_id": job_id,
+            "status": "queued",
+            "universe": universe_name,
+        }
+
+    async def _run_machine_screening_job(
+        self,
+        job_id: str,
+        styles: list[str],
+        top_n: int,
+        universe_name: str,
+        min_market_cap_jpy: Optional[int],
+        exclude_sectors: Optional[list[str]],
+        filter_overrides: Optional[dict[str, list[str]]],
+        combine_mode: str,
+    ) -> None:
+        from api.database import screener_job_update
+        import json as _json
+        try:
+            await screener_job_update(job_id, status="running")
+            result = await self.run_multi_screening(
+                styles=styles,
+                top_n=top_n,
+                universe_name=universe_name,
+                min_market_cap_jpy=min_market_cap_jpy,
+                exclude_sectors=exclude_sectors,
+                filter_overrides=filter_overrides,
+                combine_mode=combine_mode,
+            )
+            payload = _json.dumps(result, ensure_ascii=False, default=str)
+            if not result.get("ok"):
+                await screener_job_update(
+                    job_id, status="error",
+                    error=str(result.get("error") or "失敗しました"),
+                    candidates_json=payload,
+                )
+                return
+            await screener_job_update(
+                job_id, status="done",
+                candidates_json=payload,
+                progress_current=int(result.get("scanned") or 0),
+                progress_total=int(result.get("scanned") or 0),
+            )
+            # Push 通知
+            try:
+                from api import notification_service
+                n = len(result.get("candidates") or [])
+                style_display = result.get("style_display") or " / ".join(styles)
+                await notification_service.send_push(
+                    title=f"🔎 スクリーニング完了 ({style_display})",
+                    body=f"{n} 銘柄が条件を通過しました。アプリを開いて結果を確認してください。",
+                    url=f"/?tab=invest&screener_job={job_id}",
+                )
+            except Exception as e:
+                logging.debug(f"machine screening push notify error: {e}")
+        except Exception as e:
+            logging.exception("machine screening job failed")
+            try:
+                await screener_job_update(job_id, status="error", error=str(e))
+            except Exception:
+                pass
+
+    # ==========================================================
     # 非同期 API (Phase B/C: Gemini 質的分析)
     # ==========================================================
 
@@ -287,9 +415,22 @@ class ScreenerCog(commands.Cog):
 
     async def get_job_status(self, job_id: str) -> dict:
         from api.database import screener_job_get
+        import json as _json
         job = await screener_job_get(job_id)
         if not job:
             return {"ok": False, "error": "ジョブが見つかりません"}
+        # machine スクリーニング（Phase A 非同期）の場合は candidates_json が
+        # `run_multi_screening` の全結果なので、そのまま展開してフロントへ返す。
+        result_payload = None
+        cj = (job.get("candidates_json") or "").strip()
+        if cj:
+            try:
+                parsed = _json.loads(cj)
+                # _request はメタ情報。実結果は ok キーで判別
+                if isinstance(parsed, dict) and "ok" in parsed:
+                    result_payload = parsed
+            except Exception:
+                result_payload = None
         return {
             "ok": True,
             "status": job["status"],
@@ -301,6 +442,7 @@ class ScreenerCog(commands.Cog):
             "saved_as": job.get("saved_as", ""),
             "report_markdown": job.get("report_markdown", ""),
             "error": job.get("error", ""),
+            "result": result_payload,
         }
 
     async def _run_qualitative_job(

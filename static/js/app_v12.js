@@ -648,6 +648,8 @@ function switchTab(tab) {
         if (typeof loadWatchlist === 'function') loadWatchlist();
         if (typeof loadJournalList === 'function') loadJournalList();
         if (typeof loadAlertsList === 'function') loadAlertsList();
+        // バックグラウンドで実行中のスクリーニングがあればポーリング再開
+        if (typeof resumeScreenerJobIfAny === 'function') resumeScreenerJobIfAny();
     }
 }
 
@@ -4332,6 +4334,19 @@ function initMain() {
     const sharedUrl = params.get('url') || '';
     const sharedText = params.get('text') || '';
     const sharedTitle = params.get('title') || '';
+
+    // スクリーニング完了のプッシュ通知から起動: 投資タブを開き、ジョブ結果をポーリング再開
+    const screenerJob = params.get('screener_job') || '';
+    const wantInvestTab = params.get('tab') === 'invest' || !!screenerJob;
+    if (wantInvestTab && apiKey) {
+        setTimeout(() => {
+            switchTab('invest');
+            if (screenerJob) {
+                try { localStorage.setItem(SCREENER_ACTIVE_JOB_KEY, screenerJob); } catch {}
+                if (typeof resumeScreenerJobIfAny === 'function') resumeScreenerJobIfAny();
+            }
+        }, 600);
+    }
 
     // 朝の MIT 提案: プッシュ通知から起動された場合（?openMorningMit=1）はモーダルを開く
     const wantMorningMit = params.get('openMorningMit') === '1';
@@ -9836,6 +9851,9 @@ function _setScreenerProgressDone(label = '完了') {
     setTimeout(() => _hideScreenerProgress(), 800);
 }
 
+const SCREENER_ACTIVE_JOB_KEY = 'screener_active_job_id';
+let _screenerPollTimer = null;
+
 window.runScreener = async () => {
     if (_screenerSelectedStyles.size === 0) {
         showToast('スタイルを1つ以上選んでください', true);
@@ -9846,9 +9864,8 @@ window.runScreener = async () => {
     const minMcapOku = parseInt($('#screener-min-mcap')?.value || '0', 10);
     const minMcapJpy = (minMcapOku && minMcapOku > 0) ? minMcapOku * 100000000 : null;
 
-    _renderScreenerResults('スクリーニング中...');
-    _showScreenerProgress('スクリーニング中...', 5);
-    _startScreenerFakeProgress(92, 700);
+    _renderScreenerResults('スクリーニングをキューに登録中...');
+    _showScreenerProgress('キューに登録中...', 5);
     _setScreenerAnalyzeEnabled(false);
 
     try {
@@ -9862,30 +9879,112 @@ window.runScreener = async () => {
             }
         }
         if (Object.keys(filter_overrides).length) body.filter_overrides = filter_overrides;
-        const data = await apiFetch('/api/investment/screener/run', { method: 'POST', body: JSON.stringify(body) });
-        _setScreenerProgressDone('スクリーニング完了');
-        if (!data || !data.ok) {
-            const err = (data && (data.error || data.detail)) || '失敗しました';
+        // バックグラウンドジョブとして実行。完了時にプッシュ通知が飛ぶので
+        // ユーザーは別タブ・別アプリへ離れて構わない。
+        const startData = await apiFetch('/api/investment/screener/run_async', {
+            method: 'POST',
+            body: JSON.stringify(body),
+        });
+        if (!startData || !startData.ok) {
+            const err = (startData && (startData.error || startData.detail)) || '失敗しました';
+            _hideScreenerProgress();
             _renderScreenerResults(`エラー: ${err}`);
-            showToast(`スクリーニング失敗: ${err}`, true);
+            showToast(`起動失敗: ${err}`, true);
             return;
         }
-        _screenerCandidates = data.candidates || [];
-        _screenerLastResult = data;
-        _screenerLastQualitativeReport = null;
-        _clearQualitativeResult();
-        _renderScreenerCandidates(data);
-        _setScreenerAnalyzeEnabled(_screenerCandidates.length > 0);
-        _updateScreenerSaveButton();
-        if (data.used_near_miss) {
-            showToast(`条件通過なし。代わりに「条件に近い銘柄」${_screenerCandidates.length} 件を表示`, true);
-        } else {
-            showToast(`${_screenerCandidates.length} 銘柄が条件を通過しました`);
-        }
+        const jobId = startData.job_id;
+        try { localStorage.setItem(SCREENER_ACTIVE_JOB_KEY, jobId); } catch {}
+        _renderScreenerResults(
+            `<div style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;background:rgba(78,161,255,0.08);font-size:0.82rem;color:var(--text-secondary);">
+                🕒 スクリーニングをバックグラウンドで実行中… (job: <code>${escapeHtml(jobId)}</code>)<br>
+                <span style="color:var(--text-muted);font-size:0.78rem;">アプリを離れても大丈夫。完了したらプッシュ通知でお知らせします。</span>
+            </div>`
+        );
+        _showScreenerProgress('実行中…', 10);
+        _startScreenerJobPolling(jobId, { showToast: true });
     } catch (e) {
         _hideScreenerProgress();
         _renderScreenerResults(`通信エラー: ${e.message || e}`);
     }
+};
+
+function _stopScreenerJobPolling() {
+    if (_screenerPollTimer) {
+        clearInterval(_screenerPollTimer);
+        _screenerPollTimer = null;
+    }
+}
+
+function _startScreenerJobPolling(jobId, opts = {}) {
+    _stopScreenerJobPolling();
+    const notifyOnDone = opts.showToast !== false;
+    const poll = async () => {
+        try {
+            const data = await apiFetch(`/api/investment/screener/jobs/${encodeURIComponent(jobId)}`);
+            if (!data || !data.ok) {
+                _stopScreenerJobPolling();
+                return;
+            }
+            const status = data.status;
+            if (status === 'running' || status === 'queued') {
+                _showScreenerProgress(status === 'queued' ? 'キュー待機中…' : '実行中…', 25);
+                return;
+            }
+            _stopScreenerJobPolling();
+            try { localStorage.removeItem(SCREENER_ACTIVE_JOB_KEY); } catch {}
+            if (status === 'error') {
+                _hideScreenerProgress();
+                _renderScreenerResults(`エラー: ${escapeHtml(data.error || '失敗しました')}`);
+                if (notifyOnDone) showToast(`スクリーニング失敗: ${data.error || ''}`, true);
+                return;
+            }
+            // done
+            const result = data.result;
+            if (!result || !result.ok) {
+                _hideScreenerProgress();
+                _renderScreenerResults('結果が取得できませんでした。');
+                return;
+            }
+            _setScreenerProgressDone('スクリーニング完了');
+            _screenerCandidates = result.candidates || [];
+            _screenerLastResult = result;
+            _screenerLastQualitativeReport = null;
+            _clearQualitativeResult();
+            _renderScreenerCandidates(result);
+            _setScreenerAnalyzeEnabled(_screenerCandidates.length > 0);
+            _updateScreenerSaveButton();
+            if (notifyOnDone) {
+                if (result.used_near_miss) {
+                    showToast(`条件通過なし。代わりに「条件に近い銘柄」${_screenerCandidates.length} 件を表示`, true);
+                } else {
+                    showToast(`${_screenerCandidates.length} 銘柄が条件を通過しました`);
+                }
+            }
+        } catch (e) {
+            // ネットワーク一時障害ではポーリングを止めない（最大数分は再試行可）
+        }
+    };
+    poll();
+    _screenerPollTimer = setInterval(poll, 5000);
+}
+
+// ページ復帰時 / 投資タブ表示時に未完了ジョブがあれば自動でポーリング再開
+window.resumeScreenerJobIfAny = () => {
+    let jobId = null;
+    try {
+        const url = new URL(window.location.href);
+        jobId = url.searchParams.get('screener_job') || localStorage.getItem(SCREENER_ACTIVE_JOB_KEY);
+    } catch {
+        jobId = localStorage.getItem(SCREENER_ACTIVE_JOB_KEY);
+    }
+    if (!jobId) return;
+    _renderScreenerResults(
+        `<div style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;background:rgba(78,161,255,0.08);font-size:0.82rem;color:var(--text-secondary);">
+            🕒 前回のスクリーニング (job: <code>${escapeHtml(jobId)}</code>) の状況を確認中…
+        </div>`
+    );
+    _showScreenerProgress('状況確認中…', 10);
+    _startScreenerJobPolling(jobId, { showToast: false });
 };
 
 function _renderScreenerCandidates(data) {
