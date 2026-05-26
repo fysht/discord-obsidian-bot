@@ -379,11 +379,16 @@ class LocationLogCog(commands.Cog):
                 if partner_cog:
                     context = f"ロケーション履歴を同期した日付: {dates_str}"
                     await partner_cog.generate_and_send_routine_message(
-                        context, PROMPT_LOCATION_SYNC
+                        context,
+                        PROMPT_LOCATION_SYNC + "\n\n出力の末尾に必ず `[ACTION:open_location_log]` を改行して追記してください。",
                     )
                 else:
                     from api.notification_service import save_message_and_notify as _save_msg
-                    await _save_msg("assistant", f"📍 {dates_str} の移動記録を保存したよ！", proactive=True)
+                    await _save_msg(
+                        "assistant",
+                        f"📍 {dates_str} の移動記録を保存したよ！\n[ACTION:open_location_log]",
+                        proactive=True,
+                    )
 
     @process_timeline_json.before_loop
     async def before_process(self):
@@ -411,7 +416,8 @@ class LocationLogCog(commands.Cog):
             "次の文章をユーザーに優しいタメ口で送信してください。改変せずほぼそのまま送ってください。\n\n"
             "📍 今日のロケーション履歴をエクスポートしてDriveの`Timeline/`フォルダにアップロードしておいてね！"
             "（Google Maps タイムライン → 共有 → JSON エクスポート）\n"
-            "23:55のデイリー整理までに保存しておけば、移動記録が自動で今日のノートに反映されるよ🌙"
+            "23:55のデイリー整理までに保存しておけば、移動記録が自動で今日のノートに反映されるよ🌙\n"
+            "[ACTION:open_location_log]"
         )
         try:
             await partner_cog.generate_and_send_routine_message("", instruction)

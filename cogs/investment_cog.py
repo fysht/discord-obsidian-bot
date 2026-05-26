@@ -53,6 +53,7 @@ from prompts import (
     PROMPT_CEO_CROSSCHECK,
     PROMPT_PEER_COMPARISON,
     PROMPT_NEWS_SENTIMENT,
+    PROMPT_NEWS_DIGEST,
     PROMPT_JOURNAL_PATTERN,
     PROMPT_CONSTITUTION_REVIEW,
     PROMPT_DIVIDEND_SCHEDULE,
@@ -531,7 +532,15 @@ class InvestmentCog(commands.Cog):
             await asyncio.sleep(2)
 
         if sections:
-            body = "\n\n---\n\n".join(sections)
+            raw_body = "\n\n---\n\n".join(sections)
+            yesterday = (datetime.datetime.now(JST).date() - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+            digest = ""
+            try:
+                digest_prompt = PROMPT_NEWS_DIGEST.format(yesterday=yesterday, reports=raw_body)
+                digest = await self._gemini_plain(digest_prompt, feature_key="news_sentiment")
+            except Exception:
+                logging.exception("auto_news_sentiment: digest 生成失敗。生データで通知します。")
+            body = (digest or "").strip() or raw_body
             await self._notify_long(
                 "news_sentiment", "保有銘柄ニュース（前日分）", body
             )

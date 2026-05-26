@@ -81,6 +81,26 @@ class TechnicalSignals:
         return int(mask.sum())
 
     @staticmethod
+    def consecutive_bullish_candles(open_s, close, lookback: int = 10) -> int:
+        """最新の足から遡って連続している陽線（Close > Open）の本数を返す。"""
+        if open_s is None or close is None:
+            return 0
+        n = min(len(open_s), len(close), lookback)
+        if n <= 0:
+            return 0
+        cnt = 0
+        for i in range(1, n + 1):
+            o = float(open_s.iloc[-i])
+            c = float(close.iloc[-i])
+            if o != o or c != c:
+                break
+            if c > o:
+                cnt += 1
+            else:
+                break
+        return cnt
+
+    @staticmethod
     def volume_surge_ratio(volume, short: int = 5, long: int = 20) -> float:
         if len(volume) < long:
             return 1.0
@@ -327,6 +347,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
         FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
         # 【トレンド】じわじわ上昇している
         FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", True),
+        FilterDef("bullish_streak", "連続陽線 ≥3本", "直近で陽線が続いている", True),
         FilterDef("ret_5d", "直近5日リターン 0〜+15%", "短期上昇しているが過熱なし", True),
         FilterDef("vol_increase", "出来高比率 5日/20日 ≥1.10x", "出来高がじわじわ増加", True),
         # 【品質】過熱なし・低ボラ
@@ -389,6 +410,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
         ret_5d = TechnicalSignals.return_pct(close, 5)
 
         open_s = df["Open"] if "Open" in df.columns else close
+        bullish_streak = TechnicalSignals.consecutive_bullish_candles(open_s, close, 10)
         avg_upper_wick, avg_lower_wick = TechnicalSignals.avg_wick_ratio(open_s, high, low, close, n=10)
         short_upper = avg_upper_wick <= 0.35
         short_lower = avg_lower_wick <= 0.35
@@ -405,6 +427,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
             ),
             # 【トレンド】じわじわ上昇
             Signal("連続上昇日数 ≥3日（+0.5〜+3%）", f"{up_days}日", "≥3日", up_days >= 3),
+            Signal("連続陽線 ≥3本", f"{bullish_streak}本", "≥3本", bullish_streak >= 3),
             Signal("直近5日リターン 0〜+15%", f"{ret_5d * 100:+.2f}%", "0%〜+15%", 0 <= ret_5d <= 0.15),
             Signal("出来高比率 5日/20日 ≥1.10x", f"{vol_ratio:.2f}x", "≥1.10x", vol_ratio >= 1.10),
             # 【品質】過熱なし・低ボラ
@@ -416,7 +439,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
         ]
         signal_keys = [
             "near_high", "new_high", "above_sma200",
-            "up_days", "ret_5d", "vol_increase",
+            "up_days", "bullish_streak", "ret_5d", "vol_increase",
             "low_volatility", "no_big_pop", "no_prev_low_break",
             "short_upper_wick", "short_lower_wick",
         ]

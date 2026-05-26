@@ -212,7 +212,68 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
     except Exception as e:
         logging.error(f"morning_mit answer 反映エラー: {e}")
 
-    return {"status": "success"}
+    # summary スコープの質問に答え終わったら自動で Obsidian へ確定保存する。
+    # （旧仕様では「✓ 確定保存」を押すまで保存されなかったため、
+    #   UI 上「保存済み（編集可）」と見えても振り返りカードは更新されない問題があった）
+    auto_finalized = False
+    try:
+        target_q = await _find_question_by_id(qid)
+        if target_q and target_q.get("scope") == "summary":
+            date_for_q = target_q["date"]
+            all_qs = await get_questions_by_date(date_for_q, scope="summary")
+            still_pending = [q for q in all_qs if q.get("status") == "pending"]
+            if not still_pending:
+                # 回答を {qid: answer} の dict にして再生成 → 保存
+                answers_map = {str(q["id"]): q.get("answer") or "" for q in all_qs}
+                auto_finalized = await _auto_finalize_summary(date_for_q, answers_map)
+    except Exception as e:
+        logging.error(f"summary auto-finalize エラー: {e}")
+
+    return {"status": "success", "auto_finalized": auto_finalized}
+
+
+async def _find_question_by_id(qid: int):
+    """指定 ID の質問（resolved 含む）を取得する小ヘルパー。
+    現状の DB API には `get question by id` がないので、pending と直近の
+    summary scope から探す。"""
+    for q in await get_pending_questions():
+        if q.get("id") == qid:
+            return q
+    today = datetime.datetime.now(JST).date()
+    for offset in range(0, 3):
+        d = (today - datetime.timedelta(days=offset)).strftime("%Y-%m-%d")
+        for q in await get_questions_by_date(d, scope="summary"):
+            if q.get("id") == qid:
+                return q
+    return None
+
+
+async def _auto_finalize_summary(date_str: str, answers_map: dict) -> bool:
+    """summary 質問が全て答え終わったら呼ぶ：サマリー再生成 → Obsidian 保存 → resolved 化。"""
+    from api.routes import (
+        _generate_daily_summary, _save_daily_summary_to_obsidian, _save_manager_qa_to_obsidian,
+    )
+    try:
+        result = await _generate_daily_summary(date_str, answers=answers_map)
+    except Exception as e:
+        logging.error(f"auto finalize generate エラー: {e}")
+        return False
+    summary = (result.get("summary") or "").strip()
+    if not summary:
+        return False
+    saved = await _save_daily_summary_to_obsidian(date_str, summary)
+    if saved:
+        await _save_manager_qa_to_obsidian(date_str)
+        await resolve_questions(date_str, scope="summary")
+        try:
+            await notification_service.save_message_and_notify(
+                "assistant",
+                "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 アプリの『ログ → 今日の振り返り』から見れるよ🌙",
+                title="📅 デイリーサマリー保存",
+            )
+        except Exception as e:
+            logging.debug(f"auto finalize notify エラー: {e}")
+    return saved
 
 
 @router.delete("/daily_questions/{qid}", dependencies=[Depends(verify_api_key)])

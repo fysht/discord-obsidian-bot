@@ -977,6 +977,7 @@ function describeAction(payload) {
         case 'save_thought_reflection': return `💭 思考整理を保存: ${args.theme || ''}`;
         case 'habit_complete': return `✅ 習慣を完了: ${args.habit_name || ''}`;
         case 'open_notices': return `📨 マネージャー通知ログを開く`;
+        case 'open_location_log': return `📍 ロケーションログを開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
         case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
         default:             return `▶ ${action} を実行`;
@@ -1007,6 +1008,15 @@ window.executeAction = async function(encodedPayload, btn) {
         setTimeout(() => {
             if (typeof loadManagerNotices === 'function') loadManagerNotices();
             const card = document.querySelector('.manager-notice-card');
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        return;
+    }
+    // ナビゲーション系: ロケーションログのカードへ移動
+    if (action === 'open_location_log') {
+        switchTab('log');
+        setTimeout(() => {
+            const card = document.getElementById('dash-location-log-card');
             if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
         return;
@@ -5685,7 +5695,11 @@ window.navMealsDate = (deltaDays) => {
     const cur = _mealsViewDate || _todayStr();
     const d = new Date(cur + 'T00:00:00');
     d.setDate(d.getDate() + deltaDays);
-    _mealsViewDate = d.toISOString().slice(0, 10);
+    // toISOString() は UTC 変換するため JST だと1日ずれる。ローカル日付で組み立てる。
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    _mealsViewDate = `${y}-${m}-${day}`;
     const picker = $('#meals-date-picker');
     if (picker) picker.value = _mealsViewDate;
     loadMeals();
@@ -5985,6 +5999,11 @@ window.openMealManualModal = async (id = null, seed = null) => {
                     <h3 id="meal-edit-title" style="margin-top:0;">🍽 食事を記録</h3>
                     <p id="meal-edit-confidence" style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 8px;"></p>
 
+                    <label style="font-size:0.78rem;color:var(--text-muted);">保存済みレシピから選ぶ（任意）</label>
+                    <select id="meal-recipe-picker" class="modern-input" style="margin-bottom:8px;" onchange="onMealRecipePicked()">
+                        <option value="">— 選択しない —</option>
+                    </select>
+
                     <label style="font-size:0.78rem;color:var(--text-muted);">料理名</label>
                     <input id="meal-name" class="modern-input" style="margin-bottom:8px;" placeholder="例: 唐揚げ定食">
 
@@ -6121,6 +6140,23 @@ window.openMealManualModal = async (id = null, seed = null) => {
         }
     }
 
+    // 保存済みレシピ一覧をプルダウンへ流し込む
+    try {
+        const linksData = await apiFetch('/api/links');
+        const recipes = ((linksData && linksData.links) || []).filter(l => l.type === 'recipe');
+        const picker = $('#meal-recipe-picker');
+        if (picker) {
+            picker.innerHTML = '<option value="">— 選択しない —</option>'
+                + recipes.map(r => `<option value="${r.id}">${escapeHtml(r.title || '(無題)')}</option>`).join('');
+            picker.dataset.recipes = JSON.stringify(recipes.map(r => ({
+                id: r.id, title: r.title || '', url: r.url || '', memo: r.memo || '', summary: r.summary || '',
+            })));
+            picker.value = '';
+        }
+    } catch (e) {
+        // 失敗してもモーダル本体は使えるようにする
+    }
+
     $('#meal-name').value = m.name || '';
     $('#meal-date').value = m.date || _todayStr();
     $('#meal-time').value = m.time || '';
@@ -6144,6 +6180,29 @@ window.openMealManualModal = async (id = null, seed = null) => {
 window.closeMealEditModal = () => {
     $('#meal-edit-modal')?.classList.add('hidden');
     _pendingMealAnalysis = null;
+};
+
+// 保存済みレシピ選択 → 料理名・メモを埋める（既入力は上書きしない）
+window.onMealRecipePicked = () => {
+    const picker = $('#meal-recipe-picker');
+    if (!picker || !picker.value) return;
+    let recipes = [];
+    try { recipes = JSON.parse(picker.dataset.recipes || '[]'); } catch { recipes = []; }
+    const r = recipes.find(x => String(x.id) === String(picker.value));
+    if (!r) return;
+    const nameEl = $('#meal-name');
+    if (nameEl && !nameEl.value.trim()) nameEl.value = r.title || '';
+    const memoEl = $('#meal-memo');
+    if (memoEl && !memoEl.value.trim()) {
+        const parts = [];
+        if (r.url) parts.push(r.url);
+        if (r.summary) parts.push(r.summary);
+        if (r.memo) parts.push(r.memo);
+        memoEl.value = parts.join('\n');
+    }
+    // 自炊と推測
+    const srcEl = $('#meal-source');
+    if (srcEl && !srcEl.value) srcEl.value = '自炊';
 };
 
 window.saveMealFromModal = async () => {
@@ -8070,7 +8129,7 @@ function renderDailyMarkdown(text, opts = {}) {
             if (/^# /.test(line)) return `<div style="margin:6px 0;font-weight:700;font-size:1rem;">${escapeHtml(line.replace(/^# /, ''))}</div>`;
             if (/^[\-*] /.test(line)) return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;">${escapeHtml(line.replace(/^[\-*]\s+/, ''))}</div>`;
             if (line.trim() === '') return '<div style="height:6px;"></div>';
-            return `<div style="font-size:0.88rem;line-height:1.6;">${escapeHtml(line)}</div>`;
+            return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;line-height:1.6;">${escapeHtml(line)}</div>`;
         })
         .join('');
     return dateLabel + html;
