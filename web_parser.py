@@ -2,7 +2,6 @@ import logging
 import os
 import subprocess
 import asyncio
-from playwright.async_api import async_playwright
 from readability import Document
 from markdownify import markdownify as md
 import aiohttp
@@ -12,6 +11,11 @@ import re
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 LOCAL_BROWSER_DIR = os.path.join(PROJECT_ROOT, ".playwright_browsers")
 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = LOCAL_BROWSER_DIR
+
+# Chromium 起動は瞬間的に 100〜200MB 消費する。低メモリ環境（Render 512MB 等）で
+# 同期処理とユーザー操作の Chromium が同時に立ち上がると OOM で落ちるため、
+# ブラウザ起動を 1 つずつに直列化する。
+_BROWSER_LOCK = asyncio.Lock()
 
 
 async def _ensure_browser_installed():
@@ -43,48 +47,58 @@ async def parse_url_with_readability(url: str) -> tuple[str | None, str | None]:
     try:
         await _ensure_browser_installed()
 
-        async with async_playwright() as p:
-            # 【修正1】メモリ不足対策の引数 '--disable-dev-shm-usage' を追加
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
+        # playwright は重い依存なので使用時に遅延 import（起動時の常駐メモリを抑える）
+        from playwright.async_api import async_playwright
 
-            # 【修正2】try...finally で囲み、エラーが起きても確実にブラウザを閉じるようにする
-            try:
-                context = await browser.new_context(
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        # Chromium の同時起動を防ぐ（OOM 対策）。1 つずつ起動・解析・クローズする。
+        async with _BROWSER_LOCK:
+            async with async_playwright() as p:
+                # メモリ不足対策の起動引数。低メモリ環境向けに描画/プロセスを絞る。
+                browser = await p.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--single-process",
+                        "--no-zygote",
+                        "--disable-gpu",
+                        "--disable-extensions",
+                        "--disable-background-networking",
+                    ],
                 )
-                page = await context.new_page()
 
-                # 【修正3】ページ遷移のタイムアウトを45秒に延長
-                await page.goto(url, timeout=45000, wait_until="domcontentloaded")
-
+                # try...finally で囲み、エラーが起きても確実にブラウザを閉じる
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=5000)
-                except Exception:
-                    pass
+                    context = await browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    )
+                    page = await context.new_page()
 
-                content_html = await page.content()
-                page_title = await page.title()
+                    # ページ遷移のタイムアウトは45秒
+                    await page.goto(url, timeout=45000, wait_until="domcontentloaded")
 
-            finally:
-                # どんな状況（タイムアウトなど）でも確実にブラウザを閉じる
-                await browser.close()
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=5000)
+                    except Exception:
+                        pass
 
-            # readabilityで本文抽出
-            doc = Document(content_html)
-            title = page_title if page_title else doc.title()
-            summary_html = doc.summary()
+                    content_html = await page.content()
+                    page_title = await page.title()
 
-            # HTMLをMarkdownに変換
-            markdown_content = md(summary_html, heading_style="ATX")
+                finally:
+                    # どんな状況（タイムアウトなど）でも確実にブラウザを閉じる
+                    await browser.close()
 
-            return title, markdown_content
+        # readabilityで本文抽出
+        doc = Document(content_html)
+        title = page_title if page_title else doc.title()
+        summary_html = doc.summary()
+
+        # HTMLをMarkdownに変換
+        markdown_content = md(summary_html, heading_style="ATX")
+
+        return title, markdown_content
 
     except Exception as e:
         logging.error(f"PlaywrightによるURL解析エラー: {url} -> {e}")

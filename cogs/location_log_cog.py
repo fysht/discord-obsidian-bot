@@ -363,6 +363,8 @@ class LocationLogCog(commands.Cog):
                 for date_str, log_text in logs_by_date.items():
                     if await self._write_to_obsidian(date_str, log_text, force=False):
                         processed_dates.append(date_str)
+                        # 外食らしき滞在を検知したら meal ログ質問を投下（事後の振り返り）
+                        await self._maybe_ask_meal_from_location(date_str, log_text)
 
             timestamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
             await loop.run_in_executor(
@@ -389,6 +391,43 @@ class LocationLogCog(commands.Cog):
                         f"📍 {dates_str} の移動記録を保存したよ！\n[ACTION:open_location_log]",
                         proactive=True,
                     )
+
+    async def _maybe_ask_meal_from_location(self, date_str: str, log_text: str):
+        """その日の滞在記録から、食事時間帯の外食らしき滞在を検知して
+        『〇〇で何を食べた？』の meal ログ質問を投下する（事後の振り返り）。
+        対象は今日のみ。自宅・勤務先・不明は除外。最初の1件だけ。"""
+        if date_str != datetime.now(JST).strftime("%Y-%m-%d"):
+            return
+        import re as _re
+        exclude = {"自宅", "勤務先", "不明な場所"}
+        pat = _re.compile(r"- \*\*(\d{1,2}):(\d{2}) - \d{1,2}:\d{2}\*\* \([^)]*\) 滞在: (.+)")
+        hit = None
+        for m in pat.finditer(log_text or ""):
+            hour = int(m.group(1))
+            place = (m.group(3) or "").strip()
+            if not place or place in exclude:
+                continue
+            if 11 <= hour < 15:
+                hit = ("昼", place)
+                break
+            if 17 <= hour < 22:
+                hit = ("夜", place)
+                break
+        if not hit:
+            return
+        when, place = hit
+        # 「確認するだけ」ログ：入力させず、✓ボタン1タップで外食を記録できる確認メッセージを送る。
+        safe_place = place.replace("|", " ").replace("=", " ").strip()
+        meal_type = "昼食" if when == "昼" else "夕食"
+        msg = (
+            f"🍽 {when}に「{safe_place}」にいたみたいだね。外食した？\n"
+            f"[ACTION:meal_quick:name={safe_place}|meal_type={meal_type}]"
+        )
+        try:
+            from api.notification_service import save_message_and_notify
+            await save_message_and_notify("assistant", msg, proactive=True, title="🍽 外食の記録")
+        except Exception as e:
+            logging.debug(f"location meal confirm error: {e}")
 
     @process_timeline_json.before_loop
     async def before_process(self):

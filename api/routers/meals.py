@@ -105,6 +105,54 @@ async def meals_analyze(req: MealAnalyzeRequest):
         raise HTTPException(status_code=500, detail=f"解析失敗: {str(e)}")
 
 
+async def analyze_meal_text(text: str) -> dict:
+    """テキスト（例:「コーンフレーク」「唐揚げ定食」）から栄養情報を推定して dict を返す。
+    画像版 meals_analyze と同じ JSON 契約を流用し、画像 Part をテキスト Part に差し替えただけ。
+    失敗時は name だけ埋めた最小 dict を返す。"""
+    from google.genai import types as _gt
+    from api import app
+
+    fallback = {"name": (text or "").strip()[:40] or "食事", "meal_type": "",
+                "calories": 0, "protein_g": 0.0, "fat_g": 0.0, "carbs_g": 0.0,
+                "confidence": "low", "memo": ""}
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        return fallback
+
+    now_hour = datetime.datetime.now(JST).hour
+    prompt = (
+        "次の『食べたもの』の説明から栄養情報を推定し、必ず以下の JSON 形式だけを返してください。\n"
+        f"前置きや説明は禁止。現在の時刻は約{now_hour}時。\n\n"
+        f"食べたもの: {text}\n\n"
+        "{\n"
+        '  "name": "料理名（複数なら『+』でつなぐ）",\n'
+        '  "meal_type": "breakfast / lunch / dinner / snack のいずれか（時間帯から best effort）",\n'
+        '  "calories": 推定カロリー(kcal, int),\n'
+        '  "protein_g": タンパク質(g, number),\n'
+        '  "fat_g": 脂質(g, number),\n'
+        '  "carbs_g": 炭水化物(g, number),\n'
+        '  "confidence": "high / medium / low",\n'
+        '  "memo": "気づいたこと（量が多い・野菜が少ない 等）を1行（任意）"\n'
+        "}\n"
+        "情報が乏しいときは confidence='low' とし、数値は控えめに。"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("meal_image", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[_gt.Part.from_text(text=prompt)]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        data = json.loads(response.text)
+        if not (data.get("name") or "").strip():
+            data["name"] = fallback["name"]
+        return data
+    except Exception as e:
+        logging.error(f"analyze_meal_text error: {e}")
+        return fallback
+
+
 @router.post("", dependencies=[Depends(verify_api_key)])
 async def meals_save(req: MealSaveRequest):
     """食事ログを保存。Lifelog にも `- HH:MM 🍽 ...` で追記する。"""

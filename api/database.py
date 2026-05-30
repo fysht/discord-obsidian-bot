@@ -8,19 +8,60 @@ from config import JST
 
 DB_PATH = Path(__file__).parent.parent / "chat_history.db"
 
+def _latest_message_ts(path) -> str:
+    """指定 DB ファイルの messages.timestamp の最大値を返す（取得不可なら空文字）。
+    timestamp は ISO 風文字列なので辞書順比較で新旧を判定できる。"""
+    import sqlite3
+    try:
+        con = sqlite3.connect(str(path))
+        try:
+            cur = con.execute("SELECT MAX(timestamp) FROM messages")
+            row = cur.fetchone()
+        finally:
+            con.close()
+        return row[0] if row and row[0] else ""
+    except Exception:
+        return ""
+
+
 async def restore_db_from_drive(drive_service, drive_folder_id):
-    """Google Driveからchat_history.dbをダウンロードして復元する"""
+    """Google Driveからchat_history.dbをダウンロードして復元する。
+
+    起動毎に無条件で上書きすると、直近のバックアップが間に合っていない場合に
+    ローカルの新しいメッセージが「古いDrive版」で潰され、チャットからメッセージが
+    消える事故が起きる。これを防ぐため、ローカルが存在する場合は Drive 版を一時
+    ファイルに落として「最新メッセージが新しい方」を採用する。"""
+    import os
     try:
         service = drive_service.get_service()
         if not service: return
-        
+
         bot_folder_id = await drive_service.find_file(service, drive_folder_id, ".bot")
         if not bot_folder_id: return
-        
+
         file_id = await drive_service.find_file(service, bot_folder_id, "chat_history.db")
-        if file_id:
+        if not file_id: return
+
+        # ローカルDBが無ければ無条件で復元（ホストのディスクが揮発した直後など）
+        if not DB_PATH.exists():
             await drive_service.download_file(service, file_id, str(DB_PATH))
-            logging.info("[Database] chat_history.dbをGoogle Driveから復元しました。")
+            logging.info("[Database] chat_history.dbをGoogle Driveから復元しました（ローカル無し）。")
+            return
+
+        # ローカルがある場合は新旧比較してから採否を決める
+        tmp_path = str(DB_PATH) + ".drive_tmp"
+        await drive_service.download_file(service, file_id, tmp_path)
+        local_ts = _latest_message_ts(DB_PATH)
+        drive_ts = _latest_message_ts(tmp_path)
+        if drive_ts > local_ts:
+            os.replace(tmp_path, str(DB_PATH))
+            logging.info(f"[Database] Drive版が新しいため復元しました（local={local_ts!r} < drive={drive_ts!r}）。")
+        else:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            logging.info(f"[Database] ローカルの方が新しいため復元をスキップしました（local={local_ts!r} >= drive={drive_ts!r}）。")
     except Exception as e:
         logging.error(f"[Database] リストアに失敗しました: {e}")
 
@@ -840,6 +881,19 @@ async def answer_daily_question(qid: int, answer: str) -> bool:
             "UPDATE daily_questions SET answer = ?, status = 'answered', answered_at = ? "
             "WHERE id = ? AND status IN ('pending', 'answered')",
             (answer, now, qid),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def resolve_question_by_id(qid: int) -> bool:
+    """単一の質問を確定（status='resolved'）にする。
+    記録系スコープ（meal/expense 等）でログ保存が完了した質問を、
+    再回答による二重保存を防ぐために閉じる用途。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE daily_questions SET status = 'resolved' WHERE id = ?",
+            (int(qid),),
         )
         await db.commit()
         return cursor.rowcount > 0

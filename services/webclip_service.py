@@ -5,7 +5,8 @@ import logging
 import aiohttp
 
 from config import JST
-from web_parser import parse_url_with_readability, fetch_maps_info
+# web_parser（playwright/readability 等の重い依存）は起動時の常駐メモリを抑えるため
+# 使用箇所で遅延 import する。
 from utils.obsidian_utils import update_section  # デイリーノート更新用
 
 
@@ -94,6 +95,9 @@ class WebClipService:
         raw_text = ""
         author_name = ""
         map_desc = ""
+
+        # 重い依存を遅延 import（実際に URL 解析が必要になった時だけ読み込む）
+        from web_parser import parse_url_with_readability, fetch_maps_info
 
         if is_youtube:
             yt_info = await self.get_youtube_info(url)

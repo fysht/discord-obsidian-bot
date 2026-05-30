@@ -1,4 +1,4 @@
-const CACHE_NAME = 'secretary-ai-v32';
+const CACHE_NAME = 'secretary-ai-v33';
 const SHARE_CACHE = 'share-target-cache';
 const ASSETS = [
   '/',
@@ -108,23 +108,31 @@ self.addEventListener('push', (event) => {
     try { data = { ...data, ...event.data.json() }; }
     catch (e) { data.body = event.data.text() || data.body; }
   }
-  event.waitUntil(
-    self.registration.showNotification(data.title, {
-      body: data.body,
-      icon: '/static/icons/icon-192.png',
-      badge: '/static/icons/icon-192.png',
-      tag: 'manager-msg',
-      renotify: true,
-      vibrate: [200, 100, 200],
-      data: { url: data.url || '/' },
-    })
-  );
+  const opts = {
+    body: data.body,
+    icon: '/static/icons/icon-192.png',
+    badge: '/static/icons/icon-192.png',
+    tag: 'manager-msg',
+    renotify: true,
+    vibrate: [200, 100, 200],
+    data: { url: data.url || '/', qid: data.qid, answers: data.answers || {} },
+  };
+  // ログ質問の通知アクション（機能E）: ボタンから1タップで回答
+  if (Array.isArray(data.actions) && data.actions.length) {
+    opts.actions = data.actions.slice(0, 2);
+  }
+  event.waitUntil(self.registration.showNotification(data.title, opts));
 });
 
 // Notification click handler — focus existing tab or open new one
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const target = (event.notification.data && event.notification.data.url) || '/';
+  const d = event.notification.data || {};
+  let target = d.url || '/';
+  // アクションボタンが押された場合（機能E）: アプリを deep-link で開き、自動で回答を記録
+  if (event.action && d.qid && d.answers && d.answers[event.action]) {
+    target = `/?logq=${encodeURIComponent(d.qid)}&ans=${encodeURIComponent(d.answers[event.action])}`;
+  }
   event.waitUntil((async () => {
     const allClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of allClients) {

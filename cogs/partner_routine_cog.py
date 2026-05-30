@@ -13,10 +13,7 @@ from prompts import (
     PROMPT_ROUTINE_INACTIVITY,
     PROMPT_ROUTINE_NIGHTLY,
     PROMPT_WEEKEND_STOCK_REVIEW,
-    PROMPT_HABIT_CHECK,
-    PROMPT_ROUTINE_MORNING,
     PROMPT_SPONTANEOUS_CHAT,
-    PROMPT_ROUTINE_TOMORROW,
     PROMPT_ROUTINE_DAILY_REVIEW,
 )
 from services.info_service import InfoService
@@ -31,6 +28,8 @@ class PartnerRoutineCog(commands.Cog):
         self.info_service = getattr(bot, "info_service", InfoService())
         # スケジュール対象タスクの最終実行日（同日重複防止用）
         self._last_run_dates: dict[str, "datetime.date"] = {}
+        # DB バックアップの重複アップロード抑止用（前回バックアップ時の DB mtime）
+        self._last_db_backup_mtime: float = 0.0
 
         for task in [
             self.inactivity_check_task,
@@ -42,6 +41,9 @@ class PartnerRoutineCog(commands.Cog):
             self.update_manual_task,
             self.tomorrow_plan_task,
             self.obsidian_review_task,
+            self.db_backup_task,
+            self.evening_mood_check_task,
+            self.english_quiz_task,
         ]:
             task.start()
 
@@ -56,6 +58,9 @@ class PartnerRoutineCog(commands.Cog):
             self.update_manual_task,
             self.tomorrow_plan_task,
             self.obsidian_review_task,
+            self.db_backup_task,
+            self.evening_mood_check_task,
+            self.english_quiz_task,
         ]:
             task.cancel()
 
@@ -180,17 +185,20 @@ class PartnerRoutineCog(commands.Cog):
             min_t = weather_data.get("min_temp", "N/A")
             news_list = await self.info_service.get_news(limit=3)
 
-        # get_news() は {"title", "link"} の dict リストを返す。文字列が混在しても安全に整形する。
+        # get_news() は {"title", "link"} の dict リストを返す。
+        # 通知カードでは markdown リンクにして「リンクをそのままクリック」できるようにする。
         if news_list:
             _news_lines = []
             for n in news_list:
                 if isinstance(n, dict):
-                    _news_lines.append(f"- {n.get('title', '')}")
+                    title = n.get("title", "")
+                    link = n.get("link", "")
+                    _news_lines.append(f"- [{title}]({link})" if link else f"- {title}")
                 else:
                     _news_lines.append(f"- {n}")
             news_text = "\n".join(_news_lines)
         else:
-            news_text = "（ニュースを取得できませんでした）"
+            news_text = ""
 
         # 過去の今日（1年前 / 3ヶ月前）
         past_journals = ""
@@ -199,20 +207,91 @@ class PartnerRoutineCog(commands.Cog):
         except Exception as e:
             logging.debug(f"past journals fetch error: {e}")
 
-        past_section = (
-            f"\n【過去の今日】\n{past_journals}\n" if past_journals else ""
-        )
+        # 「複数項目を1メッセージに束ねる」のをやめ、項目ごとに個別の通知カード
+        # （既読チェック可能）として送り、プッシュはまとめて1発だけ。
+        notices = [
+            {"category": "weather", "title": "☀️ 今日の天気",
+             "body": f"{weather}\n最高 {max_t}℃ / 最低 {min_t}℃"},
+            {"category": "schedule", "title": "📅 今日の予定", "body": schedule_text},
+            {"category": "tasks", "title": "✅ 未完了タスク", "body": tasks_text},
+            {"category": "news", "title": "📰 今日のニュース", "body": news_text},
+        ]
+        if past_journals and past_journals.strip():
+            notices.append(
+                {"category": "past", "title": "🕰 過去の今日", "body": past_journals}
+            )
 
-        context_data = (
-            f"【今日の予定】\n{schedule_text}\n\n"
-            f"【未完了のタスク（タイムライン作成のベース）】\n{tasks_text}\n\n"
-            f"【今日の天気】\n{weather} (最高{max_t}℃ / 最低{min_t}℃)\n\n"
-            f"【ニュース】\n{news_text}"
-            f"{past_section}"
-        )
-        await partner_cog.generate_and_send_routine_message(
-            context_data, PROMPT_ROUTINE_MORNING
-        )
+        from api.notification_service import send_notice_batch
+        await send_notice_batch(notices, "朝のお知らせ")
+
+        # 朝食のログ質問を投下（回答欄＋履歴チップで1タップ記録）。
+        # Push は朝のお知らせカード（上の send_notice_batch）の1発にまとめるため、ここでは出さない。
+        try:
+            await partner_cog.send_log_question("meal", "朝ごはんは何を食べた？", push=False)
+        except Exception as e:
+            logging.debug(f"morning meal question error: {e}")
+
+    # ==========================================
+    # 夜の気分チェック（21:00）— 1タップで気分をログに残す
+    # ==========================================
+    @tasks.loop(minutes=1)
+    async def evening_mood_check_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("evening_mood", "21:00", "daily", self._last_run_dates.get("evening_mood"))
+        if not due:
+            return
+        self._last_run_dates["evening_mood"] = today
+        await asyncio.sleep(random.randint(0, 600))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog:
+            return
+        try:
+            await partner_cog.send_log_question("mood", "今日の気分はどうだった？")
+        except Exception as e:
+            logging.debug(f"evening mood question error: {e}")
+
+    # ==========================================
+    # 英語クイズ（火・木・土の19:30）— 週3回、選択肢チップで気軽に学習
+    # ==========================================
+    @tasks.loop(minutes=1)
+    async def english_quiz_task(self):
+        from services.schedule_resolver import is_due
+        # 週3回（火=1・木=3・土=5）に限定して通知過多を避ける
+        if datetime.datetime.now(JST).weekday() not in (1, 3, 5):
+            return
+        due, today = await is_due("english_quiz", "19:30", "daily", self._last_run_dates.get("english_quiz"))
+        if not due:
+            return
+        self._last_run_dates["english_quiz"] = today
+        await asyncio.sleep(random.randint(0, 600))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog:
+            return
+        try:
+            await partner_cog.send_english_quiz()
+        except Exception as e:
+            logging.debug(f"english quiz task error: {e}")
+
+    # ==========================================
+    # DB の定期バックアップ（2分ごと・変更時のみ）
+    #   チャット・通知カード・質問など全ての DB 書き込みを Drive へ確実に退避する。
+    #   起動毎の復元で古い Drive 版がローカルを潰し、メッセージが消える事故への対策。
+    #   OOM 等の突然死でも損失は最大2分に収まる。mtime 比較で無駄なアップロードは省く。
+    # ==========================================
+    @tasks.loop(minutes=2)
+    async def db_backup_task(self):
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog or not getattr(partner_cog, "drive_service", None):
+            return
+        try:
+            from api.database import DB_PATH, backup_db_to_drive
+            mtime = DB_PATH.stat().st_mtime if DB_PATH.exists() else 0.0
+            if mtime == self._last_db_backup_mtime:
+                return  # 前回から変更なし → アップロードしない
+            await backup_db_to_drive(partner_cog.drive_service, partner_cog.drive_folder_id)
+            self._last_db_backup_mtime = mtime
+        except Exception as e:
+            logging.debug(f"db_backup_task error: {e}")
 
     # ==========================================
     # 無活動チェック（15分ごと）
@@ -364,23 +443,30 @@ class PartnerRoutineCog(commands.Cog):
 
         incomplete_habits = await habit_cog.get_incomplete_habits()
 
-        if incomplete_habits:
-            context_data = "【今日の未完了の習慣】\n" + "\n".join(
-                [f"- {h}" for h in incomplete_habits]
-            )
-        else:
-            context_data = "今日の習慣はすべて完了しています！"
+        # すべて完了している日は通知しない（ノイズを避ける）。
+        # 未完了がある日だけ、個別カード（既読チェック可能）として知らせる。
+        if not incomplete_habits:
+            return
 
-        await partner_cog.generate_and_send_routine_message(
-            context_data, PROMPT_HABIT_CHECK
+        body = "まだ完了していない習慣だよ。\n" + "\n".join(
+            [f"- {h}" for h in incomplete_habits]
+        )
+        from api.notification_service import send_notice_batch
+        await send_notice_batch(
+            [{"category": "habit", "title": "🔁 未完了の習慣", "body": body}],
+            "習慣チェック",
         )
 
     # ==========================================
-    # 明日の予定（21:00）
+    # 明日の予定（21:00）— 無効化
+    #   22:00 のデイリーサマリー（DailySummaryCog._send_tomorrow_cards）が
+    #   明日の天気・予定を個別カードで送るようになり、内容が重複するため停止。
+    #   互換のため関数自体は残し、即 return する。
     # ==========================================
     @tasks.loop(minutes=1)
     async def tomorrow_plan_task(self):
-        from services.schedule_resolver import is_due
+        return  # 無効化（DailySummaryCog のカードに統合済み）
+        from services.schedule_resolver import is_due  # noqa: E402,F401  # type: ignore[unreachable]
         due, today = await is_due("tomorrow_preview", "21:00", "daily", self._last_run_dates.get("tomorrow_preview"))
         if not due:
             return
@@ -403,15 +489,18 @@ class PartnerRoutineCog(commands.Cog):
         if self.info_service:
             weather_data = await self.info_service.get_weather()
             weather_text = (
-                f"{weather_data.get('summary', '不明')} "
-                f"(最高{weather_data.get('max_temp','--')}℃ / "
-                f"最低{weather_data.get('min_temp','--')}℃)"
+                f"{weather_data.get('summary', '不明')}\n"
+                f"最高 {weather_data.get('max_temp','--')}℃ / "
+                f"最低 {weather_data.get('min_temp','--')}℃"
             )
 
-        context_data = f"【明日の予定】\n{schedule_text}\n\n【明日の天気】\n{weather_text}"
-        await partner_cog.generate_and_send_routine_message(
-            context_data, PROMPT_ROUTINE_TOMORROW
-        )
+        # 明日の予定・天気も項目ごとに個別カード化し、プッシュはまとめて1発。
+        notices = [
+            {"category": "schedule", "title": "📅 明日の予定", "body": schedule_text},
+            {"category": "weather", "title": "☀️ 明日の天気", "body": weather_text},
+        ]
+        from api.notification_service import send_notice_batch
+        await send_notice_batch(notices, "明日のお知らせ")
 
     # ==========================================
     # Obsidianデイリーノートの振り返り（20:00）
@@ -445,6 +534,9 @@ class PartnerRoutineCog(commands.Cog):
     @habit_check_task.before_loop
     @tomorrow_plan_task.before_loop
     @obsidian_review_task.before_loop
+    @db_backup_task.before_loop
+    @evening_mood_check_task.before_loop
+    @english_quiz_task.before_loop
     async def before_tasks(self):
         await self.bot.wait_until_ready()
 

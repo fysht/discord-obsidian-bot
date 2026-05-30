@@ -24,7 +24,8 @@ from api.database import (
 )
 from api import notification_service
 from services.info_service import InfoService
-from web_parser import fetch_maps_info, parse_url_with_readability
+# web_parser（playwright/readability 等の重い依存）は起動時の常駐メモリを抑えるため
+# 使用箇所で遅延 import する。
 from config import (
     JST,
     require_env,
@@ -198,6 +199,7 @@ async def _fetch_link_meta(url: str) -> dict:
     if "maps.google.com" in url or "maps.app.goo.gl" in url or "goo.gl/maps" in url or "/maps/" in url:
         link_type = "map"
         try:
+            from web_parser import fetch_maps_info
             place_name, _ = await fetch_maps_info(url)
             if place_name and place_name != "Google Maps Location":
                 title = place_name
@@ -208,6 +210,7 @@ async def _fetch_link_meta(url: str) -> dict:
     if "amazon.co.jp" in url or "amzn.to" in url or "amazon.com" in url:
         link_type = "book"
         try:
+            from web_parser import parse_url_with_readability
             pw_title, _ = await asyncio.wait_for(parse_url_with_readability(url), timeout=TIMEOUT_PLAYWRIGHT)
             if pw_title and pw_title not in ("No Title Found", "Untitled", ""):
                 t = pw_title

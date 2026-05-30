@@ -169,8 +169,22 @@ async def daily_summary_generate(req: DailySummaryGenerateRequest):
 
 @router.get("/daily_questions/pending", dependencies=[Depends(verify_api_key)])
 async def daily_questions_pending():
-    """未回答の質問一覧。"""
+    """未回答の質問一覧。各質問に scope レジストリ由来の選択チップ(chips)を付与する。"""
+    import json
+    from services.log_question_registry import resolve_chips
+
     qs = await get_pending_questions()
+    for q in qs:
+        ctx = {}
+        raw = q.get("context")
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    ctx = parsed
+            except Exception:
+                ctx = {}
+        q["chips"] = resolve_chips(q.get("scope") or "", ctx)
     return {"questions": qs}
 
 
@@ -212,6 +226,23 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
     except Exception as e:
         logging.error(f"morning_mit answer 反映エラー: {e}")
 
+    # meal / expense スコープ: 回答テキストを記録系ログへ反映する（ログ質問フレームワーク）
+    try:
+        rq = await _find_question_by_id(qid)
+        rscope = rq.get("scope") if rq else None
+        if rscope == "meal":
+            await _reflect_meal_answer(qid, req.answer)
+        elif rscope == "expense":
+            await _reflect_expense_answer(qid, req.answer)
+        elif rscope in ("mood", "condition"):
+            await _reflect_mood_answer(qid, req.answer, rscope)
+        elif rscope == "reading":
+            await _reflect_reading_answer(qid, req.answer)
+        elif rscope == "english_quiz":
+            await _reflect_english_quiz_answer(rq, req.answer)
+    except Exception as e:
+        logging.error(f"log-question reflect エラー: {e}")
+
     # summary スコープの質問に答え終わったら自動で Obsidian へ確定保存する。
     # （旧仕様では「✓ 確定保存」を押すまで保存されなかったため、
     #   UI 上「保存済み（編集可）」と見えても振り返りカードは更新されない問題があった）
@@ -230,6 +261,210 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
         logging.error(f"summary auto-finalize エラー: {e}")
 
     return {"status": "success", "auto_finalized": auto_finalized}
+
+
+def _meal_type_jp(mt: str) -> str:
+    """analyze の英語 meal_type を日本語に正規化。不明なら現在時刻から推定。"""
+    m = {"breakfast": "朝食", "lunch": "昼食", "dinner": "夕食", "snack": "間食"}.get((mt or "").strip().lower())
+    if m:
+        return m
+    h = datetime.datetime.now(JST).hour
+    if 4 <= h < 11:
+        return "朝食"
+    if 11 <= h < 15:
+        return "昼食"
+    if 15 <= h < 18:
+        return "間食"
+    return "夕食"
+
+
+async def _reflect_meal_answer(qid: int, answer_text: str):
+    """meal スコープの回答を栄養推定して食事ログに保存し、リンク返信を送る（フローA）。"""
+    from api.routers.meals import analyze_meal_text, meals_save, MealSaveRequest
+    from api.database import resolve_question_by_id
+
+    text = (answer_text or "").strip()
+    if not text:
+        return
+    nutri = await analyze_meal_text(text)
+    save_req = MealSaveRequest(
+        name=(nutri.get("name") or text)[:60],
+        meal_type=_meal_type_jp(nutri.get("meal_type")),
+        calories=int(nutri.get("calories") or 0),
+        protein_g=float(nutri.get("protein_g") or 0),
+        fat_g=float(nutri.get("fat_g") or 0),
+        carbs_g=float(nutri.get("carbs_g") or 0),
+        memo=(nutri.get("memo") or ""),
+    )
+    await meals_save(save_req)
+    await resolve_question_by_id(qid)
+    cal = save_req.calories
+    cal_txt = f"・約{cal}kcal" if cal else ""
+    msg = f"🍽 食事ログに記録したよ（{save_req.name}{cal_txt}）\n[ACTION:open_meals]"
+    await notification_service.save_message_and_notify("assistant", msg, title="🍽 食事ログ記録")
+
+
+async def _reflect_expense_answer(qid: int, answer_text: str):
+    """expense スコープの回答をAI抽出して支出ログへ反映する（フローB）。
+    confidence=high は即保存＋リンク返信、それ以外は確認ボタンを返す（保存前確認）。"""
+    from api.routers.expenses import analyze_expense_text
+    from api.database import add_expense, resolve_question_by_id
+
+    text = (answer_text or "").strip()
+    if not text:
+        return
+    ex = await analyze_expense_text(text)
+    await resolve_question_by_id(qid)
+    amount = int(ex.get("amount") or 0)
+    vendor = (ex.get("vendor") or "").strip()
+    category = (ex.get("category") or "その他").strip()
+    conf = (ex.get("confidence") or "low").strip()
+    date = (ex.get("date") or "").strip() or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+
+    if conf == "high" and amount > 0:
+        await add_expense(
+            date=date, amount=amount, category=category, vendor=vendor,
+            payment_method=(ex.get("payment_method") or ""), memo=(ex.get("memo") or ""),
+        )
+        v = vendor or category
+        msg = f"💰 支出を記録したよ（{v} ¥{amount:,}・{category}）\n[ACTION:open_expenses]"
+        await notification_service.save_message_and_notify("assistant", msg, title="💰 支出記録")
+    else:
+        def _s(x):
+            return str(x or "").replace("|", " ").replace("=", " ").replace("\n", " ")
+        msg = (
+            "💰 支出を記録する？内容を確認して保存してね\n"
+            f"[ACTION:expense_confirm:amount={amount}|vendor={_s(vendor)}|category={_s(category)}"
+            f"|payment_method={_s(ex.get('payment_method'))}|memo={_s(ex.get('memo') or text)}|date={date}]"
+        )
+        await notification_service.save_message_and_notify("assistant", msg, title="💰 支出の確認")
+
+
+async def _reflect_mood_answer(qid: int, answer_text: str, scope: str):
+    """mood / condition スコープの回答を Obsidian の Lifelog に1行記録する（フローA・選択式）。"""
+    from api import app
+    from api.database import resolve_question_by_id
+
+    text = (answer_text or "").strip()
+    if not text:
+        return
+    label = "気分" if scope == "mood" else "体調"
+    icon = "😀" if scope == "mood" else "🩺"
+    bot = getattr(app.state, "bot", None)
+    partner_cog = bot.get_cog("PartnerCog") if bot else None
+    if partner_cog:
+        try:
+            await partner_cog._append_raw_message_to_obsidian(
+                f"{icon} {label}: {text}", target_heading="## 🪟 Lifelog"
+            )
+        except Exception as e:
+            logging.debug(f"mood/condition obsidian append failed: {e}")
+    await resolve_question_by_id(qid)
+    await notification_service.save_message_and_notify(
+        "assistant", f"{icon} {label}を記録したよ（{text}）", title=f"{icon} {label}記録",
+    )
+
+
+async def _extract_reading(text: str) -> dict:
+    """読書メモのテキストから書名と学び・メモを抽出する（フローB）。"""
+    from api import app
+    from google.genai import types as _gt
+
+    fallback = {"book": "", "memo": text}
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        return fallback
+    prompt = (
+        "次の読書メモから書名と学び・要点を抽出し、必ず以下の JSON だけ返してください。前置き禁止。\n"
+        f"メモ: {text}\n\n"
+        '{"book": "書名（分からなければ空文字）", "memo": "学び・要点（元の文意を保って簡潔に）"}'
+    )
+    try:
+        import json as _json
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("partner_chat", default_pro=False)
+        resp = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[_gt.Part.from_text(text=prompt)]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        data = _json.loads(resp.text)
+        if not (data.get("memo") or "").strip():
+            data["memo"] = text
+        return data
+    except Exception as e:
+        logging.debug(f"_extract_reading error: {e}")
+        return fallback
+
+
+async def _reflect_reading_answer(qid: int, answer_text: str):
+    """reading スコープの回答を書名ごとの読書ノート（BookNotes）へ保存する（フローB）。"""
+    from api import app
+    from api.database import resolve_question_by_id
+
+    text = (answer_text or "").strip()
+    if not text:
+        return
+    data = await _extract_reading(text)
+    book = (data.get("book") or "").strip()
+    memo = (data.get("memo") or text).strip()
+    bot = getattr(app.state, "bot", None)
+    saved = False
+    if bot and book:
+        book_cog = bot.get_cog("BookCog")
+        if book_cog:
+            try:
+                saved = await book_cog.append_book_memo(book, memo)
+            except Exception as e:
+                logging.debug(f"reading book note append failed: {e}")
+    if not saved:
+        # 書名が取れない/失敗時は DailyNote の Reading Log に追記
+        partner_cog = bot.get_cog("PartnerCog") if bot else None
+        if partner_cog:
+            try:
+                await partner_cog._append_raw_message_to_obsidian(
+                    f"📖 {text}", target_heading="## 📖 Reading Log"
+                )
+            except Exception as e:
+                logging.debug(f"reading daily note append failed: {e}")
+    await resolve_question_by_id(qid)
+    where = f"『{book}』のノート" if (saved and book) else "今日のノート"
+    await notification_service.save_message_and_notify(
+        "assistant", f"📖 読書メモを{where}に記録したよ", title="📖 読書メモ",
+    )
+
+
+async def _reflect_english_quiz_answer(rq: dict, answer_text: str):
+    """english_quiz スコープの回答を採点し、正誤を学習データへ記録する（学習レール）。
+    context に {correct, phrase_id} を持つ前提。"""
+    import json as _json
+    from api.database import record_quiz_attempt, resolve_question_by_id
+
+    qid = rq.get("id")
+    ctx = {}
+    raw = rq.get("context")
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            if isinstance(parsed, dict):
+                ctx = parsed
+        except Exception:
+            ctx = {}
+    correct = (ctx.get("correct") or "").strip()
+    phrase_id = ctx.get("phrase_id")
+    ans = (answer_text or "").strip()
+    is_correct = bool(correct) and ans == correct
+    try:
+        if phrase_id is not None:
+            await record_quiz_attempt(int(phrase_id), is_correct)
+    except Exception as e:
+        logging.debug(f"record_quiz_attempt failed: {e}")
+    if qid is not None:
+        await resolve_question_by_id(int(qid))
+    msg = "🎉 正解！その調子！" if is_correct else f"惜しい！正解は「{correct}」だよ。また出すね💪"
+    await notification_service.save_message_and_notify(
+        "assistant", msg, title="🗣 英語クイズ",
+    )
 
 
 async def _find_question_by_id(qid: int):

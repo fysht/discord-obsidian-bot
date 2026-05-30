@@ -920,21 +920,167 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
                 } catch (e) { /* context が JSON でなければ無視 */ }
             }
             if (scope === 'morning_mit') rows = 3;
+            // scope レジストリ由来の選択チップ（1タップ回答）。無ければ何も出さない。
+            const chips = Array.isArray(q.chips) ? q.chips : [];
+            const chipsHtml = chips.length ? `<div class="inline-q-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
+                + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="pickInlineChip(this)" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
+                + `</div>` : '';
             return `
             <div class="inline-q" data-qid="${q.id}" style="margin-bottom:8px;">
                 <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;display:flex;justify-content:space-between;gap:6px;align-items:flex-start;">
                     <span>${escapeHtml(q.question)}</span>${savedMark}
                 </div>
+                ${chipsHtml}
                 <textarea class="modern-input inline-q-answer" rows="${rows}" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(defaultVal)}</textarea>
                 <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
+                    ${answered ? '' : `<button class="modal-btn cancel" style="padding:4px 12px;font-size:0.78rem;" onclick="skipInlineQuestion(this)" title="あとで（まとめて回答できます）">あとで</button>`}
                     <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${date}', '${scope}')">${answered ? '回答を更新' : '回答'}</button>
                 </div>
             </div>`;
         }).join('');
+        if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
     } catch (e) {
         wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">回答欄の読み込みに失敗しました。</div>';
     }
 }
+
+// 「あとで」：この場では回答欄を閉じるだけ。質問は pending のまま残り、
+// 「未回答ログ」まとめ画面（openLogInbox）から後でまとめて回答できる。
+window.skipInlineQuestion = (btn) => {
+    const row = btn.closest('.inline-q');
+    if (row) row.remove();
+    if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
+};
+
+// ===== A: 未回答ログ質問のまとめ回答ビュー＋バッジ =====
+// ログ質問フレームワークの scope（チャットに流れて埋もれがちなもの）だけを対象にする。
+const LOG_INBOX_SCOPES = ['meal', 'expense', 'mood', 'condition', 'reading', 'english_quiz'];
+
+async function _fetchLogQuestions() {
+    try {
+        const data = await apiFetch('/api/daily_questions/pending');
+        const all = (data && data.questions) || [];
+        return all.filter(q => LOG_INBOX_SCOPES.includes(q.scope) && q.status !== 'resolved');
+    } catch (e) {
+        return [];
+    }
+}
+
+// バッジ更新：未回答（pending）の件数を表示
+window.refreshLogInboxBadge = async () => {
+    const badge = document.getElementById('log-inbox-badge');
+    if (!badge) return;
+    const items = await _fetchLogQuestions();
+    const n = items.filter(q => q.status === 'pending').length;
+    badge.textContent = String(n);
+    badge.style.display = n > 0 ? '' : 'none';
+};
+
+window.openLogInbox = async () => {
+    let modal = document.getElementById('log-inbox-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="log-inbox-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:520px;max-height:88vh;overflow-y:auto;">
+                    <h3 style="margin-top:0;">📥 未回答のログ</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">溜まった記録をまとめて。チップなら1タップ、不要なら🗑で消せます。</p>
+                    <div id="log-inbox-list"></div>
+                    <div class="modal-actions" style="margin-top:12px;">
+                        <button class="modal-btn cancel" onclick="document.getElementById('log-inbox-modal').classList.add('hidden')">閉じる</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('log-inbox-modal');
+    }
+    modal.classList.remove('hidden');
+    await renderLogInbox();
+};
+
+window.renderLogInbox = async () => {
+    const listEl = document.getElementById('log-inbox-list');
+    if (!listEl) return;
+    const items = (await _fetchLogQuestions()).sort((a, b) => (a.id || 0) - (b.id || 0));
+    if (!items.length) {
+        listEl.innerHTML = '<div style="font-size:0.82rem;color:var(--text-muted);padding:12px 4px;">未回答のログはありません 🎉</div>';
+        return;
+    }
+    const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣' };
+    listEl.innerHTML = items.map(q => {
+        const chips = Array.isArray(q.chips) ? q.chips : [];
+        const chipsHtml = chips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
+            + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="pickInlineChip(this)" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
+            + `</div>` : '';
+        return `
+        <div class="inline-q" data-qid="${q.id}" style="margin-bottom:10px;padding:8px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
+            <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${icon[q.scope] || '📝'} ${escapeHtml(q.question)}</div>
+            ${chipsHtml}
+            <textarea class="modern-input inline-q-answer" rows="2" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;"></textarea>
+            <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
+                <button class="modal-btn cancel" style="padding:4px 10px;font-size:0.78rem;" onclick="deleteLogQuestion(${q.id})" title="この質問を削除">🗑</button>
+                <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${q.date}', '${q.scope}')">回答</button>
+            </div>
+        </div>`;
+    }).join('');
+};
+
+window.deleteLogQuestion = async (qid) => {
+    try {
+        await apiFetch(`/api/daily_questions/${qid}`, { method: 'DELETE' });
+    } catch (e) { /* 失敗してもUIは進める */ }
+    await renderLogInbox();
+    refreshLogInboxBadge();
+};
+
+// 機能E: 通知のアクションボタンから開かれた場合（/?logq=ID&ans=...）、自動で回答を記録する。
+window._handleLogQuestionDeepLink = async () => {
+    let qid, ans;
+    try {
+        const params = new URLSearchParams(window.location.search);
+        qid = params.get('logq');
+        ans = params.get('ans');
+        if (!qid || !ans) return;
+    } catch (e) { return; }
+    // URL からパラメータを先に消す（リロードでの二重送信を防ぐ）
+    try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('logq');
+        url.searchParams.delete('ans');
+        window.history.replaceState({}, '', url.pathname + url.search);
+    } catch (e) { /* ignore */ }
+    try {
+        await apiFetch(`/api/daily_questions/${qid}/answer`, {
+            method: 'POST', body: JSON.stringify({ answer: ans }),
+        });
+        showToast('通知から記録しました ✓');
+        if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
+    } catch (e) {
+        showToast('通知からの記録に失敗しました', true);
+    }
+};
+
+// カード → チャット連携：チャットタブを開き、入力欄に文面をプレフィルしてフォーカスする。
+// 各タブのカードから「マネージャーに聞く」導線として使う（送信はユーザーが確認して行う）。
+window.askManagerAbout = (text) => {
+    try { switchTab('chat'); } catch (e) { /* ignore */ }
+    setTimeout(() => {
+        if (typeof messageInput === 'undefined' || !messageInput) return;
+        messageInput.value = text || '';
+        messageInput.dispatchEvent(new Event('input'));
+        messageInput.focus();
+    }, 200);
+};
+
+// 選択チップをタップ → 回答欄に値を入れてそのまま送信（1タップ回答）
+window.pickInlineChip = (btn) => {
+    const row = btn.closest('.inline-q');
+    if (!row) return;
+    const ta = row.querySelector('.inline-q-answer');
+    if (ta) ta.value = btn.dataset.val || btn.textContent || '';
+    const submit = row.querySelector('.modal-btn.submit');
+    if (submit) submit.click();
+};
 
 window.submitInlineAnswer = async (btn, qid, date, scope) => {
     const row = btn.closest('.inline-q');
@@ -963,6 +1109,11 @@ window.submitInlineAnswer = async (btn, qid, date, scope) => {
             header.appendChild(mark);
         }
         showToast('回答を保存しました');
+        // まとめ回答ビュー内なら、記録済み（resolved）の質問を落として再描画
+        if (btn.closest('#log-inbox-list') && typeof renderLogInbox === 'function') {
+            setTimeout(renderLogInbox, 500);
+        }
+        if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
     } catch (e) {
         btn.disabled = false;
         btn.textContent = origLabel;
@@ -1006,6 +1157,10 @@ function describeAction(payload) {
         case 'open_location_log': return `📍 ロケーションログを開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
         case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
+        case 'meal_quick':   return `✓ 外食を記録: ${args.name || ''}`;
+        case 'open_meals':   return `🍽 食事ログを開く`;
+        case 'open_expenses': return `💰 支出ログを開く`;
+        case 'expense_confirm': return `💰 支出を確認して保存: ${args.vendor || ''} ¥${args.amount || 0}`;
         default:             return `▶ ${action} を実行`;
     }
 }
@@ -1045,6 +1200,66 @@ window.executeAction = async function(encodedPayload, btn) {
             const card = document.getElementById('dash-location-log-card');
             if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
+        return;
+    }
+    // 確認するだけログ: 外食を1タップで記録（栄養は後から追記可）
+    if (action === 'meal_quick') {
+        if (btn) { btn.disabled = true; btn.textContent = '記録中...'; }
+        try {
+            await apiFetch('/api/meals', {
+                method: 'POST',
+                body: JSON.stringify({
+                    name: args.name || '外食',
+                    meal_type: args.meal_type || '',
+                    restaurant: args.name || '',
+                    source: '外食',
+                }),
+            });
+            showToast('外食を記録しました');
+            if (btn) { btn.textContent = '記録した ✓'; btn.classList.add('done'); }
+        } catch (e) {
+            if (btn) { btn.disabled = false; btn.textContent = '✓ 外食を記録'; }
+            showToast('記録に失敗しました', true);
+        }
+        return;
+    }
+    // ナビゲーション系: 記録済みの食事ログを開く（infoタブの食事カードへ）
+    if (action === 'open_meals') {
+        switchTab('info');
+        setTimeout(() => {
+            const el = document.getElementById('dash-meals-list');
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (typeof loadMeals === 'function') loadMeals();
+        }, 300);
+        return;
+    }
+    // ナビゲーション系: 支出ログを開く
+    if (action === 'open_expenses') {
+        switchTab('info');
+        setTimeout(() => {
+            const el = document.getElementById('dash-expense-list') || document.getElementById('dash-expense-summary');
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (typeof loadExpenses === 'function') loadExpenses();
+        }, 300);
+        return;
+    }
+    // フローB の確認: 抽出済みの支出をプレフィルした確認モーダルを開く（保存前確認）
+    if (action === 'expense_confirm') {
+        try {
+            switchTab('info');
+            const seed = {
+                amount: parseInt(args.amount, 10) || 0,
+                vendor: args.vendor || '',
+                category: args.category || 'その他',
+                payment_method: args.payment_method || '',
+                memo: args.memo || '',
+                date: args.date || '',
+            };
+            openExpenseManualModal(null, seed);
+        } catch (e) {
+            console.error(e);
+            showToast('支出の確認画面を開けませんでした', true);
+        }
         return;
     }
     // ナビゲーション系: 食事ログ登録モーダルを開く（料理名をプレフィル）
@@ -1517,6 +1732,12 @@ const _NOTICE_CATEGORY_META = {
     news_sentiment:   { icon: '📰', label: 'ニュース' },
     alerts_earnings:  { icon: '🔔', label: 'アラート' },
     weekend_stocks:   { icon: '📊', label: '週末株' },
+    weather:          { icon: '☀️', label: '天気' },
+    schedule:         { icon: '📅', label: '予定' },
+    tasks:            { icon: '✅', label: 'タスク' },
+    news:             { icon: '📰', label: 'ニュース' },
+    habit:            { icon: '🔁', label: '習慣' },
+    past:             { icon: '🕰', label: '過去の今日' },
 };
 
 function _formatNoticeTime(iso) {
@@ -4327,6 +4548,8 @@ function initMain() {
     _installGlobalButtonFeedback();
     loadDashboard();
     requestNotificationPermission();
+    if (typeof refreshLogInboxBadge === 'function') { try { refreshLogInboxBadge(); } catch {} }
+    if (typeof _handleLogQuestionDeepLink === 'function') { try { _handleLogQuestionDeepLink(); } catch {} }
     // PayPay 等の共有が来ていれば支出モーダル/チャットへ振り分け
     if (apiKey) { _handleExpenseShareTarget(); _handleShareTarget(); }
 
@@ -5771,9 +5994,10 @@ window.loadMeals = async () => {
         if (sumEl) {
             const dateLabel = isToday ? '本日' : _mealsViewDate;
             if (meals.length) {
+                const askBtn = `<button class="inline-q-chip" onclick="askManagerAbout('${dateLabel}の食事についてアドバイスして')" style="margin-left:8px;padding:2px 10px;font-size:0.74rem;border:1px solid rgba(255,212,84,0.45);border-radius:12px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">💬 マネージャーに聞く</button>`;
                 sumEl.innerHTML =
                     `${dateLabel}合計 <b style="color:var(--text-primary);">${total.calories || 0}kcal</b> ` +
-                    `(P${total.protein_g || 0} / F${total.fat_g || 0} / C${total.carbs_g || 0})`;
+                    `(P${total.protein_g || 0} / F${total.fat_g || 0} / C${total.carbs_g || 0})` + askBtn;
             } else {
                 sumEl.innerHTML = `${dateLabel}の記録はまだありません。`;
             }
@@ -6629,7 +6853,10 @@ window.loadExpenses = async (year = null, month = null) => {
                     <span style="font-size:1.2rem;font-weight:700;color:var(--text-primary);">¥${total.toLocaleString()}</span>
                 </div>
                 <div style="margin-top:4px;">${byCat}</div>
-                <div style="font-size:0.7rem;color:var(--text-muted);margin-top:4px;">大きな支出の閾値: ¥${threshold.toLocaleString()}</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+                    <span style="font-size:0.7rem;color:var(--text-muted);">大きな支出の閾値: ¥${threshold.toLocaleString()}</span>
+                    <button class="inline-q-chip" onclick="askManagerAbout('${data.year}年${data.month}月の支出について相談したい')" style="padding:2px 10px;font-size:0.74rem;border:1px solid rgba(255,212,84,0.45);border-radius:12px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">💬 マネージャーに聞く</button>
+                </div>
             `;
         }
 
@@ -7724,7 +7951,8 @@ function renderFitbitTable() {
             <td style="padding:6px 4px;text-align:center;">${r.steps ? r.steps.toLocaleString() : '—'}</td>
             <td style="padding:6px 4px;text-align:center;">${(r.calories_out ?? r.calories) ? (r.calories_out ?? r.calories).toLocaleString() : '—'}</td>
         </tr>`).join('')}</tbody>
-    </table>`;
+    </table>
+    <div style="text-align:right;margin-top:6px;"><button class="inline-q-chip" onclick="askManagerAbout('最近の睡眠・体調について相談したい')" style="padding:2px 10px;font-size:0.74rem;border:1px solid rgba(255,212,84,0.45);border-radius:12px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">💬 マネージャーに聞く</button></div>`;
 }
 
 window.renderFitbitChart = () => {
@@ -8204,7 +8432,8 @@ function renderDailySummaryCard(data, opts = {}) {
     if (text) {
         // デイリーノート・マネージャーの気づきと統一感を持たせるためシンプルに日付ラベルのみ
         const label = displayDate ? `📅 ${displayDate} の振り返り` : '';
-        tEl.innerHTML = renderDailyMarkdown(text, { dateLabel: label });
+        const askBtn = `<div style="text-align:right;margin-top:6px;"><button class="inline-q-chip" onclick="askManagerAbout('今日の振り返りについて話したい')" style="padding:2px 10px;font-size:0.74rem;border:1px solid rgba(255,212,84,0.45);border-radius:12px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">💬 マネージャーに聞く</button></div>`;
+        tEl.innerHTML = renderDailyMarkdown(text, { dateLabel: label }) + askBtn;
     } else if (!preserveOnEmpty) {
         tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。<span class="muted-hint">「回答を反映して生成」または「✓ 確定保存」で作成できます。</span></div>';
     }

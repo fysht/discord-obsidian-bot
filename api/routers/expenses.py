@@ -69,6 +69,49 @@ class ExpenseThresholdRequest(BaseModel):
     threshold_jpy: int
 
 
+async def analyze_expense_text(text: str) -> dict:
+    """テキスト（例:「ラーメン 980円」「駅前のスーパーで2300円」）から支出情報を抽出して
+    dict を返す。レシート版 expenses_analyze と同じ JSON 契約を流用（画像→テキスト差し替え）。
+    失敗時は confidence='low' の最小 dict を返す。"""
+    from google.genai import types as _gt
+    from api import app
+
+    fallback = {"date": "", "vendor": "", "amount": 0, "category": "その他",
+                "payment_method": "不明", "memo": (text or "").strip()[:60],
+                "items": [], "confidence": "low"}
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        return fallback
+
+    prompt = (
+        "次の説明から支出情報を抽出し、必ず以下の JSON 形式だけを返してください。前置きや説明は禁止。\n\n"
+        f"説明: {text}\n\n"
+        "{\n"
+        '  "date": "YYYY-MM-DD（不明なら空文字）",\n'
+        '  "vendor": "店名・内容（最大40文字。空可）",\n'
+        '  "amount": 合計金額(int, 円。税込み合計を優先),\n'
+        '  "category": "食費 / 交通費 / 娯楽 / 衣服 / 家電 / 医療 / 教育 / 通信 / 光熱費 / 投資 / その他 のいずれか",\n'
+        '  "payment_method": "現金 / クレジット / 電子マネー / QR / 不明 のいずれか",\n'
+        '  "memo": "備考（空可）",\n'
+        '  "items": [{"name": "品名", "amount": 金額int}],\n'
+        '  "confidence": "high / medium / low"\n'
+        "}\n"
+        "金額がはっきり読み取れないときは confidence='low' とし amount は控えめに。"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("receipt_ocr", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[_gt.Part.from_text(text=prompt)]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        return json.loads(response.text)
+    except Exception as e:
+        logging.error(f"analyze_expense_text error: {e}")
+        return fallback
+
+
 @router.post("/analyze", dependencies=[Depends(verify_api_key)])
 async def expenses_analyze(req: ReceiptAnalyzeRequest):
     """レシート写真から日付・店名・合計金額・支払方法を Gemini Vision で抽出（保存はしない）。"""

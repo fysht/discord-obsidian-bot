@@ -647,6 +647,32 @@ class PartnerCog(commands.Cog):
                             required=["title", "category"],
                         ),
                     ),
+                    types.FunctionDeclaration(
+                        name="ask_log_question",
+                        description=(
+                            "ユーザーに記録のための質問を投げ、回答欄（選択チップ＋自由記載）を表示する。"
+                            "食事・気分・体調・支出などを負担なくログに残してもらいたいときに使う。"
+                            "例: 朝に『朝食は何を食べた？』(scope='meal')、"
+                            "日中に『今の気分は？』(scope='mood')、買い物の話題で『何にいくら使った？』(scope='expense')。"
+                            "即実行ではなく、ユーザーが回答欄に答えると自動でログに記録される。"
+                            "scope は 'meal'（食事）/ 'expense'（支出）/ 'mood'（気分）/ "
+                            "'condition'（体調）/ 'reading'（読書メモ）のいずれか。"
+                        ),
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "scope": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="meal / expense / mood / condition / reading",
+                                ),
+                                "question": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="ユーザーに表示する質問文（短く具体的に）",
+                                ),
+                            },
+                            required=["scope", "question"],
+                        ),
+                    ),
                 ]
             ))
         return tools
@@ -738,6 +764,147 @@ class PartnerCog(commands.Cog):
             await self.drive_service.upload_text(service, folder_id, f"{tomorrow_str}.md", new_content)
         return f"未達のMIT {len(unfinished)} 件を明日に繰り越したよ: {' / '.join(unfinished)}"
 
+    async def _recent_meal_names(self, days: int = 30, limit: int = 5) -> list[str]:
+        """直近の食事ログから頻出の料理名を集計して返す（回答欄チップ用）。"""
+        try:
+            from api.database import get_meals_by_range
+            today = datetime.datetime.now(JST).date()
+            start = (today - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+            rows = await get_meals_by_range(start, today.strftime("%Y-%m-%d"))
+            counts: dict[str, int] = {}
+            for r in rows:
+                nm = (r.get("name") or "").strip()
+                if nm and nm != "食事":
+                    counts[nm] = counts.get(nm, 0) + 1
+            return [n for n, _ in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:limit]]
+        except Exception as e:
+            logging.debug(f"_recent_meal_names error: {e}")
+            return []
+
+    async def _create_log_question(self, scope, question):
+        """記録用の質問を作成し (qid, 本文文字列) を返す。失敗時は (None, エラー文字列)。
+        scope レジストリに沿って context（選択チップ）を詰めて daily_question を登録する。"""
+        scope = (scope or "").strip()
+        question = (question or "").strip()
+        if scope not in {"meal", "expense", "mood", "condition", "reading"}:
+            return None, "（その種類のログにはまだ対応してないんだ）"
+        if not question:
+            return None, "（質問文が空っぽだよ）"
+        try:
+            import json as _json
+            from api.database import add_daily_question
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            context: dict = {}
+            if scope == "meal":
+                chips = await self._recent_meal_names()
+                if chips:
+                    context["chips"] = chips
+            ctx_str = _json.dumps(context, ensure_ascii=False) if context else ""
+            qid = await add_daily_question(today, question, scope=scope, context=ctx_str)
+            return qid, f"{question}\n[QUESTIONS:{scope}:{today}]"
+        except Exception as e:
+            logging.error(f"_create_log_question error: {e}")
+            return None, "（質問の準備に失敗しちゃった）"
+
+    async def _ask_log_question(self, scope, question) -> str:
+        """記録用の質問を作成し、回答欄を出すためのマーカー付き文字列を返す（会話ツール用）。"""
+        _, body = await self._create_log_question(scope, question)
+        return body
+
+    async def send_log_question(self, scope: str, question: str, push: bool = True) -> bool:
+        """ルーティン等から記録質問を能動的に投下する（質問作成＋回答欄付きメッセージ送信）。
+        同じ scope の未回答質問が今日すでにあれば二重投下しない。
+        push=False のときは Push 通知を出さずメッセージ保存のみ（他の通知とまとめたい場合に使う）。"""
+        try:
+            from api.database import get_questions_by_date
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            existing = await get_questions_by_date(today, scope=scope)
+            if any(q.get("status") != "resolved" for q in existing):
+                return False  # 既に未回答の同種質問がある
+        except Exception as e:
+            logging.debug(f"send_log_question 既存確認エラー: {e}")
+        qid, body = await self._create_log_question(scope, question)
+        if not body or body.startswith("（"):
+            return False
+        try:
+            from api.database import save_message
+            # メッセージは常に保存（チャット内の回答欄＋まとめビュー用）
+            await save_message("assistant", body)
+            if not push:
+                return True  # 他の Push とまとめるため通知は出さない
+
+            # 選択式スコープ（mood/condition）は、通知のアクションボタンから
+            # アプリを開かず1タップで回答できるよう、Push にアクションを載せる（機能E）。
+            from api import notification_service as _ns
+            chips = self._choice_chips_for(scope)
+            if qid and chips:
+                actions, answers = [], {}
+                for i, c in enumerate(chips[:2]):  # 通知のボタンは2件程度が上限
+                    aid = f"a{i}"
+                    actions.append({"action": aid, "title": c})
+                    answers[aid] = c
+                await _ns.send_push(
+                    "📝 ちょっと記録", question, url="/",
+                    actions=actions, data={"qid": qid, "answers": answers},
+                )
+            else:
+                await _ns.send_push("📝 ちょっと記録", question, url="/")
+            return True
+        except Exception as e:
+            logging.error(f"send_log_question 送信エラー: {e}")
+            return False
+
+    @staticmethod
+    def _choice_chips_for(scope: str) -> list:
+        """選択式スコープの既定チップを scope レジストリから取得する（通知アクション用）。"""
+        try:
+            from services.log_question_registry import get_scope_config
+            cfg = get_scope_config(scope)
+            if cfg.get("answer_type") == "choice":
+                return list(cfg.get("chips") or [])
+        except Exception:
+            pass
+        return []
+
+    async def send_english_quiz(self) -> bool:
+        """英語フレーズのクイズを1問、選択肢チップ付きの回答欄として投下する（学習レール）。
+        正解と phrase_id を context に保存し、回答時に採点・記録する。"""
+        try:
+            from api.routers.english_phrases import english_phrases_quiz
+            data = await english_phrases_quiz()
+        except Exception:
+            return False  # フレーズ未登録など
+        options = data.get("options") or []
+        correct = (data.get("phrase") or "").strip()
+        if not options or not correct:
+            return False
+        try:
+            import json as _json
+            from api.database import add_daily_question, get_questions_by_date
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            existing = await get_questions_by_date(today, scope="english_quiz")
+            if any(q.get("status") != "resolved" for q in existing):
+                return False
+            translation = (data.get("translation") or "").strip()
+            qtext = (
+                f"🗣 英語クイズ！「{translation}」に合うフレーズはどれ？" if translation
+                else "🗣 英語クイズ！正しいフレーズはどれ？"
+            )
+            ctx = {"chips": options, "correct": correct, "phrase_id": data.get("id")}
+            await add_daily_question(
+                today, qtext, scope="english_quiz",
+                context=_json.dumps(ctx, ensure_ascii=False),
+            )
+            from api.notification_service import save_message_and_notify
+            await save_message_and_notify(
+                "assistant", f"{qtext}\n[QUESTIONS:english_quiz:{today}]",
+                proactive=True, title="🗣 英語クイズ",
+            )
+            return True
+        except Exception as e:
+            logging.error(f"send_english_quiz error: {e}")
+            return False
+
     async def _dispatch_tool_call(self, function_call):
         name = function_call.name
         args = function_call.args
@@ -767,6 +934,8 @@ class PartnerCog(commands.Cog):
             return "タスクの完了はアプリの予定タブから直接チェックできるよ！"
         elif name in ["delete_calendar_event", "delete_habit"]:
             return "削除はアプリから直接行うか、詳細を教えてね。"
+        elif name == "ask_log_question":
+            return await self._ask_log_question(args.get("scope"), args.get("question"))
 
         try:
             if name == "log_life_activity":
@@ -990,7 +1159,8 @@ class PartnerCog(commands.Cog):
                 # 安全網: ツール結果に [ACTION:...] が含まれているのに、
                 # 最終返信から欠落していたら自動で末尾に補完する。
                 import re as _re
-                action_pat = _re.compile(r"\[ACTION:[^\]]+\]")
+                # ACTION（確認ボタン）と QUESTIONS（回答欄）の両マーカーを取りこぼさない
+                action_pat = _re.compile(r"\[(?:ACTION|QUESTIONS):[^\]]+\]")
                 missing_actions = []
                 for tr in tool_result_texts:
                     for m in action_pat.findall(tr or ""):
