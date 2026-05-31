@@ -1276,7 +1276,7 @@ async def get_expenses_by_range(start_date: str, end_date: str) -> list[dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, date, amount, category, vendor, payment_method, memo, receipt_drive_id, is_large, breakdown, created_at "
-            "FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date DESC, id DESC",
+            "FROM expenses WHERE date BETWEEN ? AND ? ORDER BY date ASC, id ASC",
             (start_date, end_date),
         )
         rows = await cursor.fetchall()

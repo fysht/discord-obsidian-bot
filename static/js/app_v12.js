@@ -1920,11 +1920,25 @@ function _refreshNoticeUnreadBadge() {
 
 // 選択中の通知件数に応じて「選択削除」ボタンの表示を更新する
 window.updateNoticeBulkBtn = () => {
+    const all = document.querySelectorAll('.notice-select-cb');
     const checked = document.querySelectorAll('.notice-select-cb:checked').length;
     const btn = document.getElementById('notice-bulk-delete-btn');
-    if (!btn) return;
-    btn.style.display = checked > 0 ? '' : 'none';
-    btn.textContent = checked > 0 ? `🗑 選択削除 (${checked})` : '🗑 選択削除';
+    if (btn) {
+        btn.style.display = checked > 0 ? '' : 'none';
+        btn.textContent = checked > 0 ? `🗑 選択削除 (${checked})` : '🗑 選択削除';
+    }
+    // 全選択/解除ボタンのラベルを現在の選択状態に合わせる
+    const selBtn = document.getElementById('notice-select-all-btn');
+    if (selBtn) selBtn.textContent = (all.length > 0 && checked === all.length) ? '☐ 解除' : '☑ 全選択';
+};
+
+// 通知ログをすべて選択 / すべて解除（トグル）
+window.toggleSelectAllNotices = () => {
+    const cbs = [...document.querySelectorAll('.notice-select-cb')];
+    if (!cbs.length) return;
+    const turnOn = cbs.some(cb => !cb.checked);  // 1つでも未選択なら全選択、全部選択済みなら解除
+    cbs.forEach(cb => { cb.checked = turnOn; });
+    updateNoticeBulkBtn();
 };
 
 // チェックした通知をまとめて削除する
@@ -6362,7 +6376,10 @@ window.openMealManualModal = async (id = null, seed = null) => {
                     </select>
 
                     <label style="font-size:0.78rem;color:var(--text-muted);">料理名</label>
-                    <input id="meal-name" class="modern-input" style="margin-bottom:8px;" placeholder="例: 唐揚げ定食">
+                    <input id="meal-name" class="modern-input" style="margin-bottom:4px;" placeholder="例: 唐揚げ定食" onblur="_autoEstimateMealNutrition()">
+                    <div style="text-align:right;margin-bottom:8px;">
+                        <button type="button" class="mini-link" onclick="estimateMealNutrition(true)" title="料理名からカロリー・PFCをAIで見積もる">🔢 カロリー自動見積</button>
+                    </div>
 
                     <div style="display:flex;gap:8px;margin-bottom:8px;">
                         <div style="flex:1;">
@@ -6563,6 +6580,44 @@ window.onMealRecipePicked = () => {
     // 自炊と推測
     const srcEl = $('#meal-source');
     if (srcEl && !srcEl.value) srcEl.value = '自炊';
+};
+
+// 料理名からカロリー/PFCをAIで推定して欄を埋める（自分でカロリーが分からなくてもOK）
+let _mealEstimating = false;
+window.estimateMealNutrition = async (force = false) => {
+    const nameEl = $('#meal-name');
+    const kcalEl = $('#meal-kcal');
+    const name = (nameEl?.value || '').trim();
+    if (!name) { if (force) showToast('先に料理名を入力してね', true); return; }
+    if (!force && kcalEl && Number(kcalEl.value) > 0) return;  // 既に値があれば自動では上書きしない
+    if (_mealEstimating) return;
+    _mealEstimating = true;
+    if (force) showToast('🔢 カロリーを推定中…');
+    try {
+        const res = await apiFetch('/api/meals/analyze_text', {
+            method: 'POST', body: JSON.stringify({ text: name }),
+        });
+        const r = (res && res.result) || {};
+        const setIf = (el, val) => { if (el && Number(val) > 0 && (force || !(Number(el.value) > 0))) el.value = val; };
+        setIf($('#meal-kcal'), r.calories);
+        setIf($('#meal-p'), r.protein_g);
+        setIf($('#meal-f'), r.fat_g);
+        setIf($('#meal-c'), r.carbs_g);
+        const typeEl = $('#meal-type');
+        if (typeEl && !typeEl.value && r.meal_type) typeEl.value = r.meal_type;
+        if (force) showToast('カロリーを見積もりました（必要なら修正してね）');
+    } catch (e) {
+        if (force) showToast('推定に失敗しました', true);
+    } finally {
+        _mealEstimating = false;
+    }
+};
+
+// 料理名の入力確定時、カロリーが空なら自動推定（写真解析・手入力済みは尊重）
+window._autoEstimateMealNutrition = () => {
+    const kcalEl = $('#meal-kcal');
+    if (kcalEl && Number(kcalEl.value) > 0) return;
+    estimateMealNutrition(false);
 };
 
 window.saveMealFromModal = async () => {
@@ -6779,6 +6834,7 @@ window.loadGmailInbox = async (state = 'pending') => {
                     </div>
                     <div class="row-actions" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
                         ${actions}
+                        <button class="mini-link" data-gmail-action="expense" title="メール内容を支出として記録">💰 支出</button>
                         <button class="mini-link" data-gmail-action="open-gmail" title="Gmail で開く">↗ Gmail</button>
                     </div>
                 </div>
@@ -6812,9 +6868,32 @@ function _bindGmailDelegation(container) {
         else if (action === 'open-saved' && savedDriveId) window.openSavedEmail(savedDriveId);
         else if (action === 'archive') window.markGmailRead(id);
         else if (action === 'trash') window.trashGmail(id);
+        else if (action === 'expense') window.gmailToExpense(id);
         else if (action === 'open-gmail') window.openGmail(id, thread);
     });
 }
+
+// メール本文を AI 解析して支出入力モーダルにプレフィルする
+window.gmailToExpense = async (id) => {
+    showToast('✉️ メールを解析中…');
+    try {
+        const res = await apiFetch(`/api/gmail/${encodeURIComponent(id)}/expense`, { method: 'POST' });
+        if (!res || !res.ok || !res.expense) { showToast('解析に失敗しました', true); return; }
+        const ex = res.expense;
+        const seed = {
+            amount: parseInt(ex.amount, 10) || 0,
+            vendor: ex.vendor || '',
+            category: ex.category || 'その他',
+            payment_method: ex.payment_method || '',
+            memo: ex.memo || '',
+            date: ex.date || '',
+        };
+        switchTab('log');
+        openExpenseManualModal(null, seed);
+    } catch (e) {
+        showToast('解析に失敗しました', true);
+    }
+};
 
 window.refreshGmailServer = async () => {
     showToast('📥 Gmail を再ポーリング中…');
@@ -8487,6 +8566,9 @@ window.initMain = function patchedInitMain() {
 // 画像保管庫（写真・書類）— 撮影/選択 → AI判定 → 確認 → Drive保存
 // ===========================================================
 let _mediaFilter = '';
+let _mediaView = 'list';
+let _mediaItems = [];
+let _mediaCalMonth = null;
 let _mediaImageListenerInstalled = false;
 
 window.openMediaCaptureModal = (mode = '') => {
@@ -8591,10 +8673,18 @@ function _openMediaConfirmModal(seed) {
     modal.classList.remove('hidden');
 }
 
+function _mediaImgUrl(id) { return `/api/media/${id}/image?k=${encodeURIComponent(apiKey)}`; }
+
 window.setMediaFilter = (btn, kind) => {
     _mediaFilter = kind || '';
     document.querySelectorAll('.media-filter-btn').forEach(b => b.classList.toggle('active', b === btn));
     loadMediaItems();
+};
+
+window.setMediaView = (btn, view) => {
+    _mediaView = view || 'list';
+    document.querySelectorAll('.media-view-btn').forEach(b => b.classList.toggle('active', b === btn));
+    _renderMedia();
 };
 
 window.loadMediaItems = async () => {
@@ -8603,33 +8693,106 @@ window.loadMediaItems = async () => {
     try {
         const q = _mediaFilter ? `?kind=${_mediaFilter}` : '';
         const data = await apiFetch(`/api/media${q}`);
-        const items = (data && data.items) || [];
-        if (!items.length) {
-            el.innerHTML = '<div class="loading-placeholder">まだ画像はありません。📷撮影 / 🖼選択 から追加できます。</div>';
-            return;
-        }
-        el.innerHTML = items.map(it => {
-            const icon = it.kind === 'document' ? '📄' : '📷';
-            const kindLabel = it.kind === 'document' ? '書類' : '写真';
-            const title = escapeHtml(it.title || kindLabel);
-            const ts = escapeHtml((it.created_at || it.date || '').replace('T', ' ').slice(0, 16));
-            const url = escapeHtml(it.view_url || '');
-            const toggleKind = it.kind === 'document' ? 'photo' : 'document';
-            const toggleLabel = it.kind === 'document' ? '📷 写真へ' : '📄 書類へ';
-            return `<div class="media-row" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-glass);">
-                <span style="font-size:1.1rem;flex:none;">${icon}</span>
-                <div style="flex:1;min-width:0;">
-                    <div style="font-size:0.86rem;color:var(--text-primary);word-break:break-word;">${title}</div>
-                    <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(kindLabel)}・${ts}</div>
-                </div>
-                ${url ? `<a href="${url}" target="_blank" rel="noopener" class="mini-link" title="Driveで開く">開く</a>` : ''}
-                <button class="mini-link" title="種別を変更" onclick="setMediaItemKind(${it.id}, '${toggleKind}')">${toggleLabel}</button>
-                <button class="mini-link" style="color:#e2574c;" title="削除" onclick="deleteMediaItem(${it.id})">🗑</button>
-            </div>`;
-        }).join('');
+        _mediaItems = (data && data.items) || [];
+        _renderMedia();
     } catch (e) {
         el.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
+};
+
+function _renderMedia() {
+    const el = document.getElementById('dash-media-list');
+    if (!el) return;
+    if (!_mediaItems.length) {
+        el.innerHTML = '<div class="loading-placeholder">まだ画像はありません。📷撮影 / 🖼選択 から追加できます。</div>';
+        return;
+    }
+    if (_mediaView === 'grid') return _renderMediaGrid(el);
+    if (_mediaView === 'calendar') return _renderMediaCalendar(el);
+    return _renderMediaList(el);
+}
+
+function _renderMediaList(el) {
+    el.innerHTML = _mediaItems.map(it => {
+        const icon = it.kind === 'document' ? '📄' : '📷';
+        const kindLabel = it.kind === 'document' ? '書類' : '写真';
+        const title = escapeHtml(it.title || kindLabel);
+        const ts = escapeHtml((it.created_at || it.date || '').replace('T', ' ').slice(0, 16));
+        const url = escapeHtml(it.view_url || '');
+        const toggleKind = it.kind === 'document' ? 'photo' : 'document';
+        const toggleLabel = it.kind === 'document' ? '📷 写真へ' : '📄 書類へ';
+        return `<div class="media-row" data-id="${it.id}" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-glass);">
+            <img loading="lazy" src="${_mediaImgUrl(it.id)}" alt="" onclick="window.open('${url}','_blank','noopener')" style="width:40px;height:40px;object-fit:cover;border-radius:6px;flex:none;cursor:pointer;background:rgba(255,255,255,0.05);">
+            <div style="flex:1;min-width:0;">
+                <div class="media-title" style="font-size:0.86rem;color:var(--text-primary);word-break:break-word;">${icon} ${title}</div>
+                <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(kindLabel)}・${ts}</div>
+            </div>
+            ${url ? `<a href="${url}" target="_blank" rel="noopener" class="mini-link" title="Driveで開く">開く</a>` : ''}
+            <button class="mini-link" title="タイトルを編集" onclick="editMediaTitle(${it.id})">✏️</button>
+            <button class="mini-link" title="種別を変更" onclick="setMediaItemKind(${it.id}, '${toggleKind}')">${toggleLabel}</button>
+            <button class="mini-link" style="color:#e2574c;" title="削除" onclick="deleteMediaItem(${it.id})">🗑</button>
+        </div>`;
+    }).join('');
+}
+
+function _renderMediaGrid(el) {
+    el.innerHTML = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;">` +
+        _mediaItems.map(it => {
+            const title = escapeHtml(it.title || (it.kind === 'document' ? '書類' : '写真'));
+            const badge = it.kind === 'document' ? '📄' : '📷';
+            const url = escapeHtml(it.view_url || '');
+            return `<div style="position:relative;">
+                <img loading="lazy" src="${_mediaImgUrl(it.id)}" alt="${title}" title="${title}" onclick="window.open('${url}','_blank','noopener')" style="width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:6px;cursor:pointer;background:rgba(255,255,255,0.05);">
+                <span style="position:absolute;top:2px;left:3px;font-size:0.8rem;text-shadow:0 0 3px #000;">${badge}</span>
+                <button class="mini-link" title="編集" onclick="editMediaTitle(${it.id})" style="position:absolute;top:1px;right:1px;background:rgba(0,0,0,0.5);border-radius:4px;">✏️</button>
+                <div style="font-size:0.66rem;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${title}</div>
+            </div>`;
+        }).join('') + `</div>`;
+}
+
+function _renderMediaCalendar(el) {
+    if (!_mediaCalMonth) { const d = new Date(); _mediaCalMonth = { y: d.getFullYear(), m: d.getMonth() + 1 }; }
+    const { y, m } = _mediaCalMonth;
+    const byDate = {};
+    _mediaItems.forEach(it => {
+        const d = (it.date || (it.created_at || '').slice(0, 10));
+        (byDate[d] = byDate[d] || []).push(it);
+    });
+    const startDow = new Date(y, m - 1, 1).getDay();
+    const daysInMonth = new Date(y, m, 0).getDate();
+    const dow = ['日', '月', '火', '水', '木', '金', '土'].map(d => `<div style="font-size:0.66rem;color:var(--text-muted);text-align:center;">${d}</div>`).join('');
+    const cells = [];
+    for (let i = 0; i < startDow; i++) cells.push('<div></div>');
+    for (let day = 1; day <= daysInMonth; day++) {
+        const ds = `${y}-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const items = byDate[ds] || [];
+        const it0 = items[0];
+        const thumb = it0
+            ? `<img loading="lazy" src="${_mediaImgUrl(it0.id)}" onclick="window.open('${escapeHtml(it0.view_url || '')}','_blank','noopener')" style="width:100%;height:100%;object-fit:cover;border-radius:4px;cursor:pointer;">`
+            : '';
+        const more = items.length > 1 ? `<span style="position:absolute;bottom:1px;right:2px;font-size:0.58rem;background:rgba(0,0,0,0.65);color:#fff;border-radius:6px;padding:0 4px;">+${items.length - 1}</span>` : '';
+        cells.push(`<div style="position:relative;aspect-ratio:1/1;border:1px solid var(--border-glass);border-radius:4px;overflow:hidden;">
+            <span style="position:absolute;top:0;left:2px;font-size:0.58rem;color:var(--text-muted);z-index:1;text-shadow:0 0 3px #000;">${day}</span>
+            ${thumb}${more}
+        </div>`);
+    }
+    el.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+            <button class="mini-link" onclick="navMediaCalMonth(-1)">◀</button>
+            <span style="font-size:0.85rem;">${y}年${m}月</span>
+            <button class="mini-link" onclick="navMediaCalMonth(1)">▶</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px;">${dow}</div>
+        <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:3px;">${cells.join('')}</div>`;
+}
+
+window.navMediaCalMonth = (delta) => {
+    if (!_mediaCalMonth) { const d = new Date(); _mediaCalMonth = { y: d.getFullYear(), m: d.getMonth() + 1 }; }
+    let { y, m } = _mediaCalMonth;
+    m += delta;
+    if (m < 1) { m = 12; y--; } else if (m > 12) { m = 1; y++; }
+    _mediaCalMonth = { y, m };
+    _renderMedia();
 };
 
 window.setMediaItemKind = async (id, kind) => {
@@ -8639,6 +8802,20 @@ window.setMediaItemKind = async (id, kind) => {
         loadMediaItems();
     } catch (e) {
         showToast('変更に失敗しました', true);
+    }
+};
+
+window.editMediaTitle = async (id) => {
+    const row = document.querySelector(`.media-row[data-id="${id}"]`);
+    const current = row ? (row.querySelector('.media-title')?.textContent || '') : '';
+    const t = window.prompt('タイトルを編集', current);
+    if (t === null) return;  // キャンセル
+    try {
+        await apiFetch(`/api/media/${id}`, { method: 'PATCH', body: JSON.stringify({ title: t.trim() }) });
+        showToast('タイトルを更新しました');
+        loadMediaItems();
+    } catch (e) {
+        showToast('更新に失敗しました', true);
     }
 };
 
@@ -10672,7 +10849,10 @@ function _renderScreenerCandidates(data) {
                     </div>
                     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap;">
                         <span style="font-size:0.78rem;color:var(--text-muted);">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
-                        <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;flex-shrink:0;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
+                        <span style="display:flex;gap:4px;flex-shrink:0;">
+                            <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openStockChart('${codeEsc}','${nameEsc}')">📈 チャート</button>
+                            <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
+                        </span>
                     </div>
                     ${styleBadges ? `<div style="margin-bottom:4px;">${styleBadges}</div>` : ''}
                     ${failedBadge}
@@ -10692,6 +10872,123 @@ function _renderScreenerCandidates(data) {
         secBtn.style.opacity = cands.length ? '1' : '0.5';
     }
 }
+
+// ===== 銘柄チャート（スクリーナー結果から1クリック表示） =====
+let _stockChartInstance = null;
+
+function _destroyStockChart() {
+    if (_stockChartInstance) { try { _stockChartInstance.destroy(); } catch (e) {} _stockChartInstance = null; }
+}
+
+window.openStockChart = async (code, name) => {
+    let modal = document.getElementById('stock-chart-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="stock-chart-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:640px;width:94%;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;">
+                        <h3 id="stock-chart-title" style="margin:0;font-size:1rem;">📈 チャート</h3>
+                        <select id="stock-chart-range" class="modern-input" style="padding:2px 6px;font-size:0.78rem;width:auto;flex:none;" onchange="_reloadStockChart()">
+                            <option value="60">3ヶ月</option>
+                            <option value="120" selected>6ヶ月</option>
+                            <option value="250">1年</option>
+                        </select>
+                    </div>
+                    <div id="stock-chart-meta" style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;"></div>
+                    <div style="position:relative;height:300px;"><canvas id="stock-chart-canvas"></canvas></div>
+                    <div id="stock-chart-ext" style="text-align:right;margin-top:8px;"></div>
+                    <div class="modal-actions" style="margin-top:10px;">
+                        <button class="modal-btn cancel" onclick="document.getElementById('stock-chart-modal').classList.add('hidden');_destroyStockChart();">閉じる</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('stock-chart-modal');
+    }
+    modal._code = code; modal._name = name || '';
+    const titleEl = document.getElementById('stock-chart-title');
+    if (titleEl) titleEl.textContent = `📈 ${code} ${name || ''}`;
+    const ext = document.getElementById('stock-chart-ext');
+    if (ext) ext.innerHTML = `<a href="https://kabutan.jp/stock/chart?code=${encodeURIComponent(code)}" target="_blank" rel="noopener" class="mini-link">↗ 詳細チャート（かぶたん）</a>`;
+    modal.classList.remove('hidden');
+    await _reloadStockChart();
+};
+
+window._reloadStockChart = async () => {
+    const modal = document.getElementById('stock-chart-modal');
+    if (!modal) return;
+    const code = modal._code;
+    const days = document.getElementById('stock-chart-range')?.value || '120';
+    const meta = document.getElementById('stock-chart-meta');
+    if (meta) meta.textContent = '読み込み中…';
+    let data;
+    try {
+        data = await apiFetch(`/api/investment/screener/ohlcv/${encodeURIComponent(code)}?days=${days}`);
+    } catch (e) { if (meta) meta.textContent = '取得に失敗しました'; return; }
+    const candles = (data && data.ok && data.candles) || [];
+    if (!candles.length) { if (meta) meta.textContent = 'データがありません'; _destroyStockChart(); return; }
+
+    const closes = candles.map(c => c.close);
+    // ローソク足データ {x: 時刻ms, o,h,l,c}（OHLCが揃った足のみ）
+    const ohlc = candles
+        .filter(c => [c.open, c.high, c.low, c.close].every(v => v != null))
+        .map(c => ({ x: new Date(c.date + 'T00:00:00').getTime(), o: c.open, h: c.high, l: c.low, c: c.close }));
+    // SMA（終値ベース）を {x,y} で
+    const smaPoints = (n) => candles.map((c, i) => {
+        if (i < n - 1) return { x: new Date(c.date + 'T00:00:00').getTime(), y: null };
+        let s = 0;
+        for (let j = i - n + 1; j <= i; j++) { if (closes[j] == null) return { x: new Date(c.date + 'T00:00:00').getTime(), y: null }; s += closes[j]; }
+        return { x: new Date(c.date + 'T00:00:00').getTime(), y: +(s / n).toFixed(1) };
+    });
+
+    const last = [...closes].reverse().find(v => v != null);
+    const first = closes.find(v => v != null);
+    const chg = (first && last) ? ((last - first) / first * 100) : 0;
+    if (meta) meta.textContent = `終値 ${last ?? '-'} / 期間騰落 ${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%`;
+
+    _destroyStockChart();
+    const ctx = document.getElementById('stock-chart-canvas');
+    if (!ctx || !window.Chart) { if (meta) meta.textContent = 'チャート描画を初期化できませんでした'; return; }
+
+    // ローソク足コントローラ（chartjs-chart-financial）が読み込めていれば candlestick、
+    // 失敗時は終値の折れ線にフォールバック。
+    const hasCandle = !!(window.Chart.registry && (() => { try { return !!window.Chart.registry.getController('candlestick'); } catch (e) { return false; } })());
+    const spanDays = candles.length;
+    const xScale = {
+        type: 'time',
+        time: { unit: spanDays > 180 ? 'month' : 'week', tooltipFormat: 'yyyy-MM-dd' },
+        ticks: { maxTicksLimit: 6, font: { size: 9 } },
+    };
+    const commonOpts = {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        plugins: { legend: { labels: { boxWidth: 10, font: { size: 10 } } } },
+        scales: { x: xScale, y: { ticks: { font: { size: 9 } } } },
+    };
+
+    if (hasCandle) {
+        _stockChartInstance = new window.Chart(ctx, {
+            type: 'candlestick',
+            data: { datasets: [
+                { label: '株価', data: ohlc, color: { up: '#26a69a', down: '#ef5350', unchanged: '#888' }, borderColor: { up: '#26a69a', down: '#ef5350', unchanged: '#888' } },
+                { label: 'SMA25', type: 'line', data: smaPoints(25), borderColor: '#ffd454', borderWidth: 1, pointRadius: 0, spanGaps: true },
+                { label: 'SMA75', type: 'line', data: smaPoints(75), borderColor: '#4ea1ff', borderWidth: 1, pointRadius: 0, spanGaps: true },
+            ] },
+            options: commonOpts,
+        });
+    } else {
+        _stockChartInstance = new window.Chart(ctx, {
+            type: 'line',
+            data: { datasets: [
+                { label: '終値', data: candles.map(c => ({ x: new Date(c.date + 'T00:00:00').getTime(), y: c.close })), borderColor: '#4ea1ff', borderWidth: 1.4, pointRadius: 0, tension: 0.1, spanGaps: true },
+                { label: 'SMA25', data: smaPoints(25), borderColor: '#ffd454', borderWidth: 1, pointRadius: 0, spanGaps: true },
+                { label: 'SMA75', data: smaPoints(75), borderColor: '#ff8a8a', borderWidth: 1, pointRadius: 0, spanGaps: true },
+            ] },
+            options: commonOpts,
+        });
+    }
+};
 
 function _populateSecondaryStyleSelect() {
     const sel = $('#screener-secondary-style');

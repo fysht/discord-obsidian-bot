@@ -172,6 +172,20 @@ class GoogleDriveService:
         except Exception as e:
             return f"検索中にエラーが発生しました: {e}"
 
+    async def download_bytes(self, service, file_id):
+        """指定したIDのファイルをメモリ上に取得して bytes で返す（画像プロキシ用）。失敗時 None。"""
+        try:
+            request = service.files().get_media(fileId=file_id)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while not done:
+                _, done = await asyncio.to_thread(downloader.next_chunk)
+            return fh.getvalue()
+        except Exception as e:
+            logging.error(f"DriveService: download_bytes error: {e}")
+            return None
+
     async def download_file(self, service, file_id, local_path):
         """指定したIDのファイルをローカルにダウンロードする（PDF読み込み用）"""
         try:

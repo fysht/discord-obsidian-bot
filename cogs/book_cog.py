@@ -50,6 +50,15 @@ class BookCog(commands.Cog):
             content_to_update, append_text, "## 📖 Reading Log"
         )
         await self.drive_service.update_text(service, f_id, new_content)
+
+        # デイリーノートにも書籍ノートへのリンクを残す（その日のインプットを一覧できるように）
+        try:
+            from api.routers._obsidian_helpers import append_lifelog_line
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            link = f"- [[BookNotes/{book_title}|📖 {book_title}]]"
+            await append_lifelog_line(today, link, heading="## 📖 Reading Log", dedup=True)
+        except Exception:
+            pass
         return True
 
 

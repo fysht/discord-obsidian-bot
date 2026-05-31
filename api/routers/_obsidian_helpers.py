@@ -11,9 +11,11 @@ async def append_lifelog_line(
     line: str,
     heading: str = "## 🪟 Lifelog",
     sort_by_time: bool = False,
+    dedup: bool = False,
 ) -> bool:
     """指定日 (YYYY-MM-DD) の DailyNote の指定セクションに 1 行（または複数行ブロック）を追記する。
     heading を変えれば食事ログ等の独立セクションへ書ける。sort_by_time=True で時刻順に整列。
+    dedup=True なら、その日のノートに同じ line が既にあれば追記しない（同じリンクの重複防止）。
     成功時 True、未接続/失敗時 False。例外は内部でログのみ。"""
     from api import app
     chat_service = getattr(app.state, "chat_service", None)
@@ -33,6 +35,8 @@ async def append_lifelog_line(
             content = await drive.read_text_file(service, file_id)
         else:
             content = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n"
+        if dedup and line.strip() and line.strip() in (content or ""):
+            return True  # 既に同じ行があるので何もしない（成功扱い）
         new_content = update_section(content, line, heading, sort_by_time=sort_by_time)
         if file_id:
             await drive.update_text(service, file_id, new_content)

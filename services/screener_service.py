@@ -168,6 +168,42 @@ class ScreenerService:
             "candidates": [r.to_dict() for r in top],
         }
 
+    async def get_ohlcv_series(self, code: str, days: int = 120) -> dict:
+        """1 銘柄の OHLCV を JSON 化して返す（アプリ内チャート表示用）。
+        スクリーナーと同じ分割調整済みデータなのでシグナルと一致する。"""
+        import math
+        days = max(20, min(int(days or 120), 400))
+        try:
+            df = await self.provider.get_ohlcv(code, days=max(days, 60))
+        except Exception as e:
+            return {"ok": False, "error": f"取得失敗: {e}"}
+        if df is None or len(df) == 0:
+            return {"ok": False, "error": "データがありません"}
+
+        def _f(v):
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f if math.isfinite(f) else None
+
+        candles = []
+        for idx, row in df.tail(days).iterrows():
+            try:
+                d = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)[:10]
+            except Exception:
+                d = str(idx)[:10]
+            vol = row["Volume"] if "Volume" in row else None
+            candles.append({
+                "date": d,
+                "open": _f(row.get("Open")),
+                "high": _f(row.get("High")),
+                "low": _f(row.get("Low")),
+                "close": _f(row.get("Close")),
+                "volume": int(vol) if vol == vol and vol is not None else 0,
+            })
+        return {"ok": True, "code": code, "candles": candles}
+
     # =========================================================
     # スタイル横断フィルタ：既存候補を別スタイルで再評価する
     # =========================================================

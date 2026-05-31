@@ -138,6 +138,13 @@ async def screener_job(job_id: str):
     return await cog.get_job_status(job_id)
 
 
+@router.get("/ohlcv/{code}", dependencies=[Depends(verify_api_key)])
+async def screener_ohlcv(code: str, days: int = 120):
+    """1 銘柄の OHLCV（分割調整済み）を返す。スクリーナー結果のチャート表示用。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.get_ohlcv_series(code, days))
+
+
 @router.post("/cross_filter", dependencies=[Depends(verify_api_key)])
 async def screener_cross_filter(req: ScreenerCrossFilterRequest):
     cog = _get_screener_cog()

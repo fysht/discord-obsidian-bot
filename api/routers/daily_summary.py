@@ -333,34 +333,40 @@ async def _reflect_meal_answer(qid: int, answer_text: str):
     await notification_service.save_message_and_notify("assistant", msg, title="🍽 食事ログ記録")
 
 
-# afternoon/learning/gratitude スコープの記録先（見出し・ラベル）
+# afternoon/learning/gratitude スコープの表示アイコン・ラベル。
+# 記録先はすべてデイリーノートの `## 📔 Daily Journal`（独立セクションにせず日記に統合）。
 _JOURNAL_SCOPE_META = {
-    "afternoon": ("## 🌤 Afternoon Check", "午後の調子"),
-    "learning": ("## 💡 Learnings", "学び"),
-    "gratitude": ("## 🙏 Gratitude", "良かったこと"),
+    "afternoon": ("🌤", "午後の調子"),
+    "learning": ("💡", "学び"),
+    "gratitude": ("🙏", "良かったこと"),
 }
+
+# 日次チェックインの記録先（Daily Journal に時刻付き1行で集約）
+_CHECKIN_HEADING = "## 📔 Daily Journal"
 
 
 async def _reflect_journal_answer(qid: int, answer_text: str, scope: str):
     """昼の振り返り / 学び / 感謝の回答を、入力テキストそのまま Obsidian の
-    独立セクションへ時刻付きで1行記録する（フローA）。"""
+    Daily Journal に時刻付きで1行記録する（フローA・日次チェックイン）。"""
     from api import app
     from api.database import resolve_question_by_id
 
     text = (answer_text or "").strip()
     if not text:
         return
-    heading, label = _JOURNAL_SCOPE_META.get(scope, ("## 🪟 Lifelog", "メモ"))
+    icon, label = _JOURNAL_SCOPE_META.get(scope, ("📝", "メモ"))
     bot = getattr(app.state, "bot", None)
     partner_cog = bot.get_cog("PartnerCog") if bot else None
     if partner_cog:
         try:
-            await partner_cog._append_raw_message_to_obsidian(text, target_heading=heading)
+            await partner_cog._append_raw_message_to_obsidian(
+                f"{icon} {label}: {text}", target_heading=_CHECKIN_HEADING
+            )
         except Exception as e:
             logging.debug(f"journal({scope}) obsidian append failed: {e}")
     await resolve_question_by_id(qid)
     await notification_service.save_message_and_notify(
-        "assistant", f"📝 {label}を記録したよ（{text[:40]}）", title=f"📝 {label}記録",
+        "assistant", f"📝 {label}を記録したよ（{text}）", title=f"📝 {label}記録",
     )
 
 
@@ -401,8 +407,8 @@ async def _reflect_expense_answer(qid: int, answer_text: str):
 
 
 async def _reflect_mood_answer(qid: int, answer_text: str, scope: str):
-    """mood / condition スコープの回答を Obsidian の独立セクションに1行記録する（フローA・選択式）。
-    気分は `## 😀 Mood`、体調は `## 🩺 Condition` に時刻付きで追記する。"""
+    """mood / condition スコープの回答を Obsidian の Daily Journal に時刻付き1行で記録する
+    （フローA・選択式・日次チェックインとして日記に統合）。"""
     from api import app
     from api.database import resolve_question_by_id
 
@@ -411,13 +417,12 @@ async def _reflect_mood_answer(qid: int, answer_text: str, scope: str):
         return
     label = "気分" if scope == "mood" else "体調"
     icon = "😀" if scope == "mood" else "🩺"
-    heading = "## 😀 Mood" if scope == "mood" else "## 🩺 Condition"
     bot = getattr(app.state, "bot", None)
     partner_cog = bot.get_cog("PartnerCog") if bot else None
     if partner_cog:
         try:
             await partner_cog._append_raw_message_to_obsidian(
-                f"{label}: {text}", target_heading=heading
+                f"{icon} {label}: {text}", target_heading=_CHECKIN_HEADING
             )
         except Exception as e:
             logging.debug(f"mood/condition obsidian append failed: {e}")

@@ -78,6 +78,9 @@ class ScreenerCog(commands.Cog):
             enabled_filters=enabled_filters,
         )
 
+    async def get_ohlcv_series(self, code: str, days: int = 120) -> dict:
+        return await self.service.get_ohlcv_series(code, days)
+
     async def run_multi_screening(
         self,
         styles: list[str],

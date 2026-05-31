@@ -26,6 +26,41 @@ async def gmail_inbox(state: str = "pending", limit: int = 50):
     }
 
 
+@router.post("/{message_id}/expense", dependencies=[Depends(verify_api_key)])
+async def gmail_to_expense(message_id: str):
+    """メール本文（注文確認メール等）から AI で支出情報を抽出して返す（保存はしない）。
+    フロントはこの結果を支出入力モーダルにプレフィルする。"""
+    from api import app
+    from api.database import gmail_get
+    from api.routers.expenses import analyze_expense_text
+
+    bot = getattr(app.state, "bot", None)
+    gmail = getattr(bot, "gmail_service", None) if bot else None
+    if not gmail:
+        raise HTTPException(status_code=503, detail="Gmail未接続")
+
+    record = await gmail_get(message_id)
+    subject = (record.get("subject") or "") if record else ""
+    sender = (record.get("from_addr") or record.get("sender") or "") if record else ""
+
+    try:
+        full = await gmail.get_message(message_id)
+    except Exception as e:
+        logging.error(f"gmail_to_expense get_message error: {e}")
+        full = None
+    body = ((full or {}).get("body") or "")[:5000]
+
+    text = f"件名: {subject}\n差出人: {sender}\n本文:\n{body}".strip()
+    if not body and not subject:
+        raise HTTPException(status_code=404, detail="メール本文を取得できませんでした")
+
+    ex = await analyze_expense_text(text)
+    # 店名が空ければ件名から補完
+    if not (ex.get("vendor") or "").strip() and subject:
+        ex["vendor"] = subject[:40]
+    return {"ok": True, "expense": ex}
+
+
 @router.post("/{message_id}/read", dependencies=[Depends(verify_api_key)])
 async def gmail_mark_read(message_id: str):
     """Gmail 側で既読化し、DB の state を 'archived' に。"""
@@ -138,6 +173,18 @@ async def gmail_save_to_obsidian(message_id: str):
             saved_drive_id=drive_id,
             saved_at=datetime.datetime.now(JST).isoformat(),
         )
+
+        # 受信日のデイリーノートに、保存したメールノートへのリンクを残す
+        try:
+            from api.routers._obsidian_helpers import append_lifelog_line
+            filename_no_ext = file_name[:-3] if file_name.endswith(".md") else file_name
+            # wikilink のエイリアスに [ ] | が入ると壊れるので除去
+            label = subject.replace("[", "").replace("]", "").replace("|", " ").strip() or "メール"
+            link = f"- [[Emails/{month_part}/{filename_no_ext}|✉️ {label}]]"
+            await append_lifelog_line(date_part, link, heading="## ✉️ Emails", dedup=True)
+        except Exception as e:
+            logging.debug(f"gmail_save daily-note link failed: {e}")
+
         return {"ok": True, "drive_id": drive_id, "file_name": file_name}
     except Exception as e:
         logging.error(f"gmail_save_to_obsidian error: {e}")

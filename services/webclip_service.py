@@ -139,7 +139,7 @@ class WebClipService:
         elif is_map:
             folder_name = "Places"
             content_type_label = "📍 場所（マップ）"
-            section_header = "## 🔗 WebClips"
+            section_header = "## 🗺 Places"
         elif is_recipe:
             folder_name = "Recipes"
             content_type_label = "🍳 レシピ"

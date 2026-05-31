@@ -64,11 +64,13 @@ SECTION_ORDER = [
     "## 🔎 Insights",  # 派生分析 (DailyOrganizeCog) ※旧名: Insights & Thoughts
     "## 🚀 Next Actions",  # 明日のアクション (DailyOrganizeCog)
     # --- 4. Input & Information (インプット・情報収集) ---
-    "## 📖 Reading Log",  # 読書メモ (PartnerCog)
+    "## 📖 Reading Log",  # 読書メモ (PartnerCog / BookCog → デイリーノートにもリンク)
+    "## 📝 Study Log",  # 勉強ログ (StudyCog → デイリーノートにリンク)
     "## 🍳 Recipes",  # レシピクリップ (WebClipService)
     "## 📺 YouTube",  # YouTube動画リンク (WebClipService)
     "## 🗺 Places",   # Google Maps の場所情報 (旧 WebClips から分離)
     "## 🔗 WebClips",  # Web記事クリップ (WebClipService)
+    "## ✉️ Emails",   # 保存したメールノートへのリンク (gmail)
     # --- 5. Logs & Records (自動記録・活動データ) ---
     "## 📷 Media",  # 撮影画像（写真／書類）への索引リンク (media)
     "## 📊 Health Metrics",  # 健康データ (FitbitCog)

@@ -11,7 +11,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
 from config import JST
@@ -179,6 +179,36 @@ async def media_list(kind: str = "", limit: int = 200):
     photo_n = sum(1 for it in items if it.get("kind") == "photo")
     doc_n = sum(1 for it in items if it.get("kind") == "document")
     return {"ok": True, "items": items, "counts": {"photo": photo_n, "document": doc_n}}
+
+
+@router.get("/{item_id}/image")
+async def media_image(item_id: int, k: str = "", x_api_key: str = Header(None)):
+    """保存画像の実体を Drive から取得して返す（サムネイル/プレビュー表示用プロキシ）。
+    <img src> はヘッダを送れないため、API キーはクエリ ?k= でも受け付ける。"""
+    from fastapi import Response
+    from api import app
+    from api.routes import API_KEY
+    from api.database import get_media_item
+
+    if (x_api_key or k) != API_KEY:
+        raise HTTPException(status_code=401, detail="認証エラー")
+
+    item = await get_media_item(item_id)
+    if not item or not item.get("drive_id"):
+        raise HTTPException(status_code=404, detail="画像が見つかりません")
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="Drive未接続")
+    service = chat_service.drive_service.get_service()
+    if not service:
+        raise HTTPException(status_code=503, detail="Drive未接続")
+    data = await chat_service.drive_service.download_bytes(service, item["drive_id"])
+    if data is None:
+        raise HTTPException(status_code=502, detail="画像の取得に失敗しました")
+    fn = (item.get("filename") or "").lower()
+    media_type = "image/png" if fn.endswith(".png") else "image/jpeg"
+    return Response(content=data, media_type=media_type,
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.patch("/{item_id}", dependencies=[Depends(verify_api_key)])

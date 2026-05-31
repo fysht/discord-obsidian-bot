@@ -153,6 +153,20 @@ async def analyze_meal_text(text: str) -> dict:
         return fallback
 
 
+class MealTextAnalyzeRequest(BaseModel):
+    text: str
+
+
+@router.post("/analyze_text", dependencies=[Depends(verify_api_key)])
+async def meals_analyze_text(req: MealTextAnalyzeRequest):
+    """料理名・説明文からカロリー/PFC を推定して返す（保存はしない）。手入力時の自動見積用。"""
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="text が空です")
+    result = await analyze_meal_text(text)
+    return {"ok": True, "result": result}
+
+
 async def _sync_meal_expense(meal_id, date, name, restaurant, price, existing_expense_id):
     """外食の金額を支出メモへ反映する。meal と expense を expense_id で1対1に紐付け、
     金額の新規/変更は作成・更新、金額が 0 になったら連携支出を削除する（二重計上を防ぐ）。"""
@@ -200,11 +214,28 @@ async def meals_save(req: MealSaveRequest):
     time = req.time or now.strftime("%H:%M")
     name = (req.name or "").strip() or "食事"
 
+    # カロリー未入力（0）かつ料理名がある場合は AI で自動推定して補完する。
+    # ユーザーはカロリーが分からなくても保存でき、必要なら後で手動修正できる。
+    calories = int(req.calories or 0)
+    protein_g, fat_g, carbs_g = req.protein_g, req.fat_g, req.carbs_g
+    if calories <= 0 and name and name != "食事":
+        try:
+            nutri = await analyze_meal_text(name)
+            calories = int(nutri.get("calories") or 0)
+            if not protein_g:
+                protein_g = float(nutri.get("protein_g") or 0)
+            if not fat_g:
+                fat_g = float(nutri.get("fat_g") or 0)
+            if not carbs_g:
+                carbs_g = float(nutri.get("carbs_g") or 0)
+        except Exception as e:
+            logging.debug(f"meals_save calorie auto-estimate failed: {e}")
+
     meal_id = await add_meal(
         date=date, time=time, name=name,
         meal_type=(req.meal_type or "").strip(),
-        calories=req.calories,
-        protein_g=req.protein_g, fat_g=req.fat_g, carbs_g=req.carbs_g,
+        calories=calories,
+        protein_g=protein_g, fat_g=fat_g, carbs_g=carbs_g,
         memo=req.memo or "",
         image_drive_id=req.image_drive_id or "",
         restaurant=(req.restaurant or "").strip(),
@@ -225,8 +256,8 @@ async def meals_save(req: MealSaveRequest):
             parts.append(f"@{req.restaurant.strip()}")
         parts.append(name)
         extras = []
-        if req.calories:
-            extras.append(f"推定{req.calories}kcal")
+        if calories:
+            extras.append(f"推定{calories}kcal")
         if req.price:
             extras.append(f"¥{int(req.price):,}")
         if req.rating and req.rating > 0:
