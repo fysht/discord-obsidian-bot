@@ -841,14 +841,16 @@ class PartnerCog(commands.Cog):
 
     async def send_log_question(self, scope: str, question: str, push: bool = True) -> bool:
         """ルーティン等から記録質問を能動的に投下する（質問作成＋回答欄付きメッセージ送信）。
-        同じ scope の未回答質問が今日すでにあれば二重投下しない。
+        同じ「文面」の未回答質問が今日すでにあれば二重投下しない（朝食・昼食・夕食のように
+        同じ scope でも文面が異なる質問は別物として両方出せる）。
         push=False のときは Push 通知を出さずメッセージ保存のみ（他の通知とまとめたい場合に使う）。"""
         try:
             from api.database import get_questions_by_date
             today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            qtext = (question or "").strip()
             existing = await get_questions_by_date(today, scope=scope)
-            if any(q.get("status") != "resolved" for q in existing):
-                return False  # 既に未回答の同種質問がある
+            if any(q.get("status") != "resolved" and (q.get("question") or "").strip() == qtext for q in existing):
+                return False  # 既に同じ未回答質問がある（同一文面のみ抑止）
         except Exception as e:
             logging.debug(f"send_log_question 既存確認エラー: {e}")
         qid, body = await self._create_log_question(scope, question)

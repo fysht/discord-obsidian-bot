@@ -153,6 +153,42 @@ async def analyze_meal_text(text: str) -> dict:
         return fallback
 
 
+async def _sync_meal_expense(meal_id, date, name, restaurant, price, existing_expense_id):
+    """外食の金額を支出メモへ反映する。meal と expense を expense_id で1対1に紐付け、
+    金額の新規/変更は作成・更新、金額が 0 になったら連携支出を削除する（二重計上を防ぐ）。"""
+    from api.database import add_expense, update_expense, delete_expense, set_meal_expense_id
+
+    price = int(price or 0)
+    eid = existing_expense_id or None
+
+    if price > 0:
+        from api.routers.expenses import _get_large_threshold
+        nm = (name or "食事").strip() or "食事"
+        rest = (restaurant or "").strip()
+        vendor = rest or nm
+        memo = f"🍽 外食: {nm}" + (f"（{rest}）" if rest else "")
+        threshold = await _get_large_threshold()
+        is_large = price >= threshold
+        if eid:
+            await update_expense(eid, {
+                "date": date, "amount": price, "vendor": vendor,
+                "memo": memo, "category": "食費", "is_large": is_large,
+            })
+            return eid
+        new_id = await add_expense(
+            date=date, amount=price, category="食費", vendor=vendor,
+            payment_method="", memo=memo, is_large=is_large,
+        )
+        await set_meal_expense_id(meal_id, new_id)
+        return new_id
+
+    # 金額が無くなった → 連携していた支出があれば削除して紐付けも解除
+    if eid:
+        await delete_expense(eid)
+        await set_meal_expense_id(meal_id, None)
+    return None
+
+
 @router.post("", dependencies=[Depends(verify_api_key)])
 async def meals_save(req: MealSaveRequest):
     """食事ログを保存。Obsidian の `## 🍽 Meals` セクションにも `- HH:MM 🍽 ...` で時刻順に追記する。"""
@@ -210,7 +246,16 @@ async def meals_save(req: MealSaveRequest):
     except Exception as e:
         logging.debug(f"meals_save lifelog append failed: {e}")
 
-    return {"ok": True, "id": meal_id, "date": date, "time": time}
+    # 外食などで金額が入っていれば支出メモにも反映する（食費カテゴリで自動登録）。
+    expense_id = None
+    try:
+        expense_id = await _sync_meal_expense(
+            meal_id, date, name, req.restaurant, req.price, None
+        )
+    except Exception as e:
+        logging.debug(f"meals_save expense sync failed: {e}")
+
+    return {"ok": True, "id": meal_id, "date": date, "time": time, "expense_id": expense_id}
 
 
 @router.get("", dependencies=[Depends(verify_api_key)])
@@ -230,20 +275,37 @@ async def meals_list(date: str = ""):
 
 @router.patch("/{meal_id}", dependencies=[Depends(verify_api_key)])
 async def meals_patch(meal_id: int, req: MealPatchRequest):
-    from api.database import update_meal
+    from api.database import update_meal, get_meal
     fields = {k: v for k, v in req.model_dump().items() if v is not None}
     ok = await update_meal(meal_id, fields)
     if not ok:
         raise HTTPException(status_code=404, detail="食事が見つかりません")
+    # 金額を後から追記/変更した場合も支出メモへ反映（連携支出を作成・更新・削除）。
+    try:
+        m = await get_meal(meal_id)
+        if m:
+            await _sync_meal_expense(
+                meal_id, m.get("date"), m.get("name"), m.get("restaurant"),
+                m.get("price"), m.get("expense_id") or None,
+            )
+    except Exception as e:
+        logging.debug(f"meals_patch expense sync failed: {e}")
     return {"ok": True}
 
 
 @router.delete("/{meal_id}", dependencies=[Depends(verify_api_key)])
 async def meals_delete(meal_id: int):
-    from api.database import delete_meal
+    from api.database import delete_meal, get_meal, delete_expense
+    # 連携している自動作成の支出も一緒に削除（手動の支出には触れない）
+    linked = await get_meal(meal_id)
     ok = await delete_meal(meal_id)
     if not ok:
         raise HTTPException(status_code=404, detail="食事が見つかりません")
+    if linked and linked.get("expense_id"):
+        try:
+            await delete_expense(linked["expense_id"])
+        except Exception as e:
+            logging.debug(f"meals_delete linked expense delete failed: {e}")
     return {"ok": True}
 
 

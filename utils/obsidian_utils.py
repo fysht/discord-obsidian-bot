@@ -70,6 +70,7 @@ SECTION_ORDER = [
     "## 🗺 Places",   # Google Maps の場所情報 (旧 WebClips から分離)
     "## 🔗 WebClips",  # Web記事クリップ (WebClipService)
     # --- 5. Logs & Records (自動記録・活動データ) ---
+    "## 📷 Media",  # 撮影画像（写真／書類）への索引リンク (media)
     "## 📊 Health Metrics",  # 健康データ (FitbitCog)
     "## 📍 Location History",  # 位置情報ログ (LocationLogCog)
     "## 🗒️ Logs",  # 一般ログ (PartnerCog)

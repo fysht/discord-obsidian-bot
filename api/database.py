@@ -290,6 +290,7 @@ async def init_db():
             ("companions", "ALTER TABLE meals ADD COLUMN companions TEXT DEFAULT ''"),
             ("rating", "ALTER TABLE meals ADD COLUMN rating INTEGER DEFAULT 0"),
             ("restaurant_url", "ALTER TABLE meals ADD COLUMN restaurant_url TEXT DEFAULT ''"),
+            ("expense_id", "ALTER TABLE meals ADD COLUMN expense_id INTEGER DEFAULT NULL"),
         ]:
             try:
                 await db.execute(ddl)
@@ -384,6 +385,22 @@ async def init_db():
         """)
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_manager_notices_created ON manager_notices(created_at DESC)"
+        )
+
+        # 撮影画像の保管（写真／書類を分けて整理）。実体は Google Drive、ここは索引。
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS media_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL DEFAULT 'photo',
+                drive_id TEXT NOT NULL DEFAULT '',
+                filename TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                date TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_items_created ON media_items(created_at DESC)"
         )
 
         # 新規拡張カラムの追加 (存在しない場合) — ALTER TABLE は冪等にならないので個別 try で吸収
@@ -1038,6 +1055,80 @@ async def delete_manager_notice(notice_id: int) -> bool:
         return cursor.rowcount > 0
 
 
+# --- Media (撮影画像: 写真／書類) ---
+
+async def add_media_item(kind: str, drive_id: str, filename: str, title: str, date: str) -> int:
+    now = datetime.datetime.now(JST).isoformat()
+    k = kind if kind in ("photo", "document") else "photo"
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT INTO media_items (kind, drive_id, filename, title, date, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (k, drive_id, filename, title, date, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def list_media_items(kind: str | None = None, limit: int = 200) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if kind in ("photo", "document"):
+            cursor = await db.execute(
+                "SELECT id, kind, drive_id, filename, title, date, created_at "
+                "FROM media_items WHERE kind = ? ORDER BY created_at DESC LIMIT ?",
+                (kind, int(limit)),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT id, kind, drive_id, filename, title, date, created_at "
+                "FROM media_items ORDER BY created_at DESC LIMIT ?",
+                (int(limit),),
+            )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def update_media_item(item_id: int, kind: str | None = None, title: str | None = None) -> bool:
+    sets, params = [], []
+    if kind in ("photo", "document"):
+        sets.append("kind = ?")
+        params.append(kind)
+    if title is not None:
+        sets.append("title = ?")
+        params.append(title)
+    if not sets:
+        return False
+    params.append(int(item_id))
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            f"UPDATE media_items SET {', '.join(sets)} WHERE id = ?", params
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_media_item(item_id: int) -> dict | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, kind, drive_id, filename, title, date, created_at "
+            "FROM media_items WHERE id = ?",
+            (int(item_id),),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def delete_media_item(item_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "DELETE FROM media_items WHERE id = ?", (int(item_id),)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 # --- Meals (食事ログ) ---
 
 async def add_meal(
@@ -1124,6 +1215,31 @@ async def update_meal(meal_id: int, fields: dict) -> bool:
         cursor = await db.execute(
             f"UPDATE meals SET {', '.join(sets)} WHERE id = ?",
             tuple(values),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def get_meal(meal_id: int) -> dict | None:
+    """1 件の食事ログを取得（外食金額の支出連携で現状値を読むのに使う）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT id, date, time, name, restaurant, price, "
+            "COALESCE(expense_id, 0) AS expense_id "
+            "FROM meals WHERE id = ?",
+            (int(meal_id),),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def set_meal_expense_id(meal_id: int, expense_id) -> bool:
+    """食事ログに連携支出の id を保存（解除は None）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE meals SET expense_id = ? WHERE id = ?",
+            (int(expense_id) if expense_id else None, int(meal_id)),
         )
         await db.commit()
         return cursor.rowcount > 0

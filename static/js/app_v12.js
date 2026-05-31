@@ -641,6 +641,7 @@ function switchTab(tab) {
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
         loadDailySummary();
+        if (typeof loadMediaItems === 'function') loadMediaItems();
     }
     if (tab === 'invest') {
         loadInvestmentHistory();
@@ -4562,12 +4563,12 @@ async function _handleShareTarget() {
     } catch (e) { /* ignore */ }
     if (!payload) return false;
 
-    // 画像が共有された → 支出として解析（PayPay 支払い画面・購入履歴スクショ）
+    // 画像が共有された → 「支出 / 写真 / 書類」のどれで保存するか選ばせる
     if (payload.hasImage) {
         try {
             const imgResp = await fetch('/__share_image__');
             if (imgResp.ok) {
-                await _analyzeSharedExpenseImage(await imgResp.blob());
+                _openShareImageChooser(await imgResp.blob());
                 return true;
             }
         } catch (e) { /* fallthrough */ }
@@ -4582,6 +4583,12 @@ async function _handleShareTarget() {
     }
     // URL を含む → リンクをストック（チャットへ流す）
     const urlToStock = (payload.url || '') || ((text.match(/https?:\/\/[^\s]+/) || [''])[0]);
+    // Google マップの共有は「外食として記録 / 場所として登録」を選ばせる
+    if (urlToStock && /maps\.app\.goo\.gl|google\.[^/]*\/maps|goo\.gl\/maps|maps\.google\./i.test(urlToStock)) {
+        let placeName = (payload.title || payload.text || '').replace(urlToStock, '').replace(/https?:\/\/\S+/g, '').trim();
+        _openMapsShareChooser(urlToStock, placeName);
+        return true;
+    }
     if (urlToStock) {
         switchTab('chat');
         setTimeout(async () => {
@@ -6600,6 +6607,8 @@ window.saveMealFromModal = async () => {
             if (picker) picker.value = payload.date;
         }
         loadMeals();
+        // 外食の金額は支出メモにも連携されるため、支出一覧も更新しておく
+        if (typeof loadExpenses === 'function') loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
     } catch (e) {
         console.error('saveMealFromModal failed', e);
         showToast('保存に失敗しました', true);
@@ -6615,6 +6624,8 @@ window.deleteMeal = async (id) => {
         await apiFetch(`/api/meals/${id}`, { method: 'DELETE' });
         showToast('削除しました');
         loadMeals();
+        // 連携していた外食の支出も削除されるため、支出一覧も更新
+        if (typeof loadExpenses === 'function') loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
     } catch {
         showToast('削除に失敗しました', true);
     }
@@ -6902,6 +6913,21 @@ let _pendingReceiptBase64 = null;
 let _pendingReceiptMime = '';
 let _expenseCurrentYear = null;
 let _expenseCurrentMonth = null;
+
+// 支出メモを月単位で前後に切り替える
+window.navExpensesMonth = (delta) => {
+    let y = _expenseCurrentYear, m = _expenseCurrentMonth;
+    if (!y || !m) { const d = new Date(); y = d.getFullYear(); m = d.getMonth() + 1; }
+    m += delta;
+    if (m < 1) { m = 12; y -= 1; }
+    else if (m > 12) { m = 1; y += 1; }
+    loadExpenses(y, m);
+};
+
+window.navExpensesToThisMonth = () => {
+    const d = new Date();
+    loadExpenses(d.getFullYear(), d.getMonth() + 1);
+};
 const EXPENSE_CATEGORIES_FALLBACK = ['食費','交通費','娯楽','衣服','家電','医療','教育','通信','光熱費','投資','その他'];
 
 window.loadExpenses = async (year = null, month = null) => {
@@ -6913,6 +6939,8 @@ window.loadExpenses = async (year = null, month = null) => {
         const data = await apiFetch('/api/expenses' + qs);
         _expenseCurrentYear = data.year;
         _expenseCurrentMonth = data.month;
+        const monthLbl = document.getElementById('expense-month-label');
+        if (monthLbl) monthLbl.textContent = `${data.year}年${data.month}月`;
         const expenses = data.expenses || [];
         const total = data.total || 0;
         const threshold = data.large_threshold || 5000;
@@ -8454,6 +8482,270 @@ window.initMain = function patchedInitMain() {
     if (sel && savedMetric) sel.value = savedMetric;
 };
 
+
+// ===========================================================
+// 画像保管庫（写真・書類）— 撮影/選択 → AI判定 → 確認 → Drive保存
+// ===========================================================
+let _mediaFilter = '';
+let _mediaImageListenerInstalled = false;
+
+window.openMediaCaptureModal = (mode = '') => {
+    _installMediaImageListener();
+    // mode='camera' はカメラ起動（capture）、それ以外はアルバム/ファイル選択
+    const input = document.getElementById(mode === 'camera' ? 'media-image-input-cam' : 'media-image-input');
+    if (!input) return;
+    input.value = '';
+    input.click();
+};
+
+function _installMediaImageListener() {
+    if (_mediaImageListenerInstalled) return;
+    ['media-image-input', 'media-image-input-cam'].forEach(id => {
+        const input = document.getElementById(id);
+        if (!input) return;
+        input.addEventListener('change', async () => {
+            const file = (input.files || [])[0];
+            if (!file) return;
+            try {
+                const base64 = await _fileToBase64(file);
+                await _analyzeAndConfirmMedia(base64, file.type || 'image/jpeg');
+            } catch (e) {
+                showToast('画像の読み込みに失敗しました', true);
+            } finally {
+                input.value = '';
+            }
+        });
+    });
+    _mediaImageListenerInstalled = true;
+}
+
+// base64画像をAIで写真/書類に自動判定 → 確認モーダル（種別・タイトル編集可）→ 保存
+async function _analyzeAndConfirmMedia(base64, mimeType, presetKind = '') {
+    showToast('🗂️ 画像を判定中…');
+    let kind = presetKind || 'photo';
+    let title = '';
+    try {
+        const res = await apiFetch('/api/media/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ image_base64: base64, mime_type: mimeType }),
+        });
+        if (res && res.ok) {
+            if (!presetKind && res.kind) kind = res.kind;  // 共有から種別指定済みなら尊重
+            title = res.title || '';
+        }
+    } catch (e) { /* 判定失敗でも保存はできるよう続行 */ }
+    _openMediaConfirmModal({ base64, mimeType, kind, title });
+}
+
+function _openMediaConfirmModal(seed) {
+    let modal = document.getElementById('media-confirm-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="media-confirm-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:460px;max-height:90vh;overflow-y:auto;">
+                    <h3 style="margin-top:0;">🗂️ 画像を保存</h3>
+                    <img id="media-confirm-preview" alt="" style="width:100%;max-height:240px;object-fit:contain;border-radius:8px;margin-bottom:10px;background:rgba(0,0,0,0.2);">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">種別（AIの判定。違ったら直してね）</label>
+                    <div style="display:flex;gap:8px;margin:4px 0 10px;">
+                        <label style="flex:1;display:flex;align-items:center;gap:4px;"><input type="radio" name="media-kind" value="photo"> 📷 写真</label>
+                        <label style="flex:1;display:flex;align-items:center;gap:4px;"><input type="radio" name="media-kind" value="document"> 📄 書類</label>
+                    </div>
+                    <label style="font-size:0.78rem;color:var(--text-muted);">タイトル</label>
+                    <input id="media-confirm-title" class="modern-input" style="margin:4px 0 12px;width:100%;" placeholder="（任意）">
+                    <div class="modal-actions">
+                        <button class="modal-btn cancel" onclick="document.getElementById('media-confirm-modal').classList.add('hidden')">キャンセル</button>
+                        <button class="modal-btn submit" id="media-confirm-save">保存</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('media-confirm-modal');
+    }
+    modal.querySelector('#media-confirm-preview').src = `data:${seed.mimeType};base64,${seed.base64}`;
+    modal.querySelector('#media-confirm-title').value = seed.title || '';
+    modal.querySelectorAll('input[name="media-kind"]').forEach(r => { r.checked = (r.value === (seed.kind || 'photo')); });
+    const saveBtn = modal.querySelector('#media-confirm-save');
+    saveBtn.onclick = async () => {
+        const kind = (modal.querySelector('input[name="media-kind"]:checked') || {}).value || 'photo';
+        const title = modal.querySelector('#media-confirm-title').value.trim();
+        saveBtn.disabled = true; saveBtn.textContent = '保存中…';
+        try {
+            const res = await apiFetch('/api/media', {
+                method: 'POST',
+                body: JSON.stringify({ image_base64: seed.base64, mime_type: seed.mimeType, kind, title }),
+            });
+            if (res && res.ok) {
+                showToast(kind === 'document' ? '📄 書類を保存しました' : '📷 写真を保存しました');
+                modal.classList.add('hidden');
+                if (typeof loadMediaItems === 'function') loadMediaItems();
+            } else {
+                showToast((res && res.error) || '保存に失敗しました', true);
+            }
+        } catch (e) {
+            showToast('保存に失敗しました', true);
+        } finally {
+            saveBtn.disabled = false; saveBtn.textContent = '保存';
+        }
+    };
+    modal.classList.remove('hidden');
+}
+
+window.setMediaFilter = (btn, kind) => {
+    _mediaFilter = kind || '';
+    document.querySelectorAll('.media-filter-btn').forEach(b => b.classList.toggle('active', b === btn));
+    loadMediaItems();
+};
+
+window.loadMediaItems = async () => {
+    const el = document.getElementById('dash-media-list');
+    if (!el) return;
+    try {
+        const q = _mediaFilter ? `?kind=${_mediaFilter}` : '';
+        const data = await apiFetch(`/api/media${q}`);
+        const items = (data && data.items) || [];
+        if (!items.length) {
+            el.innerHTML = '<div class="loading-placeholder">まだ画像はありません。📷撮影 / 🖼選択 から追加できます。</div>';
+            return;
+        }
+        el.innerHTML = items.map(it => {
+            const icon = it.kind === 'document' ? '📄' : '📷';
+            const kindLabel = it.kind === 'document' ? '書類' : '写真';
+            const title = escapeHtml(it.title || kindLabel);
+            const ts = escapeHtml((it.created_at || it.date || '').replace('T', ' ').slice(0, 16));
+            const url = escapeHtml(it.view_url || '');
+            const toggleKind = it.kind === 'document' ? 'photo' : 'document';
+            const toggleLabel = it.kind === 'document' ? '📷 写真へ' : '📄 書類へ';
+            return `<div class="media-row" style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border-glass);">
+                <span style="font-size:1.1rem;flex:none;">${icon}</span>
+                <div style="flex:1;min-width:0;">
+                    <div style="font-size:0.86rem;color:var(--text-primary);word-break:break-word;">${title}</div>
+                    <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(kindLabel)}・${ts}</div>
+                </div>
+                ${url ? `<a href="${url}" target="_blank" rel="noopener" class="mini-link" title="Driveで開く">開く</a>` : ''}
+                <button class="mini-link" title="種別を変更" onclick="setMediaItemKind(${it.id}, '${toggleKind}')">${toggleLabel}</button>
+                <button class="mini-link" style="color:#e2574c;" title="削除" onclick="deleteMediaItem(${it.id})">🗑</button>
+            </div>`;
+        }).join('');
+    } catch (e) {
+        el.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
+    }
+};
+
+window.setMediaItemKind = async (id, kind) => {
+    try {
+        await apiFetch(`/api/media/${id}`, { method: 'PATCH', body: JSON.stringify({ kind }) });
+        showToast(kind === 'document' ? '📄 書類に変更しました' : '📷 写真に変更しました');
+        loadMediaItems();
+    } catch (e) {
+        showToast('変更に失敗しました', true);
+    }
+};
+
+window.deleteMediaItem = async (id) => {
+    if (!await confirmDialog('この画像を削除しますか？（Driveのファイルもゴミ箱へ移動します）')) return;
+    try {
+        await apiFetch(`/api/media/${id}`, { method: 'DELETE' });
+        showToast('削除しました');
+        loadMediaItems();
+    } catch (e) {
+        showToast('削除に失敗しました', true);
+    }
+};
+
+// 共有された画像を「支出/写真/書類」のどれで保存するか選ばせる
+function _openShareImageChooser(blob) {
+    let modal = document.getElementById('share-image-chooser');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="share-image-chooser" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:420px;">
+                    <h3 style="margin-top:0;">共有された画像をどうする？</h3>
+                    <img id="share-chooser-preview" alt="" style="width:100%;max-height:220px;object-fit:contain;border-radius:8px;margin-bottom:12px;background:rgba(0,0,0,0.2);">
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        <button class="modal-btn submit" id="share-as-expense">💰 支出として記録</button>
+                        <button class="modal-btn" id="share-as-photo">📷 写真として保存</button>
+                        <button class="modal-btn" id="share-as-doc">📄 書類として保存</button>
+                        <button class="modal-btn cancel" id="share-chooser-cancel">キャンセル</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('share-image-chooser');
+    }
+    const previewUrl = URL.createObjectURL(blob);
+    modal.querySelector('#share-chooser-preview').src = previewUrl;
+    const close = () => { modal.classList.add('hidden'); try { URL.revokeObjectURL(previewUrl); } catch (e) {} };
+    modal.querySelector('#share-chooser-cancel').onclick = close;
+    modal.querySelector('#share-as-expense').onclick = () => { close(); _analyzeSharedExpenseImage(blob); };
+    modal.querySelector('#share-as-photo').onclick = async () => {
+        close();
+        try { _analyzeAndConfirmMedia(await _fileToBase64(blob), blob.type || 'image/jpeg', 'photo'); } catch (e) { showToast('画像の処理に失敗しました', true); }
+    };
+    modal.querySelector('#share-as-doc').onclick = async () => {
+        close();
+        try { _analyzeAndConfirmMedia(await _fileToBase64(blob), blob.type || 'image/jpeg', 'document'); } catch (e) { showToast('画像の処理に失敗しました', true); }
+    };
+    modal.classList.remove('hidden');
+}
+
+// Google マップの共有を「外食として記録 / 場所として登録」のどちらにするか選ばせる
+function _openMapsShareChooser(mapUrl, placeName) {
+    let modal = document.getElementById('maps-share-chooser');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="maps-share-chooser" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:420px;">
+                    <h3 style="margin-top:0;">📍 この場所をどうする？</h3>
+                    <div id="maps-chooser-name" style="font-size:0.9rem;color:var(--text-primary);margin-bottom:4px;word-break:break-word;"></div>
+                    <div id="maps-chooser-url" style="font-size:0.72rem;color:var(--text-muted);margin-bottom:12px;word-break:break-all;"></div>
+                    <div style="display:flex;flex-direction:column;gap:8px;">
+                        <button class="modal-btn submit" id="maps-as-meal">🍽 外食として記録</button>
+                        <button class="modal-btn" id="maps-as-place">📍 場所として登録（行った/行きたい）</button>
+                        <button class="modal-btn cancel" id="maps-chooser-cancel">キャンセル</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('maps-share-chooser');
+    }
+    modal.querySelector('#maps-chooser-name').textContent = placeName || '(名称不明の場所)';
+    modal.querySelector('#maps-chooser-url').textContent = mapUrl;
+    const close = () => modal.classList.add('hidden');
+    modal.querySelector('#maps-chooser-cancel').onclick = close;
+    modal.querySelector('#maps-as-meal').onclick = () => {
+        close();
+        const h = new Date().getHours();
+        const mt = h < 11 ? '朝食' : (h < 15 ? '昼食' : (h < 18 ? '間食' : '夕食'));
+        // 店名・マップURLをプレフィルした外食モードで食事記録モーダルを開く
+        try {
+            openMealManualModal(null, {
+                restaurant: placeName || '',
+                restaurant_url: mapUrl,
+                source: '外食',
+                meal_type: mt,
+            });
+        } catch (e) { showToast('食事記録を開けませんでした', true); }
+    };
+    modal.querySelector('#maps-as-place').onclick = () => {
+        close();
+        // 既存の「リンクをストック（チャットへ流す）」フローへ。AI が場所として登録する。
+        switchTab('chat');
+        setTimeout(async () => {
+            const msg = placeName ? `${placeName}\n${mapUrl}` : mapUrl;
+            appendMsg('user', msg);
+            try {
+                const data = await apiFetch('/api/chat', { method: 'POST', body: JSON.stringify({ message: msg }) });
+                appendMsg('assistant', data.reply);
+            } catch (e) {
+                appendMsg('assistant', 'リンクのストックに失敗しました。');
+            }
+        }, 300);
+    };
+    modal.classList.remove('hidden');
+}
 
 // ===========================================================
 // デイリーサマリー（1日の統合ログ）
