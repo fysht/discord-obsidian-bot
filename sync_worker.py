@@ -275,7 +275,7 @@ def process_pending_memos():
                 # 内容の結合 (update_section)
                 new_content_part = "\n".join(content_to_add)
                 full_new_content = update_section(
-                    current_content, new_content_part, "## Memo"
+                    current_content, new_content_part, "## 📝 Memo"
                 )
 
                 # アップロード (更新または作成)

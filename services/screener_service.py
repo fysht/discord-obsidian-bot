@@ -132,12 +132,17 @@ class ScreenerService:
         results.sort(key=lambda r: r.score, reverse=True)
         top = results[:top_n]
 
-        # 通過0件のとき、near-miss 上位を返す
+        # 完全合致が指定数 (top_n) に満たない場合、near-miss（部分合致）の上位で
+        # 不足分を埋めて、できる限り常に top_n 件返す。
+        # 完全合致を上に・部分合致を下に並べる（部分合致は is_near_miss / failed_filters で区別可能）。
         used_near_miss = False
-        if not top and near_miss_results:
+        if len(top) < top_n and near_miss_results:
             near_miss_results.sort(key=lambda r: r.score, reverse=True)
-            top = near_miss_results[:top_n]
-            used_near_miss = True
+            shortfall = top_n - len(top)
+            fillers = near_miss_results[:shortfall]
+            if fillers:
+                top = top + fillers
+                used_near_miss = True
 
         # 適用条件の詳細（UI表示用）
         applied_filters = []

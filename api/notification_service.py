@@ -145,22 +145,38 @@ async def send_notice_batch(items: list[dict], push_title: str, push_url: str = 
     items: [{"category": str, "title": str, "body": str}, ...]（body が空の項目はスキップ）
     返り値: 実際に保存した件数。
     """
-    from api.database import add_manager_notice
+    from api.database import add_manager_notice, save_message
 
     saved = 0
+    saved_titles: list[str] = []
     for it in items:
         body = (it.get("body") or "").strip()
         if not body:
             continue
         try:
-            await add_manager_notice(
-                it.get("category", ""), it.get("title", "お知らせ"), body
-            )
+            title = it.get("title", "お知らせ")
+            await add_manager_notice(it.get("category", ""), title, body)
             saved += 1
+            saved_titles.append(title)
         except Exception as e:
             logging.error(f"send_notice_batch 保存エラー: {e}")
 
-    if saved and is_configured():
+    if not saved:
+        return 0
+
+    # チャットにも導線を残す。プッシュを見逃しても、どんな項目が通知ログに
+    # 入ったか一覧でき、[ACTION:open_notices] ボタンから1タップで開ける。
+    # （プッシュは下で1発だけ送るので、ここではチャット保存のみ。）
+    try:
+        lead_lines = [f"📨 {push_title}を {saved} 件お届けしたよ。下のボタンから通知ログを見てね。"]
+        for t in saved_titles:
+            lead_lines.append(f"・{t}")
+        lead_lines.append("[ACTION:open_notices]")
+        await save_message("assistant", "\n".join(lead_lines))
+    except Exception as e:
+        logging.error(f"send_notice_batch チャット導線エラー: {e}")
+
+    if is_configured():
         try:
             await send_push(push_title, f"{push_title}が {saved} 件届いたよ📨", url=push_url)
         except Exception as e:

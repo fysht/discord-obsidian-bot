@@ -155,7 +155,7 @@ async def analyze_meal_text(text: str) -> dict:
 
 @router.post("", dependencies=[Depends(verify_api_key)])
 async def meals_save(req: MealSaveRequest):
-    """食事ログを保存。Lifelog にも `- HH:MM 🍽 ...` で追記する。"""
+    """食事ログを保存。Obsidian の `## 🍽 Meals` セクションにも `- HH:MM 🍽 ...` で時刻順に追記する。"""
     from api import app
     from api.database import add_meal
 
@@ -180,7 +180,7 @@ async def meals_save(req: MealSaveRequest):
         restaurant_url=(req.restaurant_url or "").strip(),
     )
 
-    # Obsidian の対象日 DailyNote の `## 🪟 Lifelog` に追記する。
+    # Obsidian の対象日 DailyNote の独立セクション `## 🍽 Meals` に時刻順で追記する。
     # 外食時は店名・注文・金額・★を併記して見返しやすくする。
     try:
         from api.routers._obsidian_helpers import append_lifelog_line
@@ -206,7 +206,7 @@ async def meals_save(req: MealSaveRequest):
                 if it:
                     sub_lines.append(f"    - {it}")
         full_line = head_line + ("\n" + "\n".join(sub_lines) if sub_lines else "")
-        await append_lifelog_line(date, full_line)
+        await append_lifelog_line(date, full_line, heading="## 🍽 Meals", sort_by_time=True)
     except Exception as e:
         logging.debug(f"meals_save lifelog append failed: {e}")
 

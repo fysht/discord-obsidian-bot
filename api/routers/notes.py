@@ -275,9 +275,9 @@ async def save_note(req: SaveNoteRequest):
 
             if folder_name == "DailyNotes":
                 # DailyNote は構造化された日次ノートなので、従来通り
-                # `## 💡 Insights & Thoughts` セクションに整列して追記する
+                # `## 🔎 Insights` セクションに整列して追記する
                 new_content = update_section(
-                    existing, f"*{now_str} 追記*\n{req.content}", "## 💡 Insights & Thoughts"
+                    existing, f"*{now_str} 追記*\n{req.content}", "## 🔎 Insights"
                 )
             else:
                 # StudyLogs/BookNotes 等の永続ノートはセクション見出しを使わず、

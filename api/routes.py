@@ -818,7 +818,7 @@ async def _generate_daily_summary(date_str: str, answers: dict | None = None) ->
     prompt = (
         "あなたはユーザーのマネージャーです。1日の統合ログ（デイリーサマリー）を Markdown で書きます。\n"
         "このサマリーはアプリの画面と Obsidian の `## 📅 Daily Summary` セクションに**同じ内容で**保存され、"
-        "他の `## 📔 Daily Journal` `## 💡 Insights & Thoughts` `## 🚀 Next Actions` セクションとは別に表示されます。\n\n"
+        "他の `## 📔 Daily Journal` `## 🔎 Insights` `## 🚀 Next Actions` セクションとは別に表示されます。\n\n"
         "【重要】重複を避けるため、以下のルールを守ってください：\n"
         "1. Daily Journal は「Lifelog ＋ 客観データから生成された俯瞰的な振り返り日記」が別途保存されています。\n"
         "   サマリーでは Lifelog の単純な書き起こしは避け、**会話と出来事から見えた重要なトピックのまとめ**にフォーカスしてください。\n"

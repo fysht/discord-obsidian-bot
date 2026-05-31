@@ -66,7 +66,10 @@ async def dashboard():
         return m.group(1).strip() if m else None
 
     def extract_alter_log(text):
-        m = re.search(r"## 💡 Insights & Thoughts\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+        # 新名 🔎 Insights を優先しつつ、未移行ノート用に旧名もフォールバックで読む
+        m = re.search(r"## 🔎 Insights\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+        if not m:
+            m = re.search(r"## 💡 Insights & Thoughts\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
         if not m:
             m = re.search(r"## 🪞 Alter Log\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
         if not m:

@@ -99,15 +99,16 @@ class DailySummaryCog(commands.Cog):
             if saved:
                 await _save_manager_qa_to_obsidian(today_str)
                 await resolve_questions(today_str, scope='summary')
-                if partner_cog:
-                    instruction = (
-                        "次の文章をユーザーに優しいタメ口で送信してください。改変せずそのまま送ってください。\n\n"
-                        "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 アプリの『ログ → デイリーサマリー』から見れるよ🌙"
+                # AI を通すと [ACTION:...] タグが欠落するため、リンク付き通知は直接送る。
+                try:
+                    from api.notification_service import save_message_and_notify
+                    await save_message_and_notify(
+                        "assistant",
+                        "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 下のボタンから今日の振り返りを見てね🌙\n[ACTION:open_reflection]",
+                        title="📅 デイリーサマリー保存", proactive=True,
                     )
-                    try:
-                        await partner_cog.generate_and_send_routine_message("", instruction)
-                    except Exception as e:
-                        logging.error(f"DailySummaryCog notify error: {e}")
+                except Exception as e:
+                    logging.error(f"DailySummaryCog notify error: {e}")
 
 
     async def _send_tomorrow_cards(self):

@@ -29,6 +29,16 @@ LOG_QUESTION_SCOPES: dict[str, dict] = {
         "icon": "🩺",
         "chips": ["絶好調", "普通", "疲れ気味", "不調"],
     },
+    # 昼の振り返り（午後の調子。選択式・1問1答）
+    "afternoon": {
+        "answer_type": "choice",
+        "icon": "🌤",
+        "chips": ["順調 👍", "ぼちぼち 😐", "疲れてきた 😪", "集中できてない"],
+    },
+    # 今日学んだこと・気づき（自由記載）
+    "learning": {"answer_type": "text", "icon": "💡", "chips": None},
+    # 今日良かったこと・感謝（自由記載）
+    "gratitude": {"answer_type": "text", "icon": "🙏", "chips": None},
     # 読書メモ（多項目→AI抽出で書名＋学びに分解）
     "reading": {"answer_type": "extract", "icon": "📖", "chips": None},
     # 英単語/フレーズのクイズ（学習。選択肢は context.chips に都度格納）

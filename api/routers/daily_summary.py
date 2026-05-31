@@ -226,6 +226,33 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
     except Exception as e:
         logging.error(f"morning_mit answer 反映エラー: {e}")
 
+    # 夜の振り返り（summary スコープ）の中の「明日のMIT」質問への回答は、
+    # 翌日の DailyNote の `## 🎯 MIT` セクションへ前もって書き込んでおく。
+    # こうしておかないと、翌朝の MorningMitCog が「今日の MIT 未設定」と判定し、
+    # 同じ MIT を朝もう一度聞いてきてしまう（前日入力が当日に反映されない不具合）。
+    try:
+        mq = await _find_question_by_id(qid)
+        if mq and mq.get("scope") == "summary" and (mq.get("question") or "").startswith("明日のMIT"):
+            import re as _re2
+            mit_items = []
+            for ln in (req.answer or "").splitlines():
+                ln = _re2.sub(r"^\s*[0-9]+[.)、]\s*", "", ln).strip()
+                ln = _re2.sub(r"^[-・*]\s*", "", ln).strip()
+                if ln:
+                    mit_items.append(ln[:60])
+            mit_items = mit_items[:3]
+            if mit_items:
+                from api import app
+                bot = getattr(app.state, "bot", None)
+                partner_cog = bot.get_cog("PartnerCog") if bot else None
+                if partner_cog:
+                    tomorrow_str = (
+                        datetime.datetime.now(JST) + datetime.timedelta(days=1)
+                    ).strftime("%Y-%m-%d")
+                    await partner_cog._set_mit_for_date(tomorrow_str, mit_items)
+    except Exception as e:
+        logging.error(f"明日のMIT 翌日反映エラー: {e}")
+
     # meal / expense スコープ: 回答テキストを記録系ログへ反映する（ログ質問フレームワーク）
     try:
         rq = await _find_question_by_id(qid)
@@ -240,6 +267,8 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
             await _reflect_reading_answer(qid, req.answer)
         elif rscope == "english_quiz":
             await _reflect_english_quiz_answer(rq, req.answer)
+        elif rscope in ("afternoon", "learning", "gratitude"):
+            await _reflect_journal_answer(qid, req.answer, rscope)
     except Exception as e:
         logging.error(f"log-question reflect エラー: {e}")
 
@@ -304,6 +333,37 @@ async def _reflect_meal_answer(qid: int, answer_text: str):
     await notification_service.save_message_and_notify("assistant", msg, title="🍽 食事ログ記録")
 
 
+# afternoon/learning/gratitude スコープの記録先（見出し・ラベル）
+_JOURNAL_SCOPE_META = {
+    "afternoon": ("## 🌤 Afternoon Check", "午後の調子"),
+    "learning": ("## 💡 Learnings", "学び"),
+    "gratitude": ("## 🙏 Gratitude", "良かったこと"),
+}
+
+
+async def _reflect_journal_answer(qid: int, answer_text: str, scope: str):
+    """昼の振り返り / 学び / 感謝の回答を、入力テキストそのまま Obsidian の
+    独立セクションへ時刻付きで1行記録する（フローA）。"""
+    from api import app
+    from api.database import resolve_question_by_id
+
+    text = (answer_text or "").strip()
+    if not text:
+        return
+    heading, label = _JOURNAL_SCOPE_META.get(scope, ("## 🪟 Lifelog", "メモ"))
+    bot = getattr(app.state, "bot", None)
+    partner_cog = bot.get_cog("PartnerCog") if bot else None
+    if partner_cog:
+        try:
+            await partner_cog._append_raw_message_to_obsidian(text, target_heading=heading)
+        except Exception as e:
+            logging.debug(f"journal({scope}) obsidian append failed: {e}")
+    await resolve_question_by_id(qid)
+    await notification_service.save_message_and_notify(
+        "assistant", f"📝 {label}を記録したよ（{text[:40]}）", title=f"📝 {label}記録",
+    )
+
+
 async def _reflect_expense_answer(qid: int, answer_text: str):
     """expense スコープの回答をAI抽出して支出ログへ反映する（フローB）。
     confidence=high は即保存＋リンク返信、それ以外は確認ボタンを返す（保存前確認）。"""
@@ -341,7 +401,8 @@ async def _reflect_expense_answer(qid: int, answer_text: str):
 
 
 async def _reflect_mood_answer(qid: int, answer_text: str, scope: str):
-    """mood / condition スコープの回答を Obsidian の Lifelog に1行記録する（フローA・選択式）。"""
+    """mood / condition スコープの回答を Obsidian の独立セクションに1行記録する（フローA・選択式）。
+    気分は `## 😀 Mood`、体調は `## 🩺 Condition` に時刻付きで追記する。"""
     from api import app
     from api.database import resolve_question_by_id
 
@@ -350,12 +411,13 @@ async def _reflect_mood_answer(qid: int, answer_text: str, scope: str):
         return
     label = "気分" if scope == "mood" else "体調"
     icon = "😀" if scope == "mood" else "🩺"
+    heading = "## 😀 Mood" if scope == "mood" else "## 🩺 Condition"
     bot = getattr(app.state, "bot", None)
     partner_cog = bot.get_cog("PartnerCog") if bot else None
     if partner_cog:
         try:
             await partner_cog._append_raw_message_to_obsidian(
-                f"{icon} {label}: {text}", target_heading="## 🪟 Lifelog"
+                f"{label}: {text}", target_heading=heading
             )
         except Exception as e:
             logging.debug(f"mood/condition obsidian append failed: {e}")
@@ -503,7 +565,7 @@ async def _auto_finalize_summary(date_str: str, answers_map: dict) -> bool:
         try:
             await notification_service.save_message_and_notify(
                 "assistant",
-                "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 アプリの『ログ → 今日の振り返り』から見れるよ🌙",
+                "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 下のボタンから今日の振り返りを見てね🌙\n[ACTION:open_reflection]",
                 title="📅 デイリーサマリー保存",
             )
         except Exception as e:

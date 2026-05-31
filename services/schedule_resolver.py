@@ -20,7 +20,12 @@ SCHEDULE_CATALOG: list[dict] = [
     # ===== マネージャーがユーザーに連絡するタスク（時刻重複なし）=====
     {"key": "morning_mit",            "label": "朝のMIT",                 "time": "06:30", "dow": "daily",  "category": "manager", "description": "今日のMIT候補3件を朝に提案します。あなたの返信で確定。"},
     {"key": "auto_market_sentiment",  "label": "市場の地合い",            "time": "06:45", "dow": "daily",  "category": "manager", "description": "保有銘柄基準の朝の地合いレポートを通知ログへ。"},
-    {"key": "morning_routine",        "label": "朝のルーチン",            "time": "07:00", "dow": "daily",  "category": "manager", "description": "今日の予定・タスク・天気・ニュース・過去の今日を一括お届け。"},
+    {"key": "morning_routine",        "label": "朝のルーチン",            "time": "07:00", "dow": "daily",  "category": "manager", "description": "今日の予定・タスク・天気・ニュース・過去の今日を一括お届け。朝食ログの質問も同時に投下。"},
+    {"key": "afternoon_check",        "label": "昼の振り返り",            "time": "14:30", "dow": "daily",  "category": "manager", "description": "午後の調子を1タップで記録。回答は Obsidian の独立セクションに保存。"},
+    {"key": "english_quiz",           "label": "英語クイズ",              "time": "19:30", "dow": "daily",  "category": "manager", "description": "火・木・土に英単語/フレーズのクイズを出題（選択肢チップで気軽に学習）。"},
+    {"key": "gratitude_check",        "label": "良かったこと・感謝",      "time": "20:45", "dow": "daily",  "category": "manager", "description": "今日良かったこと・感謝したいことを1つ記録。"},
+    {"key": "evening_mood",           "label": "夜の気分チェック",        "time": "21:00", "dow": "daily",  "category": "manager", "description": "今日の気分を1タップで記録。回答は Obsidian の独立セクションに保存。"},
+    {"key": "learning_check",         "label": "今日の学び・気づき",      "time": "21:15", "dow": "daily",  "category": "manager", "description": "今日の学び・気づきを記録。回答は Obsidian の独立セクションに保存。"},
     {"key": "auto_alerts_earnings",   "label": "価格アラート＋決算予定",  "time": "07:15", "dow": "daily",  "category": "manager", "description": "保有銘柄の当日決算予定や価格アラートを通知。"},
     {"key": "fitbit_morning",         "label": "Fitbit 朝レポート",       "time": "08:00", "dow": "daily",  "category": "manager", "description": "前夜の睡眠データを取得し、朝のメッセージで報告。"},
     {"key": "auto_news_sentiment",    "label": "保有銘柄ニュース朝刊",    "time": "08:30", "dow": "daily",  "category": "manager", "description": "保有銘柄のニュース差分を AI が短いダイジェスト（取り上げるべき銘柄のみ／好材料・悪材料・影響）にまとめて通知ログへ。"},

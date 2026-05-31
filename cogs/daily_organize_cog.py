@@ -146,6 +146,9 @@ class DailyOrganizeCog(commands.Cog):
             "message",
             "（今日の会話とデータをノートにまとめたよ🌙 今日も一日お疲れ様、おやすみ！）",
         )
+        # デイリーノート整理で「マネージャーの気づき（メタ観察）」等を書いたので、
+        # 1タップでそのカードへ飛べるリンクを添える。
+        send_msg = send_msg.rstrip() + "\n[ACTION:open_insights]"
         if proposed_actions:
             send_msg = (
                 send_msg.rstrip()
@@ -214,7 +217,7 @@ class DailyOrganizeCog(commands.Cog):
                 "\n".join(data["insights"])
                 if isinstance(data["insights"], list)
                 else str(data["insights"]),
-                "## 💡 Insights & Thoughts",
+                "## 🔎 Insights",
             )
 
         if data.get("next_actions") and len(data["next_actions"]) > 0:

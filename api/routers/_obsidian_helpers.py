@@ -6,8 +6,14 @@ import logging
 from utils.obsidian_utils import update_section
 
 
-async def append_lifelog_line(date_str: str, line: str) -> bool:
-    """指定日 (YYYY-MM-DD) の DailyNote の `## 🪟 Lifelog` セクションに 1 行追記する。
+async def append_lifelog_line(
+    date_str: str,
+    line: str,
+    heading: str = "## 🪟 Lifelog",
+    sort_by_time: bool = False,
+) -> bool:
+    """指定日 (YYYY-MM-DD) の DailyNote の指定セクションに 1 行（または複数行ブロック）を追記する。
+    heading を変えれば食事ログ等の独立セクションへ書ける。sort_by_time=True で時刻順に整列。
     成功時 True、未接続/失敗時 False。例外は内部でログのみ。"""
     from api import app
     chat_service = getattr(app.state, "chat_service", None)
@@ -27,7 +33,7 @@ async def append_lifelog_line(date_str: str, line: str) -> bool:
             content = await drive.read_text_file(service, file_id)
         else:
             content = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n"
-        new_content = update_section(content, line, "## 🪟 Lifelog")
+        new_content = update_section(content, line, heading, sort_by_time=sort_by_time)
         if file_id:
             await drive.update_text(service, file_id, new_content)
         else:

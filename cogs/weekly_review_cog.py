@@ -96,7 +96,8 @@ class WeeklyReviewCog(commands.Cog):
     def _extract_key_sections(self, content: str) -> str:
         sections_to_extract = [
             "## 🪞 Alter Log",
-            "## 💡 Insights & Thoughts",
+            "## 🔎 Insights",
+            "## 💡 Insights & Thoughts",  # 旧名（未移行ノート用フォールバック）
             "## 📝 Events & Actions",
         ]
         extracted = []

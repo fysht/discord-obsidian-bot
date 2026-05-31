@@ -954,7 +954,7 @@ window.skipInlineQuestion = (btn) => {
 
 // ===== A: 未回答ログ質問のまとめ回答ビュー＋バッジ =====
 // ログ質問フレームワークの scope（チャットに流れて埋もれがちなもの）だけを対象にする。
-const LOG_INBOX_SCOPES = ['meal', 'expense', 'mood', 'condition', 'reading', 'english_quiz'];
+const LOG_INBOX_SCOPES = ['meal', 'expense', 'mood', 'condition', 'reading', 'english_quiz', 'afternoon', 'learning', 'gratitude'];
 
 async function _fetchLogQuestions() {
     try {
@@ -1006,7 +1006,7 @@ window.renderLogInbox = async () => {
         listEl.innerHTML = '<div style="font-size:0.82rem;color:var(--text-muted);padding:12px 4px;">未回答のログはありません 🎉</div>';
         return;
     }
-    const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣' };
+    const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣', afternoon: '🌤', learning: '💡', gratitude: '🙏' };
     listEl.innerHTML = items.map(q => {
         const chips = Array.isArray(q.chips) ? q.chips : [];
         const chipsHtml = chips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
@@ -1160,6 +1160,8 @@ function describeAction(payload) {
         case 'meal_quick':   return `✓ 外食を記録: ${args.name || ''}`;
         case 'open_meals':   return `🍽 食事ログを開く`;
         case 'open_expenses': return `💰 支出ログを開く`;
+        case 'open_reflection': return `📅 今日の振り返りを開く`;
+        case 'open_insights': return `📒 マネージャーの気づきを開く`;
         case 'expense_confirm': return `💰 支出を確認して保存: ${args.vendor || ''} ¥${args.amount || 0}`;
         default:             return `▶ ${action} を実行`;
     }
@@ -1223,9 +1225,9 @@ window.executeAction = async function(encodedPayload, btn) {
         }
         return;
     }
-    // ナビゲーション系: 記録済みの食事ログを開く（infoタブの食事カードへ）
+    // ナビゲーション系: 記録済みの食事ログを開く（logタブの食事カードへ）
     if (action === 'open_meals') {
-        switchTab('info');
+        switchTab('log');
         setTimeout(() => {
             const el = document.getElementById('dash-meals-list');
             if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1233,13 +1235,35 @@ window.executeAction = async function(encodedPayload, btn) {
         }, 300);
         return;
     }
-    // ナビゲーション系: 支出ログを開く
+    // ナビゲーション系: 支出ログを開く（logタブの支出カードへ）
     if (action === 'open_expenses') {
-        switchTab('info');
+        switchTab('log');
         setTimeout(() => {
             const el = document.getElementById('dash-expense-list') || document.getElementById('dash-expense-summary');
             if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
             if (typeof loadExpenses === 'function') loadExpenses();
+        }, 300);
+        return;
+    }
+    // ナビゲーション系: 今日の振り返り（デイリーサマリー）カードへ移動
+    if (action === 'open_reflection') {
+        switchTab('log');
+        setTimeout(() => {
+            if (typeof loadDailySummary === 'function') loadDailySummary();
+            const el = document.getElementById('dash-daily-summary');
+            if (el && el.closest('.card')) el.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            else if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        return;
+    }
+    // ナビゲーション系: マネージャーの気づき（メタ観察）カードへ移動
+    if (action === 'open_insights') {
+        switchTab('log');
+        setTimeout(() => {
+            if (typeof loadFitbitAllData === 'function' && !(_fitbitRows && _fitbitRows.length)) loadFitbitAllData(false);
+            const el = document.getElementById('dash-alter-log');
+            if (el && el.closest('.card')) el.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+            else if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
         return;
     }
@@ -1828,22 +1852,69 @@ function _bindNoticeDelegation(container) {
         }
         e.stopPropagation();
         const nid = parseInt(id, 10);
-        if (action === 'read') window.setNoticeRead(nid, true);
-        else if (action === 'unread') window.setNoticeRead(nid, false);
+        // 既読/未読の切替は再描画せずローカル更新（開いたカードが閉じないように）
+        if (action === 'read') window.setNoticeRead(nid, true, { local: true });
+        else if (action === 'unread') window.setNoticeRead(nid, false, { local: true });
         else if (action === 'delete') window.deleteNotice(nid);
     });
-    // <details> の open 切替を捕捉して、未読なら自動で既読化
+    // <details> の open 切替を捕捉して、未読なら自動で既読化。
+    // ここで loadManagerNotices() による全再描画を行うと、開いたばかりの
+    // <details> が閉じてしまう（=「1タップしてもすぐ閉じる」不具合）。
+    // そのため API 呼び出し後はローカル DOM だけを更新する。
     container.addEventListener('toggle', (e) => {
         const d = e.target;
         if (!d || d.tagName !== 'DETAILS' || !d.classList.contains('notice-item')) return;
         if (d.open && d.dataset.isRead === '0') {
             const nid = parseInt(d.dataset.id, 10);
             if (!isNaN(nid)) {
-                window.setNoticeRead(nid, true);
-                d.dataset.isRead = '1';
+                window.setNoticeRead(nid, true, { local: true });
             }
         }
     }, true);
+}
+
+// 通知カードの既読/未読状態を、全再描画せずにその場で反映する。
+function _applyNoticeReadLocal(id, isRead) {
+    const itemEl = document.querySelector(`.notice-item[data-id="${id}"]`);
+    if (!itemEl) return;
+    itemEl.dataset.isRead = isRead ? '1' : '0';
+    itemEl.classList.toggle('notice-unread', !isRead);
+    const summaryRow = itemEl.querySelector('.notice-summary-row');
+    let dot = itemEl.querySelector('.notice-dot');
+    if (isRead) {
+        if (dot) dot.remove();
+    } else if (!dot && summaryRow) {
+        const cb = summaryRow.querySelector('.notice-select-cb');
+        dot = document.createElement('span');
+        dot.className = 'notice-dot';
+        dot.title = '未読';
+        if (cb && cb.nextSibling) summaryRow.insertBefore(dot, cb.nextSibling);
+        else summaryRow.insertBefore(dot, summaryRow.firstChild);
+    }
+    const btn = itemEl.querySelector('.notice-actions [data-notice-action="read"], .notice-actions [data-notice-action="unread"]');
+    if (btn) {
+        if (isRead) {
+            btn.dataset.noticeAction = 'unread';
+            btn.title = '未読に戻す';
+            btn.textContent = '◯ 未読';
+            btn.classList.remove('primary');
+        } else {
+            btn.dataset.noticeAction = 'read';
+            btn.title = '既読にする';
+            btn.textContent = '✓ 既読';
+            btn.classList.add('primary');
+        }
+    }
+    _refreshNoticeUnreadBadge();
+}
+
+// 表示中の通知カードから未読数を数えてバッジを更新する。
+function _refreshNoticeUnreadBadge() {
+    const badgeEl = document.getElementById('manager-notices-unread');
+    if (!badgeEl) return;
+    const unread = document.querySelectorAll('.notice-item[data-is-read="0"]').length;
+    badgeEl.textContent = unread > 0 ? `未読 ${unread}` : '';
+    badgeEl.style.display = unread > 0 ? '' : 'none';
 }
 
 // 選択中の通知件数に応じて「選択削除」ボタンの表示を更新する
@@ -1871,13 +1942,16 @@ window.deleteSelectedNotices = async () => {
     loadManagerNotices();
 };
 
-window.setNoticeRead = async (id, isRead) => {
+window.setNoticeRead = async (id, isRead, opts = {}) => {
     try {
         await apiFetch(`/api/manager/notices/${id}/read`, {
             method: 'POST',
             body: JSON.stringify({ is_read: !!isRead }),
         });
-        loadManagerNotices();
+        // local=true のときは全再描画せず、開いているカードを閉じないよう
+        // その場で見た目だけ更新する（タップで開いた直後の自動既読化など）。
+        if (opts.local) _applyNoticeReadLocal(id, !!isRead);
+        else loadManagerNotices();
     } catch (e) {
         showToast('既読状態の更新に失敗しました', true);
     }
@@ -10273,7 +10347,7 @@ function _renderScreenerCandidates(data) {
     }
 
     const nearMissBanner = data.used_near_miss
-        ? `<div style="padding:8px;margin-bottom:8px;background:rgba(255,212,84,0.12);border-left:3px solid #ffd454;border-radius:4px;font-size:0.78rem;color:#ffd454;">⚠️ 全条件を満たす銘柄はありませんでした。代わりに「条件に近い銘柄」を提示しています（赤バッジ＝満たさなかった条件）。</div>`
+        ? `<div style="padding:8px;margin-bottom:8px;background:rgba(255,212,84,0.12);border-left:3px solid #ffd454;border-radius:4px;font-size:0.78rem;color:#ffd454;">⚠️ 全条件を満たす銘柄が指定数に届かなかったため、不足分を「条件に近い銘柄」で補っています（赤バッジ＝満たさなかった条件）。</div>`
         : '';
 
     const bulkToggle = `<div style="font-size:0.74rem;margin-bottom:6px;color:var(--text-secondary);">

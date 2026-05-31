@@ -10,10 +10,8 @@ from discord.ext import commands, tasks
 from config import JST
 from utils.async_utils import safe_create_task
 from prompts import (
-    PROMPT_ROUTINE_INACTIVITY,
     PROMPT_ROUTINE_NIGHTLY,
     PROMPT_WEEKEND_STOCK_REVIEW,
-    PROMPT_SPONTANEOUS_CHAT,
     PROMPT_ROUTINE_DAILY_REVIEW,
 )
 from services.info_service import InfoService
@@ -32,34 +30,36 @@ class PartnerRoutineCog(commands.Cog):
         self._last_db_backup_mtime: float = 0.0
 
         for task in [
-            self.inactivity_check_task,
             self.nightly_reflection_task,
             self.weekend_stock_review_task,
             self.habit_check_task,
             self.morning_routine_task,
-            self.spontaneous_message_task,
             self.update_manual_task,
             self.tomorrow_plan_task,
             self.obsidian_review_task,
             self.db_backup_task,
+            self.afternoon_check_task,
             self.evening_mood_check_task,
+            self.gratitude_check_task,
+            self.learning_check_task,
             self.english_quiz_task,
         ]:
             task.start()
 
     def cog_unload(self):
         for task in [
-            self.inactivity_check_task,
             self.nightly_reflection_task,
             self.weekend_stock_review_task,
             self.habit_check_task,
             self.morning_routine_task,
-            self.spontaneous_message_task,
             self.update_manual_task,
             self.tomorrow_plan_task,
             self.obsidian_review_task,
             self.db_backup_task,
+            self.afternoon_check_task,
             self.evening_mood_check_task,
+            self.gratitude_check_task,
+            self.learning_check_task,
             self.english_quiz_task,
         ]:
             task.cancel()
@@ -125,32 +125,6 @@ class PartnerRoutineCog(commands.Cog):
             logging.info("【UserManual】取扱説明書の更新と保存が完了しました！")
         except Exception as e:
             logging.error(f"Manual Update Error: {e}")
-
-    # ==========================================
-    # 気まぐれメッセージ（毎時20%の確率）
-    # ==========================================
-    @tasks.loop(hours=1)
-    async def spontaneous_message_task(self):
-        now = datetime.datetime.now(JST)
-        if not (9 <= now.hour <= 22):
-            return
-        if random.random() > 0.20:
-            return
-
-        partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog:
-            return
-
-        if (
-            datetime.datetime.now(JST) - partner_cog.last_interaction
-        ).total_seconds() < 3600:
-            return
-
-        manual = await partner_cog._get_user_manual()
-        prompt = PROMPT_SPONTANEOUS_CHAT.format(user_manual=manual)
-        await partner_cog.generate_and_send_routine_message(
-            "（気まぐれな雑談メッセージを生成してください）", prompt
-        )
 
     # ==========================================
     # 朝のルーティン（7:00）
@@ -232,6 +206,25 @@ class PartnerRoutineCog(commands.Cog):
             logging.debug(f"morning meal question error: {e}")
 
     # ==========================================
+    # 昼の振り返り（14:30）— 午後の調子を1タップで記録
+    # ==========================================
+    @tasks.loop(minutes=1)
+    async def afternoon_check_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("afternoon_check", "14:30", "daily", self._last_run_dates.get("afternoon_check"))
+        if not due:
+            return
+        self._last_run_dates["afternoon_check"] = today
+        await asyncio.sleep(random.randint(0, 600))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog:
+            return
+        try:
+            await partner_cog.send_log_question("afternoon", "午前はどうだった？午後の調子は？")
+        except Exception as e:
+            logging.debug(f"afternoon question error: {e}")
+
+    # ==========================================
     # 夜の気分チェック（21:00）— 1タップで気分をログに残す
     # ==========================================
     @tasks.loop(minutes=1)
@@ -249,6 +242,44 @@ class PartnerRoutineCog(commands.Cog):
             await partner_cog.send_log_question("mood", "今日の気分はどうだった？")
         except Exception as e:
             logging.debug(f"evening mood question error: {e}")
+
+    # ==========================================
+    # 良かったこと・感謝（20:45）— 今日のポジティブを1つ残す
+    # ==========================================
+    @tasks.loop(minutes=1)
+    async def gratitude_check_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("gratitude_check", "20:45", "daily", self._last_run_dates.get("gratitude_check"))
+        if not due:
+            return
+        self._last_run_dates["gratitude_check"] = today
+        await asyncio.sleep(random.randint(0, 600))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog:
+            return
+        try:
+            await partner_cog.send_log_question("gratitude", "今日良かったこと・感謝したいことは？")
+        except Exception as e:
+            logging.debug(f"gratitude question error: {e}")
+
+    # ==========================================
+    # 今日の学び・気づき（21:15）— インプットや発見を1行残す
+    # ==========================================
+    @tasks.loop(minutes=1)
+    async def learning_check_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due("learning_check", "21:15", "daily", self._last_run_dates.get("learning_check"))
+        if not due:
+            return
+        self._last_run_dates["learning_check"] = today
+        await asyncio.sleep(random.randint(0, 600))
+        partner_cog = self.bot.get_cog("PartnerCog")
+        if not partner_cog:
+            return
+        try:
+            await partner_cog.send_log_question("learning", "今日学んだこと・気づいたことは？")
+        except Exception as e:
+            logging.debug(f"learning question error: {e}")
 
     # ==========================================
     # 英語クイズ（火・木・土の19:30）— 週3回、選択肢チップで気軽に学習
@@ -296,22 +327,6 @@ class PartnerRoutineCog(commands.Cog):
     # ==========================================
     # 無活動チェック（15分ごと）
     # ==========================================
-    @tasks.loop(minutes=15)
-    async def inactivity_check_task(self):
-        partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog:
-            return
-
-        now = datetime.datetime.now(JST)
-        diff = now - partner_cog.last_interaction
-
-        if diff > timedelta(hours=6) and 9 <= now.hour <= 21:
-            context_data = "ユーザーは数時間何も発言していません。"
-            await partner_cog.generate_and_send_routine_message(
-                context_data, PROMPT_ROUTINE_INACTIVITY
-            )
-            partner_cog.last_interaction = now
-
     # ==========================================
     # 夜の振り返り（22:00）— DailySummaryCog に統合済みのため通常は早期 return
     # （明日の天気・予定・MIT 質問も DailySummaryCog のメッセージに含まれる）
@@ -525,17 +540,18 @@ class PartnerRoutineCog(commands.Cog):
             daily_note, PROMPT_ROUTINE_DAILY_REVIEW
         )
 
-    @spontaneous_message_task.before_loop
     @update_manual_task.before_loop
     @morning_routine_task.before_loop
-    @inactivity_check_task.before_loop
     @nightly_reflection_task.before_loop
     @weekend_stock_review_task.before_loop
     @habit_check_task.before_loop
     @tomorrow_plan_task.before_loop
     @obsidian_review_task.before_loop
     @db_backup_task.before_loop
+    @afternoon_check_task.before_loop
     @evening_mood_check_task.before_loop
+    @gratitude_check_task.before_loop
+    @learning_check_task.before_loop
     @english_quiz_task.before_loop
     async def before_tasks(self):
         await self.bot.wait_until_ready()

@@ -656,14 +656,15 @@ class PartnerCog(commands.Cog):
                             "日中に『今の気分は？』(scope='mood')、買い物の話題で『何にいくら使った？』(scope='expense')。"
                             "即実行ではなく、ユーザーが回答欄に答えると自動でログに記録される。"
                             "scope は 'meal'（食事）/ 'expense'（支出）/ 'mood'（気分）/ "
-                            "'condition'（体調）/ 'reading'（読書メモ）のいずれか。"
+                            "'condition'（体調）/ 'reading'（読書メモ）/ 'afternoon'（昼の振り返り）/ "
+                            "'learning'（今日の学び・気づき）/ 'gratitude'（良かったこと・感謝）のいずれか。"
                         ),
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
                             properties={
                                 "scope": types.Schema(
                                     type=types.Type.STRING,
-                                    description="meal / expense / mood / condition / reading",
+                                    description="meal / expense / mood / condition / reading / afternoon / learning / gratitude",
                                 ),
                                 "question": types.Schema(
                                     type=types.Type.STRING,
@@ -695,6 +696,32 @@ class PartnerCog(commands.Cog):
         new_content = update_section(note_content, section_text, "## 🎯 MIT")
         await self._save_todays_obsidian_note(new_content)
         return f"今日のMIT3つを設定したよ！: {' / '.join(items)}"
+
+    async def _set_mit_for_date(self, date_str: str, items: list[str]) -> str:
+        """指定日 (YYYY-MM-DD) の DailyNote の `## 🎯 MIT` に MIT を書き込む。
+        前夜に答えた『明日のMIT』を翌日ノートへ前もって確定させる用途。"""
+        items = [s.strip() for s in (items or []) if s and s.strip()][:3]
+        if not items:
+            return "有効な MIT が無かったよ。"
+        service = self.drive_service.get_service()
+        if not service:
+            return "Obsidian に接続できなかったよ。"
+        folder_id = await self.drive_service.find_file(service, self.drive_folder_id, "DailyNotes")
+        if not folder_id:
+            folder_id = await self.drive_service.create_folder(service, self.drive_folder_id, "DailyNotes")
+        f_id = await self.drive_service.find_file(service, folder_id, f"{date_str}.md")
+        if f_id:
+            content = await self.drive_service.read_text_file(service, f_id)
+        else:
+            content = f"# Daily Note {date_str}\n"
+
+        section_text = "\n".join(f"- [ ] {t}" for t in items)
+        new_content = update_section(content, section_text, "## 🎯 MIT")
+        if f_id:
+            await self.drive_service.update_text(service, f_id, new_content)
+        else:
+            await self.drive_service.upload_text(service, folder_id, f"{date_str}.md", new_content)
+        return f"{date_str} のMITを設定したよ！: {' / '.join(items)}"
 
     async def _toggle_mit_in_obsidian(self, index: int) -> dict:
         """今日のMITの `index` 番目（0始まり）の `[ ]`/`[x]` をトグルする。"""
@@ -786,7 +813,8 @@ class PartnerCog(commands.Cog):
         scope レジストリに沿って context（選択チップ）を詰めて daily_question を登録する。"""
         scope = (scope or "").strip()
         question = (question or "").strip()
-        if scope not in {"meal", "expense", "mood", "condition", "reading"}:
+        if scope not in {"meal", "expense", "mood", "condition", "reading",
+                         "afternoon", "learning", "gratitude"}:
             return None, "（その種類のログにはまだ対応してないんだ）"
         if not question:
             return None, "（質問文が空っぽだよ）"
