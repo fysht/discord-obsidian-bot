@@ -18,11 +18,12 @@ let lastMsgDate = null;
 
 // 各カテゴリーごとのソート状態を保持するオブジェクト
 let linkSorts = {
-    web: 'newest',
-    youtube: 'newest',
-    recipe: 'newest',
-    map: 'newest',
-    book: 'newest'
+    web: 'oldest',
+    youtube: 'oldest',
+    recipe: 'oldest',
+    map: 'oldest',
+    book: 'oldest',
+    study: 'oldest'
 };
 
 // 各カテゴリーごとの目的フィルタ ('' = すべて表示)

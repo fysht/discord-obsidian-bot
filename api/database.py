@@ -617,11 +617,11 @@ async def add_stocked_link(url: str, link_type: str, title: str = "Untitled"):
         return cursor.lastrowid
 
 async def get_all_links():
-    """ストックリンク一覧を取得（全ステータス、新しい順）"""
+    """ストックリンク一覧を取得（全ステータス、古い順＝最新が下）"""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags FROM stocked_links ORDER BY id DESC"
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags FROM stocked_links ORDER BY id ASC"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -797,11 +797,13 @@ async def get_english_phrases(limit: int = 200) -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, phrase, translation, context, created_at, "
-            "COALESCE(attempt_count, 0) AS attempt_count, "
-            "COALESCE(correct_count, 0) AS correct_count, "
-            "last_attempted_at "
-            "FROM english_phrases ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM ("
+            "  SELECT id, phrase, translation, context, created_at, "
+            "  COALESCE(attempt_count, 0) AS attempt_count, "
+            "  COALESCE(correct_count, 0) AS correct_count, "
+            "  last_attempted_at "
+            "  FROM english_phrases ORDER BY created_at DESC LIMIT ?"
+            ") ORDER BY created_at ASC, id ASC",
             (limit,),
         )
         rows = await cursor.fetchall()
@@ -1071,18 +1073,21 @@ async def add_media_item(kind: str, drive_id: str, filename: str, title: str, da
 
 
 async def list_media_items(kind: str | None = None, limit: int = 200) -> list[dict]:
+    # 直近 limit 件を取りつつ、表示は古い順（最新が下）にする。
+    # 内側で created_at DESC LIMIT で最新N件を確保し、外側で昇順に並べ替える。
+    cols = "id, kind, drive_id, filename, title, date, created_at"
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         if kind in ("photo", "document"):
             cursor = await db.execute(
-                "SELECT id, kind, drive_id, filename, title, date, created_at "
-                "FROM media_items WHERE kind = ? ORDER BY created_at DESC LIMIT ?",
+                f"SELECT {cols} FROM (SELECT {cols} FROM media_items WHERE kind = ? "
+                "ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC, id ASC",
                 (kind, int(limit)),
             )
         else:
             cursor = await db.execute(
-                "SELECT id, kind, drive_id, filename, title, date, created_at "
-                "FROM media_items ORDER BY created_at DESC LIMIT ?",
+                f"SELECT {cols} FROM (SELECT {cols} FROM media_items "
+                "ORDER BY created_at DESC LIMIT ?) ORDER BY created_at ASC, id ASC",
                 (int(limit),),
             )
         rows = await cursor.fetchall()
@@ -1566,7 +1571,7 @@ async def watchlist_list() -> list[dict]:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT code, name, sector, source, memo, added_at FROM watchlist ORDER BY added_at DESC"
+            "SELECT code, name, sector, source, memo, added_at FROM watchlist ORDER BY added_at ASC, code ASC"
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -1633,7 +1638,7 @@ async def screener_run_list() -> list[dict]:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
             "SELECT id, title, styles, combine_mode, universe, candidates, qualitative_report, created_at "
-            "FROM screener_runs ORDER BY created_at DESC"
+            "FROM screener_runs ORDER BY created_at ASC, id ASC"
         )
         rows = await cursor.fetchall()
         out = []
