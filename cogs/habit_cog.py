@@ -148,7 +148,28 @@ class HabitCog(commands.Cog):
         return today_weekday in weekdays
 
     async def get_incomplete_habits(self) -> list[str]:
-        """今日まだ完了していない習慣の名前リスト（曜日フィルタ済み）を返す"""
+        """今日まだ完了していない習慣の名前リストを返す。
+
+        真実源は Google タスクの「習慣」リスト（ユーザーが実運用しているもの）。
+        未完了タスク＝今日まだ済んでいない習慣。これにより、DB に残った
+        “現在は生きていない習慣” が一覧に混ざらない。
+        Google タスクが使えない場合のみ、従来の DB/JSON ＋曜日フィルタにフォールバックする。
+        """
+        tasks_service = getattr(self.bot, "tasks_service", None)
+        if tasks_service:
+            try:
+                raw = await tasks_service.get_raw_tasks(list_name="習慣")
+                names = [
+                    (t.get("title") or "").strip()
+                    for t in (raw or [])
+                    if (t.get("title") or "").strip()
+                ]
+                # Google タスク側で取得できたらそれを真実源とする（空でもそのまま返す）
+                return names
+            except Exception as e:
+                logging.warning(f"[HabitCog] 習慣リスト取得失敗、DBにフォールバック: {e}")
+
+        # フォールバック: 従来の DB/JSON ＋曜日フィルタ
         data = await self._load_data()
         now = datetime.now(JST)
         today_str = now.strftime("%Y-%m-%d")

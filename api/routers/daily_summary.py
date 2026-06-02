@@ -123,6 +123,7 @@ async def daily_summary_generate(req: DailySummaryGenerateRequest):
     finalize=True または質問が空の場合は Obsidian に保存して質問を resolved にする。"""
     from api.routes import (
         _generate_daily_summary, _save_daily_summary_to_obsidian, _save_manager_qa_to_obsidian,
+        _save_daily_data_to_obsidian,
     )
     date_str = req.date or datetime.datetime.now(JST).strftime("%Y-%m-%d")
 
@@ -156,6 +157,7 @@ async def daily_summary_generate(req: DailySummaryGenerateRequest):
         saved = await _save_daily_summary_to_obsidian(date_str, summary)
         if saved:
             await _save_manager_qa_to_obsidian(date_str)
+            await _save_daily_data_to_obsidian(date_str)
             await resolve_questions(date_str, scope='summary')
 
     return {
@@ -554,6 +556,7 @@ async def _auto_finalize_summary(date_str: str, answers_map: dict) -> bool:
     """summary 質問が全て答え終わったら呼ぶ：サマリー再生成 → Obsidian 保存 → resolved 化。"""
     from api.routes import (
         _generate_daily_summary, _save_daily_summary_to_obsidian, _save_manager_qa_to_obsidian,
+        _save_daily_data_to_obsidian,
     )
     try:
         result = await _generate_daily_summary(date_str, answers=answers_map)
@@ -566,6 +569,7 @@ async def _auto_finalize_summary(date_str: str, answers_map: dict) -> bool:
     saved = await _save_daily_summary_to_obsidian(date_str, summary)
     if saved:
         await _save_manager_qa_to_obsidian(date_str)
+        await _save_daily_data_to_obsidian(date_str)
         await resolve_questions(date_str, scope="summary")
         try:
             await notification_service.save_message_and_notify(

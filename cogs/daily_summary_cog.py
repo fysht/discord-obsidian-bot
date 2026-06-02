@@ -35,6 +35,7 @@ class DailySummaryCog(commands.Cog):
                 _generate_daily_summary,
                 _save_daily_summary_to_obsidian,
                 _save_manager_qa_to_obsidian,
+                _save_daily_data_to_obsidian,
             )
             from api.database import (
                 add_daily_question, get_questions_by_date, resolve_questions,
@@ -52,6 +53,18 @@ class DailySummaryCog(commands.Cog):
 
         summary = (result.get("summary") or "").strip()
         questions = result.get("questions") or []
+
+        # 一日の終わりに「今日あった出来事」を必ず聞き、回答をノートに反映できるようにする。
+        # AI 生成の確認質問より前に置き、振り返りの起点にする。
+        events_question = "今日はどんな1日だった？印象に残った出来事や、記録しておきたいことを教えて。"
+        questions = [events_question] + list(questions)
+
+        # 当日の客観データ（天気 / Fitbit / 食事）をデイリーノートへ構造化保存する。
+        # 回答の有無に関わらず端末を見返したときに分かるよう、毎回ここで書き出す（冪等：置換）。
+        try:
+            await _save_daily_data_to_obsidian(today_str)
+        except Exception as e:
+            logging.debug(f"daily data save error: {e}")
 
         # 既存の未確定質問と重複しないものだけ DB に追加
         existing = await get_questions_by_date(today_str, scope='summary')

@@ -825,10 +825,16 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
     let html = '';
     if (role === 'assistant') html += `<img src="/static/icons/avatar.png" class="msg-avatar">`;
 
-    // [ACTION:...] タグを抽出してボタン描画用に分離
+    // [ACTION:...] タグを抽出してボタン描画用に分離。
+    // ただし内部関数ツール名（ユーザー操作対象ではないもの）は、モデルが誤って
+    // [ACTION:ask_log_question:...] のように吐いてもボタン化しない（謎ボタン防止）。
+    const INTERNAL_TOOL_ACTIONS = new Set([
+        'ask_log_question', 'log_question', 'search_memory',
+    ]);
     const actions = [];
     let rawText = String(content || '').replace(/\[ACTION:([^\]]+)\]/g, (_, payload) => {
-        actions.push(payload);
+        const name = String(payload).split(':')[0];
+        if (!INTERNAL_TOOL_ACTIONS.has(name)) actions.push(payload);
         return '';
     });
     // [QUESTIONS:summary:YYYY-MM-DD] マーカーを抽出してインライン回答UIを後で描画
@@ -839,10 +845,16 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         questionsDate = date;
         return '';
     });
-    // 内部関数呼び出しの生文字列を除去（「ツールを呼び出す xxx(...)」「tool_call: xxx(...)」など）
+    // 内部関数呼び出しの生文字列を除去（「ツールを呼び出す xxx(...)」「tool_call: xxx(...)」
+    // 「call_tool("ask_log_question", {...})」「ask_log_question({...})」など）
     rawText = rawText
         .replace(/^\s*(?:ツールを呼び出す|tool[_ ]?call:?)\s*[\w.]+\([^)]*\)\s*$/gim, '')
-        .replace(/^\s*\[?function[_ ]?call\]?:?\s*[\w.]+\([^)]*\)\s*$/gim, '');
+        .replace(/^\s*\[?function[_ ]?call\]?:?\s*[\w.]+\([^)]*\)\s*$/gim, '')
+        // call_tool("name", {...}) 形式（引数JSON内に ) を含み得るので貪欲気味に1行で除去）
+        .replace(/^\s*call_tool\s*\(.*\)\s*$/gim, '')
+        .replace(/call_tool\s*\(\s*["'][\w.]+["']\s*,?\s*\{[\s\S]*?\}\s*\)/g, '')
+        // 内部ツール名を直接コードのように書いてしまったもの: ask_log_question({...}) 等
+        .replace(/^\s*(?:ask_log_question|log_life_activity|save_thought_reflection|propose_note|propose_permanent_note|search_memory)\s*\(.*\)\s*$/gim, '');
     const visibleText = rawText.trim();
     const processedContent = escapeHtml(visibleText).replace(/\n/g, '<br>');
 
@@ -1797,6 +1809,11 @@ window.loadManagerNotices = async () => {
             updateNoticeBulkBtn();
             return;
         }
+        // 再描画でも開いていたカードが閉じないよう、現在開いている notice の id を退避し、
+        // 描画後に open を復元する（ダッシュボード定期更新・タブ切替などどの経路でも維持）。
+        const openIds = new Set(
+            [...el.querySelectorAll('.notice-item[open]')].map(d => d.dataset.id)
+        );
         el.innerHTML = items.map(it => {
             const meta = _NOTICE_CATEGORY_META[it.category] || { icon: '📨', label: it.category || '通知' };
             const ts = _formatNoticeTime(it.created_at);
@@ -1825,6 +1842,16 @@ window.loadManagerNotices = async () => {
                 </div>
             </details>`;
         }).join('');
+        // 退避した open 状態を復元する。<details> の toggle は非同期発火なので、
+        // 復元中フラグを立て、toggle ハンドラ側の自動既読化を一時的に抑止する。
+        if (openIds.size) {
+            el._restoringOpen = true;
+            openIds.forEach(id => {
+                const d = el.querySelector(`.notice-item[data-id="${id}"]`);
+                if (d) d.open = true;
+            });
+            setTimeout(() => { el._restoringOpen = false; }, 0);
+        }
         _bindNoticeDelegation(el);
         updateNoticeBulkBtn();
     } catch (e) {
@@ -1866,6 +1893,8 @@ function _bindNoticeDelegation(container) {
     container.addEventListener('toggle', (e) => {
         const d = e.target;
         if (!d || d.tagName !== 'DETAILS' || !d.classList.contains('notice-item')) return;
+        // 再描画後の open 状態復元による toggle では既読化しない（ユーザー操作のみ対象）
+        if (container._restoringOpen) return;
         if (d.open && d.dataset.isRead === '0') {
             const nid = parseInt(d.dataset.id, 10);
             if (!isNaN(nid)) {
@@ -2446,7 +2475,9 @@ document.addEventListener('keydown', e => {
 });
 
 // ========== CALENDAR EVENT MODAL ==========
-window.openAddEventModal = () => {
+// seed を渡すと各フィールドにプレフィルする（メール→予定の確認モーダル等）。
+// seed.start / seed.end は datetime-local 形式 'YYYY-MM-DDTHH:MM' を想定。
+window.openAddEventModal = (seed = null) => {
     const now = new Date();
     const toLocal = d => {
         const off = d.getTimezoneOffset() * 60000;
@@ -2458,10 +2489,20 @@ window.openAddEventModal = () => {
     const end = new Date(start);
     end.setHours(end.getHours() + 1);
 
-    $('#event-summary').value = '';
-    $('#event-start').value = toLocal(start);
-    $('#event-end').value = toLocal(end);
-    $('#event-desc').value = '';
+    // datetime-local の値として妥当な 'YYYY-MM-DDTHH:MM' だけ採用（不正値は既定にフォールバック）
+    const validDt = v => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v)) ? v.slice(0, 16) : '';
+    const seedStart = seed ? validDt(seed.start) : '';
+    let seedEnd = seed ? validDt(seed.end) : '';
+    // 開始のみ分かる場合は終了を開始の1時間後にする
+    if (seedStart && !seedEnd) {
+        const s = new Date(seedStart);
+        if (!isNaN(s.getTime())) { s.setHours(s.getHours() + 1); seedEnd = toLocal(s); }
+    }
+
+    $('#event-summary').value = (seed && seed.summary) || '';
+    $('#event-start').value = seedStart || toLocal(start);
+    $('#event-end').value = seedEnd || toLocal(end);
+    $('#event-desc').value = (seed && seed.description) || '';
     $('#event-modal').classList.remove('hidden');
     setTimeout(() => $('#event-summary').focus(), 100);
 };
@@ -6835,6 +6876,7 @@ window.loadGmailInbox = async (state = 'pending') => {
                     </div>
                     <div class="row-actions" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
                         ${actions}
+                        <button class="mini-link" data-gmail-action="calendar" title="メール内の予定をカレンダーに登録">📅 予定</button>
                         <button class="mini-link" data-gmail-action="expense" title="メール内容を支出として記録">💰 支出</button>
                         <button class="mini-link" data-gmail-action="open-gmail" title="Gmail で開く">↗ Gmail</button>
                     </div>
@@ -6870,9 +6912,33 @@ function _bindGmailDelegation(container) {
         else if (action === 'archive') window.markGmailRead(id);
         else if (action === 'trash') window.trashGmail(id);
         else if (action === 'expense') window.gmailToExpense(id);
+        else if (action === 'calendar') window.gmailToCalendar(id);
         else if (action === 'open-gmail') window.openGmail(id, thread);
     });
 }
+
+// メール本文を AI 解析して、抽出した予定をカレンダー追加モーダルにプレフィルする。
+window.gmailToCalendar = async (id) => {
+    showToast('✉️ 予定を解析中…');
+    try {
+        const res = await apiFetch(`/api/gmail/${encodeURIComponent(id)}/calendar`, { method: 'POST' });
+        if (!res || !res.ok || !res.event) { showToast('解析に失敗しました', true); return; }
+        const ev = res.event;
+        if (ev.has_event === false && !(ev.summary || '').trim()) {
+            showToast('このメールから予定を読み取れませんでした', true);
+            return;
+        }
+        switchTab('schedule');
+        openAddEventModal({
+            summary: ev.summary || '',
+            start: ev.start || '',
+            end: ev.end || '',
+            description: ev.location ? `場所: ${ev.location}` : '',
+        });
+    } catch (e) {
+        showToast('解析に失敗しました', true);
+    }
+};
 
 // メール本文を AI 解析して支出入力モーダルにプレフィルする
 window.gmailToExpense = async (id) => {
@@ -7086,42 +7152,48 @@ window.loadExpenses = async (year = null, month = null) => {
     }
 };
 
-window.openExpenseCaptureModal = () => {
-    const input = $('#expense-image-input');
+// mode='camera' はカメラ起動（capture）、それ以外はアルバム/スクショ等のファイル選択。
+window.openExpenseCaptureModal = (mode) => {
+    const id = mode === 'camera' ? '#expense-image-input-cam' : '#expense-image-input';
+    const input = $(id);
     if (!input) return;
     input.value = '';
     input.click();
 };
 
+async function _handleExpenseImageInput(input) {
+    const file = (input.files || [])[0];
+    if (!file) return;
+    showToast('🧾 レシートを解析中…');
+    try {
+        const base64 = await _fileToBase64(file);
+        _pendingReceiptBase64 = base64;
+        _pendingReceiptMime = file.type || 'image/jpeg';
+        _pendingReceiptDriveId = '';
+        const res = await apiFetch('/api/expenses/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ image_base64: base64, mime_type: _pendingReceiptMime }),
+        });
+        if (!res || !res.ok) {
+            showToast('解析に失敗しました', true);
+            return;
+        }
+        _pendingReceiptAnalysis = res.result || {};
+        openExpenseManualModal(null, _pendingReceiptAnalysis);
+    } catch (e) {
+        showToast('解析に失敗しました', true);
+    } finally {
+        input.value = '';
+    }
+}
+
 let _expenseImageListenerInstalled = false;
 function _installExpenseImageListener() {
     if (_expenseImageListenerInstalled) return;
-    const input = $('#expense-image-input');
-    if (!input) return;
-    input.addEventListener('change', async () => {
-        const file = (input.files || [])[0];
-        if (!file) return;
-        showToast('🧾 レシートを解析中…');
-        try {
-            const base64 = await _fileToBase64(file);
-            _pendingReceiptBase64 = base64;
-            _pendingReceiptMime = file.type || 'image/jpeg';
-            _pendingReceiptDriveId = '';
-            const res = await apiFetch('/api/expenses/analyze', {
-                method: 'POST',
-                body: JSON.stringify({ image_base64: base64, mime_type: _pendingReceiptMime }),
-            });
-            if (!res || !res.ok) {
-                showToast('解析に失敗しました', true);
-                return;
-            }
-            _pendingReceiptAnalysis = res.result || {};
-            openExpenseManualModal(null, _pendingReceiptAnalysis);
-        } catch (e) {
-            showToast('解析に失敗しました', true);
-        } finally {
-            input.value = '';
-        }
+    // カメラ用・アルバム用の両 input に同じ解析ハンドラを bind する。
+    ['#expense-image-input', '#expense-image-input-cam'].forEach(sel => {
+        const input = $(sel);
+        if (input) input.addEventListener('change', () => _handleExpenseImageInput(input));
     });
     _expenseImageListenerInstalled = true;
 }
@@ -8945,6 +9017,21 @@ window.loadDailySummary = async () => {
 
 // 共通: デイリー系カードの軽量 Markdown レンダラ
 // 「今日の振り返り」と同じ見た目を「デイリーノート」「マネージャーの気づき」にも適用する。
+// escape 済みテキスト内の Markdown リンク [text](url) と裸URLをクリック可能な <a> に変換する。
+// XSS回避のため http(s) のURLのみを対象にし、既存の <a> 内は二重リンクしない。
+function _linkifyEscaped(escaped) {
+    let out = String(escaped || '')
+        // 1) Markdown リンク [表示文字](http...) を <a> に
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+            (m, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    // 2) 裸URL（既存 <a>...</a> の中は触らない）
+    out = out.replace(/(<a\b[^>]*>.*?<\/a>)|(https?:\/\/[^\s<]+)/g,
+        (m, anchor, bare) => anchor
+            ? anchor
+            : `<a href="${bare}" target="_blank" rel="noopener noreferrer">${bare}</a>`);
+    return out;
+}
+
 function renderDailyMarkdown(text, opts = {}) {
     const dateLabel = opts.dateLabel
         ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;">${escapeHtml(opts.dateLabel)}</div>`
@@ -8955,9 +9042,9 @@ function renderDailyMarkdown(text, opts = {}) {
             if (/^### /.test(line)) return `<div style="margin:8px 0 4px;font-weight:700;font-size:0.88rem;color:var(--text-primary);">${escapeHtml(line.replace(/^### /, ''))}</div>`;
             if (/^## /.test(line)) return `<div style="margin:10px 0 4px;font-weight:700;color:var(--accent);font-size:0.9rem;">${escapeHtml(line.replace(/^## /, ''))}</div>`;
             if (/^# /.test(line)) return `<div style="margin:6px 0;font-weight:700;font-size:1rem;">${escapeHtml(line.replace(/^# /, ''))}</div>`;
-            if (/^[\-*] /.test(line)) return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;">${escapeHtml(line.replace(/^[\-*]\s+/, ''))}</div>`;
+            if (/^[\-*] /.test(line)) return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;">${_linkifyEscaped(escapeHtml(line.replace(/^[\-*]\s+/, '')))}</div>`;
             if (line.trim() === '') return '<div style="height:6px;"></div>';
-            return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;line-height:1.6;">${escapeHtml(line)}</div>`;
+            return `<div style="padding:2px 0 2px 12px;border-left:2px solid rgba(0,186,152,0.3);margin:2px 0;font-size:0.88rem;line-height:1.6;">${_linkifyEscaped(escapeHtml(line))}</div>`;
         })
         .join('');
     return dateLabel + html;

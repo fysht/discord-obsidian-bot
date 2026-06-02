@@ -61,6 +61,85 @@ async def gmail_to_expense(message_id: str):
     return {"ok": True, "expense": ex}
 
 
+async def analyze_calendar_text(text: str) -> dict:
+    """メール本文等から予定（イベント）情報を抽出して dict を返す。保存はしない。
+    start / end は datetime-local 互換の 'YYYY-MM-DDTHH:MM' 形式。抽出できなければ空。"""
+    import json
+    from google.genai import types as _gt
+    from api import app
+
+    now = datetime.datetime.now(JST)
+    fallback = {"has_event": False, "summary": "", "date": "", "start": "",
+                "end": "", "location": "", "confidence": "low"}
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        return fallback
+
+    prompt = (
+        "次のメール内容から『カレンダーに登録すべき予定』を1件抽出し、必ず以下の JSON 形式だけを返してください。"
+        "前置きや説明は禁止。\n\n"
+        f"現在日時（JST）: {now.strftime('%Y-%m-%d %H:%M')}（相対表現はこれを基準に絶対日時へ変換）\n\n"
+        f"メール内容:\n{text}\n\n"
+        "{\n"
+        '  "has_event": 予定が読み取れたら true、なければ false,\n'
+        '  "summary": "予定のタイトル（簡潔に。例: 〇〇の打ち合わせ）",\n'
+        '  "date": "YYYY-MM-DD（不明なら空文字）",\n'
+        '  "start": "YYYY-MM-DDTHH:MM（開始日時。時刻不明なら日付＋T09:00など妥当な既定。不明なら空）",\n'
+        '  "end": "YYYY-MM-DDTHH:MM（終了日時。不明なら開始の1時間後。不明なら空）",\n'
+        '  "location": "場所（空可）",\n'
+        '  "confidence": "high / medium / low"\n'
+        "}\n"
+        "日時がはっきりしないときは confidence='low' とすること。"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("receipt_ocr", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[_gt.Part.from_text(text=prompt)]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        data = json.loads(response.text)
+        return data if isinstance(data, dict) else fallback
+    except Exception as e:
+        logging.error(f"analyze_calendar_text error: {e}")
+        return fallback
+
+
+@router.post("/{message_id}/calendar", dependencies=[Depends(verify_api_key)])
+async def gmail_to_calendar(message_id: str):
+    """メール本文から AI で予定情報を抽出して返す（保存はしない）。
+    フロントはこの結果をカレンダー追加モーダルにプレフィルする。"""
+    from api import app
+    from api.database import gmail_get
+
+    bot = getattr(app.state, "bot", None)
+    gmail = getattr(bot, "gmail_service", None) if bot else None
+    if not gmail:
+        raise HTTPException(status_code=503, detail="Gmail未接続")
+
+    record = await gmail_get(message_id)
+    subject = (record.get("subject") or "") if record else ""
+    sender = (record.get("from_addr") or record.get("sender") or "") if record else ""
+
+    try:
+        full = await gmail.get_message(message_id)
+    except Exception as e:
+        logging.error(f"gmail_to_calendar get_message error: {e}")
+        full = None
+    body = ((full or {}).get("body") or "")[:5000]
+
+    text = f"件名: {subject}\n差出人: {sender}\n本文:\n{body}".strip()
+    if not body and not subject:
+        raise HTTPException(status_code=404, detail="メール本文を取得できませんでした")
+
+    ev = await analyze_calendar_text(text)
+    # タイトルが空なら件名で補完
+    if not (ev.get("summary") or "").strip() and subject:
+        ev["summary"] = subject[:60]
+    return {"ok": True, "event": ev}
+
+
 @router.post("/{message_id}/read", dependencies=[Depends(verify_api_key)])
 async def gmail_mark_read(message_id: str):
     """Gmail 側で既読化し、DB の state を 'archived' に。"""

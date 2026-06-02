@@ -75,6 +75,20 @@ class PartnerCog(commands.Cog):
             logging.error(f"DailyNote 読み取りエラー: {e}")
         return ""
 
+    @staticmethod
+    def _truncate_at_sentence(text: str, limit: int) -> str:
+        """text を limit 文字以内に収める。超過時は文末（。！？や改行）境界で切って「…」を付ける。
+        境界が見つからなければ limit でハード切り。改行は空白に畳む。"""
+        t = (text or "").replace("\n", " ").strip()
+        if len(t) <= limit:
+            return t
+        head = t[:limit]
+        # limit 手前で最後に現れる文末記号までで切る（あまりに手前なら諦めてハード切り）
+        cut = max(head.rfind("。"), head.rfind("！"), head.rfind("？"), head.rfind("!"), head.rfind("?"))
+        if cut >= int(limit * 0.5):
+            return head[:cut + 1] + "…"
+        return head.rstrip() + "…"
+
     async def _get_past_daily_journals(self) -> str:
         """1年前と3ヶ月前のデイリーノートから Daily Journal セクションを抜粋して返す。"""
         if not self.drive_service:
@@ -116,8 +130,9 @@ class PartnerCog(commands.Cog):
                 journal = m.group(1).strip()
                 if not journal:
                     continue
-                # 長すぎたら 200 文字まで
-                snippet = journal[:200].replace("\n", " ")
+                # 通知カードは展開可能なので長文を保持できる。長すぎる場合のみ
+                # 文末（。/！/？/改行）の境界で切って「…」を付け、文が途中で切れないようにする。
+                snippet = self._truncate_at_sentence(journal, 700)
                 excerpts.append(f"【{label}（{date_str}）】 {snippet}")
             except Exception as e:
                 logging.debug(f"past journal fetch error ({date_str}): {e}")
@@ -1141,9 +1156,13 @@ class PartnerCog(commands.Cog):
                         include_server_side_tool_invocations=True,
                     )
                 except TypeError:
-                    # SDK が当該フィールドを未サポート → 検索のみのフォールバック
-                    cfg_kwargs["tools"] = [types.Tool(google_search=types.GoogleSearch())]
-                    logging.info("SDK が include_server_side_tool_invocations 未対応のため、検索のみで実行")
+                    # SDK が当該フィールドを未サポート → 検索と関数呼び出しは併用不可。
+                    # 検索 grounding を諦め、関数ツール（ask_log_question / カレンダー登録など）を優先する。
+                    # 検索のみにすると ask_log_question 等が呼べず、モデルがツール呼び出しを
+                    # 本文テキストとして漏らす不具合（謎の生文字列・ボタン）につながるため。
+                    cfg_kwargs["tools"] = self._get_function_tools(enable_search=False)
+                    cfg_kwargs.pop("tool_config", None)
+                    logging.info("SDK が include_server_side_tool_invocations 未対応のため、関数ツール優先で実行（検索は無効）")
 
             response = await self.gemini_client.aio.models.generate_content(
                 model=_m,

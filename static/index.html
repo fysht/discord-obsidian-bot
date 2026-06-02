@@ -329,7 +329,8 @@
                         <div class="card-header">
                             <span class="card-icon">💴</span>
                             <span class="card-title">支出メモ</span>
-                            <button class="mini-link" onclick="openExpenseCaptureModal()" title="レシートから記録">📷 レシート</button>
+                            <button class="mini-link" onclick="openExpenseCaptureModal('camera')" title="カメラでレシートを撮影">📷 撮影</button>
+                            <button class="mini-link" onclick="openExpenseCaptureModal()" title="アルバム/スクショから選択">🖼 アルバム</button>
                             <button class="mini-link" onclick="openExpenseManualModal()" title="手動で記録">✏️ 手動</button>
                             <button class="mini-link" onclick="openExpenseThresholdEditor()" title="大きな支出の閾値設定">⚙️ 閾値</button>
                         </div>
@@ -342,7 +343,8 @@
                         </div>
                         <div id="dash-expense-summary" class="card-body" style="border-bottom:1px solid var(--border-glass);padding:10px 18px;"></div>
                         <div id="dash-expense-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
-                        <input type="file" id="expense-image-input" accept="image/*" capture="environment" style="display:none;">
+                        <input type="file" id="expense-image-input" accept="image/*" style="display:none;">
+                        <input type="file" id="expense-image-input-cam" accept="image/*" capture="environment" style="display:none;">
                     </div>
 
                     <!-- 写真・書類の保管庫（撮影画像を写真/書類に分けて整理） -->

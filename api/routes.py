@@ -985,6 +985,77 @@ async def _save_manager_qa_to_obsidian(date_str: str) -> bool:
         return False
 
 
+async def _save_daily_data_to_obsidian(date_str: str) -> bool:
+    """その日の客観データ（天気 / Fitbit / 食事合計）を `## 📊 今日のデータ` セクションへ書き出す。
+
+    後で見返したときに「どんな一日だったか」が分かるよう、AI 要約とは別に
+    生データを構造化して残す。`_collect_daily_context` で集めた情報を流用する。
+    """
+    import re as _re
+    from api import app
+    from utils.obsidian_utils import update_section
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return False
+
+    try:
+        ctx = await _collect_daily_context(date_str)
+    except Exception as e:
+        logging.error(f"_save_daily_data_to_obsidian collect error: {e}")
+        return False
+
+    lines = []
+    if ctx.get("weather"):
+        lines.append(f"- ☀️ 天気: {ctx['weather']}")
+    if ctx.get("fitbit"):
+        lines.append(f"- ⌚ Fitbit: {ctx['fitbit']}")
+    # 食事は当日合計の行（「当日合計: ...kcal ...」）だけを抜き出して載せる
+    meals = ctx.get("meals") or ""
+    total_line = next(
+        (ln.strip() for ln in meals.splitlines() if ln.strip().startswith("当日合計")),
+        "",
+    )
+    if total_line:
+        lines.append(f"- 🍽 食事: {total_line.replace('当日合計: ', '')}")
+
+    if not lines:
+        # 載せるデータが何も無ければセクションを作らない
+        return True
+    data_text = "\n".join(lines)
+
+    try:
+        service = chat_service.drive_service.get_service()
+        folder_id = await chat_service.drive_service.find_file(
+            service, chat_service.drive_folder_id, "DailyNotes"
+        )
+        if not folder_id:
+            folder_id = await chat_service.drive_service.create_folder(
+                service, chat_service.drive_folder_id, "DailyNotes"
+            )
+        f_id = await chat_service.drive_service.find_file(service, folder_id, f"{date_str}.md")
+        if f_id:
+            content = await chat_service.drive_service.read_text_file(service, f_id)
+        else:
+            content = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n"
+
+        section_header = "## 📊 今日のデータ"
+        # 既存の同セクションは置き換える（重複・古い値の残留を防ぐ）
+        pattern = _re.compile(rf"{_re.escape(section_header)}\n?.*?(?=\n## |\Z)", _re.DOTALL)
+        content = pattern.sub("", content)
+        new_content = update_section(content, data_text, section_header)
+
+        if f_id:
+            await chat_service.drive_service.update_text(service, f_id, new_content)
+        else:
+            await chat_service.drive_service.upload_text(
+                service, folder_id, f"{date_str}.md", new_content
+            )
+        return True
+    except Exception as e:
+        logging.error(f"_save_daily_data_to_obsidian error: {e}")
+        return False
+
+
 async def _save_nightly_reflection_to_obsidian(date_str: str) -> bool:
     """夜の振り返り（scope='nightly_reflection'）の Q&A を `## 🌙 Nightly Reflection` セクションへ保存する。"""
     import re as _re

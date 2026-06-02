@@ -55,8 +55,9 @@ SECTION_ORDER = [
     "## 💬 Chat Log",  # 日常のつぶやき・メモ (PartnerCog) ※旧名: Timeline
     "## 🤔 Thought Reflection",  # 壁打ち (PartnerCog)
     # --- 3. Reflection (1日の振り返り)
-    # 流れ: 主観の日記 → 客観総括 → マネージャー Q&A → メタ観察 → 派生分析 → 明日のアクション
+    # 流れ: 当日データ → 主観の日記 → 客観総括 → マネージャー Q&A → メタ観察 → 派生分析 → 明日のアクション
     # アプリのログタブの並び（デイリーノート → 今日の振り返り → マネージャーの気づき）と一致
+    "## 📊 今日のデータ",  # 天気・Fitbit・食事など当日の客観データ一覧 (routes.py / DailySummaryCog)
     "## 📔 Daily Journal",  # 主観の日記 (DailyOrganizeCog)
     "## 📅 Daily Summary",  # 客観総括 (routes.py)
     "## 🤝 Manager Q&A",   # マネージャー質問への回答 (DailySummaryCog)
