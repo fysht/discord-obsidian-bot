@@ -145,6 +145,14 @@ async def screener_ohlcv(code: str, days: int = 120):
     return _json_sanitize(await cog.get_ohlcv_series(code, days))
 
 
+@router.get("/projection/{code}", dependencies=[Depends(verify_api_key)])
+async def screener_projection(code: str, days: int = 750):
+    """1 銘柄の過去の高値ブレイク後の値動きから、上昇余地・利確目標・損切り目安を返す
+    （決定論的・Gemini非依存）。じわじわ高値ブレイク等の候補の出口戦略づくりに使う。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.analyze_projection(code, days))
+
+
 @router.post("/cross_filter", dependencies=[Depends(verify_api_key)])
 async def screener_cross_filter(req: ScreenerCrossFilterRequest):
     cog = _get_screener_cog()

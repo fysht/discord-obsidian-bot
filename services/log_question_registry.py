@@ -19,10 +19,12 @@ LOG_QUESTION_SCOPES: dict[str, dict] = {
     "morning_mit": {"answer_type": "text", "icon": "🎯", "chips": None},
     "nightly_reflection": {"answer_type": "text", "icon": "🌙", "chips": None},
     # --- 新スコープ（選択式・1 問 1 答）。Phase 2 で reflect を接続 ---
+    # 気分：3択だと「まあまあ」に寄りがちなので、中庸を分散させた5段階にする。
+    # 回答後は理由を一言うながす追質問を出す（_reflect_mood_answer 側）。
     "mood": {
         "answer_type": "choice",
         "icon": "😀",
-        "chips": ["とても良い 😀", "まあまあ 😐", "しんどい 😫"],
+        "chips": ["絶好調 🤩", "良い 🙂", "ふつう 😐", "もやもや 😕", "しんどい 😫"],
     },
     "condition": {
         "answer_type": "choice",

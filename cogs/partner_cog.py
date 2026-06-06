@@ -823,9 +823,11 @@ class PartnerCog(commands.Cog):
             logging.debug(f"_recent_meal_names error: {e}")
             return []
 
-    async def _create_log_question(self, scope, question):
+    async def _create_log_question(self, scope, question, meal_type: str = ""):
         """記録用の質問を作成し (qid, 本文文字列) を返す。失敗時は (None, エラー文字列)。
-        scope レジストリに沿って context（選択チップ）を詰めて daily_question を登録する。"""
+        scope レジストリに沿って context（選択チップ）を詰めて daily_question を登録する。
+        meal_type を渡すと context に食事区分を保存し、回答時にこの区分で記録される
+        （夜にまとめて回答しても朝食は朝食として残る）。"""
         scope = (scope or "").strip()
         question = (question or "").strip()
         if scope not in {"meal", "expense", "mood", "condition", "reading",
@@ -842,6 +844,8 @@ class PartnerCog(commands.Cog):
                 chips = await self._recent_meal_names()
                 if chips:
                     context["chips"] = chips
+                if (meal_type or "").strip():
+                    context["meal_type"] = meal_type.strip()
             ctx_str = _json.dumps(context, ensure_ascii=False) if context else ""
             qid = await add_daily_question(today, question, scope=scope, context=ctx_str)
             return qid, f"{question}\n[QUESTIONS:{scope}:{today}]"
@@ -854,11 +858,13 @@ class PartnerCog(commands.Cog):
         _, body = await self._create_log_question(scope, question)
         return body
 
-    async def send_log_question(self, scope: str, question: str, push: bool = True) -> bool:
+    async def send_log_question(self, scope: str, question: str, push: bool = True,
+                                meal_type: str = "") -> bool:
         """ルーティン等から記録質問を能動的に投下する（質問作成＋回答欄付きメッセージ送信）。
         同じ「文面」の未回答質問が今日すでにあれば二重投下しない（朝食・昼食・夕食のように
         同じ scope でも文面が異なる質問は別物として両方出せる）。
-        push=False のときは Push 通知を出さずメッセージ保存のみ（他の通知とまとめたい場合に使う）。"""
+        push=False のときは Push 通知を出さずメッセージ保存のみ（他の通知とまとめたい場合に使う）。
+        meal_type（朝食/昼食/夕食）を渡すと、回答がその区分・代表時刻で食事ログに記録される。"""
         try:
             from api.database import get_questions_by_date
             today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
@@ -868,7 +874,7 @@ class PartnerCog(commands.Cog):
                 return False  # 既に同じ未回答質問がある（同一文面のみ抑止）
         except Exception as e:
             logging.debug(f"send_log_question 既存確認エラー: {e}")
-        qid, body = await self._create_log_question(scope, question)
+        qid, body = await self._create_log_question(scope, question, meal_type=meal_type)
         if not body or body.startswith("（"):
             return False
         try:

@@ -110,6 +110,7 @@
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('start')">▶ タスク開始</button>
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">■ タスク終了</button>
                         <button class="chip-btn special" onclick="openMemoModal()" title="永久ノートに保存">📝 メモ</button>
+                        <button class="chip-btn special" onclick="openQuickLogModal('event')" title="出来事・学び・良かったことをその場で記録">✏️ サッと記録</button>
                         <button class="chip-btn special" onclick="openLogInbox()" id="log-inbox-chip" title="未回答のログ質問をまとめて回答">📥 未回答ログ<span id="log-inbox-badge" style="margin-left:4px;display:none;background:#ff5468;color:#fff;border-radius:8px;padding:1px 5px;font-size:0.65rem;">0</span></button>
                         <button class="chip-btn chip-more" onclick="toggleMoreChips()" id="chip-more-toggle">＋ その他</button>
                     </div>
@@ -460,6 +461,12 @@
                             <span class="card-icon">📅</span>
                             <span class="card-title">今日の振り返り</span>
                             <button class="mini-link" onclick="openDailySummaryEditor()">編集</button>
+                        </div>
+                        <div id="dash-summary-nav" style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:0.78rem;color:var(--text-muted);">
+                            <button class="mini-link" onclick="shiftDailySummaryDate(-1)" title="前日へ">◀ 前日</button>
+                            <input type="date" id="dash-summary-date" class="modern-input" style="padding:3px 6px;font-size:0.78rem;width:auto;" onchange="loadDailySummary(this.value)">
+                            <button class="mini-link" id="dash-summary-next" onclick="shiftDailySummaryDate(1)" title="翌日へ">翌日 ▶</button>
+                            <button class="mini-link" onclick="loadDailySummary()" title="今日へ戻る" style="margin-left:auto;">今日</button>
                         </div>
                         <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
                         <div id="dash-daily-summary" class="card-body diary-content"></div>
@@ -1102,7 +1109,7 @@
             </div>
             
             <div id="link-extra-actions" style="margin-top: 12px; display: none;">
-                <button class="modal-btn cancel" style="width:100%; border:1px solid var(--border-glass);" id="link-move-recipe-btn">🍳 レシピに移動する</button>
+                <button class="modal-btn submit" style="width:100%;" id="link-cook-to-meal-btn" onclick="cookRecipeToMeal()">🍽 作って食べた → 食事ログへ</button>
             </div>
         </div>
     </div>

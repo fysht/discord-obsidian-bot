@@ -190,6 +190,26 @@ async def daily_questions_pending():
     return {"questions": qs}
 
 
+class QuickLogRequest(BaseModel):
+    scope: str
+    text: str
+
+
+@router.post("/daily_questions/quick_log", dependencies=[Depends(verify_api_key)])
+async def daily_questions_quick_log(req: QuickLogRequest):
+    """出来事 / 学び / 良かったこと等を、質問を介さずその場で1件記録する。
+    「残しておこう」と思った瞬間に何度でも入力できるようにするための入口
+    （夜にまとめてではなく都度・複数入力を可能にする）。"""
+    scope = (req.scope or "").strip()
+    text = (req.text or "").strip()
+    if scope not in _JOURNAL_SCOPE_META:
+        raise HTTPException(status_code=422, detail="対応していない種類です")
+    if not text:
+        raise HTTPException(status_code=422, detail="本文が空です")
+    icon, label = await _append_journal_line(scope, text)
+    return {"ok": True, "icon": icon, "label": label, "scope": scope}
+
+
 @router.post("/daily_questions/{qid}/answer", dependencies=[Depends(verify_api_key)])
 async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
     ok = await answer_daily_question(qid, req.answer)
@@ -260,16 +280,16 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
         rq = await _find_question_by_id(qid)
         rscope = rq.get("scope") if rq else None
         if rscope == "meal":
-            await _reflect_meal_answer(qid, req.answer)
+            await _reflect_meal_answer(rq, req.answer)
         elif rscope == "expense":
             await _reflect_expense_answer(qid, req.answer)
         elif rscope in ("mood", "condition"):
-            await _reflect_mood_answer(qid, req.answer, rscope)
+            await _reflect_mood_answer(rq, req.answer, rscope)
         elif rscope == "reading":
             await _reflect_reading_answer(qid, req.answer)
         elif rscope == "english_quiz":
             await _reflect_english_quiz_answer(rq, req.answer)
-        elif rscope in ("afternoon", "learning", "gratitude"):
+        elif rscope in ("afternoon", "learning", "gratitude", "event"):
             await _reflect_journal_answer(qid, req.answer, rscope)
     except Exception as e:
         logging.error(f"log-question reflect エラー: {e}")
@@ -309,18 +329,33 @@ def _meal_type_jp(mt: str) -> str:
     return "夕食"
 
 
-async def _reflect_meal_answer(qid: int, answer_text: str):
-    """meal スコープの回答を栄養推定して食事ログに保存し、リンク返信を送る（フローA）。"""
+async def _reflect_meal_answer(rq: dict, answer_text: str):
+    """meal スコープの回答を栄養推定して食事ログに保存し、リンク返信を送る（フローA）。
+
+    食事区分は質問の context.meal_type を最優先する（朝食の質問への回答は、たとえ
+    夜にまとめて回答しても「朝食」として記録される）。context に無い会話入力の場合のみ
+    AI 推定／現在時刻から区分を決める。記録時刻は meals_save が区分の代表時刻で補完する。"""
+    import json as _json
     from api.routers.meals import analyze_meal_text, meals_save, MealSaveRequest
     from api.database import resolve_question_by_id
 
+    qid = rq.get("id") if isinstance(rq, dict) else rq
     text = (answer_text or "").strip()
     if not text:
         return
+    # 質問生成時に埋めた食事区分（朝食/昼食/夕食）を正とする。
+    ctx_meal_type = ""
+    try:
+        ctx = _json.loads(rq.get("context") or "{}") if isinstance(rq, dict) else {}
+        if isinstance(ctx, dict):
+            ctx_meal_type = (ctx.get("meal_type") or "").strip()
+    except Exception:
+        ctx_meal_type = ""
     nutri = await analyze_meal_text(text)
+    meal_type = ctx_meal_type or _meal_type_jp(nutri.get("meal_type"))
     save_req = MealSaveRequest(
         name=(nutri.get("name") or text)[:60],
-        meal_type=_meal_type_jp(nutri.get("meal_type")),
+        meal_type=meal_type,
         calories=int(nutri.get("calories") or 0),
         protein_g=float(nutri.get("protein_g") or 0),
         fat_g=float(nutri.get("fat_g") or 0),
@@ -328,34 +363,32 @@ async def _reflect_meal_answer(qid: int, answer_text: str):
         memo=(nutri.get("memo") or ""),
     )
     await meals_save(save_req)
-    await resolve_question_by_id(qid)
+    if qid is not None:
+        await resolve_question_by_id(qid)
     cal = save_req.calories
     cal_txt = f"・約{cal}kcal" if cal else ""
     msg = f"🍽 食事ログに記録したよ（{save_req.name}{cal_txt}）\n[ACTION:open_meals]"
     await notification_service.save_message_and_notify("assistant", msg, title="🍽 食事ログ記録")
 
 
-# afternoon/learning/gratitude スコープの表示アイコン・ラベル。
+# afternoon/learning/gratitude/event スコープの表示アイコン・ラベル。
 # 記録先はすべてデイリーノートの `## 📔 Daily Journal`（独立セクションにせず日記に統合）。
 _JOURNAL_SCOPE_META = {
     "afternoon": ("🌤", "午後の調子"),
     "learning": ("💡", "学び"),
     "gratitude": ("🙏", "良かったこと"),
+    "event": ("📌", "出来事"),
 }
 
 # 日次チェックインの記録先（Daily Journal に時刻付き1行で集約）
 _CHECKIN_HEADING = "## 📔 Daily Journal"
 
 
-async def _reflect_journal_answer(qid: int, answer_text: str, scope: str):
-    """昼の振り返り / 学び / 感謝の回答を、入力テキストそのまま Obsidian の
-    Daily Journal に時刻付きで1行記録する（フローA・日次チェックイン）。"""
+async def _append_journal_line(scope: str, text: str) -> tuple[str, str]:
+    """出来事 / 学び / 良かったこと / 午後の調子を Daily Journal に時刻付き1行で追記する。
+    (icon, label) を返す。質問経由でもクイック入力経由でも共通で使う。"""
     from api import app
-    from api.database import resolve_question_by_id
 
-    text = (answer_text or "").strip()
-    if not text:
-        return
     icon, label = _JOURNAL_SCOPE_META.get(scope, ("📝", "メモ"))
     bot = getattr(app.state, "bot", None)
     partner_cog = bot.get_cog("PartnerCog") if bot else None
@@ -366,9 +399,21 @@ async def _reflect_journal_answer(qid: int, answer_text: str, scope: str):
             )
         except Exception as e:
             logging.debug(f"journal({scope}) obsidian append failed: {e}")
+    return icon, label
+
+
+async def _reflect_journal_answer(qid: int, answer_text: str, scope: str):
+    """昼の振り返り / 学び / 感謝 / 出来事の回答を、入力テキストそのまま Obsidian の
+    Daily Journal に時刻付きで1行記録する（フローA・日次チェックイン）。"""
+    from api.database import resolve_question_by_id
+
+    text = (answer_text or "").strip()
+    if not text:
+        return
+    icon, label = await _append_journal_line(scope, text)
     await resolve_question_by_id(qid)
     await notification_service.save_message_and_notify(
-        "assistant", f"📝 {label}を記録したよ（{text}）", title=f"📝 {label}記録",
+        "assistant", f"{icon} {label}を記録したよ（{text}）", title=f"{icon} {label}記録",
     )
 
 
@@ -408,29 +453,66 @@ async def _reflect_expense_answer(qid: int, answer_text: str):
         await notification_service.save_message_and_notify("assistant", msg, title="💰 支出の確認")
 
 
-async def _reflect_mood_answer(qid: int, answer_text: str, scope: str):
+async def _reflect_mood_answer(rq: dict, answer_text: str, scope: str):
     """mood / condition スコープの回答を Obsidian の Daily Journal に時刻付き1行で記録する
-    （フローA・選択式・日次チェックインとして日記に統合）。"""
+    （フローA・選択式・日次チェックインとして日記に統合）。
+
+    気分は「まあまあ」に寄りがちなので、最初の回答（context.followup なし）には
+    理由を一言うながす追質問を出す。理由の回答（context.followup=True）はその場の
+    気分行に続けて記録し、それ以上は追質問しない（ループ防止）。"""
+    import json as _json
     from api import app
     from api.database import resolve_question_by_id
 
+    qid = rq.get("id") if isinstance(rq, dict) else rq
     text = (answer_text or "").strip()
     if not text:
         return
+    # 追質問（理由）かどうかを context から判定する。
+    is_followup = False
+    try:
+        ctx = _json.loads(rq.get("context") or "{}") if isinstance(rq, dict) else {}
+        is_followup = bool(isinstance(ctx, dict) and ctx.get("followup"))
+    except Exception:
+        is_followup = False
+
     label = "気分" if scope == "mood" else "体調"
     icon = "😀" if scope == "mood" else "🩺"
+    log_label = f"{label}の理由" if is_followup else label
     bot = getattr(app.state, "bot", None)
     partner_cog = bot.get_cog("PartnerCog") if bot else None
     if partner_cog:
         try:
             await partner_cog._append_raw_message_to_obsidian(
-                f"{icon} {label}: {text}", target_heading=_CHECKIN_HEADING
+                f"{icon} {log_label}: {text}", target_heading=_CHECKIN_HEADING
             )
         except Exception as e:
             logging.debug(f"mood/condition obsidian append failed: {e}")
-    await resolve_question_by_id(qid)
+    if qid is not None:
+        await resolve_question_by_id(qid)
+
+    # 最初の気分回答には理由を一言うながす（push なしでチャットに回答欄だけ追加）。
+    if scope == "mood" and not is_followup:
+        try:
+            from api.database import add_daily_question, save_message
+            today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+            fctx = _json.dumps({"followup": True}, ensure_ascii=False)
+            await add_daily_question(
+                today, f"「{text}」だったのは何があったから？（一言・なければスキップでOK）",
+                scope="mood", context=fctx,
+            )
+            await save_message(
+                "assistant",
+                f"{icon} {label}を記録したよ（{text}）。"
+                f"よかったら理由も一言どうぞ👇\n"
+                f"「{text}」だったのは何があったから？（一言・なければスキップでOK）\n"
+                f"[QUESTIONS:mood:{today}]",
+            )
+            return
+        except Exception as e:
+            logging.debug(f"mood reason follow-up failed: {e}")
     await notification_service.save_message_and_notify(
-        "assistant", f"{icon} {label}を記録したよ（{text}）", title=f"{icon} {label}記録",
+        "assistant", f"{icon} {log_label}を記録したよ（{text}）", title=f"{icon} {label}記録",
     )
 
 

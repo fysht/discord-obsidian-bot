@@ -556,3 +556,229 @@ def list_strategies() -> list[dict]:
         }
         for s in STRATEGY_REGISTRY.values()
     ]
+
+
+# =========================================================
+# 上昇余地・利確目標プロジェクション（決定論的・Gemini非依存）
+# =========================================================
+def analyze_breakout_projection(
+    df,
+    *,
+    breakout_lookback: int = 60,
+    horizon: int = 60,
+    atr_n: int = 14,
+    leg_window: int = 120,
+) -> dict:
+    """過去の「N日高値ブレイク」後の値動きから、この先の上昇余地・利確目標・損切り目安を
+    統計的に推定する。Gemini を使わず OHLCV のみで計算するためハルシネーションがない。
+
+    手順:
+      1. 過去に breakout_lookback 日高値を更新した日（ブレイク）を抽出
+      2. 各ブレイク後 horizon 日のピーク上昇率・到達日数・最大ドローダウンを集計
+         → 上昇率の四分位（控えめ/中央/強気）と「天井までの日数」中央値
+      3. 現在の上昇レッグ（直近 leg_window 日の最安値を起点）と既上昇率を測定
+      4. 統計・ATR・計測ムーブ（スイング幅延伸）から利確目標を3段階で合成
+      5. 損切り目安（起点 or 2ATR 下）とリスクリワード、残り上昇余地を算出
+    """
+    import math
+    import numpy as np
+
+    if df is None or len(df) < 250:
+        return {"ok": False, "error": "分析に十分な履歴がありません（約1年以上必要）"}
+
+    close = df["Close"].astype(float).to_numpy()
+    high = df["High"].astype(float).to_numpy()
+    low = df["Low"].astype(float).to_numpy()
+    n = len(close)
+    atr_arr = TechnicalSignals.atr(df["High"], df["Low"], df["Close"], n=atr_n).to_numpy()
+
+    def _fin(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if math.isfinite(f) else None
+
+    # --- 1〜2. 過去ブレイクの検出と前向き成績 ---
+    gains: list[float] = []
+    days_to_peak: list[int] = []
+    drawdowns: list[float] = []  # エントリー基準の最悪含み損（負値）
+    last_bo = -(10 ** 9)
+    min_gap = max(10, breakout_lookback // 3)
+    for i in range(breakout_lookback, n - horizon - 1):
+        prior_high = high[i - breakout_lookback:i].max()
+        if not (high[i] > prior_high):
+            continue
+        if i - last_bo < min_gap:  # 連続ブレイクのクラスタを1件に圧縮
+            continue
+        last_bo = i
+        entry = close[i]
+        if not (entry > 0):
+            continue
+        fwd_high = high[i + 1:i + 1 + horizon]
+        fwd_low = low[i + 1:i + 1 + horizon]
+        if fwd_high.size == 0:
+            continue
+        peak = float(fwd_high.max())
+        gains.append((peak - entry) / entry)
+        days_to_peak.append(int(fwd_high.argmax()) + 1)
+        drawdowns.append((float(fwd_low.min()) - entry) / entry)
+
+    sample = len(gains)
+
+    def _pct(arr, q):
+        return float(np.percentile(arr, q)) if arr else None
+
+    g25, g50, g75 = _pct(gains, 25), _pct(gains, 50), _pct(gains, 75)
+    dd50 = _pct(drawdowns, 50)
+    days50 = _pct(days_to_peak, 50)
+
+    # --- 3. 現在の上昇レッグ ---
+    last_close = _fin(close[-1])
+    last_atr = None
+    for k in range(1, min(6, n) + 1):
+        last_atr = _fin(atr_arr[-k])
+        if last_atr:
+            break
+    lw = min(leg_window, n)
+    origin_rel = int(low[-lw:].argmin())
+    origin_idx = n - lw + origin_rel
+    origin_low = _fin(low[origin_idx])
+    days_in_run = n - 1 - origin_idx
+    current_gain = ((last_close - origin_low) / origin_low) if (origin_low and origin_low > 0) else 0.0
+    swing_high = _fin(high[origin_idx:].max())
+    high_252 = float(high[-252:].max()) if n >= 252 else float(high.max())
+    gap_to_52w = ((high_252 - last_close) / high_252) if high_252 > 0 else 0.0
+
+    try:
+        origin_date = df.index[origin_idx].strftime("%Y-%m-%d")
+    except Exception:
+        origin_date = ""
+    try:
+        as_of = df.index[-1].strftime("%Y-%m-%d")
+    except Exception:
+        as_of = ""
+
+    # --- 4. 利確目標の候補を集める ---
+    cand_t1: list[float] = []  # 控えめ
+    cand_t2: list[float] = []  # 中央
+    cand_t3: list[float] = []  # 強気
+    if origin_low and origin_low > 0:
+        if g25 is not None:
+            cand_t1.append(origin_low * (1 + g25))
+        if g50 is not None:
+            cand_t2.append(origin_low * (1 + g50))
+        if g75 is not None:
+            cand_t3.append(origin_low * (1 + g75))
+        swing = (swing_high - origin_low) if swing_high else 0.0
+        if swing > 0:
+            cand_t1.append(origin_low + swing * 1.0)      # 1:1 計測ムーブ
+            cand_t2.append(origin_low + swing * 1.272)
+            cand_t3.append(origin_low + swing * 1.618)
+    if last_atr:
+        cand_t1.append(last_close + 2 * last_atr)
+        cand_t2.append(last_close + 3 * last_atr)
+        cand_t3.append(last_close + 4 * last_atr)
+
+    def _consolidate(vals):
+        vals = [v for v in vals if v and v > last_close]
+        return float(np.median(vals)) if vals else None
+
+    t1, t2, t3 = _consolidate(cand_t1), _consolidate(cand_t2), _consolidate(cand_t3)
+    # 単調性を担保（T1<T2<T3）
+    levels = [v for v in (t1, t2, t3) if v]
+    levels = sorted(set(round(v, 1) for v in levels))
+    target_meta = [("T1 控えめ", "ATR2倍・過去ブレイク下位25%・1:1計測"),
+                   ("T2 本命", "ATR3倍・過去ブレイク中央値・1.272延伸"),
+                   ("T3 強気", "ATR4倍・過去ブレイク上位25%・1.618延伸")]
+    targets = []
+    for idx, price in enumerate(levels[:3]):
+        label, basis = target_meta[idx] if idx < len(target_meta) else (f"T{idx+1}", "")
+        targets.append({
+            "label": label,
+            "price": round(price, 1),
+            "upside_pct": round((price - last_close) / last_close * 100, 1) if last_close else None,
+            "basis": basis,
+        })
+
+    # --- 5. 損切り・リスクリワード・残り上昇余地 ---
+    stop = None
+    if last_atr and last_close:
+        atr_stop = last_close - 2 * last_atr
+        # 損切りは「現値に近い戦術的水準」。直近15営業日のスイング安値を基本とし、
+        # 現値から 1〜3ATR の範囲にある時だけ採用（近すぎ＝R/R過大、遠すぎ＝損大 を回避）。
+        # それ以外は一律 2ATR 下に置く。※120日起点は上昇率の測定専用で損切りには使わない。
+        recent_low = _fin(low[-15:].min()) if n >= 15 else None
+        if recent_low and (last_atr <= (last_close - recent_low) <= 3 * last_atr):
+            stop = recent_low
+        else:
+            stop = atr_stop
+        if stop >= last_close:
+            stop = last_close - 2 * last_atr
+    risk_pct = round((last_close - stop) / last_close * 100, 1) if (stop and last_close) else None
+    base_target = targets[1]["price"] if len(targets) >= 2 else (targets[0]["price"] if targets else None)
+    rr = None
+    if base_target and stop and last_close and (last_close - stop) > 0:
+        rr = round((base_target - last_close) / (last_close - stop), 2)
+
+    remaining_pct = None
+    if g50 is not None:
+        remaining_pct = round(max(0.0, (g50 - current_gain)) * 100, 1)
+
+    # --- 判定文・注記 ---
+    notes: list[str] = []
+    if sample < 3:
+        notes.append(f"過去のブレイク事例が{sample}件と少なく、統計の信頼度は低めです。ATR・計測ムーブ中心の目安です。")
+    else:
+        notes.append(f"過去{sample}回のブレイク後、中央値で約{g50 * 100:.0f}%上昇・天井まで約{days50:.0f}営業日。最悪含み損は中央値約{dd50 * 100:.0f}%。")
+    if gap_to_52w is not None:
+        if gap_to_52w <= 0.01:
+            notes.append("現在ほぼ52週高値圏（上に過去の戻り売り圧力が少なく伸びやすい）。")
+        else:
+            notes.append(f"52週高値まであと約{gap_to_52w * 100:.1f}%（直近高値が当面の上値メド）。")
+    if remaining_pct is not None:
+        if current_gain >= (g50 or 0):
+            notes.append(f"現レッグは起点から約{current_gain * 100:.0f}%上昇で、過去中央値（{(g50 or 0) * 100:.0f}%）を既に超過。利益確定を意識する局面。")
+        else:
+            notes.append(f"現レッグは起点から約{current_gain * 100:.0f}%上昇。過去中央値まで概算で残り約{remaining_pct:.0f}%の余地。")
+
+    # 総合判定（ざっくり）
+    if rr is not None and rr >= 2 and (current_gain < (g50 or 0)):
+        verdict = "妙味あり：リスクリワード良好で、過去の典型的な上昇余地もまだ残る。"
+    elif current_gain >= (g75 or 1e9):
+        verdict = "過熱気味：過去ブレイクの上位25%水準まで上昇済み。新規は慎重に、保有分は利確検討。"
+    elif rr is not None and rr < 1:
+        verdict = "見送り寄り：直近高値までの距離が近く、損切り幅に対する利幅が小さい。"
+    else:
+        verdict = "中立：T1（控えめ目標）での部分利確を起点に、トレンド継続を見ながら。"
+
+    return {
+        "ok": True,
+        "as_of": as_of,
+        "last_close": round(last_close, 1) if last_close else None,
+        "atr": round(last_atr, 2) if last_atr else None,
+        "atr_pct": round(last_atr / last_close * 100, 2) if (last_atr and last_close) else None,
+        "leg": {
+            "origin_low": round(origin_low, 1) if origin_low else None,
+            "origin_date": origin_date,
+            "days_in_run": days_in_run,
+            "current_gain_pct": round(current_gain * 100, 1),
+            "swing_high": round(swing_high, 1) if swing_high else None,
+        },
+        "history": {
+            "sample": sample,
+            "gain_p25_pct": round(g25 * 100, 1) if g25 is not None else None,
+            "gain_p50_pct": round(g50 * 100, 1) if g50 is not None else None,
+            "gain_p75_pct": round(g75 * 100, 1) if g75 is not None else None,
+            "days_to_peak_p50": round(days50) if days50 is not None else None,
+            "drawdown_p50_pct": round(dd50 * 100, 1) if dd50 is not None else None,
+        },
+        "high_52w": round(high_252, 1) if high_252 else None,
+        "gap_to_52w_pct": round(gap_to_52w * 100, 1),
+        "targets": targets,
+        "stop": {"price": round(stop, 1) if stop else None, "risk_pct": risk_pct},
+        "risk_reward": rr,
+        "remaining_estimate_pct": remaining_pct,
+        "verdict": verdict,
+        "notes": notes,
+    }

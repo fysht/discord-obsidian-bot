@@ -81,6 +81,9 @@ class ScreenerCog(commands.Cog):
     async def get_ohlcv_series(self, code: str, days: int = 120) -> dict:
         return await self.service.get_ohlcv_series(code, days)
 
+    async def analyze_projection(self, code: str, days: int = 750) -> dict:
+        return await self.service.analyze_projection(code, days)
+
     async def run_multi_screening(
         self,
         styles: list[str],

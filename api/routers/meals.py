@@ -14,6 +14,16 @@ from config import JST
 
 router = APIRouter(prefix="/meals", tags=["meals"])
 
+# 食事区分ごとの代表時刻。time 未指定で保存された場合に、メッセージ送信時刻ではなく
+# 食事区分の標準時刻で記録するために使う。これにより「夜にまとめて朝食を入力」しても
+# 朝食は朝の時刻で残る（区分は JP/EN どちらのキーでも引ける）。
+MEAL_TYPE_TIMES = {
+    "朝食": "08:30", "breakfast": "08:30",
+    "昼食": "12:45", "lunch": "12:45",
+    "夕食": "20:00", "dinner": "20:00",
+    "間食": "15:30", "snack": "15:30",
+}
+
 
 class MealAnalyzeRequest(BaseModel):
     image_base64: str
@@ -211,7 +221,10 @@ async def meals_save(req: MealSaveRequest):
 
     now = datetime.datetime.now(JST)
     date = req.date or now.strftime("%Y-%m-%d")
-    time = req.time or now.strftime("%H:%M")
+    mtype = (req.meal_type or "").strip()
+    # time 未指定なら食事区分の代表時刻を採用（夜にまとめて回答しても朝食=朝の時刻で記録）。
+    # 区分も未指定なら最後の手段として現在時刻を使う。
+    time = req.time or MEAL_TYPE_TIMES.get(mtype) or now.strftime("%H:%M")
     name = (req.name or "").strip() or "食事"
 
     # カロリー未入力（0）かつ料理名がある場合は AI で自動推定して補完する。

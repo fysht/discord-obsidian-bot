@@ -140,6 +140,115 @@ async def gmail_to_calendar(message_id: str):
     return {"ok": True, "event": ev}
 
 
+async def _gmail_message_text(message_id: str, body_limit: int = 5000) -> tuple[str, str, str]:
+    """メールの (本文込みテキスト, 件名, 差出人) を返す。抽出系エンドポイント共通の前処理。"""
+    from api import app
+    from api.database import gmail_get
+
+    bot = getattr(app.state, "bot", None)
+    gmail = getattr(bot, "gmail_service", None) if bot else None
+    if not gmail:
+        raise HTTPException(status_code=503, detail="Gmail未接続")
+
+    record = await gmail_get(message_id)
+    subject = (record.get("subject") or "") if record else ""
+    sender = (record.get("from_addr") or record.get("sender") or "") if record else ""
+    try:
+        full = await gmail.get_message(message_id)
+    except Exception as e:
+        logging.error(f"_gmail_message_text get_message error: {e}")
+        full = None
+    body = ((full or {}).get("body") or "")[:body_limit]
+    text = f"件名: {subject}\n差出人: {sender}\n本文:\n{body}".strip()
+    if not body and not subject:
+        raise HTTPException(status_code=404, detail="メール本文を取得できませんでした")
+    return text, subject, sender
+
+
+@router.post("/{message_id}/classify", dependencies=[Depends(verify_api_key)])
+async def gmail_classify_log(message_id: str):
+    """メール1通を AI で分類し、最適なログ種別と抽出データを返す（保存はしない）。
+
+    すべてのメールをログ化すると広告・メルマガまで取り込んでしまうため、ここで AI が
+    「ログにする価値があるか」を判定する。価値が低いものは kind='none' を返し、フロントは
+    取り込みを促さない。価値があるものは種別（外食/支出/予定/学び/良かったこと）に応じた
+    プレフィル用データを返し、ユーザーが確認して保存できるようにする（保存前確認は必須）。"""
+    import json
+    from google.genai import types as _gt
+    from api import app
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    text, subject, _sender = await _gmail_message_text(message_id)
+    now = datetime.datetime.now(JST)
+    prompt = (
+        "あなたはユーザー専属のマネージャー（AI秘書）です。受信した Gmail 1通を見て、"
+        "『ライフログに残す価値があるか』を判断し、最適なログ種別へ分類してください。\n"
+        "広告・メルマガ・キャンペーン・自動通知など、本人の行動記録として無意味なものは "
+        'kind="none" としてください。必ず以下の JSON だけを返し、前置きや説明は禁止。\n\n'
+        f"現在日時（JST）: {now.strftime('%Y-%m-%d %H:%M')}（相対表現はこれを基準に絶対日時へ）\n\n"
+        f"メール内容:\n{text}\n\n"
+        "{\n"
+        '  "kind": "meal / expense / calendar / learning / gratitude / none のいずれか",\n'
+        '  "confidence": "high / medium / low",\n'
+        '  "reason": "そう判断した理由を1行（日本語）",\n'
+        '  "title": "ログの短い見出し（種別不問・日本語）",\n'
+        '  "meal": {"name": "料理/店の一言", "restaurant": "店名", "ordered_items": "注文（改行可・空可）", "price": 金額int, "source": "外食/デリバリー/中食/自炊", "date": "YYYY-MM-DD", "restaurant_url": "URL（空可）"},\n'
+        '  "expense": {"amount": 金額int, "vendor": "店/サービス名", "category": "食費/日用品/交通費/娯楽/その他 等", "payment_method": "", "memo": "", "date": "YYYY-MM-DD"},\n'
+        '  "calendar": {"summary": "予定名", "start": "YYYY-MM-DDTHH:MM", "end": "YYYY-MM-DDTHH:MM", "location": ""},\n'
+        '  "text": "learning/gratitude のとき、ログに残す1〜2文（日本語）"\n'
+        "}\n\n"
+        "判定の指針:\n"
+        "- meal: 飲食店の予約確認・来店レシート・デリバリー注文など『食事』に紐づくもの\n"
+        "- expense: 購入/決済/請求/領収（飲食以外）。飲食の支払いは meal を優先\n"
+        "- calendar: 日時の決まった予約・面談・配達指定など『予定』にすべきもの\n"
+        "- learning: ニュースレター等で得た学び・気づき（要点を text に1〜2文で）\n"
+        "- gratitude: 嬉しい知らせ・感謝につながる連絡\n"
+        "- none: 上記いずれの価値もない（広告・宣伝・自動通知など）\n"
+        "種別に対応しないフィールドは空でよい。不確かなときは confidence='low'。"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("routines", default_pro=False)
+        response = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[_gt.Part.from_text(text=prompt)]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        data = json.loads(response.text or "{}")
+        if not isinstance(data, dict):
+            data = {}
+    except Exception as e:
+        logging.error(f"gmail_classify_log error: {e}")
+        raise HTTPException(status_code=500, detail="分類に失敗しました")
+
+    kind = (data.get("kind") or "none").strip().lower()
+    if kind not in ("meal", "expense", "calendar", "learning", "gratitude", "none"):
+        kind = "none"
+    # 種別ごとのプレフィルデータを取り出す（タイトルや件名で空欄を補完）
+    payload = data.get(kind) if kind in ("meal", "expense", "calendar") else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    title = (data.get("title") or subject or "").strip()
+    if kind == "meal" and not (payload.get("name") or "").strip():
+        payload["name"] = title[:60]
+    if kind == "expense" and not (payload.get("vendor") or "").strip():
+        payload["vendor"] = title[:40]
+    if kind == "calendar" and not (payload.get("summary") or "").strip():
+        payload["summary"] = title[:60]
+    return {
+        "ok": True,
+        "kind": kind,
+        "confidence": (data.get("confidence") or "low").strip().lower(),
+        "reason": (data.get("reason") or "").strip(),
+        "title": title,
+        "data": payload,
+        "text": (data.get("text") or "").strip(),
+    }
+
+
 @router.post("/{message_id}/read", dependencies=[Depends(verify_api_key)])
 async def gmail_mark_read(message_id: str):
     """Gmail 側で既読化し、DB の state を 'archived' に。"""

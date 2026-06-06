@@ -4285,10 +4285,40 @@ window.openLinkDetailsModal = (lk) => {
     $('#link-memo-input').value = lk.memo || '';
     $('#link-calendar-check').checked = true;
 
+    // レシピなら「作って食べた→食事ログ」ボタンを出す（種別変更にも追従させる）
+    window._currentEditLink = lk;
+    const _syncRecipeAction = () => {
+        const isRecipe = ($('#link-type-select')?.value || lk.type) === 'recipe';
+        const extra = $('#link-extra-actions');
+        if (extra) extra.style.display = isRecipe ? '' : 'none';
+    };
+    _syncRecipeAction();
+    requestAnimationFrame(() => {
+        $('#link-type-select')?.addEventListener('change', _syncRecipeAction);
+    });
+
     $('#link-details-modal').classList.remove('hidden');
     // モーダル表示後に textarea を内容量に合わせて自動リサイズ
     requestAnimationFrame(() => {
         document.querySelectorAll('#link-details-modal .auto-grow-textarea').forEach(autoResizeTextarea);
+    });
+};
+
+// レシピ詳細から「作って食べた」→ 食事記録モーダルをレシピ内容で開く（レシピ↔食事ログ連携）。
+window.cookRecipeToMeal = () => {
+    const lk = window._currentEditLink;
+    if (!lk) return;
+    const parts = [];
+    if (lk.url) parts.push(lk.url);
+    if (lk.summary) parts.push(lk.summary);
+    if (lk.memo) parts.push(lk.memo);
+    closeLinkDetailsModal();
+    try { switchTab('info'); } catch (e) { /* ignore */ }
+    // name/memo/source をプレフィル（時刻は未指定＝食事区分の代表時刻 or 現在時刻で記録）
+    openMealManualModal(null, {
+        name: lk.title || '',
+        memo: parts.join('\n'),
+        source: '自炊',
     });
 };
 
@@ -6412,13 +6442,13 @@ window.openMealManualModal = async (id = null, seed = null) => {
                     <h3 id="meal-edit-title" style="margin-top:0;">🍽 食事を記録</h3>
                     <p id="meal-edit-confidence" style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 8px;"></p>
 
-                    <label style="font-size:0.78rem;color:var(--text-muted);">保存済みレシピから選ぶ（任意）</label>
+                    <label style="font-size:0.78rem;color:var(--text-muted);">保存済みレシピから追加（複数可・任意）</label>
                     <select id="meal-recipe-picker" class="modern-input" style="margin-bottom:8px;" onchange="onMealRecipePicked()">
-                        <option value="">— 選択しない —</option>
+                        <option value="">— レシピを選んで追加 —</option>
                     </select>
 
-                    <label style="font-size:0.78rem;color:var(--text-muted);">料理名</label>
-                    <input id="meal-name" class="modern-input" style="margin-bottom:4px;" placeholder="例: 唐揚げ定食" onblur="_autoEstimateMealNutrition()">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">料理名（複数メニューは「＋」で連結）</label>
+                    <input id="meal-name" class="modern-input" style="margin-bottom:4px;" placeholder="例: カレー ＋ サラダ" onblur="_autoEstimateMealNutrition()">
                     <div style="text-align:right;margin-bottom:8px;">
                         <button type="button" class="mini-link" onclick="estimateMealNutrition(true)" title="料理名からカロリー・PFCをAIで見積もる">🔢 カロリー自動見積</button>
                     </div>
@@ -6601,40 +6631,57 @@ window.closeMealEditModal = () => {
     _pendingMealAnalysis = null;
 };
 
-// 保存済みレシピ選択 → 料理名・メモを埋める（既入力は上書きしない）
+// 保存済みレシピ選択 → 料理名に「追加」する（1食に複数メニュー/レシピを入力できる）。
+// 上書きではなく追記し、選択後はピッカーをリセットして続けて別レシピも足せるようにする。
 window.onMealRecipePicked = () => {
     const picker = $('#meal-recipe-picker');
     if (!picker || !picker.value) return;
     let recipes = [];
     try { recipes = JSON.parse(picker.dataset.recipes || '[]'); } catch { recipes = []; }
     const r = recipes.find(x => String(x.id) === String(picker.value));
+    picker.value = '';  // 続けて別のレシピも追加できるよう選択をリセット
     if (!r) return;
+    const title = (r.title || '').trim();
+
+    // 料理名に追記（複数メニューは「 ＋ 」で連結。同じメニューの重複追加は避ける）
     const nameEl = $('#meal-name');
-    if (nameEl && !nameEl.value.trim()) nameEl.value = r.title || '';
-    const memoEl = $('#meal-memo');
-    if (memoEl && !memoEl.value.trim()) {
-        const parts = [];
-        if (r.url) parts.push(r.url);
-        if (r.summary) parts.push(r.summary);
-        if (r.memo) parts.push(r.memo);
-        memoEl.value = parts.join('\n');
+    if (nameEl && title) {
+        const cur = nameEl.value.trim();
+        const items = cur ? cur.split(/\s*[＋+]\s*/).map(s => s.trim()).filter(Boolean) : [];
+        if (!items.includes(title)) {
+            nameEl.value = cur ? `${cur} ＋ ${title}` : title;
+        }
     }
-    // 自炊と推測
+
+    // メモにレシピのURL・要点を追記（重複行は足さない）
+    const memoEl = $('#meal-memo');
+    if (memoEl) {
+        const lines = memoEl.value ? memoEl.value.split('\n') : [];
+        const add = [];
+        if (r.url && !lines.includes(r.url)) add.push(r.url);
+        if (r.summary && !lines.includes(r.summary)) add.push(r.summary);
+        if (r.memo && !lines.includes(r.memo)) add.push(r.memo);
+        if (add.length) memoEl.value = [...lines, ...add].filter(Boolean).join('\n');
+    }
+
     const srcEl = $('#meal-source');
     if (srcEl && !srcEl.value) srcEl.value = '自炊';
+    showToast(`「${title}」を追加しました`);
+    // 複数メニューの合算カロリーを反映するため、連結後の料理名から静かに推定し直す。
+    estimateMealNutrition(true, true);
 };
 
 // 料理名からカロリー/PFCをAIで推定して欄を埋める（自分でカロリーが分からなくてもOK）
 let _mealEstimating = false;
-window.estimateMealNutrition = async (force = false) => {
+window.estimateMealNutrition = async (force = false, quiet = false) => {
     const nameEl = $('#meal-name');
     const kcalEl = $('#meal-kcal');
     const name = (nameEl?.value || '').trim();
-    if (!name) { if (force) showToast('先に料理名を入力してね', true); return; }
+    if (!name) { if (force && !quiet) showToast('先に料理名を入力してね', true); return; }
     if (!force && kcalEl && Number(kcalEl.value) > 0) return;  // 既に値があれば自動では上書きしない
     if (_mealEstimating) return;
     _mealEstimating = true;
-    if (force) showToast('🔢 カロリーを推定中…');
+    if (force && !quiet) showToast('🔢 カロリーを推定中…');
     try {
         const res = await apiFetch('/api/meals/analyze_text', {
             method: 'POST', body: JSON.stringify({ text: name }),
@@ -6647,9 +6694,9 @@ window.estimateMealNutrition = async (force = false) => {
         setIf($('#meal-c'), r.carbs_g);
         const typeEl = $('#meal-type');
         if (typeEl && !typeEl.value && r.meal_type) typeEl.value = r.meal_type;
-        if (force) showToast('カロリーを見積もりました（必要なら修正してね）');
+        if (force && !quiet) showToast('カロリーを見積もりました（必要なら修正してね）');
     } catch (e) {
-        if (force) showToast('推定に失敗しました', true);
+        if (force && !quiet) showToast('推定に失敗しました', true);
     } finally {
         _mealEstimating = false;
     }
@@ -6876,6 +6923,7 @@ window.loadGmailInbox = async (state = 'pending') => {
                     </div>
                     <div class="row-actions" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
                         ${actions}
+                        <button class="mini-link" data-gmail-action="logify" title="AIが最適なログ種別を判定して取り込む">📝 ログ化</button>
                         <button class="mini-link" data-gmail-action="calendar" title="メール内の予定をカレンダーに登録">📅 予定</button>
                         <button class="mini-link" data-gmail-action="expense" title="メール内容を支出として記録">💰 支出</button>
                         <button class="mini-link" data-gmail-action="open-gmail" title="Gmail で開く">↗ Gmail</button>
@@ -6911,11 +6959,62 @@ function _bindGmailDelegation(container) {
         else if (action === 'open-saved' && savedDriveId) window.openSavedEmail(savedDriveId);
         else if (action === 'archive') window.markGmailRead(id);
         else if (action === 'trash') window.trashGmail(id);
+        else if (action === 'logify') window.gmailLogify(id);
         else if (action === 'expense') window.gmailToExpense(id);
         else if (action === 'calendar') window.gmailToCalendar(id);
         else if (action === 'open-gmail') window.openGmail(id, thread);
     });
 }
+
+// メール1通を AI が分類し、最適なログ種別の入力モーダルへプレフィルして開く。
+// 広告・メルマガ等は kind='none' が返るので取り込みを促さない（保存前に必ずユーザーが確認）。
+window.gmailLogify = async (id) => {
+    showToast('✉️ ログ種別を判定中…');
+    try {
+        const res = await apiFetch(`/api/gmail/${encodeURIComponent(id)}/classify`, { method: 'POST' });
+        if (!res || !res.ok) { showToast('判定に失敗しました', true); return; }
+        const kind = res.kind || 'none';
+        const d = res.data || {};
+        if (kind === 'none') {
+            showToast(`ログ向きではなさそう${res.reason ? '：' + res.reason : ''}`);
+            return;
+        }
+        if (kind === 'meal') {
+            switchTab('info');
+            openMealManualModal(null, {
+                name: d.name || res.title || '',
+                restaurant: d.restaurant || '',
+                ordered_items: d.ordered_items || '',
+                price: parseInt(d.price, 10) || 0,
+                source: d.source || '外食',
+                restaurant_url: d.restaurant_url || '',
+                date: d.date || '',
+            });
+        } else if (kind === 'expense') {
+            switchTab('log');
+            openExpenseManualModal(null, {
+                amount: parseInt(d.amount, 10) || 0,
+                vendor: d.vendor || '',
+                category: d.category || 'その他',
+                payment_method: d.payment_method || '',
+                memo: d.memo || '',
+                date: d.date || '',
+            });
+        } else if (kind === 'calendar') {
+            switchTab('schedule');
+            openAddEventModal({
+                summary: d.summary || res.title || '',
+                start: d.start || '',
+                end: d.end || '',
+                description: d.location ? `場所: ${d.location}` : '',
+            });
+        } else if (kind === 'learning' || kind === 'gratitude') {
+            openQuickLogModal(kind, res.text || res.title || '');
+        }
+    } catch (e) {
+        showToast('判定に失敗しました', true);
+    }
+};
 
 // メール本文を AI 解析して、抽出した予定をカレンダー追加モーダルにプレフィルする。
 window.gmailToCalendar = async (id) => {
@@ -8273,6 +8372,66 @@ window.renderFitbitChart = () => {
     });
 };
 
+// ----- サッと記録（出来事・学び・良かったこと）: 思いついた時に何度でも -----
+// 夜にまとめてではなく、その場で複数件残せるようにするための入口（scope=event/learning/gratitude）。
+let _quickLogScope = 'event';
+window.openQuickLogModal = (scope = 'event', presetText = '') => {
+    _quickLogScope = scope;
+    let modal = document.getElementById('quick-log-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="quick-log-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:460px;">
+                    <h3 style="margin-top:0;">✏️ サッと記録</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">残しておこうと思った瞬間に。続けて何件でも入力できます。</p>
+                    <div id="quick-log-types" style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+                        <button type="button" class="chip-btn" data-scope="event"     onclick="setQuickLogScope('event')">📌 出来事</button>
+                        <button type="button" class="chip-btn" data-scope="learning"  onclick="setQuickLogScope('learning')">💡 学び</button>
+                        <button type="button" class="chip-btn" data-scope="gratitude" onclick="setQuickLogScope('gratitude')">🙏 良かったこと</button>
+                    </div>
+                    <textarea id="quick-log-text" class="modern-input" rows="3" placeholder="ひとことでOK" style="width:100%;font-family:inherit;"></textarea>
+                    <div class="modal-actions" style="margin-top:10px;">
+                        <button class="modal-btn cancel" onclick="document.getElementById('quick-log-modal').classList.add('hidden')">閉じる</button>
+                        <button class="modal-btn submit" id="quick-log-save" onclick="submitQuickLog()">記録</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('quick-log-modal');
+    }
+    modal.classList.remove('hidden');
+    setQuickLogScope(scope);
+    setTimeout(() => { const t = $('#quick-log-text'); if (t) { t.value = presetText || ''; t.focus(); } }, 30);
+};
+
+window.setQuickLogScope = (scope) => {
+    _quickLogScope = scope;
+    document.querySelectorAll('#quick-log-types .chip-btn').forEach(b => {
+        b.classList.toggle('special', b.dataset.scope === scope);
+    });
+};
+
+window.submitQuickLog = async () => {
+    const ta = $('#quick-log-text');
+    const text = (ta && ta.value || '').trim();
+    if (!text) { showToast('内容を入力してください', true); return; }
+    const btn = $('#quick-log-save');
+    if (btn) { btn.disabled = true; btn.textContent = '記録中…'; }
+    try {
+        const res = await apiFetch('/api/daily_questions/quick_log', {
+            method: 'POST',
+            body: JSON.stringify({ scope: _quickLogScope, text }),
+        });
+        showToast(`${res.icon || '📝'} ${res.label || ''}を記録しました ✓`);
+        if (ta) { ta.value = ''; ta.focus(); }  // 続けて入力できるよう開いたまま
+    } catch (e) {
+        showToast('記録に失敗しました', true);
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = '記録'; }
+    }
+};
+
 // ----- アクションチップス展開トグル -----
 function toggleMoreChips() {
     const more = document.getElementById('action-chips-more');
@@ -9002,17 +9161,32 @@ function _openMapsShareChooser(mapUrl, placeName) {
 // ===========================================================
 
 let _dailySummaryGenerating = false;
+// 現在カードで表示中の振り返りの日付（空＝今日。過去日を開いて翌日でも確定できるようにする）
+let _summaryViewDate = '';
 
-window.loadDailySummary = async () => {
+window.loadDailySummary = async (date = '') => {
     const tEl = $('#dash-daily-summary');
     const qEl = $('#dash-daily-summary-questions');
     if (!tEl || !qEl) return;
+    _summaryViewDate = date || '';
     try {
-        const data = await apiFetch('/api/daily_summary');
+        const q = date ? `?date=${encodeURIComponent(date)}` : '';
+        const data = await apiFetch(`/api/daily_summary${q}`);
         renderDailySummaryCard(data);
     } catch {
         tEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました</div>';
     }
+};
+
+// 振り返りの表示日を前後に動かす（前日に未完了の振り返りがあれば翌日でも作成・確定できる）
+window.shiftDailySummaryDate = (deltaDays) => {
+    const cur = _summaryViewDate || _todayStr();
+    const d = new Date(`${cur}T00:00:00`);
+    d.setDate(d.getDate() + deltaDays);
+    const next = d.toISOString().slice(0, 10);
+    // 未来日は開かない
+    if (next > _todayStr()) { showToast('今日より先には進めません'); return; }
+    loadDailySummary(next);
 };
 
 // 共通: デイリー系カードの軽量 Markdown レンダラ
@@ -9060,13 +9234,26 @@ function renderDailySummaryCard(data, opts = {}) {
     const isFallback = !!(data && data.fallback);
     const preserveOnEmpty = !!opts.preserveOnEmpty;
 
+    // 日付ナビを表示中の日付に同期（翌日ボタンは今日以降は無効化）
+    _summaryViewDate = displayDate || _summaryViewDate;
+    const dateInput = $('#dash-summary-date');
+    if (dateInput && displayDate) dateInput.value = displayDate;
+    const nextBtn = $('#dash-summary-next');
+    if (nextBtn) {
+        const atToday = !displayDate || displayDate >= _todayStr();
+        nextBtn.style.visibility = atToday ? 'hidden' : 'visible';
+    }
+
     if (text) {
         // デイリーノート・マネージャーの気づきと統一感を持たせるためシンプルに日付ラベルのみ
         const label = displayDate ? `📅 ${displayDate} の振り返り` : '';
         const askBtn = `<div style="text-align:right;margin-top:6px;"><button class="inline-q-chip" onclick="askManagerAbout('今日の振り返りについて話したい')" style="padding:2px 10px;font-size:0.74rem;border:1px solid rgba(255,212,84,0.45);border-radius:12px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">💬 マネージャーに聞く</button></div>`;
         tEl.innerHTML = renderDailyMarkdown(text, { dateLabel: label }) + askBtn;
     } else if (!preserveOnEmpty) {
-        tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。<span class="muted-hint">「回答を反映して生成」または「✓ 確定保存」で作成できます。</span></div>';
+        // 質問も本文も無い日（例：前日に作りそびれた振り返り）でも、今から作成できる実行ボタンを出す。
+        const genDate = displayDate || _summaryViewDate || '';
+        const genBtn = `<div style="text-align:center;margin-top:10px;"><button class="modal-btn submit" style="font-size:0.85rem;" onclick="generateDailySummary(false, '${genDate}')">📝 ${genDate && genDate < _todayStr() ? 'この日の' : '今日の'}振り返りを今から作成</button></div>`;
+        tEl.innerHTML = '<div class="loading-placeholder">デイリーサマリーはまだ生成されていません。<span class="muted-hint">回答に答えて確定すると作成されます。</span></div>' + genBtn;
     }
     // preserveOnEmpty=true で text が空のときは tEl を上書きせず、前回の振り返りを残す
 
@@ -9146,7 +9333,7 @@ window.finalizeSummaryWithAnswers = async (date) => {
 let _summaryQuestionsHidden = false;
 window.toggleSummaryQuestions = () => {
     _summaryQuestionsHidden = !_summaryQuestionsHidden;
-    loadDailySummary();
+    loadDailySummary(_summaryViewDate || '');
 };
 
 window.generateDailySummary = async (finalize, date) => {
@@ -10939,6 +11126,7 @@ function _renderScreenerCandidates(data) {
                         <span style="font-size:0.78rem;color:var(--text-muted);">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
                         <span style="display:flex;gap:4px;flex-shrink:0;">
                             <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openStockChart('${codeEsc}','${nameEsc}')">📈 チャート</button>
+                            <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openStockProjection('${codeEsc}','${nameEsc}')" title="過去の高値ブレイク後の値動きから上昇余地・利確/損切り目安を見る">🎯 利確目安</button>
                             <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
                         </span>
                     </div>
@@ -10959,6 +11147,88 @@ function _renderScreenerCandidates(data) {
         secBtn.disabled = cands.length === 0;
         secBtn.style.opacity = cands.length ? '1' : '0.5';
     }
+}
+
+// ===== 上昇余地・利確/損切り目安（過去の高値ブレイク後の値動きから算出） =====
+window.openStockProjection = async (code, name) => {
+    let modal = document.getElementById('stock-proj-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="stock-proj-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:520px;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 id="stock-proj-title" style="margin:0;font-size:1rem;">🎯 利確/損切り目安</h3>
+                        <button class="mini-link" onclick="document.getElementById('stock-proj-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="stock-proj-body" style="margin-top:10px;font-size:0.84rem;line-height:1.55;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('stock-proj-modal');
+    }
+    const titleEl = $('#stock-proj-title');
+    const bodyEl = $('#stock-proj-body');
+    if (titleEl) titleEl.textContent = `🎯 ${code} ${name || ''}`;
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">過去の値動きから算出中…</div>';
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch(`/api/investment/screener/projection/${encodeURIComponent(code)}`);
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '算出できませんでした')}</div>`;
+            return;
+        }
+        bodyEl.innerHTML = _renderProjection(r);
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで算出できませんでした</div>';
+    }
+};
+
+function _renderProjection(r) {
+    const leg = r.leg || {};
+    const h = r.history || {};
+    const num = (v, suf = '') => (v === null || v === undefined) ? '-' : `${v}${suf}`;
+    const targetRows = (r.targets || []).map(t => `
+        <div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px dashed rgba(255,255,255,0.08);">
+            <span style="color:var(--text-primary);">${escapeHtml(t.label)}</span>
+            <span style="font-weight:700;color:#7ee0a0;">${num(t.price)}円 <span style="color:var(--text-muted);font-weight:400;">(+${num(t.upside_pct)}%)</span></span>
+        </div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin:-2px 0 4px;">${escapeHtml(t.basis || '')}</div>
+    `).join('');
+    const notes = (r.notes || []).map(n => `<li style="margin-bottom:3px;">${escapeHtml(n)}</li>`).join('');
+    const rrColor = (r.risk_reward != null && r.risk_reward >= 2) ? '#7ee0a0' : (r.risk_reward != null && r.risk_reward < 1 ? '#ff8a8a' : 'var(--text-primary)');
+    return `
+        <div style="background:rgba(255,212,84,0.10);border:1px solid rgba(255,212,84,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:#ffd454;font-weight:600;">
+            ${escapeHtml(r.verdict || '')}
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:8px;">
+            終値 ${num(r.last_close)}円・ATR ${num(r.atr)}（${num(r.atr_pct, '%')}）／ 52週高値まで +${num(r.gap_to_52w_pct, '%')}<br>
+            現レッグ: ${num(leg.origin_date)} の ${num(leg.origin_low)}円から +${num(leg.current_gain_pct, '%')}（${num(leg.days_in_run)}営業日）
+        </div>
+
+        <div style="font-weight:700;margin:8px 0 4px;">📈 利確目標</div>
+        ${targetRows || '<div style="color:var(--text-muted);">目標を算出できませんでした</div>'}
+
+        <div style="display:flex;justify-content:space-between;gap:8px;margin-top:8px;padding-top:6px;border-top:1px solid rgba(255,255,255,0.1);">
+            <span>🛑 損切り目安</span>
+            <span style="font-weight:700;color:#ff8a8a;">${num((r.stop || {}).price)}円 <span style="color:var(--text-muted);font-weight:400;">(-${num((r.stop || {}).risk_pct)}%)</span></span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;">
+            <span>⚖️ リスクリワード（対 本命目標）</span>
+            <span style="font-weight:700;color:${rrColor};">${num(r.risk_reward)}</span>
+        </div>
+
+        <div style="font-weight:700;margin:10px 0 4px;">🔁 過去の高値ブレイク統計（${num(h.sample)}件）</div>
+        <div style="font-size:0.78rem;color:var(--text-secondary);">
+            ブレイク後の上昇率: 控えめ +${num(h.gain_p25_pct, '%')} / 中央 +${num(h.gain_p50_pct, '%')} / 強気 +${num(h.gain_p75_pct, '%')}<br>
+            天井まで中央値 約${num(h.days_to_peak_p50)}営業日 ・ 最悪含み損 中央値 ${num(h.drawdown_p50_pct, '%')}
+        </div>
+
+        <ul style="margin:10px 0 6px;padding-left:18px;font-size:0.78rem;color:var(--text-secondary);">${notes}</ul>
+        <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;">
+            ※ 過去の値動きの統計に基づく機械的な目安です。将来を保証するものではありません。出来高・決算・地合いも併せて判断してください。
+        </div>
+    `;
 }
 
 // ===== 銘柄チャート（スクリーナー結果から1クリック表示） =====

@@ -204,6 +204,24 @@ class ScreenerService:
             })
         return {"ok": True, "code": code, "candles": candles}
 
+    async def analyze_projection(self, code: str, days: int = 750) -> dict:
+        """1 銘柄の過去の高値ブレイク後の値動きから、上昇余地・利確目標・損切り目安を返す。
+        スクリーニングと同じ分割調整済み OHLCV を使うので、シグナルと整合する。"""
+        from services.screener_engine import analyze_breakout_projection
+        days = max(250, min(int(days or 750), 1500))
+        try:
+            df = await self.provider.get_ohlcv(code, days=days)
+        except Exception as e:
+            return {"ok": False, "error": f"取得失敗: {e}"}
+        if df is None or len(df) < 250:
+            return {"ok": False, "error": "分析に十分な履歴がありません（約1年以上必要）"}
+        try:
+            res = analyze_breakout_projection(df)
+        except Exception as e:
+            return {"ok": False, "error": f"分析に失敗しました: {e}"}
+        res["code"] = code
+        return res
+
     # =========================================================
     # スタイル横断フィルタ：既存候補を別スタイルで再評価する
     # =========================================================
