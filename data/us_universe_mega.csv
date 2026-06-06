@@ -1,0 +1,53 @@
+code,name,sector
+AAPL,Apple,Technology
+MSFT,Microsoft,Technology
+NVDA,NVIDIA,Technology
+AVGO,Broadcom,Technology
+ORCL,Oracle,Technology
+CRM,Salesforce,Technology
+ADBE,Adobe,Technology
+AMD,Advanced Micro Devices,Technology
+CSCO,Cisco Systems,Technology
+ACN,Accenture,Technology
+QCOM,Qualcomm,Technology
+TXN,Texas Instruments,Technology
+IBM,IBM,Technology
+INTC,Intel,Technology
+GOOGL,Alphabet,Communication Services
+META,Meta Platforms,Communication Services
+NFLX,Netflix,Communication Services
+DIS,Walt Disney,Communication Services
+CMCSA,Comcast,Communication Services
+VZ,Verizon,Communication Services
+AMZN,Amazon,Consumer Discretionary
+TSLA,Tesla,Consumer Discretionary
+HD,Home Depot,Consumer Discretionary
+MCD,McDonald's,Consumer Discretionary
+NKE,Nike,Consumer Discretionary
+SBUX,Starbucks,Consumer Discretionary
+LOW,Lowe's,Consumer Discretionary
+WMT,Walmart,Consumer Staples
+COST,Costco,Consumer Staples
+PG,Procter & Gamble,Consumer Staples
+KO,Coca-Cola,Consumer Staples
+PEP,PepsiCo,Consumer Staples
+BRK-B,Berkshire Hathaway,Financials
+JPM,JPMorgan Chase,Financials
+V,Visa,Financials
+MA,Mastercard,Financials
+BAC,Bank of America,Financials
+WFC,Wells Fargo,Financials
+GS,Goldman Sachs,Financials
+UNH,UnitedHealth,Health Care
+JNJ,Johnson & Johnson,Health Care
+LLY,Eli Lilly,Health Care
+ABBV,AbbVie,Health Care
+MRK,Merck,Health Care
+PFE,Pfizer,Health Care
+TMO,Thermo Fisher Scientific,Health Care
+XOM,Exxon Mobil,Energy
+CVX,Chevron,Energy
+CAT,Caterpillar,Industrials
+BA,Boeing,Industrials
+GE,GE Aerospace,Industrials
+HON,Honeywell,Industrials

@@ -926,6 +926,8 @@
                 <input type="text" id="portfolio-add-sector" class="modern-input" placeholder="セクター (任意, 例: 自動車)">
                 <input type="number" step="any" min="0" id="portfolio-add-shares" class="modern-input" placeholder="株数">
                 <input type="number" step="any" min="0" id="portfolio-add-cost" class="modern-input" placeholder="平均取得単価">
+                <label style="font-size:0.74rem;color:var(--text-muted);margin-bottom:-4px;">購入日 (任意・年率換算/市場平均比較に使用。省略時は登録日)</label>
+                <input type="date" id="portfolio-add-opened" class="modern-input">
                 <input type="text" id="portfolio-add-currency" class="modern-input" placeholder="通貨 (省略時 JPY/USD 自動)">
                 <textarea id="portfolio-add-notes" class="modern-input" placeholder="メモ (任意)" style="min-height:60px;"></textarea>
             </div>
@@ -949,6 +951,8 @@
                 <input type="text" id="portfolio-edit-sector" class="modern-input" placeholder="セクター (任意)">
                 <input type="number" step="any" min="0" id="portfolio-edit-shares" class="modern-input" placeholder="株数">
                 <input type="number" step="any" min="0" id="portfolio-edit-cost" class="modern-input" placeholder="平均取得単価">
+                <label style="font-size:0.74rem;color:var(--text-muted);margin-bottom:-4px;">購入日 (年率換算/市場平均比較の起点。実際の購入日に補正できます)</label>
+                <input type="date" id="portfolio-edit-opened" class="modern-input">
                 <input type="text" id="portfolio-edit-currency" class="modern-input" placeholder="通貨 (例: JPY / USD)">
                 <textarea id="portfolio-edit-notes" class="modern-input" placeholder="メモ (任意)" style="min-height:60px;"></textarea>
             </div>

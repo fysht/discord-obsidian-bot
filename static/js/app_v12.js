@@ -10720,8 +10720,11 @@ async function _loadScreenerUniverses() {
         const names = (data && data.universes) || [];
         if (!names.length) return;
         const labelOf = n => {
-            if (n === 'all') return '全銘柄 (要 data/jp_universe_all.csv)';
-            if (n === 'topix500') return 'TOPIX500';
+            if (n === 'all') return '🇯🇵 全銘柄 (要 data/jp_universe_all.csv)';
+            if (n === 'topix500') return '🇯🇵 TOPIX500';
+            if (n === 'us_mega') return '🇺🇸 米国 主要銘柄 (mega)';
+            if (n === 'us_sp500') return '🇺🇸 米国 S&P500';
+            if (n.startsWith('us_')) return '🇺🇸 米国 ' + n.slice(3).toUpperCase();
             return n.toUpperCase();
         };
         sel.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">${escapeHtml(labelOf(n))}</option>`).join('');
@@ -11141,7 +11144,8 @@ function _renderScreenerCandidates(data) {
     const adviseBar = `<div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(126,224,160,0.12);color:#7ee0a0;border:1px solid rgba(126,224,160,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true);" title="保有銘柄＋この候補を、テクニカル(トレンド)×ファンダ(健全性)の二重視点で一括診断します">🧭 保有＆候補を一括診断</button>
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioPerformance();" title="保有ポートフォリオが市場平均（日経平均等）をアウトパフォームできているかを測定します">📊 市場平均と比較</button>
-        <span style="font-size:0.7rem;color:var(--text-muted);">継続/売却・新規買い・入替の助言／アウトパフォーム測定</span>
+        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();openHoldingsReview();" title="平日12時の自動「保有銘柄の昼チェック」と同じ診断を今すぐ実行します">🕛 保有を今すぐ昼チェック</button>
+        <span style="font-size:0.7rem;color:var(--text-muted);">継続/売却・新規買い・入替の助言／アウトパフォーム測定（昼チェックは平日12時に自動通知）</span>
     </div>`;
     el.innerHTML = andBanner + meta + nearMissBanner + adviseBar + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 
@@ -11222,6 +11226,17 @@ function _renderProjection(r) {
             <span>⚖️ リスクリワード（対 本命目標）</span>
             <span style="font-weight:700;color:${rrColor};">${num(r.risk_reward)}</span>
         </div>
+        ${(() => {
+            const rp = (r.stop || {}).risk_pct;
+            if (!rp || rp <= 0) return '';
+            const pos2 = Math.min(100, Math.round(2 / rp * 100));
+            const pos1 = Math.min(100, Math.round(1 / rp * 100));
+            return `<div style="margin-top:6px;padding:6px 8px;background:rgba(78,161,255,0.08);border-radius:6px;font-size:0.76rem;color:var(--text-secondary);">
+                🧮 ポジションサイズ（損小利大の資金管理）<br>
+                損切り幅 ${rp}% → <b>1銘柄=総資金の最大 ${pos2}%</b>（1回の損失を総資金の2%以内に）／ 慎重なら ${pos1}%（1%ルール）<br>
+                <span style="color:var(--text-muted);">※ 損切りは1回ぶんを小さく抑える設計。小幅な値動きでの即売りではなく、トレンド崩れ（トレイル割れ）で手仕舞う前提です。</span>
+            </div>`;
+        })()}
 
         <div style="font-weight:700;margin:10px 0 4px;">🔁 過去の高値ブレイク統計（${num(h.sample)}件）</div>
         <div style="font-size:0.78rem;color:var(--text-secondary);">
@@ -11238,7 +11253,8 @@ function _renderProjection(r) {
 
 // ===== ポートフォリオ・アドバイザー（保有＋候補をテクニカル×ファンダで一括診断） =====
 // useCandidates=true なら直近スクリーニング候補も診断対象に含める。
-window.openPortfolioAdvice = async (useCandidates = true) => {
+// withFinancials=true なら EDINET 有報の安全性/キャッシュ指標も織り込む（やや時間がかかる）。
+window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false) => {
     let modal = document.getElementById('portfolio-advice-modal');
     if (!modal) {
         const wrap = document.createElement('div');
@@ -11256,14 +11272,14 @@ window.openPortfolioAdvice = async (useCandidates = true) => {
         modal = document.getElementById('portfolio-advice-modal');
     }
     const bodyEl = $('#portfolio-advice-body');
-    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">保有銘柄と候補を診断中…（数十秒かかる場合があります）</div>';
+    if (bodyEl) bodyEl.innerHTML = `<div class="loading-placeholder">保有銘柄と候補を診断中…${withFinancials ? '（EDINET財務も取得中。1〜2分かかる場合があります）' : '（数十秒かかる場合があります）'}</div>`;
     modal.classList.remove('hidden');
     const candidates = (useCandidates && _screenerLastResult && _screenerLastResult.candidates) ? _screenerLastResult.candidates : [];
     try {
         const r = await apiFetch('/api/investment/screener/advise', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ candidates }),
+            body: JSON.stringify({ candidates, with_financials: !!withFinancials }),
         });
         if (!r || !r.ok) {
             bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
@@ -11309,6 +11325,18 @@ function _renderAdviceCard(r) {
             relHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">📊 ${escapeHtml(rel.group)}比較(${rel.peer_n}社) 相対${num(rel.score)}点<br>${hi}${lo}</div>`;
         }
     }
+    // 安全性（EDINET財務）ブロック
+    let safeHtml = '';
+    const sf = r.safety;
+    if (sf) {
+        const chips = (sf.checks || []).map(c => {
+            const cc = c.passed ? '#7ee0a0' : '#ff8a8a';
+            return `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,0.05);color:${cc};font-size:0.7rem;">${escapeHtml(c.name)}: ${escapeHtml(c.value)}</span>`;
+        }).join('');
+        safeHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">🏦 財務(EDINET ${escapeHtml(sf.period_end || '')}): ${sf.cs_pattern ? escapeHtml(sf.cs_pattern) : ''}<br>${chips}</div>`;
+    }
+    const codeEsc = (r.code || '').replace(/'/g, "\\'");
+    const nameEsc = (r.name || '').replace(/'/g, "\\'");
     return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
             <strong style="word-break:break-word;">${escapeHtml(r.code)} ${escapeHtml(r.name || '')}</strong>
@@ -11319,7 +11347,9 @@ function _renderAdviceCard(r) {
         </div>
         <ul style="margin:4px 0 4px;padding-left:16px;font-size:0.76rem;color:var(--text-secondary);">${reasons}</ul>
         ${relHtml}
+        ${safeHtml}
         ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
+        <div style="margin-top:4px;"><button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openBusinessModel('${codeEsc}','${nameEsc}')" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析（宝石7）">📄 事業/中計分析</button></div>
     </div>`;
 }
 
@@ -11337,10 +11367,14 @@ function _renderPortfolioAdvice(r) {
     const candsHtml = cands.length
         ? cands.map(_renderAdviceCard).join('')
         : '<div style="font-size:0.78rem;color:var(--text-muted);">診断対象の新規候補はありません（スクリーニング結果から実行すると候補も診断します）。</div>';
+    const finBar = r.with_financials
+        ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:8px;">🏦 EDINET有報の財務（自己資本比率・FCF・CF型）を ${r.financials_count || 0} 件分 織り込み済み。</div>`
+        : `<div style="margin-bottom:8px;"><button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true,true);" title="EDINET有報の自己資本比率・FCF・キャッシュフロー型を取得して再診断（1〜2分）">🏦 EDINET財務で精査して再診断</button></div>`;
     return `
         <div style="background:rgba(126,224,160,0.10);border:1px solid rgba(126,224,160,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:#7ee0a0;font-weight:600;">
             ${escapeHtml(r.summary || '')}
         </div>
+        ${finBar}
         ${rotHtml}
         <div style="font-weight:700;margin:12px 0 4px;">📦 保有銘柄の診断</div>
         ${holdsHtml}
@@ -11351,6 +11385,78 @@ function _renderPortfolioAdvice(r) {
         </div>
     `;
 }
+
+// ===== 保有銘柄の昼チェック（平日12時の自動診断を手動実行） =====
+window.openHoldingsReview = async () => {
+    let modal = document.getElementById('holdings-review-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="holdings-review-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:600px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 style="margin:0;font-size:1rem;">🕛 保有銘柄の昼チェック</h3>
+                        <button class="mini-link" onclick="document.getElementById('holdings-review-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="holdings-review-body" style="margin-top:10px;font-size:0.84rem;line-height:1.6;white-space:pre-wrap;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('holdings-review-modal');
+    }
+    const bodyEl = $('#holdings-review-body');
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">保有銘柄を診断中…</div>';
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch('/api/investment/portfolio/review', { method: 'POST' });
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
+            return;
+        }
+        bodyEl.textContent = r.report || '保有銘柄が登録されていません。';
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
+    }
+};
+
+// ===== ビジネスモデル・中計KPI 定性分析（宝石7・Gemini） =====
+window.openBusinessModel = async (code, name) => {
+    let modal = document.getElementById('biz-model-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="biz-model-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:620px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 id="biz-model-title" style="margin:0;font-size:1rem;">📄 事業/中計分析</h3>
+                        <button class="mini-link" onclick="document.getElementById('biz-model-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="biz-model-body" style="margin-top:10px;font-size:0.84rem;line-height:1.6;white-space:pre-wrap;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('biz-model-modal');
+    }
+    const titleEl = $('#biz-model-title');
+    const bodyEl = $('#biz-model-body');
+    if (titleEl) titleEl.textContent = `📄 ${code} ${name || ''} 事業/中計分析`;
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">IR・決算説明資料・中期経営計画・統合報告書を検索して分析中…（30秒〜1分）</div>';
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch('/api/investment/screener/business_model', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, name: name || '' }),
+        });
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '分析できませんでした')}</div>`;
+            return;
+        }
+        bodyEl.innerHTML = (window.renderMarkdown ? window.renderMarkdown(r.report || '') : escapeHtml(r.report || ''));
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで分析できませんでした</div>';
+    }
+};
 
 // ===== 市場平均との比較（アウトパフォーム測定） =====
 window.openPortfolioPerformance = async () => {
@@ -11404,6 +11510,10 @@ function _renderPortfolioPerformance(r) {
         }
         const exColor = (pos.excess_pct == null) ? 'var(--text-muted)' : (pos.excess_pct >= 0 ? '#7ee0a0' : '#ff8a8a');
         const badge = (pos.excess_pct == null) ? '' : (pos.outperforming ? '✅' : '▼');
+        const annColor = (pos.excess_annual_pct == null) ? 'var(--text-muted)' : (pos.excess_annual_pct >= 0 ? '#7ee0a0' : '#ff8a8a');
+        const annHtml = (pos.excess_annual_pct != null)
+            ? `<div style="font-size:0.72rem;color:var(--text-muted);">📅 年率 自分 ${sign(pos.return_annual_pct)} vs ${escapeHtml(pos.benchmark || '-')} ${sign(pos.benchmark_annual_pct)} → <span style="color:${annColor};font-weight:700;">超過 ${sign(pos.excess_annual_pct)}</span>（保有${num(pos.holding_days)}日）</div>`
+            : (pos.holding_days != null ? `<div style="font-size:0.72rem;color:var(--text-muted);">保有${num(pos.holding_days)}日（年率換算は30日以上で表示）</div>` : '');
         return `<div style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:5px;background:${pos.outperforming ? 'rgba(126,224,160,0.06)' : ''}">
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
                 <strong style="word-break:break-word;">${badge} ${escapeHtml(pos.code)} ${escapeHtml(pos.name || '')}</strong>
@@ -11413,6 +11523,7 @@ function _renderPortfolioPerformance(r) {
                 自分 ${sign(pos.return_pct)} vs ${escapeHtml(pos.benchmark || '-')} ${sign(pos.benchmark_return_pct)}
                 ／ 取得 ${num(pos.avg_cost)} → 現値 ${num(pos.current_price)}（${num(pos.opened_at)}〜）
             </div>
+            ${annHtml}
         </div>`;
     }).join('');
     return `
@@ -11429,6 +11540,10 @@ function _renderPortfolioPerformance(r) {
             <span>超過リターン（アウトパフォーム幅）</span>
             <span style="font-weight:700;color:${headColor};">${sign(p.excess_pct)}</span>
         </div>
+        ${p.excess_annual_pct != null ? `<div style="display:flex;justify-content:space-between;gap:8px;font-size:0.85rem;padding:6px 0;background:rgba(255,255,255,0.03);border-radius:6px;">
+            <span>📅 年率換算の超過（平均保有${num(p.avg_holding_days)}日基準）</span>
+            <span style="font-weight:700;color:${p.excess_annual_pct >= 0 ? '#7ee0a0' : '#ff8a8a'};">${sign(p.return_annual_pct)} vs ${sign(p.benchmark_annual_pct)} → ${sign(p.excess_annual_pct)}</span>
+        </div>` : ''}
         <div style="font-weight:700;margin:10px 0 4px;">銘柄別（超過リターン順）</div>
         ${rows || '<div style="color:var(--text-muted);">対象なし</div>'}
         <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:8px;">
@@ -12695,6 +12810,7 @@ window.openPortfolioEditModal = (holding) => {
     set('portfolio-edit-sector', holding.sector || '');
     set('portfolio-edit-shares', holding.shares != null ? holding.shares : '');
     set('portfolio-edit-cost', holding.avg_cost != null ? holding.avg_cost : '');
+    set('portfolio-edit-opened', holding.opened_at ? String(holding.opened_at).slice(0, 10) : '');
     set('portfolio-edit-currency', holding.currency || '');
     set('portfolio-edit-notes', holding.notes || '');
     const modal = $('#invest-portfolio-edit-modal');
@@ -12720,6 +12836,8 @@ window.submitPortfolioEdit = async () => {
     const body = { code };
     if (sharesStr) body.shares = parseFloat(sharesStr);
     if (costStr) body.avg_cost = parseFloat(costStr);
+    const openedStr = $('#portfolio-edit-opened')?.value?.trim();
+    if (openedStr) body.opened_at = openedStr;
     const name = $('#portfolio-edit-name')?.value?.trim();
     const sector = $('#portfolio-edit-sector')?.value?.trim();
     const currency = $('#portfolio-edit-currency')?.value?.trim();
@@ -12748,7 +12866,7 @@ window.submitPortfolioEdit = async () => {
 };
 
 window.openPortfolioAddModal = () => {
-    ['portfolio-add-ticker','portfolio-add-name','portfolio-add-sector','portfolio-add-shares','portfolio-add-cost','portfolio-add-currency','portfolio-add-notes'].forEach(id => {
+    ['portfolio-add-ticker','portfolio-add-name','portfolio-add-sector','portfolio-add-shares','portfolio-add-cost','portfolio-add-opened','portfolio-add-currency','portfolio-add-notes'].forEach(id => {
         const el = $('#'+id);
         if (el) el.value = '';
     });
@@ -12774,6 +12892,7 @@ window.submitPortfolioAdd = async () => {
         sector: $('#portfolio-add-sector')?.value?.trim() || null,
         currency: $('#portfolio-add-currency')?.value?.trim() || null,
         notes: $('#portfolio-add-notes')?.value?.trim() || null,
+        opened_at: $('#portfolio-add-opened')?.value?.trim() || null,
     };
     try {
         const data = await apiFetch('/api/investment/portfolio/add', { method: 'POST', body: JSON.stringify(body) });

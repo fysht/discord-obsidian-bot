@@ -3,6 +3,7 @@ import asyncio
 import logging
 import datetime
 import random
+import re
 from datetime import timedelta
 
 from discord.ext import commands, tasks
@@ -156,29 +157,14 @@ class PartnerRoutineCog(commands.Cog):
         if self.tasks_service:
             tasks_text = await self.tasks_service.get_uncompleted_tasks()
 
-        weather, max_t, min_t = "取得失敗", "N/A", "N/A"
-        news_list = []
+        weather_body = "（天気を取得できませんでした）"
         if self.info_service:
-            weather_data = await self.info_service.get_weather()
-            weather = weather_data.get("summary", "取得失敗")
-            max_t = weather_data.get("max_temp", "N/A")
-            min_t = weather_data.get("min_temp", "N/A")
-            news_list = await self.info_service.get_news(limit=3)
-
-        # get_news() は {"title", "link"} の dict リストを返す。
-        # 通知カードでは markdown リンクにして「リンクをそのままクリック」できるようにする。
-        if news_list:
-            _news_lines = []
-            for n in news_list:
-                if isinstance(n, dict):
-                    title = n.get("title", "")
-                    link = n.get("link", "")
-                    _news_lines.append(f"- [{title}]({link})" if link else f"- {title}")
-                else:
-                    _news_lines.append(f"- {n}")
-            news_text = "\n".join(_news_lines)
-        else:
-            news_text = ""
+            try:
+                weather_data = await self.info_service.get_weather()
+                weather_body = self._format_weather(weather_data)
+            except Exception as e:
+                logging.debug(f"weather format error: {e}")
+        # ニュースは「情報」タブで把握できるため、朝のお知らせには含めない。
 
         # 過去の今日（1年前 / 3ヶ月前）
         past_journals = ""
@@ -190,11 +176,9 @@ class PartnerRoutineCog(commands.Cog):
         # 「複数項目を1メッセージに束ねる」のをやめ、項目ごとに個別の通知カード
         # （既読チェック可能）として送り、プッシュはまとめて1発だけ。
         notices = [
-            {"category": "weather", "title": "☀️ 今日の天気",
-             "body": f"{weather}\n最高 {max_t}℃ / 最低 {min_t}℃"},
+            {"category": "weather", "title": "☀️ 今日の天気", "body": weather_body},
             {"category": "schedule", "title": "📅 今日の予定", "body": schedule_text},
             {"category": "tasks", "title": "✅ 未完了タスク", "body": tasks_text},
-            {"category": "news", "title": "📰 今日のニュース", "body": news_text},
         ]
         if past_journals and past_journals.strip():
             notices.append(
@@ -205,6 +189,57 @@ class PartnerRoutineCog(commands.Cog):
         await send_notice_batch(notices, "朝のお知らせ")
         # 朝食ログの質問は別タスク（breakfast_meal_check_task / 8:30）で投下するため、
         # 朝のお知らせ（07:00）では出さない。
+
+    @staticmethod
+    def _format_weather(wd: dict) -> str:
+        """get_weather() の戻り値から、降水確率・時間帯別・明日を含む詳しい天気文を作る。"""
+        wd = wd or {}
+        daily = wd.get("daily") or []
+        today = daily[0] if daily else {}
+        tomorrow = daily[1] if len(daily) > 1 else {}
+        hourly = wd.get("hourly") or wd.get("slots") or []
+        loc = wd.get("location_name") or ""
+
+        icon = today.get("icon", "")
+        w = today.get("weather") or wd.get("summary", "不明")
+        mx = today.get("max_temp", wd.get("max_temp", "--"))
+        mn = today.get("min_temp", wd.get("min_temp", "--"))
+        pop = today.get("pop", "--")
+
+        lines = []
+        head = f"{icon} {w}".strip()
+        lines.append(f"{head}（{loc}）" if loc else head)
+        lines.append(f"最高 {mx}℃ / 最低 {mn}℃ / 降水 {pop}")
+
+        # 時間帯別（朝9・昼12・夕16・夜20 に最も近い「今日」のスロット）
+        def _pick(target_h):
+            best, best_d = None, 99
+            for x in hourly:
+                if x.get("day") not in (None, "今日"):
+                    continue
+                m = re.search(r"(\d+)", str(x.get("time", "")))
+                if not m:
+                    continue
+                d = abs(int(m.group(1)) - target_h)
+                if d < best_d:
+                    best_d, best = d, x
+            return best if best_d <= 3 else None
+
+        slot_parts = []
+        for label, h in (("朝", 9), ("昼", 12), ("夕", 16), ("夜", 20)):
+            s = _pick(h)
+            if s:
+                slot_parts.append(f"{label}{s.get('icon', '')}{s.get('temp', '--')}℃·{s.get('pop', '--')}")
+        if slot_parts:
+            lines.append("🕒 " + "  ".join(slot_parts))
+
+        if tomorrow:
+            lines.append(
+                f"➡️ 明日: {tomorrow.get('icon', '')}{tomorrow.get('weather', '')} "
+                f"{tomorrow.get('max_temp', '--')}/{tomorrow.get('min_temp', '--')}℃ "
+                f"降水{tomorrow.get('pop', '--')}"
+            )
+        return "\n".join(lines)
 
     # ==========================================
     # 朝食ログの質問（8:30）— 朝ごはんを記録

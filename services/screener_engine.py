@@ -579,6 +579,45 @@ def evaluate_fundamental_gate(fundamentals: Optional[dict]) -> dict:
             "total": total, "score": score, "ok": ok}
 
 
+def evaluate_safety(financials: Optional[dict]) -> Optional[dict]:
+    """EDINET 財務サマリーから「安全性/キャッシュ」（決算分析の地図 2〜3章）を評価する。
+
+    会計の利益だけでなく、自己資本比率（B/Sの安全性）・営業CF/FCF（本業のキャッシュ創出）
+    まで踏み込む。financials が無ければ None。
+    """
+    if not financials or not financials.get("ok"):
+        return None
+    eq = financials.get("equity_ratio")
+    ocf = financials.get("operating_cf")
+    fcf = financials.get("fcf")
+
+    def _cf(v):
+        if v is None:
+            return "N/A"
+        return f"{'+' if v >= 0 else '−'}{abs(v):,.0f}"
+
+    checks = [
+        {"key": "equity_ratio", "name": "自己資本比率",
+         "value": f"{eq * 100:.1f}%" if eq is not None else "N/A", "threshold": "≥30%",
+         "passed": bool(eq is not None and eq >= 0.30), "available": eq is not None},
+        {"key": "operating_cf", "name": "営業CF", "value": _cf(ocf), "threshold": "プラス",
+         "passed": bool(ocf is not None and ocf > 0), "available": ocf is not None},
+        {"key": "fcf", "name": "FCF", "value": _cf(fcf), "threshold": "プラス",
+         "passed": bool(fcf is not None and fcf > 0), "available": fcf is not None},
+    ]
+    available = sum(1 for c in checks if c["available"])
+    passed = sum(1 for c in checks if c["passed"])
+    score = round(passed / len(checks) * 100, 1)
+    ok = bool(available >= 2 and (passed / available) >= 0.5)
+    return {
+        "checks": checks, "passed": passed, "available": available, "score": score, "ok": ok,
+        "equity_ratio": eq, "operating_cf": ocf, "fcf": fcf,
+        "cs_pattern": financials.get("cs_pattern"),
+        "period_end": financials.get("period_end"),
+        "source": financials.get("source", "EDINET"),
+    }
+
+
 class FundamentalGateStrategy(StyleStrategy):
     """決算分析の地図（村上茂久）の「会計視点×ファイナンス視点の両方を持つ」
     を 1 銘柄判定に落とした、決定論的ファンダ・ゲート。
@@ -890,6 +929,7 @@ def analyze_position(
     *,
     avg_cost: Optional[float] = None,
     held: bool = True,
+    financials: Optional[dict] = None,
     sma_fast: int = 25,
     sma_mid: int = 75,
     sma_slow: int = 200,
@@ -975,6 +1015,12 @@ def analyze_position(
     fund_ok = gate["ok"] if (gate and gate["available"] >= 3) else None  # None=判定不能
     fund_score = gate["score"] if gate else None
 
+    safety = evaluate_safety(financials)
+    safety_ok = safety["ok"] if safety else None
+    safety_score = safety["score"] if safety else None
+    # 本業でキャッシュを稼げていない（営業CFがマイナス）かどうか
+    ocf_negative = bool(safety and safety.get("operating_cf") is not None and safety["operating_cf"] <= 0)
+
     # 含み損益
     pnl = None
     if avg_cost:
@@ -997,6 +1043,15 @@ def analyze_position(
                        f"・{'健全' if fund_ok else ('要警戒' if fund_ok is False else '判定不能')}")
     else:
         reasons.append("ファンダ: データ未取得")
+    if safety:
+        eqv = safety.get("equity_ratio")
+        parts = []
+        parts.append(f"自己資本比率{eqv * 100:.0f}%" if eqv is not None else "自己資本比率N/A")
+        if safety.get("cs_pattern"):
+            parts.append(safety["cs_pattern"])
+        if safety.get("fcf") is not None:
+            parts.append("FCF＋" if safety["fcf"] > 0 else "FCF−")
+        reasons.append("財務(EDINET): " + "・".join(parts))
     if pnl:
         reasons.append(f"含み{'益' if pnl['pnl_pct'] >= 0 else '損'} {pnl['pnl_pct']:+.1f}%")
 
@@ -1040,7 +1095,22 @@ def analyze_position(
             action = "WATCH"
             note = "トレンド未確立。高値ブレイクの確認待ち。"
 
-    if has_fund and fund_score is not None:
+    # --- 安全性（EDINET財務）による上書き ---
+    if safety is not None:
+        if not held and action == "BUY" and (ocf_negative or safety_ok is False):
+            action = "WATCH"
+            note = ("テクニカル・ファンダは良好だが、財務（EDINET）に懸念"
+                    f"（{'本業CFがマイナス' if ocf_negative else '自己資本比率/FCFが基準未達'}）。"
+                    "本業でキャッシュを稼げているか確認してから。")
+        elif held and action == "HOLD" and safety_ok is False:
+            action = "HOLD_WATCH"
+            note = "トレンドは良好だが財務（EDINET）に懸念。自己資本比率・営業CFの推移を注視。"
+        elif held and action in ("SELL", "TRIM") and ocf_negative:
+            note += "（財務面でも営業CFがマイナスで撤退を支持）"
+
+    if has_fund and fund_score is not None and safety_score is not None:
+        score = round(0.45 * trend_score + 0.4 * fund_score + 0.15 * safety_score, 1)
+    elif has_fund and fund_score is not None:
         score = round(0.5 * trend_score + 0.5 * fund_score, 1)
     else:
         score = trend_score
@@ -1080,6 +1150,7 @@ def analyze_position(
         },
         "fundamental": gate,
         "fund_ok": fund_ok,
+        "safety": safety,
         "metrics": metrics,
         "pnl": pnl,
         "verdict": {

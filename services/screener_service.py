@@ -231,12 +231,15 @@ class ScreenerService:
         holdings: list[dict],
         candidates: Optional[list[dict]] = None,
         days: int = 300,
+        with_financials: bool = False,
     ) -> dict:
         """保有銘柄（holdings）と新規候補（candidates）を、テクニカル×ファンダの
         二重視点で一括診断し、継続保有/縮小/売却・新規買い/見送り・入替候補を返す。
 
         判定の根拠は決定論的（analyze_position）。holdings の各要素は
         {code, name?, sector?, shares?, avg_cost?} を想定。
+        with_financials=True なら EDINET の有報CSVから安全性/キャッシュ指標も取得して
+        診断に織り込む（走査が重いので保有＋候補の小集合のみ）。
         """
         from services.screener_engine import analyze_position, compute_relative_metrics
 
@@ -245,6 +248,32 @@ class ScreenerService:
         held_codes = {str(h.get("code")) for h in holdings if h.get("code")}
         days = max(120, min(int(days or 300), 1000))
         sem = asyncio.Semaphore(4)
+
+        # 財務サマリー（任意・重い処理）。日本株=EDINET、米国株=SEC EDGAR で取得。
+        financials_by_code: dict[str, dict] = {}
+        if with_financials:
+            all_codes = [str(h.get("code")) for h in holdings if h.get("code")]
+            all_codes += [str(c.get("code")) for c in candidates
+                          if c.get("code") and str(c.get("code")) not in held_codes]
+            jp_codes = [c for c in all_codes if c.isdigit()]
+            us_codes = [c for c in all_codes if not c.isdigit()]
+            if jp_codes:
+                try:
+                    from services.edinet_financials import get_financials_for_codes as _edinet
+                    financials_by_code.update(await _edinet(jp_codes))
+                except Exception as e:
+                    logging.debug(f"advise EDINET財務取得エラー: {e}")
+            if us_codes:
+                try:
+                    from services.edgar_financials import get_financials_for_codes as _edgar
+                    fin_us = await _edgar(us_codes)
+                    # EDGAR は大文字ティッカーで返すため、元コード表記にもマッピング
+                    for c in us_codes:
+                        s = fin_us.get(c.upper())
+                        if s:
+                            financials_by_code[c] = s
+                except Exception as e:
+                    logging.debug(f"advise EDGAR財務取得エラー: {e}")
 
         async def _eval(item: dict, held: bool):
             code = str(item.get("code") or "").strip()
@@ -271,6 +300,7 @@ class ScreenerService:
                         df, fundamentals,
                         avg_cost=item.get("avg_cost") if held else None,
                         held=held,
+                        financials=financials_by_code.get(code),
                     )
                 except Exception as e:
                     logging.debug(f"advise analyze_position エラー {code}: {e}")
@@ -279,6 +309,8 @@ class ScreenerService:
             res["name"] = name
             res["sector"] = sector
             res["held"] = held
+            # 入れ替えは同一市場内で行うため、市場を判定して付与（4桁数字=日本株）
+            res["market"] = item.get("market") or ("JP" if code.isdigit() else "US")
             if held:
                 res["shares"] = item.get("shares")
             return res
@@ -309,18 +341,22 @@ class ScreenerService:
                  if r.get("ok") and r["verdict"]["action"] in ("SELL", "TRIM")]
         buys = [r for r in candidates_out
                 if r.get("ok") and r["verdict"]["action"] == "BUY"]
-        sells_weak = sorted(sells, key=_rk)
-        buys_strong = sorted(buys, key=_rk, reverse=True)
+        # 入れ替えは同一市場内のみ（日本株↔日本株、米国株↔米国株）
         rotations = []
-        for s, b in zip(sells_weak, buys_strong):
-            if _rk(b) - _rk(s) >= 10:
-                rotations.append({
-                    "sell": {"code": s["code"], "name": s["name"], "score": _rk(s),
-                             "action_label": s["verdict"]["action_label"]},
-                    "buy": {"code": b["code"], "name": b["name"], "score": _rk(b)},
-                    "reason": (f"{s['name']}は{s['verdict']['action_label']}水準（総合{_rk(s)}点）。"
-                               f"より強い{b['name']}（総合{_rk(b)}点）へ入替を検討。"),
-                })
+        for mkt in ("JP", "US"):
+            sells_weak = sorted([s for s in sells if s.get("market") == mkt], key=_rk)
+            buys_strong = sorted([b for b in buys if b.get("market") == mkt], key=_rk, reverse=True)
+            mkt_label = "日本株" if mkt == "JP" else "米国株"
+            for s, b in zip(sells_weak, buys_strong):
+                if _rk(b) - _rk(s) >= 10:
+                    rotations.append({
+                        "sell": {"code": s["code"], "name": s["name"], "score": _rk(s),
+                                 "action_label": s["verdict"]["action_label"]},
+                        "buy": {"code": b["code"], "name": b["name"], "score": _rk(b)},
+                        "market": mkt,
+                        "reason": (f"[{mkt_label}] {s['name']}は{s['verdict']['action_label']}水準"
+                                   f"（総合{_rk(s)}点）。より強い{b['name']}（総合{_rk(b)}点）へ入替を検討。"),
+                    })
 
         keep = [r for r in holdings_out if r.get("ok") and r["verdict"]["action"] in ("HOLD", "HOLD_WATCH")]
         as_of = next((r.get("as_of") for r in ok_all if r.get("as_of")), "")
@@ -332,6 +368,8 @@ class ScreenerService:
             "ok": True,
             "as_of": as_of,
             "summary": summary,
+            "with_financials": with_financials,
+            "financials_count": len(financials_by_code),
             "holdings": holdings_out,
             "candidates": candidates_out,
             "ranking": ranking_brief,
@@ -383,6 +421,15 @@ class ScreenerService:
                 bdf = None
             bench_df[mk] = (sym, bdf)
 
+        def _annualize(ret_pct, days):
+            """単純リターン(%)を年率換算(%)。保有30日未満は不安定なので None。"""
+            if ret_pct is None or not days or days < 30:
+                return None
+            try:
+                return round(((1 + ret_pct / 100.0) ** (365.0 / days) - 1) * 100, 1)
+            except (ValueError, OverflowError, ZeroDivisionError):
+                return None
+
         def _bench_return(mk, entry_date):
             sym, bdf = bench_df.get(mk, (None, None))
             if bdf is None or bdf.empty or not entry_date:
@@ -424,6 +471,10 @@ class ScreenerService:
             pos_ret = round((cur - cost) / cost * 100, 1)
             sym, bench_ret = _bench_return(mk, entry)
             excess = round(pos_ret - bench_ret, 1) if bench_ret is not None else None
+            holding_days = (today - entry).days if entry else None
+            ret_ann = _annualize(pos_ret, holding_days)
+            bench_ann = _annualize(bench_ret, holding_days)
+            excess_ann = round(ret_ann - bench_ann, 1) if (ret_ann is not None and bench_ann is not None) else None
             return {
                 "ok": True, "code": code, "name": name, "market": mk,
                 "shares": shares, "avg_cost": round(cost, 2), "current_price": round(cur, 2),
@@ -433,6 +484,10 @@ class ScreenerService:
                 "benchmark_return_pct": bench_ret,
                 "excess_pct": excess,
                 "outperforming": (excess is not None and excess > 0),
+                "holding_days": holding_days,
+                "return_annual_pct": ret_ann,
+                "benchmark_annual_pct": bench_ann,
+                "excess_annual_pct": excess_ann,
                 "opened_at": (entry.isoformat() if entry else None),
             }
 
@@ -451,6 +506,16 @@ class ScreenerService:
         port_excess = (round(port_ret - port_bench, 1)
                        if (port_ret is not None and port_bench is not None) else None)
 
+        # 保有期間を考慮した年率換算（コスト加重の平均保有日数で年率化）
+        hd_rows = [r for r in ok_rows if r.get("holding_days") and r["cost_value"] > 0]
+        hd_total = sum(r["cost_value"] for r in hd_rows)
+        avg_holding_days = (round(sum(r["holding_days"] * r["cost_value"] for r in hd_rows) / hd_total)
+                            if hd_total > 0 else None)
+        port_ret_ann = _annualize(port_ret, avg_holding_days)
+        port_bench_ann = _annualize(port_bench, avg_holding_days)
+        port_excess_ann = (round(port_ret_ann - port_bench_ann, 1)
+                           if (port_ret_ann is not None and port_bench_ann is not None) else None)
+
         bench_names = sorted({r["benchmark"] for r in ok_rows if r.get("benchmark")})
         as_of = ""
         for _mk, (_sym, bdf) in bench_df.items():
@@ -461,14 +526,17 @@ class ScreenerService:
                     pass
                 break
 
+        ann_note = (f"／ 年率換算では {port_ret_ann:+.1f}% vs {port_bench_ann:+.1f}%"
+                    f"（超過 {port_excess_ann:+.1f}%・平均保有{avg_holding_days}日）"
+                    if port_excess_ann is not None else "")
         if port_excess is None:
             summary = "ベンチマーク比較に必要なデータ（取得日など）が不足しています。"
         elif port_excess > 0:
             summary = (f"✅ 市場平均をアウトパフォーム中：ポートフォリオ {port_ret:+.1f}% vs "
-                       f"{'/'.join(bench_names)} {port_bench:+.1f}%（超過 {port_excess:+.1f}%）")
+                       f"{'/'.join(bench_names)} {port_bench:+.1f}%（超過 {port_excess:+.1f}%）{ann_note}")
         else:
             summary = (f"⚠️ 市場平均にアンダーパフォーム：ポートフォリオ {port_ret:+.1f}% vs "
-                       f"{'/'.join(bench_names)} {port_bench:+.1f}%（超過 {port_excess:+.1f}%）")
+                       f"{'/'.join(bench_names)} {port_bench:+.1f}%（超過 {port_excess:+.1f}%）{ann_note}")
 
         # 寄与の大きい順（超過×コスト）に並べる
         ok_rows.sort(key=lambda r: (r.get("excess_pct") if r.get("excess_pct") is not None else -999), reverse=True)
@@ -483,6 +551,11 @@ class ScreenerService:
                 "benchmark_return_pct": port_bench,
                 "excess_pct": port_excess,
                 "outperforming": (port_excess is not None and port_excess > 0),
+                "avg_holding_days": avg_holding_days,
+                "return_annual_pct": port_ret_ann,
+                "benchmark_annual_pct": port_bench_ann,
+                "excess_annual_pct": port_excess_ann,
+                "outperforming_annual": (port_excess_ann is not None and port_excess_ann > 0),
                 "total_cost": round(total_cost, 0),
                 "total_value": round(total_value, 0),
             },
@@ -602,6 +675,30 @@ class ScreenerService:
             "## 懸念材料（注意点）\n"
             "## 投資憲法との整合性\n"
             "（合致・不合致を箇条書きで簡潔に）\n"
+        )
+
+    @staticmethod
+    def build_business_model_prompt(code: str, name: str = "") -> str:
+        """宝石7「ビジネスモデル」＋中計KPI/マテリアリティの定性分析プロンプト。
+        決算分析の地図（村上茂久）の考え方に沿い、決算書の裏のビジネスモデルと
+        企業が重視するKPIを、IR・決算説明資料・中期経営計画・統合報告書から整理させる。"""
+        return (
+            "あなたは予測者ではなく、企業の公開情報を整理する事実アナウンサーです。\n"
+            "**禁止事項**: 目標株価・値動き予測は書かない。\n"
+            "**必須事項**: 各主張に出典URLを併記。確認できない事実は「(出典確認できず)」と明記。\n"
+            "Web検索で、企業の公式IR・決算説明資料・中期経営計画・統合報告書・有価証券報告書を参照すること。\n\n"
+            f"# 対象銘柄\n- コード: {code}\n- 名前: {name}\n\n"
+            "# 出力フォーマット（決算分析の地図『7つの宝石』に沿う。以下の構造のみ出力）\n"
+            "## ビジネスモデル（宝石7：決算書の裏側）\n"
+            "（誰に何を売り、どこで稼いでいるか。収益構造の特徴を簡潔に。出典URL）\n\n"
+            "## 企業が重視するKPI（宝石3／中期経営計画）\n"
+            "（中計で掲げる財務目標＝売上/営業利益率/ROE/ROIC/EBITDA/FCF等と、事業KPIを箇条書き。目標年度も。出典URL）\n\n"
+            "## マテリアリティ／ESGの要点（統合報告書）\n"
+            "（重要課題として何を掲げているか。なければ「該当情報なし」）\n\n"
+            "## 定性面での買い材料\n"
+            "## 定性面での懸念\n"
+            "## 総括（テクニカル×ファンダの定量判断を、定性面が補強するか／覆すか）\n"
+            "（1〜3行で簡潔に）\n"
         )
 
     @staticmethod

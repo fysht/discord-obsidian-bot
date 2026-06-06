@@ -21,6 +21,56 @@ from config import JST
 _PROVIDER_SINGLETON: Optional["StockDataProvider"] = None
 _DATA_DIR = Path(__file__).parent.parent / "data"
 
+# S&P500 構成銘柄の取得元（安定した CSV。シンボルの "." は yfinance 互換のため "-" に変換）
+_US_SP500_URLS = [
+    "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv",
+    "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv",
+]
+
+
+async def _fetch_us_sp500_to_csv(path: Path) -> bool:
+    """S&P500 構成銘柄を取得して us_universe_sp500.csv を書き出す（実行時の自己修復用）。"""
+    import io
+
+    import aiohttp
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    timeout = aiohttp.ClientTimeout(total=30)
+    for url in _US_SP500_URLS:
+        try:
+            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        continue
+                    text = await resp.text()
+        except Exception as e:
+            logging.debug(f"S&P500 取得失敗 {url}: {e}")
+            continue
+        rows = []
+        for row in csv.DictReader(io.StringIO(text)):
+            sym = (row.get("Symbol") or row.get("symbol") or "").strip().upper()
+            if not sym:
+                continue
+            sym = sym.replace(".", "-")  # BRK.B → BRK-B
+            rows.append({
+                "code": sym,
+                "name": (row.get("Security") or row.get("Name") or "").strip(),
+                "sector": (row.get("GICS Sector") or row.get("Sector") or "").strip(),
+            })
+        if rows:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=["code", "name", "sector"])
+                    writer.writeheader()
+                    writer.writerows(rows)
+                logging.info(f"S&P500 ユニバースを自動取得しました（{len(rows)}銘柄）")
+                return True
+            except Exception as e:
+                logging.warning(f"S&P500 CSV 書き出し失敗: {e}")
+                return False
+    return False
+
 
 class StockDataProvider(ABC):
     """株価データ取得の抽象基底クラス。"""
@@ -130,11 +180,25 @@ class StockDataProvider(ABC):
         Returns:
             [{"code": "7203", "name": "トヨタ自動車", "sector": "輸送用機器"}, ...]
         """
-        filename = f"jp_universe_{name}.csv"
-        path = _DATA_DIR / filename
+        # 米国株ユニバースは "us_" プレフィックスで区別（例: us_sp500 → us_universe_sp500.csv）。
+        if name.startswith("us_"):
+            path = _DATA_DIR / f"us_universe_{name[3:]}.csv"
+        else:
+            path = _DATA_DIR / f"jp_universe_{name}.csv"
+            if not path.exists():
+                # フォールバック: us_universe_{name}.csv も探す
+                alt = _DATA_DIR / f"us_universe_{name}.csv"
+                if alt.exists():
+                    path = alt
         if not path.exists():
-            logging.warning(f"ユニバースCSVが見つかりません: {path}")
-            return []
+            # S&P500 は CSV が無ければ実行時に自動取得（スクリプト実行不要・自己修復）
+            if name == "us_sp500":
+                if not await _fetch_us_sp500_to_csv(path):
+                    logging.warning("S&P500 ユニバースの自動取得に失敗しました")
+                    return []
+            else:
+                logging.warning(f"ユニバースCSVが見つかりません: {path}")
+                return []
         result: list[dict] = []
         with path.open("r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -154,11 +218,17 @@ class StockDataProvider(ABC):
         if not _DATA_DIR.exists():
             return names
         for p in _DATA_DIR.glob("jp_universe_*.csv"):
-            stem = p.stem  # jp_universe_topix500
-            name = stem.replace("jp_universe_", "", 1)
+            name = p.stem.replace("jp_universe_", "", 1)
             if name:
                 names.append(name)
-        return sorted(names)
+        # 米国株ユニバースは "us_" プレフィックス付きで列挙（例: us_sp500）
+        for p in _DATA_DIR.glob("us_universe_*.csv"):
+            name = p.stem.replace("us_universe_", "", 1)
+            if name:
+                names.append(f"us_{name}")
+        # S&P500 は CSV が無くても選択肢として常に出す（選択時に自動取得）
+        names.append("us_sp500")
+        return sorted(set(names))
 
 
 class YFinanceProvider(StockDataProvider):

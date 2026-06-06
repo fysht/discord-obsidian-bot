@@ -157,18 +157,34 @@ class ScreenerAdviseRequest(BaseModel):
     candidates: Optional[List[dict]] = None  # 新規候補（スクリーニング結果など）
     holdings: Optional[List[dict]] = None    # 省略時は保有ポートフォリオを自動取得
     days: int = 300
+    with_financials: bool = False            # EDINET有報の安全性/キャッシュ指標を織り込む
 
 
 @router.post("/advise", dependencies=[Depends(verify_api_key)])
 async def screener_advise(req: ScreenerAdviseRequest):
     """保有銘柄と新規候補を、テクニカル(トレンド)×ファンダ(健全性)の二重視点で一括診断し、
-    継続保有/縮小/売却・新規買い/見送り・銘柄入替の助言を返す（決定論的）。"""
+    継続保有/縮小/売却・新規買い/見送り・銘柄入替の助言を返す（決定論的）。
+    with_financials=True で EDINET 有報の自己資本比率・FCF・CF型も加味する。"""
     cog = _get_screener_cog()
     return _json_sanitize(await cog.advise_portfolio(
         candidates=req.candidates,
         days=req.days,
         holdings=req.holdings,
+        with_financials=req.with_financials,
     ))
+
+
+class ScreenerBusinessModelRequest(BaseModel):
+    code: str
+    name: Optional[str] = ""
+
+
+@router.post("/business_model", dependencies=[Depends(verify_api_key)])
+async def screener_business_model(req: ScreenerBusinessModelRequest):
+    """宝石7「ビジネスモデル」＋中計KPI/マテリアリティの定性分析（単一銘柄・Gemini）。
+    IR・決算説明資料・中期経営計画・統合報告書を参照して整理する。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.analyze_business_model(req.code, req.name or ""))
 
 
 class ScreenerPerformanceRequest(BaseModel):

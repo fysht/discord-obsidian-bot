@@ -322,6 +322,7 @@ class InvestmentCog(commands.Cog):
                 self.auto_market_sentiment_task,
                 self.auto_alerts_and_earnings_task,
                 self.auto_news_sentiment_task,
+                self.auto_holdings_noon_review_task,
             ):
                 try:
                     task.start()
@@ -333,6 +334,7 @@ class InvestmentCog(commands.Cog):
             self.auto_market_sentiment_task,
             self.auto_alerts_and_earnings_task,
             self.auto_news_sentiment_task,
+            self.auto_holdings_noon_review_task,
         ):
             try:
                 task.cancel()
@@ -388,7 +390,10 @@ class InvestmentCog(commands.Cog):
 
     @tasks.loop(time=datetime.time(hour=6, minute=45, tzinfo=JST))
     async def auto_market_sentiment_task(self):
-        """毎朝 06:45 (JST) に米国市場クローズ後の地合いを取得して通知する。"""
+        """平日朝 06:45 (JST) に米国市場クローズ後の地合いを取得して通知する。"""
+        # 土日は実行しない
+        if datetime.datetime.now(JST).weekday() >= 5:
+            return
         from services.schedule_resolver import is_enabled
         if not await is_enabled("auto_market_sentiment"):
             return
@@ -550,6 +555,77 @@ class InvestmentCog(commands.Cog):
     @auto_news_sentiment_task.before_loop
     async def _before_auto_news_sentiment(self):
         await self.bot.wait_until_ready()
+
+    @tasks.loop(time=datetime.time(hour=12, minute=0, tzinfo=JST))
+    async def auto_holdings_noon_review_task(self):
+        """平日 12:00 (JST) に保有銘柄の継続/縮小/売却をテクニカル×ファンダで診断し通知。
+        12:30 の売買判断の参考にする。決定論的・Gemini非依存・無料。"""
+        # 土日は実行しない
+        if datetime.datetime.now(JST).weekday() >= 5:
+            return
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("holdings_noon_review"):
+            return
+        try:
+            result = await self.run_holdings_review()
+        except Exception:
+            logging.exception("auto_holdings_noon_review_task failed")
+            return
+        if not result.get("ok") or not result.get("report"):
+            return
+        await self._notify_long("holdings_review", "🕛 保有銘柄の昼チェック", result["report"])
+
+    @auto_holdings_noon_review_task.before_loop
+    async def _before_auto_holdings_noon_review(self):
+        await self.bot.wait_until_ready()
+
+    async def run_holdings_review(self) -> dict:
+        """保有銘柄をテクニカル×ファンダで診断し、売買判断用の短いレポートを作る。
+        ScreenerCog の advise_portfolio（決定論的・高速・無料）を使う。"""
+        screener = self.bot.get_cog("ScreenerCog")
+        if not screener:
+            return {"ok": False, "error": "ScreenerCog 未ロード"}
+        advice = await screener.advise_portfolio(candidates=None, with_financials=False)
+        if not advice.get("ok"):
+            return advice
+        holds = [h for h in (advice.get("holdings") or []) if h.get("ok")]
+        if not holds:
+            return {"ok": True, "report": ""}  # 保有なし→通知なし
+
+        labels = {"SELL": "🔴 売却・撤退", "TRIM": "🟠 一部利確・縮小",
+                  "HOLD_WATCH": "🟡 保有（警戒）", "HOLD": "🟢 継続保有"}
+        order = {"SELL": 0, "TRIM": 1, "HOLD_WATCH": 2, "HOLD": 3}
+        holds.sort(key=lambda r: order.get(r["verdict"]["action"], 9))
+
+        def _line(r):
+            v = r["verdict"]
+            t = r.get("trend") or {}
+            pnl = r.get("pnl") or {}
+            pnl_s = f" / 含み{pnl['pnl_pct']:+.1f}%" if pnl.get("pnl_pct") is not None else ""
+            stop = t.get("trailing_stop")
+            stop_s = f" / トレイル{stop:g}円" if stop is not None else ""
+            return (f"- {r['code']} {r.get('name', '')}: "
+                    f"{labels.get(v['action'], v['action_label'])}（{r.get('score')}点）"
+                    f"{stop_s}{pnl_s}\n  {v.get('note', '')}")
+
+        action_items = [r for r in holds if r["verdict"]["action"] in ("SELL", "TRIM")]
+        keep_items = [r for r in holds if r["verdict"]["action"] in ("HOLD", "HOLD_WATCH")]
+
+        today = datetime.datetime.now(JST).strftime("%-m/%-d") if os.name != "nt" else datetime.datetime.now(JST).strftime("%m/%d")
+        parts = [f"🕛 保有銘柄の昼チェック（{today}）", advice.get("summary", ""), ""]
+        if action_items:
+            parts.append("【要対応：売却/縮小の検討】")
+            parts.extend(_line(r) for r in action_items)
+            parts.append("")
+        if keep_items:
+            parts.append("【継続保有】")
+            parts.extend(_line(r) for r in keep_items)
+            parts.append("")
+        for rot in (advice.get("rotations") or [])[:3]:
+            parts.append(f"🔁 {rot.get('reason', '')}")
+        parts.append("")
+        parts.append("※ テクニカル(トレンド)×ファンダの決定論的診断です。12:30 の売買判断の参考に。")
+        return {"ok": True, "report": "\n".join(p for p in parts if p is not None)}
 
     # ==========================================================
     # Driveフォルダ・ファイル管理ヘルパー
@@ -1675,6 +1751,17 @@ class InvestmentCog(commands.Cog):
         for key in ("name", "sector", "currency", "notes"):
             if key in fields and fields[key] is not None:
                 existing[key] = fields[key]
+
+        # 購入日(opened_at)の補正。YYYY-MM-DD を ISO 日時に正規化して保存。
+        if fields.get("opened_at"):
+            raw = str(fields["opened_at"]).strip()
+            try:
+                d = datetime.date.fromisoformat(raw[:10])
+                existing["opened_at"] = datetime.datetime(
+                    d.year, d.month, d.day, tzinfo=JST
+                ).isoformat()
+            except ValueError:
+                return {"ok": False, "error": "購入日は YYYY-MM-DD 形式で指定してください"}
 
         existing["updated_at"] = now_iso
         await self._write_json_file(PORTFOLIO_FOLDER, HOLDINGS_FILE, holdings)

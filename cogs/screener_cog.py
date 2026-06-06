@@ -89,9 +89,11 @@ class ScreenerCog(commands.Cog):
         candidates: Optional[list[dict]] = None,
         days: int = 300,
         holdings: Optional[list[dict]] = None,
+        with_financials: bool = False,
     ) -> dict:
         """保有銘柄（InvestmentCog のポートフォリオ）＋候補をテクニカル×ファンダで一括診断。
-        holdings 未指定なら InvestmentCog から取得する。"""
+        holdings 未指定なら InvestmentCog から取得する。
+        with_financials=True で EDINET 有報の安全性/キャッシュ指標も織り込む。"""
         if holdings is None:
             inv = self.bot.get_cog("InvestmentCog")
             if inv:
@@ -102,7 +104,8 @@ class ScreenerCog(commands.Cog):
                     holdings = []
             else:
                 holdings = []
-        return await self.service.advise_portfolio(holdings, candidates=candidates, days=days)
+        return await self.service.advise_portfolio(
+            holdings, candidates=candidates, days=days, with_financials=with_financials)
 
     async def measure_performance(
         self,
@@ -124,6 +127,24 @@ class ScreenerCog(commands.Cog):
         if not holdings:
             return {"ok": False, "error": "保有銘柄が登録されていません。"}
         return await self.service.measure_performance(holdings, days=days)
+
+    async def analyze_business_model(self, code: str, name: str = "") -> dict:
+        """宝石7「ビジネスモデル」＋中計KPI/マテリアリティの定性分析（単一銘柄・Gemini）。
+        InvestmentCog の Gemini クライアントを再利用する。"""
+        code = str(code or "").strip()
+        if not code:
+            return {"ok": False, "error": "コードを指定してください"}
+        inv = self.bot.get_cog("InvestmentCog")
+        if not inv or not getattr(inv, "gemini_client", None):
+            return {"ok": False, "error": "Gemini が未設定のため定性分析を実行できません。"}
+        prompt = ScreenerService.build_business_model_prompt(code, name)
+        try:
+            text = await inv._gemini_with_search(prompt, feature_key="investment_screener")
+        except Exception as e:
+            return {"ok": False, "error": f"定性分析に失敗しました: {e}"}
+        if not text:
+            return {"ok": False, "error": "定性分析を取得できませんでした。"}
+        return {"ok": True, "code": code, "name": name, "report": text}
 
     async def run_multi_screening(
         self,

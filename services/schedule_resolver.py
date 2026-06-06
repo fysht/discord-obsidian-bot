@@ -19,8 +19,8 @@ from config import JST
 SCHEDULE_CATALOG: list[dict] = [
     # ===== マネージャーがユーザーに連絡するタスク（時刻重複なし）=====
     {"key": "morning_mit",            "label": "朝のMIT",                 "time": "06:30", "dow": "daily",  "category": "manager", "description": "今日のMIT候補3件を朝に提案します。あなたの返信で確定。"},
-    {"key": "auto_market_sentiment",  "label": "市場の地合い",            "time": "06:45", "dow": "daily",  "category": "manager", "description": "保有銘柄基準の朝の地合いレポートを通知ログへ。"},
-    {"key": "morning_routine",        "label": "朝のルーチン",            "time": "07:00", "dow": "daily",  "category": "manager", "description": "今日の予定・タスク・天気・ニュース・過去の今日を一括お届け。"},
+    {"key": "auto_market_sentiment",  "label": "市場の地合い",            "time": "06:45", "dow": "weekday", "category": "manager", "description": "平日朝の地合いレポートを通知ログへ（土日は配信なし）。"},
+    {"key": "morning_routine",        "label": "朝のルーチン",            "time": "07:00", "dow": "daily",  "category": "manager", "description": "今日の予定・タスク・天気・過去の今日を一括お届け。"},
     {"key": "breakfast_meal",         "label": "朝食ログ",                "time": "08:30", "dow": "daily",  "category": "manager", "description": "朝ごはんを記録する質問を投下（回答は朝食・8:30で記録）。"},
     {"key": "lunch_meal",             "label": "昼食ログ",                "time": "12:45", "dow": "daily",  "category": "manager", "description": "昼ごはんを記録する質問を投下（回答は昼食・12:45で記録）。"},
     {"key": "afternoon_check",        "label": "昼の振り返り",            "time": "14:30", "dow": "daily",  "category": "manager", "description": "午後の調子を1タップで記録。回答は Obsidian の独立セクションに保存。"},
@@ -30,6 +30,7 @@ SCHEDULE_CATALOG: list[dict] = [
     {"key": "evening_mood",           "label": "夜の気分チェック",        "time": "21:00", "dow": "daily",  "category": "manager", "description": "今日の気分を1タップで記録。回答は Obsidian の独立セクションに保存。"},
     {"key": "learning_check",         "label": "今日の学び・気づき",      "time": "21:15", "dow": "daily",  "category": "manager", "description": "今日の学び・気づきを記録。回答は Obsidian の独立セクションに保存。"},
     {"key": "auto_alerts_earnings",   "label": "価格アラート＋決算予定",  "time": "07:15", "dow": "daily",  "category": "manager", "description": "保有銘柄の当日決算予定や価格アラートを通知。"},
+    {"key": "holdings_noon_review",   "label": "保有銘柄の昼チェック",    "time": "12:00", "dow": "weekday", "category": "manager", "description": "平日12時に保有銘柄の継続/縮小/売却をテクニカル×ファンダで診断し通知ログへ。12:30の売買判断の参考に（決定論的・無料）。"},
     {"key": "fitbit_morning",         "label": "Fitbit 朝レポート",       "time": "08:00", "dow": "daily",  "category": "manager", "description": "前夜の睡眠データを取得し、朝のメッセージで報告。"},
     {"key": "auto_news_sentiment",    "label": "保有銘柄ニュース朝刊",    "time": "08:30", "dow": "daily",  "category": "manager", "description": "保有銘柄のニュース差分を AI が短いダイジェスト（取り上げるべき銘柄のみ／好材料・悪材料・影響）にまとめて通知ログへ。"},
     {"key": "cost_alert",             "label": "コストアラート",          "time": "09:00", "dow": "daily",  "category": "manager", "description": "Gemini API 利用コストの監視通知。"},

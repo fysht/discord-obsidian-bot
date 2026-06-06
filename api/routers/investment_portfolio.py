@@ -18,6 +18,7 @@ class PortfolioAddRequest(BaseModel):
     sector: Optional[str] = None
     currency: Optional[str] = None
     notes: Optional[str] = None
+    opened_at: Optional[str] = None  # 実際の購入日(YYYY-MM-DD)。省略時は登録日。
 
 
 class PortfolioRemoveRequest(BaseModel):
@@ -33,6 +34,7 @@ class PortfolioEditRequest(BaseModel):
     sector: Optional[str] = None
     currency: Optional[str] = None
     notes: Optional[str] = None
+    opened_at: Optional[str] = None  # 実際の購入日(YYYY-MM-DD)に補正できる。
 
 
 @router.get("", dependencies=[Depends(verify_api_key)])
@@ -65,3 +67,11 @@ async def investment_portfolio_edit(req: PortfolioEditRequest):
 async def investment_portfolio_transactions(limit: int = 100):
     cog = _get_investment_cog()
     return await cog.portfolio_transactions(limit=limit)
+
+
+@router.post("/review", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_review():
+    """保有銘柄をテクニカル×ファンダで診断し、継続/縮小/売却の昼チェック・レポートを返す。
+    平日12時の自動通知と同じ内容を、その場で実行する（手動トリガー）。"""
+    cog = _get_investment_cog()
+    return await cog.run_holdings_review()
