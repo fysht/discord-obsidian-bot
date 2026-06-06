@@ -210,6 +210,8 @@ class StyleStrategy(ABC):
     display_name: str = ""
     description: str = ""
     filters: list[FilterDef] = []
+    # True の戦略は評価に fundamentals（get_fundamentals）の取得を要する
+    needs_fundamentals: bool = False
 
     @abstractmethod
     def evaluate(
@@ -456,6 +458,7 @@ class ValueStrategy(StyleStrategy):
     style_name = "value"
     display_name = "バリュー（割安+配当）"
     description = "PER/PBR が低く、財務健全で配当も出ている銘柄"
+    needs_fundamentals = True
     filters = [
         FilterDef("per", "PER < 15", "利益面で割安", True),
         FilterDef("pbr", "PBR < 1.5", "純資産面で割安", True),
@@ -491,6 +494,7 @@ class GrowthStrategy(StyleStrategy):
     style_name = "growth"
     display_name = "グロース（成長性重視）"
     description = "売上・利益成長率と ROE が高い銘柄"
+    needs_fundamentals = True
     filters = [
         FilterDef("revenue_growth", "売上成長率 ≥ 15%", "トップライン成長", True),
         FilterDef("earnings_growth", "利益成長率 ≥ 15%", "ボトムライン成長", True),
@@ -532,11 +536,89 @@ class GrowthStrategy(StyleStrategy):
         return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
 
 
+def evaluate_fundamental_gate(fundamentals: Optional[dict]) -> dict:
+    """決算分析の地図（村上茂久）の「会計視点×ファイナンス視点の両方を持つ」を、
+    get_fundamentals の値だけで 1 銘柄ぶん判定する決定論的スコアカード。
+
+    FundamentalGateStrategy（厳格 AND ゲート）と analyze_position（ポジション診断の
+    ソフト判定）の双方がこの関数を唯一の真実として共有する。
+
+    返り値の checks 各要素: {key, name, value, threshold, view, passed, available}
+    """
+    f = fundamentals or {}
+    roe = f.get("roe")
+    opm = f.get("operating_margin")
+    rev = f.get("revenue_growth")
+    earn = f.get("earnings_growth")
+    per = f.get("per") or f.get("forward_per")
+    ACC, FIN = "会計視点", "ファイナンス視点"
+
+    def _pct(v):
+        return f"{v * 100:.2f}%" if v is not None else "N/A"
+
+    checks = [
+        {"key": "roe", "name": "ROE", "value": _pct(roe), "threshold": "≥8%", "view": ACC,
+         "passed": bool(roe is not None and roe >= 0.08), "available": roe is not None},
+        {"key": "op_margin", "name": "営業利益率", "value": _pct(opm), "threshold": "≥8%", "view": ACC,
+         "passed": bool(opm is not None and opm >= 0.08), "available": opm is not None},
+        {"key": "revenue_growth", "name": "売上成長率", "value": _pct(rev), "threshold": "≥5%", "view": FIN,
+         "passed": bool(rev is not None and rev >= 0.05), "available": rev is not None},
+        {"key": "earnings_quality", "name": "利益成長率", "value": _pct(earn), "threshold": "≥0%", "view": ACC,
+         "passed": bool(earn is not None and earn >= 0.0), "available": earn is not None},
+        {"key": "valuation", "name": "PER", "value": (f"{per:.2f}" if per else "N/A"),
+         "threshold": "0<PER≤30", "view": FIN,
+         "passed": bool(per and 0 < per <= 30), "available": per is not None},
+    ]
+    available = sum(1 for c in checks if c["available"])
+    passed = sum(1 for c in checks if c["passed"])
+    total = len(checks)
+    score = round(passed / total * 100, 1)
+    # ソフト判定: 取得できた指標の 6 割以上を通過（最低 3 指標は必要）
+    ok = bool(available >= 3 and (passed / available) >= 0.6)
+    return {"checks": checks, "passed": passed, "available": available,
+            "total": total, "score": score, "ok": ok}
+
+
+class FundamentalGateStrategy(StyleStrategy):
+    """決算分析の地図（村上茂久）の「会計視点×ファイナンス視点の両方を持つ」
+    を 1 銘柄判定に落とした、決定論的ファンダ・ゲート。
+
+    テクニカル（じわじわ高値ブレイク等）と combine_mode="all" で AND 結合し、
+    「テクニカルでもファンダでも買い」の二重ゲートを作るための土台。
+    """
+    style_name = "fundamental_gate"
+    display_name = "ファンダ・ゲート（決算分析の地図）"
+    description = "会計視点(収益性・資本効率)とファイナンス視点(成長性・割安性)の両面が揃った銘柄"
+    needs_fundamentals = True
+    filters = [
+        FilterDef("roe", "ROE ≥ 8%", "資本効率（伊藤レポート基準）", True),
+        FilterDef("op_margin", "営業利益率 ≥ 8%", "本業の収益性（会計視点）", True),
+        FilterDef("revenue_growth", "売上成長率 ≥ 5%", "トップライン成長（未来）", True),
+        FilterDef("earnings_quality", "利益成長率 ≥ 0%", "黒字かつ利益が伸びている", True),
+        FilterDef("valuation", "PER 妥当域 (0<PER≤30)", "割高すぎない（時価総額）", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if not fundamentals:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        gate = evaluate_fundamental_gate(fundamentals)
+        sigs, signal_keys = [], []
+        for c in gate["checks"]:
+            sigs.append(Signal(
+                c["name"], c["value"], c["threshold"], c["passed"],
+                f"yfinance fundamentals（{c['view']}）",
+            ))
+            signal_keys.append(c["key"])
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
+
+
 STRATEGY_REGISTRY: dict[str, StyleStrategy] = {
     s.style_name: s for s in [
         CreepingBreakoutStrategy(),
         ValueStrategy(),
         GrowthStrategy(),
+        FundamentalGateStrategy(),
     ]
 }
 
@@ -551,7 +633,7 @@ def list_strategies() -> list[dict]:
             "name": s.style_name,
             "display_name": s.display_name,
             "description": s.description,
-            "needs_fundamentals": s.style_name in ("value", "growth"),
+            "needs_fundamentals": s.needs_fundamentals,
             "filters": s.list_filters(),
         }
         for s in STRATEGY_REGISTRY.values()
@@ -782,3 +864,319 @@ def analyze_breakout_projection(
         "verdict": verdict,
         "notes": notes,
     }
+
+
+# =========================================================
+# ポジション診断（保有継続/売却・新規買い判定）— 決定論的
+# =========================================================
+_ACTION_LABELS = {
+    "HOLD": "継続保有",
+    "HOLD_WATCH": "保有（ファンダ警戒）",
+    "TRIM": "一部利確・縮小",
+    "SELL": "売却・撤退",
+    "BUY": "新規買い候補",
+    "WATCH": "ウォッチ（見送り）",
+}
+_STATE_LABELS = {
+    "uptrend": "上昇トレンド",
+    "neutral": "横ばい・調整",
+    "broken": "トレンド崩れ",
+}
+
+
+def analyze_position(
+    df,
+    fundamentals: Optional[dict] = None,
+    *,
+    avg_cost: Optional[float] = None,
+    held: bool = True,
+    sma_fast: int = 25,
+    sma_mid: int = 75,
+    sma_slow: int = 200,
+) -> dict:
+    """1 銘柄について「テクニカルのトレンド状態 × ファンダの健全性」を決定論的に評価し、
+    継続保有 / 縮小 / 売却（保有銘柄）または 新規買い / 見送り（候補）の判定を返す。
+
+    利確の思想:
+      高値ブレイクかつファンダ健全な銘柄は「基本的に上昇するものとして継続保有」し、
+      出口は固定の利確目標ではなく「トレンド崩れ（トレイリングストップ割れ）または
+      ファンダ悪化」で手仕舞う —— という順張り×ファンダのセオリーを実装する。
+      過去の値動きから出した利確目標(analyze_breakout_projection)は、ここでは
+      「ストップ位置・到達余地の参考値」であって機械的な売りトリガーではない。
+    """
+    import math
+
+    if df is None or len(df) < 60:
+        return {"ok": False, "error": "トレンド判定に十分な履歴がありません（約3ヶ月以上必要）"}
+
+    close = df["Close"].astype(float)
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    n = len(close)
+
+    def _fin(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if math.isfinite(f) else None
+
+    last_close = _fin(close.iloc[-1])
+    if last_close is None or last_close <= 0:
+        return {"ok": False, "error": "価格データが欠損しています"}
+
+    sma_f = _fin(TechnicalSignals.sma(close, sma_fast).iloc[-1]) if n >= sma_fast else None
+    sma_m = _fin(TechnicalSignals.sma(close, sma_mid).iloc[-1]) if n >= sma_mid else None
+    sma_s = _fin(TechnicalSignals.sma(close, sma_slow).iloc[-1]) if n >= sma_slow else None
+
+    atr_series = TechnicalSignals.atr(high, low, close, n=14)
+    last_atr = None
+    for k in range(1, min(6, n) + 1):
+        last_atr = _fin(atr_series.iloc[-k])
+        if last_atr:
+            break
+
+    # トレイリングストップ: シャンデリア・エグジット（直近22日高値 − 3ATR）
+    hh22 = _fin(high.tail(22).max())
+    trailing_stop = (hh22 - 3 * last_atr) if (hh22 and last_atr) else None
+    below_stop = bool(trailing_stop and last_close < trailing_stop)
+
+    hh60 = _fin(high.tail(60).max())
+    drawdown = ((last_close - hh60) / hh60) if (hh60 and hh60 > 0) else 0.0
+    high252 = _fin(high.tail(252).max()) if n >= 252 else _fin(high.max())
+    gap52 = ((high252 - last_close) / high252) if (high252 and high252 > 0) else 0.0
+
+    above_fast = bool(sma_f and last_close > sma_f)
+    above_mid = bool(sma_m and last_close > sma_m)
+    perfect_order = bool(
+        sma_f and sma_m and last_close > sma_f > sma_m
+        and (sma_s is None or sma_m > sma_s)
+    )
+
+    conds = [
+        above_fast,
+        above_mid,
+        (sma_s is None or (sma_m and sma_s and sma_m > sma_s)),
+        (not below_stop),
+        (gap52 is not None and gap52 <= 0.05),
+        perfect_order,
+    ]
+    trend_score = round(sum(1 for c in conds if c) / len(conds) * 100, 1)
+
+    if below_stop or (sma_m and last_close < sma_m) or drawdown <= -0.18:
+        state = "broken"
+    elif above_fast and above_mid:
+        state = "uptrend"
+    else:
+        state = "neutral"
+
+    has_fund = bool(fundamentals)
+    gate = evaluate_fundamental_gate(fundamentals) if has_fund else None
+    fund_ok = gate["ok"] if (gate and gate["available"] >= 3) else None  # None=判定不能
+    fund_score = gate["score"] if gate else None
+
+    # 含み損益
+    pnl = None
+    if avg_cost:
+        try:
+            ac = float(avg_cost)
+            if ac > 0:
+                pnl = {"avg_cost": round(ac, 2),
+                       "pnl_pct": round((last_close - ac) / ac * 100, 1)}
+        except (TypeError, ValueError):
+            pnl = None
+
+    # --- 判定 ---
+    reasons = []
+    reasons.append(f"トレンド: {_STATE_LABELS[state]}（"
+                   f"{'25MA上' if above_fast else '25MA下'}/"
+                   f"{'75MA上' if above_mid else '75MA下'}"
+                   f"{'・パーフェクトオーダー' if perfect_order else ''}）")
+    if has_fund:
+        reasons.append(f"ファンダ: {gate['passed']}/{gate['total']}通過（{gate['score']}点）"
+                       f"・{'健全' if fund_ok else ('要警戒' if fund_ok is False else '判定不能')}")
+    else:
+        reasons.append("ファンダ: データ未取得")
+    if pnl:
+        reasons.append(f"含み{'益' if pnl['pnl_pct'] >= 0 else '損'} {pnl['pnl_pct']:+.1f}%")
+
+    note = ""
+    if held:
+        if state == "uptrend":
+            if fund_ok is False:
+                action = "HOLD_WATCH"
+                note = "トレンドは継続中だがファンダに陰り。トレンドが崩れたら速やかに手仕舞い。"
+            else:
+                action = "HOLD"
+                note = "高値追随かつファンダ健全。利を伸ばす局面。トレイリングストップを切り上げて防御。"
+        elif state == "neutral":
+            if fund_ok is False:
+                action = "TRIM"
+                note = "横ばい＋ファンダ悪化。資金効率の観点から縮小し、強い銘柄へ。"
+            else:
+                action = "HOLD"
+                note = "横ばい・調整。トレイリングストップを意識しつつ様子見。"
+        else:  # broken
+            if fund_ok is False:
+                action = "SELL"
+                note = "トレンド崩れ＋ファンダ悪化の両方ダメ。撤退を優先。"
+            elif below_stop:
+                action = "SELL"
+                note = "トレイリングストップ割れ。ファンダは健全なので、押し目を作れば再エントリー候補。"
+            else:
+                action = "TRIM"
+                note = "トレンドが崩れ気味。一部利確で防御。ファンダ健全のため全売りは急がない。"
+    else:  # 新規候補
+        if state == "uptrend" and fund_ok is True:
+            action = "BUY"
+            note = "テクニカル（上昇トレンド）とファンダ（健全）の両方で買い。R/R・ストップは利確目安(projection)を参照。"
+        elif state == "uptrend" and fund_ok is None:
+            action = "WATCH"
+            note = "トレンドは良好だがファンダ未取得/判定不能。ファンダ確認後に判断。"
+        elif state == "uptrend":
+            action = "WATCH"
+            note = "トレンドは良好だがファンダが基準未達。テクニカル単独では見送り。"
+        else:
+            action = "WATCH"
+            note = "トレンド未確立。高値ブレイクの確認待ち。"
+
+    if has_fund and fund_score is not None:
+        score = round(0.5 * trend_score + 0.5 * fund_score, 1)
+    else:
+        score = trend_score
+
+    # 相対比較（宝石5）用の生指標。PER は 0 以下を比較対象外にする。
+    fm = fundamentals or {}
+    per_raw = _fin(fm.get("per") or fm.get("forward_per"))
+    metrics = {
+        "roe": _fin(fm.get("roe")),
+        "op_margin": _fin(fm.get("operating_margin")),
+        "revenue_growth": _fin(fm.get("revenue_growth")),
+        "earnings_growth": _fin(fm.get("earnings_growth")),
+        "per": per_raw if (per_raw and per_raw > 0) else None,
+        "trend_score": trend_score,
+    }
+
+    return {
+        "ok": True,
+        "as_of": StyleStrategy._data_as_of(df),
+        "last_close": round(last_close, 1),
+        "atr": round(last_atr, 2) if last_atr else None,
+        "score": score,
+        "trend": {
+            "state": state,
+            "state_label": _STATE_LABELS[state],
+            "score": trend_score,
+            "sma25": round(sma_f, 1) if sma_f else None,
+            "sma75": round(sma_m, 1) if sma_m else None,
+            "sma200": round(sma_s, 1) if sma_s else None,
+            "perfect_order": perfect_order,
+            "above_fast": above_fast,
+            "above_mid": above_mid,
+            "drawdown_from_peak_pct": round(drawdown * 100, 1),
+            "gap_to_52w_pct": round(gap52 * 100, 1),
+            "trailing_stop": round(trailing_stop, 1) if trailing_stop else None,
+            "below_trailing_stop": below_stop,
+        },
+        "fundamental": gate,
+        "fund_ok": fund_ok,
+        "metrics": metrics,
+        "pnl": pnl,
+        "verdict": {
+            "action": action,
+            "action_label": _ACTION_LABELS[action],
+            "conviction": score,
+            "reasons": reasons,
+            "note": note,
+        },
+    }
+
+
+# =========================================================
+# 相対評価（宝石5：時系列・他社比較）— 決定論的
+# =========================================================
+_RELATIVE_METRICS = [
+    ("roe", False, "ROE"),
+    ("op_margin", False, "営業利益率"),
+    ("revenue_growth", False, "売上成長"),
+    ("earnings_growth", False, "利益成長"),
+    ("per", True, "割安(PER)"),       # PER は小さいほど良い
+    ("trend_score", False, "トレンド強さ"),
+]
+
+
+def compute_relative_metrics(results: list[dict]) -> list[dict]:
+    """analyze_position の結果群を「他社比較」で相対評価する（宝石5）。
+
+    各銘柄の指標を、同セクター内（そのセクターに3社以上いる場合）または全体の
+    ピア集合に対する百分位（パーセンタイル）でランク付けし、強み/弱みと
+    相対スコアを付与する。さらに絶対スコアと相対スコアを 7:3 で混ぜた
+    blended_score を加える（並べ替え・入替提案に使う）。in place で enrich。
+
+    「比較してはじめて意味が出る」（決算分析の地図 宝石5）を、バッチ内の
+    銘柄同士のクロスセクション比較として近似する。
+    """
+    from collections import defaultdict
+
+    ok = [r for r in results if r.get("ok") and r.get("metrics")]
+    if len(ok) < 2:
+        for r in results:
+            r.setdefault("blended_score", r.get("score"))
+        return results
+
+    by_sector: dict[str, list[dict]] = defaultdict(list)
+    for r in ok:
+        by_sector[(r.get("sector") or "").strip()].append(r)
+
+    def _peer_set(r):
+        sec = (r.get("sector") or "").strip()
+        grp = by_sector.get(sec, [])
+        if sec and len(grp) >= 3:
+            return grp, "セクター内", sec
+        return ok, "全体", ""
+
+    def _values(group, key):
+        return [g["metrics"].get(key) for g in group if g["metrics"].get(key) is not None]
+
+    def _pctl(vals, x, lower_better):
+        if not vals:
+            return None
+        if lower_better:
+            cnt = sum(1 for v in vals if v >= x)
+        else:
+            cnt = sum(1 for v in vals if v <= x)
+        return round(cnt / len(vals) * 100)
+
+    for r in ok:
+        group, glabel, sec = _peer_set(r)
+        m = r["metrics"]
+        pers: dict[str, Optional[int]] = {}
+        for key, lb, _label in _RELATIVE_METRICS:
+            x = m.get(key)
+            pers[key] = _pctl(_values(group, key), x, lb) if x is not None else None
+        avail = [v for v in pers.values() if v is not None]
+        rel_score = round(sum(avail) / len(avail), 1) if avail else None
+
+        # 強み（上位25%）と弱み（下位25%）を抽出。上位ほど前に。
+        ranked = sorted(
+            [(key, label, pers[key]) for key, _lb, label in _RELATIVE_METRICS if pers[key] is not None],
+            key=lambda t: t[2], reverse=True,
+        )
+        highlights = [f"{glabel} {label} 上位{max(1, 100 - p)}%" for _k, label, p in ranked if p >= 75][:3]
+        laggards = [f"{label} 下位{max(1, p)}%" for _k, label, p in sorted(ranked, key=lambda t: t[2]) if p <= 25][:2]
+
+        r["relative"] = {
+            "group": glabel,
+            "group_name": sec,
+            "peer_n": len(group),
+            "percentiles": pers,
+            "score": rel_score,
+            "highlights": highlights,
+            "laggards": laggards,
+        }
+        base = r.get("score") or 0
+        r["blended_score"] = round(0.7 * base + 0.3 * rel_score, 1) if rel_score is not None else base
+
+    for r in results:
+        r.setdefault("blended_score", r.get("score"))
+    return results

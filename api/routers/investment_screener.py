@@ -153,6 +153,37 @@ async def screener_projection(code: str, days: int = 750):
     return _json_sanitize(await cog.analyze_projection(code, days))
 
 
+class ScreenerAdviseRequest(BaseModel):
+    candidates: Optional[List[dict]] = None  # 新規候補（スクリーニング結果など）
+    holdings: Optional[List[dict]] = None    # 省略時は保有ポートフォリオを自動取得
+    days: int = 300
+
+
+@router.post("/advise", dependencies=[Depends(verify_api_key)])
+async def screener_advise(req: ScreenerAdviseRequest):
+    """保有銘柄と新規候補を、テクニカル(トレンド)×ファンダ(健全性)の二重視点で一括診断し、
+    継続保有/縮小/売却・新規買い/見送り・銘柄入替の助言を返す（決定論的）。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.advise_portfolio(
+        candidates=req.candidates,
+        days=req.days,
+        holdings=req.holdings,
+    ))
+
+
+class ScreenerPerformanceRequest(BaseModel):
+    holdings: Optional[List[dict]] = None  # 省略時は保有ポートフォリオを自動取得
+    days: int = 500
+
+
+@router.post("/performance", dependencies=[Depends(verify_api_key)])
+async def screener_performance(req: ScreenerPerformanceRequest):
+    """保有ポートフォリオが市場平均（日経平均等）をアウトパフォームできているかを測定する。
+    各ポジションの取得来リターンを同期間のベンチマークと比較し、超過リターンを返す。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.measure_performance(days=req.days, holdings=req.holdings))
+
+
 @router.post("/cross_filter", dependencies=[Depends(verify_api_key)])
 async def screener_cross_filter(req: ScreenerCrossFilterRequest):
     cog = _get_screener_cog()

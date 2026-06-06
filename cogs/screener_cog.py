@@ -84,6 +84,47 @@ class ScreenerCog(commands.Cog):
     async def analyze_projection(self, code: str, days: int = 750) -> dict:
         return await self.service.analyze_projection(code, days)
 
+    async def advise_portfolio(
+        self,
+        candidates: Optional[list[dict]] = None,
+        days: int = 300,
+        holdings: Optional[list[dict]] = None,
+    ) -> dict:
+        """保有銘柄（InvestmentCog のポートフォリオ）＋候補をテクニカル×ファンダで一括診断。
+        holdings 未指定なら InvestmentCog から取得する。"""
+        if holdings is None:
+            inv = self.bot.get_cog("InvestmentCog")
+            if inv:
+                try:
+                    pl = await inv.portfolio_list()
+                    holdings = (pl or {}).get("holdings") or []
+                except Exception:
+                    holdings = []
+            else:
+                holdings = []
+        return await self.service.advise_portfolio(holdings, candidates=candidates, days=days)
+
+    async def measure_performance(
+        self,
+        days: int = 500,
+        holdings: Optional[list[dict]] = None,
+    ) -> dict:
+        """保有ポートフォリオが市場平均をアウトパフォームできているかを測定。
+        holdings 未指定なら InvestmentCog から取得する。"""
+        if holdings is None:
+            inv = self.bot.get_cog("InvestmentCog")
+            if inv:
+                try:
+                    pl = await inv.portfolio_list()
+                    holdings = (pl or {}).get("holdings") or []
+                except Exception:
+                    holdings = []
+            else:
+                holdings = []
+        if not holdings:
+            return {"ok": False, "error": "保有銘柄が登録されていません。"}
+        return await self.service.measure_performance(holdings, days=days)
+
     async def run_multi_screening(
         self,
         styles: list[str],

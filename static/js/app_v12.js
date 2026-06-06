@@ -11138,7 +11138,12 @@ function _renderScreenerCandidates(data) {
             </label>
         </div>`;
     }).join('');
-    el.innerHTML = andBanner + meta + nearMissBanner + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
+    const adviseBar = `<div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(126,224,160,0.12);color:#7ee0a0;border:1px solid rgba(126,224,160,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true);" title="保有銘柄＋この候補を、テクニカル(トレンド)×ファンダ(健全性)の二重視点で一括診断します">🧭 保有＆候補を一括診断</button>
+        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioPerformance();" title="保有ポートフォリオが市場平均（日経平均等）をアウトパフォームできているかを測定します">📊 市場平均と比較</button>
+        <span style="font-size:0.7rem;color:var(--text-muted);">継続/売却・新規買い・入替の助言／アウトパフォーム測定</span>
+    </div>`;
+    el.innerHTML = andBanner + meta + nearMissBanner + adviseBar + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 
     // 副条件（スタイル横断フィルタ）UI: スタイル選択肢の補充とボタン有効化
     _populateSecondaryStyleSelect();
@@ -11227,6 +11232,207 @@ function _renderProjection(r) {
         <ul style="margin:10px 0 6px;padding-left:18px;font-size:0.78rem;color:var(--text-secondary);">${notes}</ul>
         <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;">
             ※ 過去の値動きの統計に基づく機械的な目安です。将来を保証するものではありません。出来高・決算・地合いも併せて判断してください。
+        </div>
+    `;
+}
+
+// ===== ポートフォリオ・アドバイザー（保有＋候補をテクニカル×ファンダで一括診断） =====
+// useCandidates=true なら直近スクリーニング候補も診断対象に含める。
+window.openPortfolioAdvice = async (useCandidates = true) => {
+    let modal = document.getElementById('portfolio-advice-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="portfolio-advice-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:600px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 style="margin:0;font-size:1rem;">🧭 保有＆候補 一括診断</h3>
+                        <button class="mini-link" onclick="document.getElementById('portfolio-advice-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="portfolio-advice-body" style="margin-top:10px;font-size:0.84rem;line-height:1.5;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('portfolio-advice-modal');
+    }
+    const bodyEl = $('#portfolio-advice-body');
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">保有銘柄と候補を診断中…（数十秒かかる場合があります）</div>';
+    modal.classList.remove('hidden');
+    const candidates = (useCandidates && _screenerLastResult && _screenerLastResult.candidates) ? _screenerLastResult.candidates : [];
+    try {
+        const r = await apiFetch('/api/investment/screener/advise', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ candidates }),
+        });
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
+            return;
+        }
+        bodyEl.innerHTML = _renderPortfolioAdvice(r);
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
+    }
+};
+
+function _adviceActionStyle(action) {
+    switch (action) {
+        case 'HOLD': return { color: '#7ee0a0', bg: 'rgba(126,224,160,0.12)' };
+        case 'HOLD_WATCH': return { color: '#ffd454', bg: 'rgba(255,212,84,0.12)' };
+        case 'TRIM': return { color: '#ffb454', bg: 'rgba(255,180,84,0.12)' };
+        case 'SELL': return { color: '#ff8a8a', bg: 'rgba(255,138,138,0.12)' };
+        case 'BUY': return { color: '#4ea1ff', bg: 'rgba(78,161,255,0.14)' };
+        default: return { color: 'var(--text-muted)', bg: 'rgba(255,255,255,0.05)' };
+    }
+}
+
+function _renderAdviceCard(r) {
+    const num = (v, suf = '') => (v === null || v === undefined) ? '-' : `${v}${suf}`;
+    if (!r.ok) {
+        return `<div style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
+            <strong>${escapeHtml(r.code || '')} ${escapeHtml(r.name || '')}</strong>
+            <div style="font-size:0.74rem;color:#ff8a8a;">${escapeHtml(r.error || '診断不可')}</div></div>`;
+    }
+    const v = r.verdict || {};
+    const t = r.trend || {};
+    const st = _adviceActionStyle(v.action);
+    const pnl = r.pnl ? ` / 含み<span style="color:${r.pnl.pnl_pct >= 0 ? '#7ee0a0' : '#ff8a8a'};font-weight:700;">${r.pnl.pnl_pct >= 0 ? '+' : ''}${r.pnl.pnl_pct}%</span>` : '';
+    const reasons = (v.reasons || []).map(x => `<li style="margin-bottom:2px;">${escapeHtml(x)}</li>`).join('');
+    const rel = r.relative || null;
+    const blended = (r.blended_score != null && r.blended_score !== r.score)
+        ? ` <span style="font-size:0.72rem;color:var(--text-muted);font-weight:400;">(総合${num(r.blended_score)})</span>` : '';
+    let relHtml = '';
+    if (rel) {
+        const hi = (rel.highlights || []).map(x => `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(126,224,160,0.12);color:#7ee0a0;font-size:0.7rem;">▲ ${escapeHtml(x)}</span>`).join('');
+        const lo = (rel.laggards || []).map(x => `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(255,138,138,0.12);color:#ff8a8a;font-size:0.7rem;">▼ ${escapeHtml(x)}</span>`).join('');
+        if (hi || lo) {
+            relHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">📊 ${escapeHtml(rel.group)}比較(${rel.peer_n}社) 相対${num(rel.score)}点<br>${hi}${lo}</div>`;
+        }
+    }
+    return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+            <strong style="word-break:break-word;">${escapeHtml(r.code)} ${escapeHtml(r.name || '')}</strong>
+            <span style="font-weight:700;color:${st.color};white-space:nowrap;">${escapeHtml(v.action_label || v.action)} ・ ${num(r.score)}点${blended}</span>
+        </div>
+        <div style="font-size:0.74rem;color:var(--text-muted);margin:2px 0;">
+            終値 ${num(r.last_close)}円 / トレイル目安 ${num(t.trailing_stop)}円${pnl}
+        </div>
+        <ul style="margin:4px 0 4px;padding-left:16px;font-size:0.76rem;color:var(--text-secondary);">${reasons}</ul>
+        ${relHtml}
+        ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
+    </div>`;
+}
+
+function _renderPortfolioAdvice(r) {
+    const holds = r.holdings || [];
+    const cands = r.candidates || [];
+    const rots = r.rotations || [];
+    const rotHtml = rots.length ? `
+        <div style="font-weight:700;margin:12px 0 4px;">🔁 入替の検討</div>
+        ${rots.map(x => `<div style="font-size:0.78rem;padding:6px 8px;border-left:3px solid #4ea1ff;background:rgba(78,161,255,0.08);border-radius:4px;margin-bottom:4px;">${escapeHtml(x.reason)}</div>`).join('')}
+    ` : '';
+    const holdsHtml = holds.length
+        ? holds.map(_renderAdviceCard).join('')
+        : '<div style="font-size:0.78rem;color:var(--text-muted);">保有銘柄は登録されていません。</div>';
+    const candsHtml = cands.length
+        ? cands.map(_renderAdviceCard).join('')
+        : '<div style="font-size:0.78rem;color:var(--text-muted);">診断対象の新規候補はありません（スクリーニング結果から実行すると候補も診断します）。</div>';
+    return `
+        <div style="background:rgba(126,224,160,0.10);border:1px solid rgba(126,224,160,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:#7ee0a0;font-weight:600;">
+            ${escapeHtml(r.summary || '')}
+        </div>
+        ${rotHtml}
+        <div style="font-weight:700;margin:12px 0 4px;">📦 保有銘柄の診断</div>
+        ${holdsHtml}
+        <div style="font-weight:700;margin:12px 0 4px;">🆕 新規候補の診断（両方で買い＝🔵BUY）</div>
+        ${candsHtml}
+        <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:8px;">
+            ※ トレンド(テクニカル)×ファンダの決定論的診断です。出口は固定の利確目標ではなく「トレンド崩れ（トレイル割れ）またはファンダ悪化」を基本に。将来を保証するものではありません。
+        </div>
+    `;
+}
+
+// ===== 市場平均との比較（アウトパフォーム測定） =====
+window.openPortfolioPerformance = async () => {
+    let modal = document.getElementById('portfolio-perf-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="portfolio-perf-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:600px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 style="margin:0;font-size:1rem;">📊 市場平均との比較</h3>
+                        <button class="mini-link" onclick="document.getElementById('portfolio-perf-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="portfolio-perf-body" style="margin-top:10px;font-size:0.84rem;line-height:1.5;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('portfolio-perf-modal');
+    }
+    const bodyEl = $('#portfolio-perf-body');
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">保有銘柄と市場平均を取得して比較中…</div>';
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch('/api/investment/screener/performance', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '測定できませんでした')}</div>`;
+            return;
+        }
+        bodyEl.innerHTML = _renderPortfolioPerformance(r);
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで測定できませんでした</div>';
+    }
+};
+
+function _renderPortfolioPerformance(r) {
+    const num = (v, suf = '') => (v === null || v === undefined) ? '-' : `${v}${suf}`;
+    const sign = (v) => (v === null || v === undefined) ? '-' : `${v >= 0 ? '+' : ''}${v}%`;
+    const p = r.portfolio || {};
+    const out = p.outperforming;
+    const headColor = out ? '#7ee0a0' : (p.excess_pct != null ? '#ff8a8a' : 'var(--text-muted)');
+    const headBg = out ? 'rgba(126,224,160,0.10)' : (p.excess_pct != null ? 'rgba(255,138,138,0.10)' : 'rgba(255,255,255,0.05)');
+    const rows = (r.positions || []).map(pos => {
+        if (!pos.ok) {
+            return `<div style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:5px;font-size:0.78rem;">
+                <strong>${escapeHtml(pos.code)} ${escapeHtml(pos.name || '')}</strong>
+                <span style="color:#ff8a8a;"> — ${escapeHtml(pos.error || '測定不可')}</span></div>`;
+        }
+        const exColor = (pos.excess_pct == null) ? 'var(--text-muted)' : (pos.excess_pct >= 0 ? '#7ee0a0' : '#ff8a8a');
+        const badge = (pos.excess_pct == null) ? '' : (pos.outperforming ? '✅' : '▼');
+        return `<div style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:5px;background:${pos.outperforming ? 'rgba(126,224,160,0.06)' : ''}">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+                <strong style="word-break:break-word;">${badge} ${escapeHtml(pos.code)} ${escapeHtml(pos.name || '')}</strong>
+                <span style="font-weight:700;color:${exColor};white-space:nowrap;">超過 ${sign(pos.excess_pct)}</span>
+            </div>
+            <div style="font-size:0.74rem;color:var(--text-muted);">
+                自分 ${sign(pos.return_pct)} vs ${escapeHtml(pos.benchmark || '-')} ${sign(pos.benchmark_return_pct)}
+                ／ 取得 ${num(pos.avg_cost)} → 現値 ${num(pos.current_price)}（${num(pos.opened_at)}〜）
+            </div>
+        </div>`;
+    }).join('');
+    return `
+        <div style="background:${headBg};border:1px solid ${headColor};border-radius:8px;padding:10px 12px;margin-bottom:10px;color:${headColor};font-weight:700;">
+            ${escapeHtml(r.summary || '')}
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:0.8rem;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.1);">
+            <span>ポートフォリオ・リターン</span><span style="font-weight:700;">${sign(p.return_pct)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:0.8rem;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.1);">
+            <span>市場平均（${escapeHtml((r.benchmarks || []).join('/') || '-')}）</span><span style="font-weight:700;">${sign(p.benchmark_return_pct)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:0.85rem;padding:6px 0;">
+            <span>超過リターン（アウトパフォーム幅）</span>
+            <span style="font-weight:700;color:${headColor};">${sign(p.excess_pct)}</span>
+        </div>
+        <div style="font-weight:700;margin:10px 0 4px;">銘柄別（超過リターン順）</div>
+        ${rows || '<div style="color:var(--text-muted);">対象なし</div>'}
+        <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:8px;">
+            ※ 取得来リターン=(現値−平均取得単価)/平均取得単価。ベンチマークは各ポジションの取得日(opened_at)→現在で比較。配当・税・売買手数料は未考慮の概算です。
         </div>
     `;
 }

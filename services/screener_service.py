@@ -73,7 +73,7 @@ class ScreenerService:
         if excluded:
             universe = [u for u in universe if (u.get("sector") or "") not in excluded]
 
-        needs_fundamentals = style in ("value", "growth")
+        needs_fundamentals = bool(getattr(strategy, "needs_fundamentals", False))
         results: list[ScreeningResult] = []
 
         # ファンダ要らないスタイルは並列度を上げる
@@ -223,6 +223,273 @@ class ScreenerService:
         return res
 
     # =========================================================
+    # ポートフォリオ・アドバイザー：保有銘柄＋候補を横断診断する
+    # =========================================================
+
+    async def advise_portfolio(
+        self,
+        holdings: list[dict],
+        candidates: Optional[list[dict]] = None,
+        days: int = 300,
+    ) -> dict:
+        """保有銘柄（holdings）と新規候補（candidates）を、テクニカル×ファンダの
+        二重視点で一括診断し、継続保有/縮小/売却・新規買い/見送り・入替候補を返す。
+
+        判定の根拠は決定論的（analyze_position）。holdings の各要素は
+        {code, name?, sector?, shares?, avg_cost?} を想定。
+        """
+        from services.screener_engine import analyze_position, compute_relative_metrics
+
+        holdings = holdings or []
+        candidates = candidates or []
+        held_codes = {str(h.get("code")) for h in holdings if h.get("code")}
+        days = max(120, min(int(days or 300), 1000))
+        sem = asyncio.Semaphore(4)
+
+        async def _eval(item: dict, held: bool):
+            code = str(item.get("code") or "").strip()
+            if not code:
+                return None
+            name = item.get("name") or code
+            sector = item.get("sector") or ""
+            async with sem:
+                try:
+                    df = await self.provider.get_ohlcv(code, days=days)
+                except Exception as e:
+                    logging.debug(f"advise OHLCV取得エラー {code}: {e}")
+                    df = None
+                if df is None:
+                    return {"ok": False, "code": code, "name": name, "sector": sector,
+                            "held": held, "error": "価格データ取得失敗"}
+                try:
+                    fundamentals = await self.provider.get_fundamentals(code)
+                except Exception as e:
+                    logging.debug(f"advise ファンダ取得エラー {code}: {e}")
+                    fundamentals = None
+                try:
+                    res = analyze_position(
+                        df, fundamentals,
+                        avg_cost=item.get("avg_cost") if held else None,
+                        held=held,
+                    )
+                except Exception as e:
+                    logging.debug(f"advise analyze_position エラー {code}: {e}")
+                    res = {"ok": False, "error": f"診断失敗: {e}"}
+            res["code"] = code
+            res["name"] = name
+            res["sector"] = sector
+            res["held"] = held
+            if held:
+                res["shares"] = item.get("shares")
+            return res
+
+        hold_results = await asyncio.gather(*[_eval(h, True) for h in holdings])
+        cand_items = [c for c in candidates if str(c.get("code")) not in held_codes]
+        cand_results = await asyncio.gather(*[_eval(c, False) for c in cand_items])
+
+        holdings_out = [r for r in hold_results if r]
+        candidates_out = [r for r in cand_results if r]
+
+        ok_all = [r for r in holdings_out + candidates_out if r.get("ok")]
+        # 宝石5：他社比較で相対スコア（blended_score）を付与（in place）
+        compute_relative_metrics(ok_all)
+
+        def _rk(r):
+            v = r.get("blended_score")
+            return v if v is not None else (r.get("score") or 0)
+
+        ranking = sorted(ok_all, key=_rk, reverse=True)
+        ranking_brief = [{
+            "code": r["code"], "name": r["name"], "held": r["held"],
+            "action": r["verdict"]["action"], "action_label": r["verdict"]["action_label"],
+            "score": r.get("score"), "blended_score": r.get("blended_score"),
+        } for r in ranking]
+
+        sells = [r for r in holdings_out
+                 if r.get("ok") and r["verdict"]["action"] in ("SELL", "TRIM")]
+        buys = [r for r in candidates_out
+                if r.get("ok") and r["verdict"]["action"] == "BUY"]
+        sells_weak = sorted(sells, key=_rk)
+        buys_strong = sorted(buys, key=_rk, reverse=True)
+        rotations = []
+        for s, b in zip(sells_weak, buys_strong):
+            if _rk(b) - _rk(s) >= 10:
+                rotations.append({
+                    "sell": {"code": s["code"], "name": s["name"], "score": _rk(s),
+                             "action_label": s["verdict"]["action_label"]},
+                    "buy": {"code": b["code"], "name": b["name"], "score": _rk(b)},
+                    "reason": (f"{s['name']}は{s['verdict']['action_label']}水準（総合{_rk(s)}点）。"
+                               f"より強い{b['name']}（総合{_rk(b)}点）へ入替を検討。"),
+                })
+
+        keep = [r for r in holdings_out if r.get("ok") and r["verdict"]["action"] in ("HOLD", "HOLD_WATCH")]
+        as_of = next((r.get("as_of") for r in ok_all if r.get("as_of")), "")
+        summary = (f"保有{len(holdings_out)}銘柄: 継続{len(keep)}・縮小/売却{len(sells)}。"
+                   f"新規候補{len(candidates_out)}銘柄中、両方で買い{len(buys)}件。"
+                   f"入替提案{len(rotations)}件。")
+
+        return {
+            "ok": True,
+            "as_of": as_of,
+            "summary": summary,
+            "holdings": holdings_out,
+            "candidates": candidates_out,
+            "ranking": ranking_brief,
+            "rotations": rotations,
+        }
+
+    # =========================================================
+    # パフォーマンス測定：保有ポートフォリオ vs 市場平均（ベンチマーク）
+    # =========================================================
+
+    # 市場ごとの代表ベンチマーク（yfinance シンボル → 表示名）
+    _BENCHMARKS = {"JP": "^N225", "US": "^GSPC"}
+    _BENCH_LABELS = {"^N225": "日経平均", "^GSPC": "S&P500", "1306.T": "TOPIX(1306)"}
+
+    async def measure_performance(self, holdings: list[dict], days: int = 500) -> dict:
+        """保有銘柄が市場平均（ベンチマーク）をアウトパフォームできているかを測定する。
+
+        各ポジションの取得来リターン((現値-平均取得単価)/平均取得単価)を、同期間
+        （取得日→現在）のベンチマーク・リターンと比較し、超過リターン(excess)を出す。
+        ポートフォリオ全体ではコスト基準で加重平均し、対ベンチマーク超過を返す。
+        """
+        import datetime as _dt
+        holdings = holdings or []
+        today = _dt.datetime.now(JST).date()
+
+        def _parse_date(s):
+            try:
+                return _dt.date.fromisoformat(str(s)[:10])
+            except (ValueError, TypeError):
+                return None
+
+        entries = [_parse_date(h.get("opened_at")) for h in holdings]
+        valid_entries = [d for d in entries if d]
+        if valid_entries:
+            span_days = (today - min(valid_entries)).days + 30
+        else:
+            span_days = days
+        span_days = max(120, min(int(span_days), 2000))
+
+        # 出現する市場のベンチマークだけ取得
+        markets = {(h.get("market") or "JP") for h in holdings} or {"JP"}
+        bench_df: dict[str, tuple] = {}
+        for mk in markets:
+            sym = self._BENCHMARKS.get(mk, "^N225")
+            try:
+                bdf = await self.provider.get_ohlcv(sym, days=span_days)
+            except Exception as e:
+                logging.debug(f"ベンチマーク取得エラー {sym}: {e}")
+                bdf = None
+            bench_df[mk] = (sym, bdf)
+
+        def _bench_return(mk, entry_date):
+            sym, bdf = bench_df.get(mk, (None, None))
+            if bdf is None or bdf.empty or not entry_date:
+                return sym, None
+            try:
+                import pandas as pd  # type: ignore
+                b_now = float(bdf["Close"].iloc[-1])
+                b_entry = bdf["Close"].asof(pd.Timestamp(entry_date))
+                b_entry = float(b_entry) if b_entry == b_entry else None  # NaN 除外
+                if b_entry and b_entry > 0:
+                    return sym, round((b_now - b_entry) / b_entry * 100, 1)
+            except Exception:
+                pass
+            return sym, None
+
+        sem = asyncio.Semaphore(4)
+
+        async def _eval(h: dict):
+            code = str(h.get("code") or "").strip()
+            if not code:
+                return None
+            name = h.get("name") or code
+            try:
+                shares = float(h.get("shares") or 0)
+                cost = float(h.get("avg_cost") or 0)
+            except (TypeError, ValueError):
+                shares, cost = 0.0, 0.0
+            mk = h.get("market") or "JP"
+            entry = _parse_date(h.get("opened_at"))
+            async with sem:
+                try:
+                    df = await self.provider.get_ohlcv(code, days=span_days)
+                except Exception as e:
+                    logging.debug(f"performance OHLCV取得エラー {code}: {e}")
+                    df = None
+            if df is None or df.empty or cost <= 0:
+                return {"ok": False, "code": code, "name": name, "error": "価格/取得単価が不足"}
+            cur = float(df["Close"].iloc[-1])
+            pos_ret = round((cur - cost) / cost * 100, 1)
+            sym, bench_ret = _bench_return(mk, entry)
+            excess = round(pos_ret - bench_ret, 1) if bench_ret is not None else None
+            return {
+                "ok": True, "code": code, "name": name, "market": mk,
+                "shares": shares, "avg_cost": round(cost, 2), "current_price": round(cur, 2),
+                "cost_value": round(cost * shares, 0), "market_value": round(cur * shares, 0),
+                "return_pct": pos_ret,
+                "benchmark": self._BENCH_LABELS.get(sym, sym),
+                "benchmark_return_pct": bench_ret,
+                "excess_pct": excess,
+                "outperforming": (excess is not None and excess > 0),
+                "opened_at": (entry.isoformat() if entry else None),
+            }
+
+        results = [r for r in await asyncio.gather(*[_eval(h) for h in holdings]) if r]
+        ok_rows = [r for r in results if r.get("ok")]
+
+        total_cost = sum(r["cost_value"] for r in ok_rows)
+        total_value = sum(r["market_value"] for r in ok_rows)
+        port_ret = round((total_value - total_cost) / total_cost * 100, 1) if total_cost > 0 else None
+
+        # コスト加重のベンチマーク・リターン（bench 既知のポジションだけで再正規化）
+        w_rows = [r for r in ok_rows if r.get("benchmark_return_pct") is not None and r["cost_value"] > 0]
+        w_total = sum(r["cost_value"] for r in w_rows)
+        port_bench = (round(sum(r["benchmark_return_pct"] * r["cost_value"] for r in w_rows) / w_total, 1)
+                      if w_total > 0 else None)
+        port_excess = (round(port_ret - port_bench, 1)
+                       if (port_ret is not None and port_bench is not None) else None)
+
+        bench_names = sorted({r["benchmark"] for r in ok_rows if r.get("benchmark")})
+        as_of = ""
+        for _mk, (_sym, bdf) in bench_df.items():
+            if bdf is not None and not bdf.empty:
+                try:
+                    as_of = bdf.index[-1].strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+                break
+
+        if port_excess is None:
+            summary = "ベンチマーク比較に必要なデータ（取得日など）が不足しています。"
+        elif port_excess > 0:
+            summary = (f"✅ 市場平均をアウトパフォーム中：ポートフォリオ {port_ret:+.1f}% vs "
+                       f"{'/'.join(bench_names)} {port_bench:+.1f}%（超過 {port_excess:+.1f}%）")
+        else:
+            summary = (f"⚠️ 市場平均にアンダーパフォーム：ポートフォリオ {port_ret:+.1f}% vs "
+                       f"{'/'.join(bench_names)} {port_bench:+.1f}%（超過 {port_excess:+.1f}%）")
+
+        # 寄与の大きい順（超過×コスト）に並べる
+        ok_rows.sort(key=lambda r: (r.get("excess_pct") if r.get("excess_pct") is not None else -999), reverse=True)
+
+        return {
+            "ok": True,
+            "as_of": as_of,
+            "benchmarks": bench_names,
+            "summary": summary,
+            "portfolio": {
+                "return_pct": port_ret,
+                "benchmark_return_pct": port_bench,
+                "excess_pct": port_excess,
+                "outperforming": (port_excess is not None and port_excess > 0),
+                "total_cost": round(total_cost, 0),
+                "total_value": round(total_value, 0),
+            },
+            "positions": ok_rows + [r for r in results if not r.get("ok")],
+        }
+
+    # =========================================================
     # スタイル横断フィルタ：既存候補を別スタイルで再評価する
     # =========================================================
 
@@ -244,7 +511,7 @@ class ScreenerService:
             return {"ok": False, "error": f"未知のスタイル: {secondary_style}"}
 
         enabled_set = set(enabled_filters) if enabled_filters is not None else None
-        needs_fundamentals = secondary_style in ("value", "growth")
+        needs_fundamentals = bool(getattr(strategy, "needs_fundamentals", False))
 
         sem = asyncio.Semaphore(6)
 
