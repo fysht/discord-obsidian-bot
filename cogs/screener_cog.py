@@ -81,6 +81,44 @@ class ScreenerCog(commands.Cog):
     async def get_ohlcv_series(self, code: str, days: int = 120) -> dict:
         return await self.service.get_ohlcv_series(code, days)
 
+    # ==========================================================
+    # 判断の事後検証ループ（売買時の自動記録 → 答え合わせ → 学習）
+    # ==========================================================
+
+    async def record_trade_decision(
+        self,
+        code: str,
+        name: str = "",
+        market: str = "",
+        trade_action: str = "buy",
+        price: Optional[float] = None,
+        style: str = "",
+    ) -> dict:
+        """売買成立時に診断スナップショットを記録する（InvestmentCog から呼ばれる）。"""
+        return await self.service.record_trade_decision(
+            code=code, name=name, market=market,
+            trade_action=trade_action, price=price, style=style,
+        )
+
+    async def verify_due_decisions(self, force: bool = False) -> dict:
+        """検証期日（20/60営業日）を過ぎた判断を答え合わせする。"""
+        return await self.service.verify_due_decisions(force=force)
+
+    async def decision_review_report(self, horizon: str = "d60") -> dict:
+        """検証済みの判断を集計し、シグナル別などの的中率（学習結果）を返す。"""
+        return await self.service.decision_review_report(horizon=horizon)
+
+    async def list_decision_reviews(self, status: Optional[str] = None, limit: int = 200) -> dict:
+        """記録済みの判断（事後検証用スナップショット）を一覧する。"""
+        from api.database import decision_review_list
+        items = await decision_review_list(status=status, limit=limit)
+        return {"ok": True, "items": items}
+
+    async def delete_decision_review(self, review_id: int) -> dict:
+        from api.database import decision_review_delete
+        ok = await decision_review_delete(review_id)
+        return {"ok": ok}
+
     async def analyze_projection(self, code: str, days: int = 750) -> dict:
         return await self.service.analyze_projection(code, days)
 

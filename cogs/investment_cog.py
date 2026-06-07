@@ -323,6 +323,7 @@ class InvestmentCog(commands.Cog):
                 self.auto_alerts_and_earnings_task,
                 self.auto_news_sentiment_task,
                 self.auto_holdings_noon_review_task,
+                self.auto_decision_review_verify_task,
             ):
                 try:
                     task.start()
@@ -335,6 +336,7 @@ class InvestmentCog(commands.Cog):
             self.auto_alerts_and_earnings_task,
             self.auto_news_sentiment_task,
             self.auto_holdings_noon_review_task,
+            self.auto_decision_review_verify_task,
         ):
             try:
                 task.cancel()
@@ -577,6 +579,57 @@ class InvestmentCog(commands.Cog):
 
     @auto_holdings_noon_review_task.before_loop
     async def _before_auto_holdings_noon_review(self):
+        await self.bot.wait_until_ready()
+
+    @tasks.loop(time=datetime.time(hour=15, minute=45, tzinfo=JST))
+    async def auto_decision_review_verify_task(self):
+        """平日 15:45 (JST) 市場クローズ後に、過去の売買判断を答え合わせ（20/60営業日後）。
+        新たに判定が確定した分があるときだけ、的中率を通知ログに届ける。"""
+        if datetime.datetime.now(JST).weekday() >= 5:
+            return
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("decision_review_verify"):
+            return
+        screener = self.bot.get_cog("ScreenerCog")
+        if not screener:
+            return
+        try:
+            verified = await screener.verify_due_decisions()
+        except Exception:
+            logging.exception("auto_decision_review_verify_task failed")
+            return
+        if not verified.get("ok") or not verified.get("updated"):
+            return  # 新たに確定した判定が無ければ通知しない
+
+        try:
+            report = await screener.decision_review_report(horizon="d60")
+        except Exception:
+            report = {}
+
+        results = verified.get("results") or []
+        labels = {"buy": "🟢買い", "sell": "🔴売り"}
+        lines = [f"🔎 売買判断の答え合わせ（新たに{verified['updated']}件確定）", ""]
+        for r in results[:12]:
+            cps = r.get("checkpoints") or {}
+            cp = cps.get("d60") or cps.get("d20") or {}
+            horizon = "60営業日" if "d60" in cps else "20営業日"
+            ex = cp.get("excess_pct")
+            ex_s = f"（市場比 {ex:+.1f}%）" if ex is not None else ""
+            lines.append(
+                f"- {r.get('code')} {r.get('name', '')}: "
+                f"{labels.get(r.get('trade_action'), r.get('trade_action', ''))} → "
+                f"{cp.get('outcome', '—')}{ex_s} [{horizon}]"
+            )
+        if report.get("summary"):
+            lines += ["", report["summary"]]
+        tv = (report or {}).get("trading_value_add") or {}
+        if tv.get("message"):
+            lines += ["", f"📌 {tv['message']}"]
+        lines += ["", "※ 上昇/下落は市場全体に対する『超過』で採点（相場の地合いに翻弄されない判定）。"]
+        await self._notify_long("decision_review", "🔎 売買判断の答え合わせ", "\n".join(lines))
+
+    @auto_decision_review_verify_task.before_loop
+    async def _before_auto_decision_review_verify(self):
         await self.bot.wait_until_ready()
 
     async def run_holdings_review(self) -> dict:
@@ -1677,10 +1730,16 @@ class InvestmentCog(commands.Cog):
                 "notes": holding.get("notes") or "",
             },
         )
+        # 事後検証用に「買い」判断のスナップショットを記録（バックグラウンド）
+        self._snapshot_trade_decision(
+            code=code, name=holding.get("name") or code, market=market,
+            trade_action="buy", price=avg_cost,
+        )
         return {"ok": True, "holdings": holdings}
 
-    async def portfolio_remove(self, code: str, shares: float = None) -> dict:
-        """sharesがNoneなら全数売却。指定なら部分売却。"""
+    async def portfolio_remove(self, code: str, shares: float = None, price: float = None) -> dict:
+        """sharesがNoneなら全数売却。指定なら部分売却。
+        price に実際の売却単価を渡すと、実現損益((売却単価-平均取得単価)×株数)を記録する。"""
         holdings = await self._read_json_file(
             PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
         )
@@ -1696,6 +1755,27 @@ class InvestmentCog(commands.Cog):
         sold_shares = float(existing.get("shares", 0)) if shares is None else float(shares)
         if sold_shares <= 0:
             return {"ok": False, "error": "売却数量が不正"}
+
+        # 実際の売却単価（指定が無ければ平均取得単価で代用＝損益0扱い）
+        try:
+            avg_cost = float(existing.get("avg_cost") or 0)
+        except (TypeError, ValueError):
+            avg_cost = 0.0
+        sell_price = None
+        if price is not None:
+            try:
+                sell_price = float(price)
+            except (TypeError, ValueError):
+                sell_price = None
+            if sell_price is not None and sell_price <= 0:
+                return {"ok": False, "error": "売却単価は正の値が必要です"}
+        # 実現損益（売却単価が分かるときだけ算出）
+        realized_pnl = None
+        realized_pnl_pct = None
+        if sell_price is not None and avg_cost > 0:
+            realized_pnl = round((sell_price - avg_cost) * sold_shares, 2)
+            realized_pnl_pct = round((sell_price - avg_cost) / avg_cost * 100, 2)
+
         if sold_shares >= float(existing.get("shares", 0)):
             holdings.pop(idx)
         else:
@@ -1709,11 +1789,75 @@ class InvestmentCog(commands.Cog):
                 "ts": now_iso,
                 "action": "sell",
                 "code": code,
+                "name": existing.get("name") or code,
                 "shares": sold_shares,
-                "price": existing.get("avg_cost"),
+                "price": sell_price if sell_price is not None else avg_cost,
+                "avg_cost": avg_cost,
+                "realized_pnl": realized_pnl,
+                "realized_pnl_pct": realized_pnl_pct,
             },
         )
-        return {"ok": True, "holdings": holdings}
+        # 事後検証用に「売り」判断のスナップショットを記録（バックグラウンド）。
+        # 実売却単価が分かればそれを基準にし、無ければ診断時の現値を使う。
+        self._snapshot_trade_decision(
+            code=code, name=existing.get("name") or code,
+            market=existing.get("market") or ("JP" if str(code).isdigit() else "US"),
+            trade_action="sell", price=sell_price,
+        )
+        return {
+            "ok": True, "holdings": holdings,
+            "realized_pnl": realized_pnl, "realized_pnl_pct": realized_pnl_pct,
+        }
+
+    async def portfolio_realized_summary(self) -> dict:
+        """取引履歴から、売却で確定した実現損益を集計する。
+        「自分の売買がどれだけ利益を生んだか」を可視化する（実現損益ベース）。"""
+        txns = await self._read_jsonl(PORTFOLIO_FOLDER, TRANSACTIONS_FILE)
+        sells = [t for t in txns if t.get("action") == "sell"]
+        realized = [t for t in sells if t.get("realized_pnl") is not None]
+
+        total = round(sum(float(t.get("realized_pnl") or 0) for t in realized), 2)
+        wins = [t for t in realized if float(t.get("realized_pnl") or 0) > 0]
+        loses = [t for t in realized if float(t.get("realized_pnl") or 0) < 0]
+        win_rate = round(len(wins) / len(realized) * 100, 1) if realized else None
+
+        # 銘柄別の実現損益
+        by_code: dict[str, dict] = {}
+        for t in realized:
+            c = str(t.get("code") or "")
+            b = by_code.setdefault(c, {"code": c, "name": t.get("name") or c,
+                                       "realized_pnl": 0.0, "sell_count": 0})
+            b["realized_pnl"] = round(b["realized_pnl"] + float(t.get("realized_pnl") or 0), 2)
+            b["sell_count"] += 1
+        by_code_list = sorted(by_code.values(), key=lambda x: x["realized_pnl"], reverse=True)
+
+        # 直近の売却（新しい順）
+        recent = [{
+            "ts": t.get("ts"), "code": t.get("code"), "name": t.get("name"),
+            "shares": t.get("shares"), "price": t.get("price"), "avg_cost": t.get("avg_cost"),
+            "realized_pnl": t.get("realized_pnl"), "realized_pnl_pct": t.get("realized_pnl_pct"),
+        } for t in realized[-30:][::-1]]
+
+        if realized:
+            summary = (f"確定済み売却{len(realized)}件：実現損益 合計 {total:+,.0f}。"
+                       f"勝ち{len(wins)}・負け{len(loses)}（勝率 {win_rate}%）。")
+        else:
+            untracked = len(sells)
+            summary = ("実現損益はまだ記録されていません。"
+                       + (f"（売却{untracked}件は売却単価が未入力のため損益未計算）"
+                          if untracked else "売却履歴がありません。"))
+
+        return {
+            "ok": True,
+            "summary": summary,
+            "total_realized_pnl": total,
+            "realized_trades": len(realized),
+            "win_count": len(wins),
+            "lose_count": len(loses),
+            "win_rate": win_rate,
+            "by_code": by_code_list,
+            "recent": recent,
+        }
 
     async def portfolio_update(self, code: str, **fields) -> dict:
         """既存保有銘柄を直接編集する（株数・平均取得単価などを上書き）。"""
@@ -1783,6 +1927,31 @@ class InvestmentCog(commands.Cog):
         items = await self._read_jsonl(PORTFOLIO_FOLDER, TRANSACTIONS_FILE)
         items = items[-limit:][::-1]
         return {"ok": True, "transactions": items}
+
+    def _snapshot_trade_decision(
+        self, code: str, name: str, market: str, trade_action: str, price=None
+    ) -> None:
+        """売買成立時に、その瞬間の診断（テクニカル状態・推奨・利確目安）を事後検証用に
+        スナップショット記録する。ScreenerCog に委譲し、バックグラウンドで実行するので
+        売買処理の応答を遅らせない。失敗しても売買自体は止めない。"""
+        cog = self.bot.get_cog("ScreenerCog")
+        if not cog:
+            return
+
+        async def _run():
+            try:
+                await cog.record_trade_decision(
+                    code=code, name=name or code, market=market,
+                    trade_action=trade_action, price=price,
+                )
+            except Exception as e:
+                logging.debug(f"判断スナップショット記録に失敗 {code}: {e}")
+
+        try:
+            asyncio.create_task(_run())
+        except RuntimeError:
+            # イベントループ外（テスト等）では握りつぶす
+            pass
 
     # ==========================================================
     # 投資日記

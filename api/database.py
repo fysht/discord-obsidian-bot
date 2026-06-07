@@ -373,6 +373,35 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_screener_runs_created ON screener_runs(created_at DESC)"
         )
 
+        # 投資判断の事後検証（買い/売りが正しかったかを 20/60 営業日後に答え合わせ）。
+        # 売買成立時に診断スナップショット（テクニカル状態＋推奨＋利確目安＋約定価格）を記録し、
+        # 期日到来後に「その後のリターン − 同期間ベンチマーク超過」で採点して学習に回す。
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS decision_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decided_at TEXT NOT NULL,
+                code TEXT NOT NULL,
+                name TEXT DEFAULT '',
+                market TEXT DEFAULT 'JP',
+                trade_action TEXT NOT NULL,
+                rec_action TEXT DEFAULT '',
+                trend_state TEXT DEFAULT '',
+                price_at_decision REAL,
+                score REAL,
+                blended_score REAL,
+                signals TEXT DEFAULT '[]',
+                projection TEXT DEFAULT '{}',
+                style TEXT DEFAULT '',
+                checkpoints TEXT DEFAULT '{}',
+                status TEXT DEFAULT 'open',
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_decision_reviews_status ON decision_reviews(status, decided_at)"
+        )
+
         # マネージャー通知ログ（長文の自動通知をチャットから分離して保存）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS manager_notices (
@@ -1694,6 +1723,106 @@ async def screener_run_get(run_id: int) -> Optional[dict]:
 async def screener_run_delete(run_id: int) -> bool:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute("DELETE FROM screener_runs WHERE id = ?", (run_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+# =========================================================
+# Decision Reviews (投資判断の事後検証ループ)
+# =========================================================
+
+def _decision_row_to_dict(r) -> dict:
+    """signals/projection/checkpoints を JSON 復元して dict 化する。"""
+    import json as _json
+    d = dict(r)
+    for k, empty in (("signals", "[]"), ("projection", "{}"), ("checkpoints", "{}")):
+        try:
+            d[k] = _json.loads(d.get(k) or empty)
+        except Exception:
+            d[k] = [] if k == "signals" else {}
+    return d
+
+
+async def decision_review_save(payload: dict) -> int:
+    """売買時の判断スナップショットを保存する。"""
+    import json as _json
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            """INSERT INTO decision_reviews
+               (decided_at, code, name, market, trade_action, rec_action, trend_state,
+                price_at_decision, score, blended_score, signals, projection, style,
+                checkpoints, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                payload.get("decided_at") or now,
+                str(payload.get("code") or ""),
+                payload.get("name") or "",
+                payload.get("market") or "JP",
+                payload.get("trade_action") or "",
+                payload.get("rec_action") or "",
+                payload.get("trend_state") or "",
+                payload.get("price_at_decision"),
+                payload.get("score"),
+                payload.get("blended_score"),
+                _json.dumps(payload.get("signals") or [], ensure_ascii=False),
+                _json.dumps(payload.get("projection") or {}, ensure_ascii=False),
+                payload.get("style") or "",
+                _json.dumps(payload.get("checkpoints") or {}, ensure_ascii=False),
+                payload.get("status") or "open",
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def decision_review_list(status: Optional[str] = None, limit: int = 200) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if status:
+            cursor = await db.execute(
+                "SELECT * FROM decision_reviews WHERE status = ? "
+                "ORDER BY decided_at DESC, id DESC LIMIT ?",
+                (status, limit),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM decision_reviews ORDER BY decided_at DESC, id DESC LIMIT ?",
+                (limit,),
+            )
+        rows = await cursor.fetchall()
+        return [_decision_row_to_dict(r) for r in rows]
+
+
+async def decision_review_list_pending() -> list[dict]:
+    """検証未完了（open / partial）の判断を古い順に返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM decision_reviews WHERE status IN ('open', 'partial') "
+            "ORDER BY decided_at ASC, id ASC"
+        )
+        rows = await cursor.fetchall()
+        return [_decision_row_to_dict(r) for r in rows]
+
+
+async def decision_review_update_checkpoints(review_id: int, checkpoints: dict, status: str) -> bool:
+    import json as _json
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE decision_reviews SET checkpoints = ?, status = ?, updated_at = ? WHERE id = ?",
+            (_json.dumps(checkpoints or {}, ensure_ascii=False), status, now, review_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def decision_review_delete(review_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute("DELETE FROM decision_reviews WHERE id = ?", (review_id,))
         await db.commit()
         return cursor.rowcount > 0
 

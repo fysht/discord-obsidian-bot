@@ -24,6 +24,7 @@ class PortfolioAddRequest(BaseModel):
 class PortfolioRemoveRequest(BaseModel):
     code: str
     shares: Optional[float] = None  # None なら全数売却
+    price: Optional[float] = None   # 実際の売却単価。実現損益の計算に使う（省略時は現値/平均取得単価）
 
 
 class PortfolioEditRequest(BaseModel):
@@ -52,7 +53,14 @@ async def investment_portfolio_add(req: PortfolioAddRequest):
 @router.post("/remove", dependencies=[Depends(verify_api_key)])
 async def investment_portfolio_remove(req: PortfolioRemoveRequest):
     cog = _get_investment_cog()
-    return await cog.portfolio_remove(req.code, shares=req.shares)
+    return await cog.portfolio_remove(req.code, shares=req.shares, price=req.price)
+
+
+@router.get("/realized", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_realized():
+    """売却で確定した実現損益（自分の売買がどれだけ利益を生んだか）を集計して返す。"""
+    cog = _get_investment_cog()
+    return await cog.portfolio_realized_summary()
 
 
 @router.post("/edit", dependencies=[Depends(verify_api_key)])

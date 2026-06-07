@@ -31,6 +31,7 @@ SCHEDULE_CATALOG: list[dict] = [
     {"key": "learning_check",         "label": "今日の学び・気づき",      "time": "21:15", "dow": "daily",  "category": "manager", "description": "今日の学び・気づきを記録。回答は Obsidian の独立セクションに保存。"},
     {"key": "auto_alerts_earnings",   "label": "価格アラート＋決算予定",  "time": "07:15", "dow": "daily",  "category": "manager", "description": "保有銘柄の当日決算予定や価格アラートを通知。"},
     {"key": "holdings_noon_review",   "label": "保有銘柄の昼チェック",    "time": "12:00", "dow": "weekday", "category": "manager", "description": "平日12時に保有銘柄の継続/縮小/売却をテクニカル×ファンダで診断し通知ログへ。12:30の売買判断の参考に（決定論的・無料）。"},
+    {"key": "decision_review_verify", "label": "売買判断の答え合わせ",    "time": "15:45", "dow": "weekday", "category": "manager", "description": "平日の市場クローズ後に、過去の売買判断を市場平均と比べて答え合わせ（20/60営業日後）。新たに判定が出たときだけ的中率を通知ログへ。"},
     {"key": "fitbit_morning",         "label": "Fitbit 朝レポート",       "time": "08:00", "dow": "daily",  "category": "manager", "description": "前夜の睡眠データを取得し、朝のメッセージで報告。"},
     {"key": "auto_news_sentiment",    "label": "保有銘柄ニュース朝刊",    "time": "08:30", "dow": "daily",  "category": "manager", "description": "保有銘柄のニュース差分を AI が短いダイジェスト（取り上げるべき銘柄のみ／好材料・悪材料・影響）にまとめて通知ログへ。"},
     {"key": "cost_alert",             "label": "コストアラート",          "time": "09:00", "dow": "daily",  "category": "manager", "description": "Gemini API 利用コストの監視通知。"},

@@ -404,6 +404,25 @@ class ScreenerService:
         # 宝石5：他社比較で相対スコア（blended_score）を付与（in place）
         compute_relative_metrics(ok_all)
 
+        # 事後検証の学習結果を活用：このトレンド状態の判断が過去どれだけ的中したかを併記。
+        # （ここでは answering 中に重いネットワーク検証はせず、保存済みの集計のみ参照）
+        track = None
+        try:
+            track = await self.decision_review_report(horizon="d60", auto_verify=False)
+            tr_by_trend = {b["key"]: b for b in (track.get("by_trend") or []) if b.get("key")}
+            for r in ok_all:
+                st = (r.get("trend") or {}).get("state_label")
+                b = tr_by_trend.get(st)
+                if b and b.get("hit_rate") is not None:
+                    r["track_record"] = {
+                        "trend_state": st,
+                        "hit_rate": b["hit_rate"],
+                        "samples": b["win"] + b["lose"],
+                        "avg_excess_pct": b.get("avg_excess_pct"),
+                    }
+        except Exception as e:
+            logging.debug(f"advise track_record 付与エラー: {e}")
+
         def _rk(r):
             v = r.get("blended_score")
             return v if v is not None else (r.get("score") or 0)
@@ -445,6 +464,20 @@ class ScreenerService:
                    f"新規候補{len(candidates_out)}銘柄中、両方で買い{buy_count}件"
                    f"（うち入替向き{len(buys)}件）。入替提案{len(rotations)}件。")
 
+        # 「市場に翻弄されて下手に売らない」方針の反映：
+        # 過去の売り判断が市場対比で裏目（握っていた方が得だった）傾向で、かつ今回も
+        # 売却/縮小を提案しているなら、固有の悪材料が無いか再確認を促す注意を添える。
+        over_trading_caution = None
+        tv = (track or {}).get("trading_value_add") or {}
+        if sells and tv.get("over_trading"):
+            over_trading_caution = (
+                f"⚠️ 今回 売却/縮小を{len(sells)}件提案していますが、過去の売り判断は売却後も"
+                f"平均で市場を{tv.get('avg_excess_after_exit_pct'):+.1f}%上回っています"
+                "（＝握っていた方が得だった傾向）。相場全体の地合いによる下げを、固有の悪材料と"
+                "取り違えていないか確認してください。トレンド崩れ＋ファンダ悪化が揃っていない"
+                "売りは見送る方が無難です。"
+            )
+
         return {
             "ok": True,
             "as_of": as_of,
@@ -455,6 +488,16 @@ class ScreenerService:
             "candidates": candidates_out,
             "ranking": ranking_brief,
             "rotations": rotations,
+            "over_trading_caution": over_trading_caution,
+            # 過去の判断の事後検証から得た「効いているトレンド状態」の学習結果（参考）
+            "decision_track_record": {
+                "summary": (track or {}).get("summary"),
+                "overall_hit_rate": (track or {}).get("overall_hit_rate"),
+                "verified_count": (track or {}).get("verified_count"),
+                "by_trend": (track or {}).get("by_trend"),
+                "trading_value_add": tv or None,
+                "market_beta_note": (track or {}).get("market_beta_note"),
+            } if track else None,
         }
 
     # =========================================================
@@ -641,6 +684,419 @@ class ScreenerService:
                 "total_value": round(total_value, 0),
             },
             "positions": ok_rows + [r for r in results if not r.get("ok")],
+        }
+
+    # =========================================================
+    # 判断の事後検証ループ：売買時に診断を記録し、後で答え合わせして学習する
+    # =========================================================
+
+    # 検証の評価期間（営業日）。20≈1ヶ月、60≈3ヶ月の2段階で採点する。
+    _REVIEW_HORIZONS = [("d20", 20), ("d60", 60)]
+    # 「正解/不正解」を分ける超過リターンのデッドバンド（%）。±この幅は「引分」。
+    _REVIEW_DEADBAND_PCT = 1.0
+
+    async def record_trade_decision(
+        self,
+        code: str,
+        name: str = "",
+        market: str = "",
+        trade_action: str = "buy",
+        price: Optional[float] = None,
+        style: str = "",
+    ) -> dict:
+        """売買が成立した瞬間に、その銘柄の診断スナップショット（テクニカル状態・推奨
+        アクション・利確目安・約定価格）を decision_reviews に保存する。
+
+        後で verify_due_decisions が答え合わせの基準に使う。価格やファンダが取れなくても
+        最低限の記録は残し、検証時に現値を取りに行く。"""
+        from api.database import decision_review_save
+        from services.screener_engine import analyze_position, analyze_breakout_projection
+
+        code = str(code or "").strip()
+        if not code:
+            return {"ok": False, "error": "code が空です"}
+        market = market or ("JP" if code.isdigit() else "US")
+        is_exit = str(trade_action).lower() == "sell"
+
+        try:
+            df = await self.provider.get_ohlcv(code, days=400)
+        except Exception as e:
+            logging.debug(f"record_trade_decision OHLCV取得エラー {code}: {e}")
+            df = None
+
+        rec_action = ""
+        trend_state = ""
+        score = None
+        signals: list[dict] = []
+        projection_snapshot: dict = {}
+        last_close = None
+
+        if df is not None and len(df) >= 60:
+            try:
+                fundamentals = await self.provider.get_fundamentals(code)
+            except Exception:
+                fundamentals = None
+            try:
+                res = analyze_position(
+                    df, fundamentals,
+                    avg_cost=(price if is_exit else None),
+                    held=is_exit,
+                )
+            except Exception as e:
+                logging.debug(f"record_trade_decision analyze_position エラー {code}: {e}")
+                res = {"ok": False}
+            if res.get("ok"):
+                verdict = res.get("verdict") or {}
+                trend = res.get("trend") or {}
+                rec_action = verdict.get("action") or ""
+                trend_state = trend.get("state_label") or ""
+                score = res.get("score")
+                last_close = res.get("last_close")
+                signals = [
+                    {"key": "trend_state", "label": "トレンド", "value": trend.get("state_label")},
+                    {"key": "perfect_order", "label": "パーフェクトオーダー", "value": bool(trend.get("perfect_order"))},
+                    {"key": "above_sma25", "label": "25日線上", "value": bool(trend.get("above_fast"))},
+                    {"key": "above_sma75", "label": "75日線上", "value": bool(trend.get("above_mid"))},
+                    {"key": "below_trailing_stop", "label": "トレイリングストップ割れ", "value": bool(trend.get("below_trailing_stop"))},
+                ]
+            try:
+                proj = analyze_breakout_projection(df)
+            except Exception:
+                proj = None
+            if proj and proj.get("ok"):
+                projection_snapshot = {
+                    "verdict": proj.get("verdict"),
+                    "risk_reward": proj.get("risk_reward"),
+                    "remaining_estimate_pct": proj.get("remaining_estimate_pct"),
+                }
+
+        rid = await decision_review_save({
+            "decided_at": datetime.datetime.now(JST).isoformat(),
+            "code": code,
+            "name": name or code,
+            "market": market,
+            "trade_action": str(trade_action).lower(),
+            "rec_action": rec_action,
+            "trend_state": trend_state,
+            "price_at_decision": price if price is not None else last_close,
+            "score": score,
+            "signals": signals,
+            "projection": projection_snapshot,
+            "style": style,
+        })
+        return {"ok": True, "id": rid, "snapshot": bool(signals)}
+
+    async def verify_due_decisions(self, force: bool = False) -> dict:
+        """検証期日（20/60営業日）を過ぎた判断を答え合わせし、結果を保存する。
+
+        各判断について「その後のリターン − 同期間のベンチマーク超過」を算出する。
+        買い/保有は超過プラスで「正解」、売り/縮小は超過マイナス（＝売って正解）で
+        「正解」とする（符号を反転）。force=True で既存チェックポイントも再計算。"""
+        import datetime as _dt
+        import pandas as pd  # type: ignore
+        from api.database import (
+            decision_review_list_pending, decision_review_update_checkpoints,
+        )
+
+        pending = await decision_review_list_pending()
+        if not pending:
+            return {"ok": True, "checked": 0, "updated": 0, "results": []}
+
+        # ベンチマークは市場ごとにまとめて1回だけ取得
+        markets = {p.get("market") or "JP" for p in pending}
+        bench_df: dict[str, tuple] = {}
+        for mk in markets:
+            sym = self._BENCHMARKS.get(mk, "^N225")
+            try:
+                bench_df[mk] = (sym, await self.provider.get_ohlcv(sym, days=500))
+            except Exception as e:
+                logging.debug(f"verify ベンチマーク取得エラー {sym}: {e}")
+                bench_df[mk] = (sym, None)
+
+        def _parse_date(s):
+            try:
+                return _dt.date.fromisoformat(str(s)[:10])
+            except (ValueError, TypeError):
+                return None
+
+        def _series_after(d, date):
+            """date 以降の取引日に限定した Close 系列を返す（なければ None）。"""
+            if d is None or getattr(d, "empty", True):
+                return None
+            try:
+                after = d[d.index >= pd.Timestamp(date)]
+            except Exception:
+                return None
+            return after if len(after) > 0 else None
+
+        updated = 0
+        results: list[dict] = []
+        sem = asyncio.Semaphore(4)
+
+        async def _verify(p: dict):
+            nonlocal updated
+            code = str(p.get("code") or "")
+            decided = _parse_date(p.get("decided_at"))
+            if not code or not decided:
+                return
+            async with sem:
+                try:
+                    df = await self.provider.get_ohlcv(code, days=500)
+                except Exception as e:
+                    logging.debug(f"verify OHLCV取得エラー {code}: {e}")
+                    df = None
+            after = _series_after(df, decided)
+            if after is None:
+                return
+            base_price = p.get("price_at_decision")
+            if not base_price or base_price <= 0:
+                base_price = float(after["Close"].iloc[0])
+            if not base_price or base_price <= 0:
+                return
+
+            mk = p.get("market") or "JP"
+            _sym, bdf = bench_df.get(mk, (None, None))
+            b_after = _series_after(bdf, decided)
+            b_base = float(b_after["Close"].iloc[0]) if b_after is not None else None
+
+            ta = (p.get("trade_action") or "").lower()
+            ra = (p.get("rec_action") or "").upper()
+            is_exit = ta == "sell" or ra in ("SELL", "TRIM")
+
+            checkpoints = dict(p.get("checkpoints") or {})
+            changed = False
+            for key, n in self._REVIEW_HORIZONS:
+                if key in checkpoints and not force:
+                    continue
+                if len(after) <= n:
+                    continue  # まだ期日に達していない
+                fwd_price = float(after["Close"].iloc[n])
+                ret = (fwd_price - base_price) / base_price * 100
+                bench_ret = None
+                if b_base and b_after is not None and len(b_after) > n:
+                    bench_ret = (float(b_after["Close"].iloc[n]) - b_base) / b_base * 100
+                excess = (ret - bench_ret) if bench_ret is not None else None
+                # 売却/縮小は「売って正解＝その後下げた/劣後した」を正解にするため符号反転
+                base_metric = excess if excess is not None else ret
+                signed = -base_metric if is_exit else base_metric
+                if signed > self._REVIEW_DEADBAND_PCT:
+                    outcome = "正解"
+                elif signed < -self._REVIEW_DEADBAND_PCT:
+                    outcome = "不正解"
+                else:
+                    outcome = "引分"
+                checkpoints[key] = {
+                    "return_pct": round(ret, 1),
+                    "benchmark_return_pct": round(bench_ret, 1) if bench_ret is not None else None,
+                    "excess_pct": round(excess, 1) if excess is not None else None,
+                    "outcome": outcome,
+                    "verified_at": _dt.datetime.now(JST).isoformat(),
+                }
+                changed = True
+
+            if changed:
+                status = ("verified"
+                          if all(k in checkpoints for k, _ in self._REVIEW_HORIZONS)
+                          else "partial")
+                await decision_review_update_checkpoints(p["id"], checkpoints, status)
+                updated += 1
+                results.append({
+                    "id": p["id"], "code": code, "name": p.get("name"),
+                    "trade_action": ta, "status": status, "checkpoints": checkpoints,
+                })
+
+        await asyncio.gather(*[_verify(p) for p in pending])
+        return {"ok": True, "checked": len(pending), "updated": updated, "results": results}
+
+    async def decision_review_report(self, horizon: str = "d60", auto_verify: bool = True) -> dict:
+        """検証済みの判断を集計し、トレンド状態・推奨アクション・スタイル・シグナル別の
+        的中率を返す。次回スクリーニング/一括診断で候補の信頼度として併記するための学習結果。
+
+        auto_verify=True なら集計前に期日到来分を答え合わせしてから集計する。"""
+        from api.database import decision_review_list
+
+        if auto_verify:
+            try:
+                await self.verify_due_decisions()
+            except Exception as e:
+                logging.debug(f"decision_review_report 事前verifyエラー: {e}")
+
+        if horizon not in ("d20", "d60"):
+            horizon = "d60"
+        rows = await decision_review_list(limit=1000)
+
+        def _cp(r):
+            cp = (r.get("checkpoints") or {}).get(horizon)
+            return cp if (cp and cp.get("outcome")) else None
+
+        verified = [r for r in rows if _cp(r)]
+
+        def _aggregate(key_fn):
+            buckets: dict[str, dict] = {}
+            for r in verified:
+                k = key_fn(r)
+                if not k:
+                    continue
+                cp = _cp(r)
+                b = buckets.setdefault(k, {"total": 0, "win": 0, "lose": 0, "draw": 0,
+                                           "sum_excess": 0.0, "n_excess": 0})
+                b["total"] += 1
+                o = cp.get("outcome")
+                if o == "正解":
+                    b["win"] += 1
+                elif o == "不正解":
+                    b["lose"] += 1
+                else:
+                    b["draw"] += 1
+                ex = cp.get("excess_pct")
+                if ex is not None:
+                    b["sum_excess"] += ex
+                    b["n_excess"] += 1
+            out = []
+            for k, b in buckets.items():
+                decisive = b["win"] + b["lose"]
+                out.append({
+                    "key": k, "total": b["total"], "win": b["win"],
+                    "lose": b["lose"], "draw": b["draw"],
+                    "hit_rate": round(b["win"] / decisive * 100, 1) if decisive else None,
+                    "avg_excess_pct": round(b["sum_excess"] / b["n_excess"], 1) if b["n_excess"] else None,
+                })
+            out.sort(key=lambda x: (x["hit_rate"] if x["hit_rate"] is not None else -1, x["total"]),
+                     reverse=True)
+            return out
+
+        by_trend = _aggregate(lambda r: r.get("trend_state"))
+        by_action = _aggregate(lambda r: r.get("rec_action"))
+        by_style = _aggregate(lambda r: r.get("style"))
+
+        # シグナル別（スナップショット時に True だったカテゴリフラグごとの的中率）
+        sig_buckets: dict[str, dict] = {}
+        for r in verified:
+            cp = _cp(r)
+            for s in (r.get("signals") or []):
+                if s.get("value") is True:
+                    k = s.get("label") or s.get("key")
+                    b = sig_buckets.setdefault(k, {"total": 0, "win": 0, "lose": 0})
+                    b["total"] += 1
+                    if cp.get("outcome") == "正解":
+                        b["win"] += 1
+                    elif cp.get("outcome") == "不正解":
+                        b["lose"] += 1
+        by_signal = []
+        for k, b in sig_buckets.items():
+            decisive = b["win"] + b["lose"]
+            by_signal.append({
+                "key": k, "total": b["total"], "win": b["win"], "lose": b["lose"],
+                "hit_rate": round(b["win"] / decisive * 100, 1) if decisive else None,
+            })
+        by_signal.sort(key=lambda x: (x["hit_rate"] if x["hit_rate"] is not None else -1, x["total"]),
+                       reverse=True)
+
+        # --- 相場に翻弄されない判定の裏付け：生リターン vs 市場超過 ＆ 売買の付加価値 ---
+        def _signed_outcome(val, is_exit):
+            if val is None:
+                return None
+            s = -val if is_exit else val
+            if s > self._REVIEW_DEADBAND_PCT:
+                return "正解"
+            if s < -self._REVIEW_DEADBAND_PCT:
+                return "不正解"
+            return "引分"
+
+        raw_win = raw_lose = ex_win = ex_lose = 0
+        exit_excess_vals: list[float] = []
+        for r in verified:
+            cp = _cp(r)
+            ta = (r.get("trade_action") or "").lower()
+            ra = (r.get("rec_action") or "").upper()
+            is_exit = ta == "sell" or ra in ("SELL", "TRIM")
+            ro = _signed_outcome(cp.get("return_pct"), is_exit)
+            if ro == "正解":
+                raw_win += 1
+            elif ro == "不正解":
+                raw_lose += 1
+            if cp.get("excess_pct") is not None:
+                eo = _signed_outcome(cp.get("excess_pct"), is_exit)
+                if eo == "正解":
+                    ex_win += 1
+                elif eo == "不正解":
+                    ex_lose += 1
+                if is_exit:
+                    exit_excess_vals.append(cp["excess_pct"])
+
+        raw_hit = round(raw_win / (raw_win + raw_lose) * 100, 1) if (raw_win + raw_lose) else None
+        excess_hit = round(ex_win / (ex_win + ex_lose) * 100, 1) if (ex_win + ex_lose) else None
+        market_beta_note = None
+        if raw_hit is not None and excess_hit is not None:
+            market_beta_note = (
+                f"生リターン基準の的中率 {raw_hit}% に対し、市場超過で測ると {excess_hit}%。"
+                "その差は『相場の地合い』が生んだ見かけの勝ち負けです。本機能は超過リターンで"
+                "採点するので、地合いに左右されない実力を見ています。"
+            )
+
+        # 売買の付加価値：売り判断のあと、その銘柄が市場をどれだけ上回ったか（平均）。
+        # 正＝売った後も市場に勝っていた＝「握っていた方が得だった」傾向。
+        avg_exit_excess = (round(sum(exit_excess_vals) / len(exit_excess_vals), 1)
+                           if exit_excess_vals else None)
+        tv_msg = None
+        over_trading = False
+        if avg_exit_excess is not None:
+            if avg_exit_excess > 1.0:
+                over_trading = True
+                tv_msg = (f"売却した銘柄は、その後も平均で市場を {avg_exit_excess:+.1f}% 上回っています。"
+                          "相場全体の流れに乗っているだけの銘柄を、固有の悪材料が無いのに手放して"
+                          "いる可能性があります。『市場に翻弄されて下手に売らない』方針が有効な兆候です。")
+            elif avg_exit_excess < -1.0:
+                tv_msg = (f"売却した銘柄は、その後 平均で市場を {avg_exit_excess:+.1f}% 下回っています。"
+                          "売り判断は下落回避として機能しています（固有の悪化を捉えられている）。")
+            else:
+                tv_msg = "売却後の市場超過はほぼ中立。売買による付加価値は今のところ小さいです。"
+        trading_value_add = {
+            "exit_decisions": len(exit_excess_vals),
+            "avg_excess_after_exit_pct": avg_exit_excess,
+            "over_trading": over_trading,
+            "message": tv_msg,
+        }
+        philosophy_note = (
+            "個別銘柄の短期の値動きは市場全体（ベータ）に強く連動します。だから売買の巧拙は"
+            "『市場に対する超過リターン』で測るべきで、相場の上下に合わせて頻繁に売買すると、"
+            "コストとタイミングのズレで実力以上に成績を落としがちです。固有の悪材料"
+            "（トレンド崩れ＋ファンダ悪化）が無い限り、握り続ける方が得策なことが多い——"
+            "という考え方は概ね正しく、本機能はこの前提で設計されています。"
+        )
+
+        total = len(verified)
+        wins = sum(1 for r in verified if _cp(r).get("outcome") == "正解")
+        loses = sum(1 for r in verified if _cp(r).get("outcome") == "不正解")
+        decisive = wins + loses
+        overall_hit = round(wins / decisive * 100, 1) if decisive else None
+        pending_count = sum(1 for r in rows if r.get("status") in ("open", "partial"))
+
+        if total:
+            summary = (f"検証済み{total}件（{horizon}・{'約1ヶ月後' if horizon == 'd20' else '約3ヶ月後'}）："
+                       f"的中{wins}・外れ{loses}・引分{total - decisive}。"
+                       f"勝敗ベースの的中率 {overall_hit}%。検証待ち{pending_count}件。")
+        else:
+            summary = ("まだ検証済みの判断がありません。売買から約1〜3ヶ月後に自動で答え合わせされます。"
+                       f"（記録済み{len(rows)}件・検証待ち{pending_count}件）")
+
+        return {
+            "ok": True,
+            "horizon": horizon,
+            "verified_count": total,
+            "pending_count": pending_count,
+            "recorded_count": len(rows),
+            "overall_hit_rate": overall_hit,
+            "raw_hit_rate": raw_hit,
+            "excess_hit_rate": excess_hit,
+            "market_beta_note": market_beta_note,
+            "trading_value_add": trading_value_add,
+            "philosophy_note": philosophy_note,
+            "summary": summary,
+            "by_trend": by_trend,
+            "by_action": by_action,
+            "by_style": by_style,
+            "by_signal": by_signal,
         }
 
     # =========================================================

@@ -96,6 +96,67 @@ function confirmDialog(message, opts = {}) {
 }
 window.confirmDialog = confirmDialog;
 
+/**
+ * 売却ダイアログ。売却単価・株数を入力させ、実現損益（自分の売買が生んだ利益）の記録に使う。
+ * Promise<null | {price: number|null, shares: number|null}> を返す（null=キャンセル）。
+ * @param {{title?:string, name?:string, code?:string, shares?:number|null, avgCost?:number|null, currency?:string}} opts
+ */
+function promptSellDialog(opts = {}) {
+    return new Promise(resolve => {
+        const { title = '売却', name = '', code = '', shares = null, avgCost = null, currency = '' } = opts;
+        const overlay = document.createElement('div');
+        overlay.className = 'modal-overlay confirm-overlay';
+        const heldStr = (shares != null) ? `${shares}株保有` : '';
+        const costStr = (avgCost != null) ? `平均取得 ${avgCost} ${currency}` : '';
+        const inputStyle = 'width:100%;box-sizing:border-box;margin-bottom:10px;padding:8px;border-radius:6px;border:1px solid var(--border,#444);background:var(--input-bg,#1c1c22);color:inherit;';
+        overlay.innerHTML = `
+            <div class="modal-card confirm-card" role="dialog" aria-modal="true" style="max-width:360px;">
+                <h3 class="confirm-title">${escapeHtml(title)}</h3>
+                <div class="confirm-body" style="text-align:left;">
+                    <div style="font-weight:600;margin-bottom:2px;">${escapeHtml(name || code)} (${escapeHtml(code)})</div>
+                    <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:12px;">${escapeHtml([heldStr, costStr].filter(Boolean).join(' / '))}</div>
+                    <label style="display:block;font-size:0.8rem;margin-bottom:4px;">売却単価（任意・実現損益の記録に使用）</label>
+                    <input id="sell-dlg-price" type="number" inputmode="decimal" step="any" min="0" placeholder="${avgCost != null ? '例: ' + avgCost : '1株あたりの売却価格'}" style="${inputStyle}">
+                    <label style="display:block;font-size:0.8rem;margin-bottom:4px;">売却株数（空欄＝全数）</label>
+                    <input id="sell-dlg-shares" type="number" inputmode="decimal" step="any" min="0" ${shares != null ? `max="${shares}"` : ''} placeholder="${shares != null ? '全数: ' + shares : '株数'}" style="${inputStyle}">
+                    <div style="font-size:0.72rem;color:var(--text-muted);">売却単価を入れると「自分の売買がどれだけ利益を生んだか」を記録します（空欄なら損益は未計算）。</div>
+                </div>
+                <div class="confirm-actions">
+                    <button class="mini-link confirm-cancel" type="button">キャンセル</button>
+                    <button class="mini-link btn-danger confirm-ok" type="button">売却する</button>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+        const priceEl = overlay.querySelector('#sell-dlg-price');
+        const sharesEl = overlay.querySelector('#sell-dlg-shares');
+        const cleanup = (result) => {
+            try { overlay.remove(); } catch {}
+            document.removeEventListener('keydown', onKey);
+            resolve(result);
+        };
+        const submit = () => {
+            const pRaw = (priceEl.value || '').trim();
+            const sRaw = (sharesEl.value || '').trim();
+            const price = pRaw === '' ? null : Number(pRaw);
+            let sh = sRaw === '' ? null : Number(sRaw);
+            if (price != null && (!isFinite(price) || price <= 0)) { showToast('売却単価は正の数で入力してください', true); return; }
+            if (sh != null && (!isFinite(sh) || sh <= 0)) { showToast('売却株数は正の数で入力してください', true); return; }
+            if (sh != null && shares != null && sh >= shares) sh = null; // 全数売却扱い
+            cleanup({ price, shares: sh });
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') cleanup(null);
+            else if (e.key === 'Enter') submit();
+        };
+        overlay.querySelector('.confirm-cancel').addEventListener('click', () => cleanup(null));
+        overlay.querySelector('.confirm-ok').addEventListener('click', submit);
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(null); });
+        document.addEventListener('keydown', onKey);
+        setTimeout(() => { try { priceEl.focus(); } catch {} }, 0);
+    });
+}
+window.promptSellDialog = promptSellDialog;
+
 const escapeHtml = t => {
     const d = document.createElement('div');
     d.textContent = t;
@@ -11145,7 +11206,8 @@ function _renderScreenerCandidates(data) {
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(126,224,160,0.12);color:#7ee0a0;border:1px solid rgba(126,224,160,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true);" title="保有銘柄＋この候補を、テクニカル(トレンド)×ファンダ(健全性)の二重視点で一括診断します">🧭 保有＆候補を一括診断</button>
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioPerformance();" title="保有ポートフォリオが市場平均（日経平均等）をアウトパフォームできているかを測定します">📊 市場平均と比較</button>
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();openHoldingsReview();" title="平日12時の自動「保有銘柄の昼チェック」と同じ診断を今すぐ実行します">🕛 保有を今すぐ昼チェック</button>
-        <span style="font-size:0.7rem;color:var(--text-muted);">継続/売却・新規買い・入替の助言／アウトパフォーム測定（昼チェックは平日12時に自動通知）</span>
+        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(196,160,255,0.12);color:#c4a0ff;border:1px solid rgba(196,160,255,0.35);border-radius:6px;" onclick="event.preventDefault();openTradeReview();" title="過去の売買が正しかったか（市場平均との比較）と、自分の売買が生んだ実現損益を振り返ります">🔎 売買の振り返り</button>
+        <span style="font-size:0.7rem;color:var(--text-muted);">継続/売却・新規買い・入替の助言／アウトパフォーム測定／売買の答え合わせ（昼チェックは平日12時に自動通知）</span>
     </div>`;
     el.innerHTML = andBanner + meta + nearMissBanner + adviseBar + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 
@@ -11568,6 +11630,103 @@ function _renderPortfolioPerformance(r) {
             ※ 取得来リターン=(現値−平均取得単価)/平均取得単価。ベンチマークは各ポジションの取得日(opened_at)→現在で比較。配当・税・売買手数料は未考慮の概算です。
         </div>
     `;
+}
+
+window.openTradeReview = async () => {
+    let modal = document.getElementById('trade-review-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="trade-review-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:620px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 style="margin:0;font-size:1rem;">🔎 売買の振り返り</h3>
+                        <button class="mini-link" onclick="document.getElementById('trade-review-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="trade-review-body" style="margin-top:10px;font-size:0.84rem;line-height:1.5;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('trade-review-modal');
+    }
+    const bodyEl = $('#trade-review-body');
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">実現損益と過去の判断の答え合わせを集計中…</div>';
+    modal.classList.remove('hidden');
+    try {
+        const [realized, report] = await Promise.all([
+            apiFetch('/api/investment/portfolio/realized').catch(() => null),
+            apiFetch('/api/investment/screener/reviews/report?horizon=d60').catch(() => null),
+        ]);
+        bodyEl.innerHTML = _renderTradeReview(realized, report);
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで集計できませんでした</div>';
+    }
+};
+
+function _renderTradeReview(realized, report) {
+    const sign = (v, suf = '%') => (v === null || v === undefined) ? '-' : `${v >= 0 ? '+' : ''}${v}${suf}`;
+    const yen = (v) => (v === null || v === undefined) ? '-' : `${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString()}`;
+
+    // --- 実現損益（自分の売買が生んだ利益）---
+    let realizedHtml = '';
+    if (realized && realized.ok) {
+        const pos = (realized.total_realized_pnl || 0) >= 0;
+        const col = realized.realized_trades ? (pos ? '#7ee0a0' : '#ff8a8a') : 'var(--text-muted)';
+        const bg = realized.realized_trades ? (pos ? 'rgba(126,224,160,0.10)' : 'rgba(255,138,138,0.10)') : 'rgba(255,255,255,0.05)';
+        const byCode = (realized.by_code || []).slice(0, 8).map(c => {
+            const cc = c.realized_pnl >= 0 ? '#7ee0a0' : '#ff8a8a';
+            return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:0.78rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
+                <span>${escapeHtml(c.name || c.code)} (${escapeHtml(c.code)})・${c.sell_count}回</span>
+                <span style="font-weight:700;color:${cc};">${yen(c.realized_pnl)}</span></div>`;
+        }).join('');
+        realizedHtml = `
+            <div style="font-weight:700;margin:2px 0 6px;">💰 自分の売買が生んだ利益（実現損益）</div>
+            <div style="background:${bg};border:1px solid ${col};border-radius:8px;padding:10px 12px;margin-bottom:8px;color:${col};font-weight:700;">
+                ${escapeHtml(realized.summary || '')}
+            </div>
+            ${byCode ? `<div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:2px;">銘柄別（実現損益順）</div>${byCode}` : ''}`;
+    } else {
+        realizedHtml = '<div style="color:var(--text-muted);">実現損益データを取得できませんでした。</div>';
+    }
+
+    // --- 判断の答え合わせ（市場平均との比較で採点）---
+    let reportHtml = '';
+    if (report && report.ok) {
+        const tv = report.trading_value_add || {};
+        const tvCol = tv.over_trading ? '#ffd454' : '#7ee0a0';
+        const cards = [];
+        if (report.verified_count) {
+            cards.push(`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.1);">
+                <span>判定済みの的中率（勝敗ベース・3ヶ月）</span><span style="font-weight:700;">${report.overall_hit_rate != null ? report.overall_hit_rate + '%' : '-'}</span></div>`);
+            if (report.raw_hit_rate != null && report.excess_hit_rate != null) {
+                cards.push(`<div style="display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.1);">
+                    <span>生リターン基準 → 市場超過基準</span><span style="font-weight:700;">${report.raw_hit_rate}% → ${report.excess_hit_rate}%</span></div>`);
+            }
+        }
+        const trendRows = (report.by_trend || []).slice(0, 6).map(b => {
+            const c = (b.hit_rate == null) ? 'var(--text-muted)' : (b.hit_rate >= 50 ? '#7ee0a0' : '#ff8a8a');
+            return `<div style="display:flex;justify-content:space-between;gap:8px;font-size:0.78rem;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
+                <span>${escapeHtml(b.key)}（${b.total}件）</span>
+                <span style="font-weight:700;color:${c};">的中 ${b.hit_rate != null ? b.hit_rate + '%' : '-'}${b.avg_excess_pct != null ? ' / 平均超過 ' + sign(b.avg_excess_pct) : ''}</span></div>`;
+        }).join('');
+        reportHtml = `
+            <div style="font-weight:700;margin:12px 0 6px;">📐 判断の答え合わせ（市場平均との超過で採点）</div>
+            <div style="background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+                ${escapeHtml(report.summary || '')}
+            </div>
+            ${cards.join('')}
+            ${tv.message ? `<div style="background:rgba(196,160,255,0.10);border:1px solid ${tvCol};border-radius:8px;padding:9px 11px;margin:8px 0;font-size:0.8rem;color:${tvCol};">📌 ${escapeHtml(tv.message)}</div>` : ''}
+            ${trendRows ? `<div style="font-weight:700;margin:8px 0 2px;font-size:0.82rem;">トレンド状態別の的中率</div>${trendRows}` : ''}
+            ${report.market_beta_note ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">${escapeHtml(report.market_beta_note)}</div>` : ''}
+            ${report.philosophy_note ? `<div style="font-size:0.72rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:8px;">🧭 ${escapeHtml(report.philosophy_note)}</div>` : ''}`;
+    } else {
+        reportHtml = '<div style="color:var(--text-muted);margin-top:10px;">答え合わせデータを取得できませんでした。</div>';
+    }
+
+    return realizedHtml + reportHtml + `
+        <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:10px;">
+            ※ 売買は成立時に自動で記録され、20/60営業日後に市場平均と比べて答え合わせされます（平日15:45に自動実行）。実現損益は売却時に売却単価を入力した取引のみ集計します。
+        </div>`;
 }
 
 // ===== 銘柄チャート（スクリーナー結果から1クリック表示） =====
@@ -12790,21 +12949,37 @@ window.runHoldingAction = async (action) => {
 window.removeHoldingFromAction = async () => {
     const code = _holdingActionCode;
     if (!code) return;
-    if (!await confirmDialog(`${code} をポートフォリオから削除しますか？（全数売却扱い）`)) return;
+    const holding = (_investHoldingsCache || []).find(h => h.code === code);
+    const res = await promptSellDialog({
+        title: '売却',
+        code,
+        name: holding?.name || '',
+        shares: holding?.shares != null ? holding.shares : null,
+        avgCost: holding?.avg_cost != null ? holding.avg_cost : null,
+        currency: holding?.currency || '',
+    });
+    if (!res) return; // キャンセル
     try {
         const data = await apiFetch('/api/investment/portfolio/remove', {
             method: 'POST',
-            body: JSON.stringify({ code, shares: null }),
+            body: JSON.stringify({ code, shares: res.shares, price: res.price }),
         });
         if (data && data.ok) {
-            showToast(`${code} を削除しました`);
+            let msg = `${code} を売却しました`;
+            if (data.realized_pnl != null) {
+                const sign = data.realized_pnl >= 0 ? '+' : '';
+                const pctStr = (data.realized_pnl_pct != null)
+                    ? ` / ${data.realized_pnl_pct >= 0 ? '+' : ''}${data.realized_pnl_pct}%` : '';
+                msg += `（実現損益 ${sign}${Math.round(data.realized_pnl).toLocaleString()}${pctStr}）`;
+            }
+            showToast(msg);
             window.closeHoldingActionModal();
             window.loadPortfolio();
         } else {
-            showToast(data?.error || '削除失敗', true);
+            showToast(data?.error || '売却失敗', true);
         }
     } catch (e) {
-        showToast('削除失敗: ' + (e.message || e), true);
+        showToast('売却失敗: ' + (e.message || e), true);
     }
 };
 

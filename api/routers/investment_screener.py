@@ -202,6 +202,56 @@ async def screener_performance(req: ScreenerPerformanceRequest):
     return _json_sanitize(await cog.measure_performance(days=req.days, holdings=req.holdings))
 
 
+# ----- 判断の事後検証ループ（売買が正しかったかを後で答え合わせ・学習） -----
+
+class ScreenerDecisionRecordRequest(BaseModel):
+    code: str
+    name: Optional[str] = ""
+    market: Optional[str] = ""
+    trade_action: str = "buy"  # buy / sell
+    price: Optional[float] = None
+    style: Optional[str] = ""
+
+
+@router.get("/reviews", dependencies=[Depends(verify_api_key)])
+async def screener_reviews_list(status: Optional[str] = None, limit: int = 200):
+    """記録済みの判断スナップショット（open/partial/verified）を一覧する。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.list_decision_reviews(status=status, limit=limit))
+
+
+@router.post("/reviews/record", dependencies=[Depends(verify_api_key)])
+async def screener_reviews_record(req: ScreenerDecisionRecordRequest):
+    """売買時の判断スナップショットを手動記録する（通常は売買時に自動記録される）。
+    過去の売買を後から登録（バックフィル）したいときに使う。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.record_trade_decision(
+        code=req.code, name=req.name or "", market=req.market or "",
+        trade_action=req.trade_action, price=req.price, style=req.style or "",
+    ))
+
+
+@router.post("/reviews/verify", dependencies=[Depends(verify_api_key)])
+async def screener_reviews_verify(force: bool = False):
+    """検証期日（20/60営業日）を過ぎた判断を答え合わせし、結果を保存する。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.verify_due_decisions(force=force))
+
+
+@router.get("/reviews/report", dependencies=[Depends(verify_api_key)])
+async def screener_reviews_report(horizon: str = "d60"):
+    """検証済みの判断を集計し、トレンド/推奨/スタイル/シグナル別の的中率を返す
+    （集計前に期日到来分を自動で答え合わせする）。horizon=d20(約1ヶ月)/d60(約3ヶ月)。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.decision_review_report(horizon=horizon))
+
+
+@router.delete("/reviews/{review_id}", dependencies=[Depends(verify_api_key)])
+async def screener_reviews_delete(review_id: int):
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.delete_decision_review(review_id))
+
+
 @router.post("/cross_filter", dependencies=[Depends(verify_api_key)])
 async def screener_cross_filter(req: ScreenerCrossFilterRequest):
     cog = _get_screener_cog()
