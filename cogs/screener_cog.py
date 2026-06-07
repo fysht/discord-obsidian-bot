@@ -128,12 +128,22 @@ class ScreenerCog(commands.Cog):
             return {"ok": False, "error": "保有銘柄が登録されていません。"}
         return await self.service.measure_performance(holdings, days=days)
 
-    async def analyze_business_model(self, code: str, name: str = "") -> dict:
+    async def analyze_business_model(self, code: str, name: str = "", force: bool = False) -> dict:
         """宝石7「ビジネスモデル」＋中計KPI/マテリアリティの定性分析（単一銘柄・Gemini）。
-        InvestmentCog の Gemini クライアントを再利用する。"""
+        結果は自動保存され、次回以降はキャッシュを返す（Geminiコスト節約）。
+        force=True で最新を再分析。"""
         code = str(code or "").strip()
         if not code:
             return {"ok": False, "error": "コードを指定してください"}
+        from services.screener_service import _research_cache_get, _research_cache_set
+
+        if not force:
+            cached = await _research_cache_get("bizmodel", code)  # 定性は陳腐化しにくいのでTTLなし
+            if cached and cached.get("report"):
+                return {"ok": True, "code": code, "name": cached.get("name") or name,
+                        "report": cached["report"], "cached": True,
+                        "fetched_at": cached.get("fetched_at")}
+
         inv = self.bot.get_cog("InvestmentCog")
         if not inv or not getattr(inv, "gemini_client", None):
             return {"ok": False, "error": "Gemini が未設定のため定性分析を実行できません。"}
@@ -144,7 +154,8 @@ class ScreenerCog(commands.Cog):
             return {"ok": False, "error": f"定性分析に失敗しました: {e}"}
         if not text:
             return {"ok": False, "error": "定性分析を取得できませんでした。"}
-        return {"ok": True, "code": code, "name": name, "report": text}
+        await _research_cache_set("bizmodel", code, {"report": text, "name": name})
+        return {"ok": True, "code": code, "name": name, "report": text, "cached": False}
 
     async def run_multi_screening(
         self,

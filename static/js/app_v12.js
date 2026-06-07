@@ -11335,6 +11335,15 @@ function _renderAdviceCard(r) {
         }).join('');
         safeHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">🏦 財務(EDINET ${escapeHtml(sf.period_end || '')}): ${sf.cs_pattern ? escapeHtml(sf.cs_pattern) : ''}<br>${chips}</div>`;
     }
+    // 利確目安（projection）— 候補のみ。過熱/余地を表示
+    let projHtml = '';
+    const pj = r.projection;
+    if (pj && pj.verdict) {
+        const pjColor = pj.overheated ? '#ffb454' : 'var(--text-muted)';
+        const rrTxt = (pj.risk_reward != null) ? ` / RR ${pj.risk_reward}` : '';
+        const remTxt = (pj.remaining_estimate_pct != null) ? ` / 残り余地 約${pj.remaining_estimate_pct}%` : '';
+        projHtml = `<div style="margin:3px 0;font-size:0.72rem;color:${pjColor};">🎯 利確目安: ${escapeHtml(pj.verdict)}${rrTxt}${remTxt}</div>`;
+    }
     const codeEsc = (r.code || '').replace(/'/g, "\\'");
     const nameEsc = (r.name || '').replace(/'/g, "\\'");
     return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
@@ -11348,6 +11357,7 @@ function _renderAdviceCard(r) {
         <ul style="margin:4px 0 4px;padding-left:16px;font-size:0.76rem;color:var(--text-secondary);">${reasons}</ul>
         ${relHtml}
         ${safeHtml}
+        ${projHtml}
         ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
         <div style="margin-top:4px;"><button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openBusinessModel('${codeEsc}','${nameEsc}')" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析（宝石7）">📄 事業/中計分析</button></div>
     </div>`;
@@ -11420,7 +11430,7 @@ window.openHoldingsReview = async () => {
 };
 
 // ===== ビジネスモデル・中計KPI 定性分析（宝石7・Gemini） =====
-window.openBusinessModel = async (code, name) => {
+window.openBusinessModel = async (code, name, force = false) => {
     let modal = document.getElementById('biz-model-modal');
     if (!modal) {
         const wrap = document.createElement('div');
@@ -11431,26 +11441,34 @@ window.openBusinessModel = async (code, name) => {
                         <h3 id="biz-model-title" style="margin:0;font-size:1rem;">📄 事業/中計分析</h3>
                         <button class="mini-link" onclick="document.getElementById('biz-model-modal').classList.add('hidden')">✕</button>
                     </div>
-                    <div id="biz-model-body" style="margin-top:10px;font-size:0.84rem;line-height:1.6;white-space:pre-wrap;"></div>
+                    <div id="biz-model-meta" style="margin-top:4px;font-size:0.72rem;color:var(--text-muted);"></div>
+                    <div id="biz-model-body" style="margin-top:8px;font-size:0.84rem;line-height:1.6;white-space:pre-wrap;"></div>
                 </div>
             </div>`;
         document.body.appendChild(wrap.firstElementChild);
         modal = document.getElementById('biz-model-modal');
     }
     const titleEl = $('#biz-model-title');
+    const metaEl = $('#biz-model-meta');
     const bodyEl = $('#biz-model-body');
     if (titleEl) titleEl.textContent = `📄 ${code} ${name || ''} 事業/中計分析`;
-    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">IR・決算説明資料・中期経営計画・統合報告書を検索して分析中…（30秒〜1分）</div>';
+    if (metaEl) metaEl.innerHTML = '';
+    if (bodyEl) bodyEl.innerHTML = `<div class="loading-placeholder">${force ? '最新情報で再分析中' : '保存済みを確認・無ければ検索して分析中'}…（初回は30秒〜1分）</div>`;
     modal.classList.remove('hidden');
     try {
         const r = await apiFetch('/api/investment/screener/business_model', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code, name: name || '' }),
+            body: JSON.stringify({ code, name: name || '', force: !!force }),
         });
         if (!r || !r.ok) {
             bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '分析できませんでした')}</div>`;
             return;
+        }
+        if (metaEl) {
+            const when = r.fetched_at ? String(r.fetched_at).slice(0, 10) : '';
+            const tag = r.cached ? `💾 保存済み（${when}）を表示` : '🆕 新規分析を保存しました';
+            metaEl.innerHTML = `${tag} ・ <a href="#" style="color:#4ea1ff;" onclick="event.preventDefault();openBusinessModel('${(code||'').replace(/'/g,"\\'")}','${(name||'').replace(/'/g,"\\'")}',true)">🔄 最新を再分析</a>`;
         }
         bodyEl.innerHTML = (window.renderMarkdown ? window.renderMarkdown(r.report || '') : escapeHtml(r.report || ''));
     } catch (e) {

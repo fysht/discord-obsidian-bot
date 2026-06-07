@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 from typing import Optional
 
@@ -14,10 +15,44 @@ from config import JST
 from services.jp_stock_data_service import StockDataProvider, get_provider
 from services.screener_engine import (
     ScreeningResult,
-    STRATEGY_REGISTRY,
     get_strategy,
     list_strategies,
 )
+
+
+async def _research_cache_get(kind: str, code: str, ttl_days: Optional[int] = None) -> Optional[dict]:
+    """銘柄調査結果のキャッシュを取得（app_setting を KV ストアとして利用）。
+    ttl_days を超えたものは無効。kind 例: "fin"(財務) / "bizmodel"(定性)。"""
+    try:
+        from api.database import get_app_setting
+        raw = await get_app_setting(f"research.{kind}.{code}", "")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        obj = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if ttl_days and obj.get("fetched_at"):
+        try:
+            age = (datetime.datetime.now(JST) - datetime.datetime.fromisoformat(obj["fetched_at"])).days
+            if age > ttl_days:
+                return None
+        except (ValueError, TypeError):
+            pass
+    return obj
+
+
+async def _research_cache_set(kind: str, code: str, payload: dict) -> None:
+    """銘柄調査結果を自動保存（fetched_at を付与）。"""
+    try:
+        from api.database import set_app_setting
+        data = dict(payload)
+        data["fetched_at"] = datetime.datetime.now(JST).isoformat()
+        await set_app_setting(f"research.{kind}.{code}", json.dumps(data, ensure_ascii=False))
+    except Exception as e:
+        logging.debug(f"research cache set 失敗 {kind}.{code}: {e}")
 
 
 class ScreenerService:
@@ -241,7 +276,9 @@ class ScreenerService:
         with_financials=True なら EDINET の有報CSVから安全性/キャッシュ指標も取得して
         診断に織り込む（走査が重いので保有＋候補の小集合のみ）。
         """
-        from services.screener_engine import analyze_position, compute_relative_metrics
+        from services.screener_engine import (
+            analyze_position, compute_relative_metrics, analyze_breakout_projection,
+        )
 
         holdings = holdings or []
         candidates = candidates or []
@@ -249,29 +286,39 @@ class ScreenerService:
         days = max(120, min(int(days or 300), 1000))
         sem = asyncio.Semaphore(4)
 
-        # 財務サマリー（任意・重い処理）。日本株=EDINET、米国株=SEC EDGAR で取得。
+        # 財務サマリー（日本株=EDINET、米国株=SEC EDGAR）。
+        # 1) まずキャッシュから読む（高速・常時）。一度精査すれば次回から自動で反映される。
+        # 2) with_financials=True のときだけ、未キャッシュ分をネットワーク取得して保存。
+        all_codes = [str(h.get("code")) for h in holdings if h.get("code")]
+        all_codes += [str(c.get("code")) for c in candidates
+                      if c.get("code") and str(c.get("code")) not in held_codes]
         financials_by_code: dict[str, dict] = {}
+        for c in all_codes:
+            cached = await _research_cache_get("fin", c, ttl_days=14)
+            if cached and cached.get("summary"):
+                financials_by_code[c] = cached["summary"]
+
         if with_financials:
-            all_codes = [str(h.get("code")) for h in holdings if h.get("code")]
-            all_codes += [str(c.get("code")) for c in candidates
-                          if c.get("code") and str(c.get("code")) not in held_codes]
-            jp_codes = [c for c in all_codes if c.isdigit()]
-            us_codes = [c for c in all_codes if not c.isdigit()]
+            missing = [c for c in all_codes if c not in financials_by_code]
+            jp_codes = [c for c in missing if c.isdigit()]
+            us_codes = [c for c in missing if not c.isdigit()]
             if jp_codes:
                 try:
                     from services.edinet_financials import get_financials_for_codes as _edinet
-                    financials_by_code.update(await _edinet(jp_codes))
+                    for code, s in (await _edinet(jp_codes)).items():
+                        financials_by_code[code] = s
+                        await _research_cache_set("fin", code, {"summary": s})
                 except Exception as e:
                     logging.debug(f"advise EDINET財務取得エラー: {e}")
             if us_codes:
                 try:
                     from services.edgar_financials import get_financials_for_codes as _edgar
                     fin_us = await _edgar(us_codes)
-                    # EDGAR は大文字ティッカーで返すため、元コード表記にもマッピング
                     for c in us_codes:
                         s = fin_us.get(c.upper())
                         if s:
                             financials_by_code[c] = s
+                            await _research_cache_set("fin", c, {"summary": s})
                 except Exception as e:
                     logging.debug(f"advise EDGAR財務取得エラー: {e}")
 
@@ -305,6 +352,37 @@ class ScreenerService:
                 except Exception as e:
                     logging.debug(f"advise analyze_position エラー {code}: {e}")
                     res = {"ok": False, "error": f"診断失敗: {e}"}
+                # 新規候補は「利確目安(projection)」と整合させる。過熱/リスクリワード劣後なら
+                # 新規買いは見送り（BUY→WATCH）。保有銘柄は利を伸ばすため過熱でも維持。
+                if (not held) and res.get("ok"):
+                    try:
+                        proj = analyze_breakout_projection(df)
+                    except Exception:
+                        proj = None
+                    if proj and proj.get("ok"):
+                        verdict_txt = proj.get("verdict") or ""
+                        overheated = verdict_txt.startswith("過熱")
+                        avoid = verdict_txt.startswith("見送り")
+                        res["projection"] = {
+                            "verdict": verdict_txt,
+                            "risk_reward": proj.get("risk_reward"),
+                            "remaining_estimate_pct": proj.get("remaining_estimate_pct"),
+                            "overheated": overheated,
+                        }
+                        # 利確目安が「見送り寄り」(リスクリワード劣後)なら新規買いは見送り(BUY→WATCH)。
+                        # 「過熱気味」は BUY のまま残すが overheated フラグを立て、入替候補からは除外する
+                        # （後段の rotations で利用）。これで利確目安と一括診断の判断が食い違わない。
+                        if res["verdict"]["action"] == "BUY" and avoid:
+                            res["verdict"]["action"] = "WATCH"
+                            res["verdict"]["action_label"] = "ウォッチ（妙味薄）"
+                            res["verdict"]["note"] = (
+                                "テクニカル・ファンダは買い方向だが、利確目安が「見送り寄り」"
+                                "（直近高値まで近く損切り幅に対し利幅が小さい）。新規買いは見送り。"
+                            )
+                        elif res["verdict"]["action"] == "BUY" and overheated:
+                            res["verdict"]["note"] += (
+                                "（ただし利確目安は『過熱気味』。新規・入替で飛び乗るより押し目待ちが無難）"
+                            )
             res["code"] = code
             res["name"] = name
             res["sector"] = sector
@@ -339,8 +417,10 @@ class ScreenerService:
 
         sells = [r for r in holdings_out
                  if r.get("ok") and r["verdict"]["action"] in ("SELL", "TRIM")]
+        # 入替先(buys)からは利確目安で「過熱気味」の銘柄を除外（高値掴みの入替を避ける）。
         buys = [r for r in candidates_out
-                if r.get("ok") and r["verdict"]["action"] == "BUY"]
+                if r.get("ok") and r["verdict"]["action"] == "BUY"
+                and not (r.get("projection") or {}).get("overheated")]
         # 入れ替えは同一市場内のみ（日本株↔日本株、米国株↔米国株）
         rotations = []
         for mkt in ("JP", "US"):
@@ -359,10 +439,11 @@ class ScreenerService:
                     })
 
         keep = [r for r in holdings_out if r.get("ok") and r["verdict"]["action"] in ("HOLD", "HOLD_WATCH")]
+        buy_count = sum(1 for r in candidates_out if r.get("ok") and r["verdict"]["action"] == "BUY")
         as_of = next((r.get("as_of") for r in ok_all if r.get("as_of")), "")
         summary = (f"保有{len(holdings_out)}銘柄: 継続{len(keep)}・縮小/売却{len(sells)}。"
-                   f"新規候補{len(candidates_out)}銘柄中、両方で買い{len(buys)}件。"
-                   f"入替提案{len(rotations)}件。")
+                   f"新規候補{len(candidates_out)}銘柄中、両方で買い{buy_count}件"
+                   f"（うち入替向き{len(buys)}件）。入替提案{len(rotations)}件。")
 
         return {
             "ok": True,

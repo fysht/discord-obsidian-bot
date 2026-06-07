@@ -177,14 +177,16 @@ async def screener_advise(req: ScreenerAdviseRequest):
 class ScreenerBusinessModelRequest(BaseModel):
     code: str
     name: Optional[str] = ""
+    force: bool = False  # True で保存済みを無視して最新を再分析
 
 
 @router.post("/business_model", dependencies=[Depends(verify_api_key)])
 async def screener_business_model(req: ScreenerBusinessModelRequest):
     """宝石7「ビジネスモデル」＋中計KPI/マテリアリティの定性分析（単一銘柄・Gemini）。
-    IR・決算説明資料・中期経営計画・統合報告書を参照して整理する。"""
+    IR・決算説明資料・中期経営計画・統合報告書を参照して整理する。
+    結果は自動保存され、次回はキャッシュを返す（force=True で再分析）。"""
     cog = _get_screener_cog()
-    return _json_sanitize(await cog.analyze_business_model(req.code, req.name or ""))
+    return _json_sanitize(await cog.analyze_business_model(req.code, req.name or "", force=req.force))
 
 
 class ScreenerPerformanceRequest(BaseModel):
