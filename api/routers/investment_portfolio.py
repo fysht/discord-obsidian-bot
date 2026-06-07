@@ -83,3 +83,11 @@ async def investment_portfolio_review():
     平日12時の自動通知と同じ内容を、その場で実行する（手動トリガー）。"""
     cog = _get_investment_cog()
     return await cog.run_holdings_review()
+
+
+@router.post("/breakout_advise", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_breakout_advise():
+    """「じわじわ高値ブレイク」(topix500)で新規候補を抽出し、保有＋候補を一括診断したレポートを返す。
+    平日16時(大引け後)の自動通知と同じ内容をその場で実行する（手動トリガー・約1〜3分）。"""
+    cog = _get_investment_cog()
+    return await cog.run_breakout_advise()

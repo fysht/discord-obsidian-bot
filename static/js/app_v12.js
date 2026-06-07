@@ -11206,6 +11206,7 @@ function _renderScreenerCandidates(data) {
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(126,224,160,0.12);color:#7ee0a0;border:1px solid rgba(126,224,160,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true);" title="保有銘柄＋この候補を、テクニカル(トレンド)×ファンダ(健全性)の二重視点で一括診断します">🧭 保有＆候補を一括診断</button>
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioPerformance();" title="保有ポートフォリオが市場平均（日経平均等）をアウトパフォームできているかを測定します">📊 市場平均と比較</button>
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();openHoldingsReview();" title="平日12時の自動「保有銘柄の昼チェック」と同じ診断を今すぐ実行します">🕛 保有を今すぐ昼チェック</button>
+        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(255,138,101,0.12);color:#ff8a65;border:1px solid rgba(255,138,101,0.35);border-radius:6px;" onclick="event.preventDefault();openBreakoutAdvise();" title="「じわじわ高値ブレイク」(topix500)で新規候補を抽出し、保有＋候補を一括診断します（平日16時の自動実行と同じ・約1〜3分）">🚀 高値ブレイク→一括診断</button>
         <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(196,160,255,0.12);color:#c4a0ff;border:1px solid rgba(196,160,255,0.35);border-radius:6px;" onclick="event.preventDefault();openTradeReview();" title="過去の売買が正しかったか（市場平均との比較）と、自分の売買が生んだ実現損益を振り返ります">🔎 売買の振り返り</button>
         <span style="font-size:0.7rem;color:var(--text-muted);">継続/売却・新規買い・入替の助言／アウトパフォーム測定／売買の答え合わせ（昼チェックは平日12時に自動通知）</span>
     </div>`;
@@ -11486,6 +11487,39 @@ window.openHoldingsReview = async () => {
             return;
         }
         bodyEl.textContent = r.report || '保有銘柄が登録されていません。';
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
+    }
+};
+
+// ===== 高値ブレイク→一括診断（平日16時の自動実行を手動トリガー） =====
+window.openBreakoutAdvise = async () => {
+    let modal = document.getElementById('breakout-advise-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="breakout-advise-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:600px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 style="margin:0;font-size:1rem;">🚀 高値ブレイク → 一括診断</h3>
+                        <button class="mini-link" onclick="document.getElementById('breakout-advise-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="breakout-advise-body" style="margin-top:10px;font-size:0.84rem;line-height:1.6;white-space:pre-wrap;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('breakout-advise-modal');
+    }
+    const bodyEl = $('#breakout-advise-body');
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">topix500を走査して高値ブレイク候補を抽出 → 保有＋候補を一括診断中…（約1〜3分）</div>';
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch('/api/investment/portfolio/breakout_advise', { method: 'POST' });
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
+            return;
+        }
+        bodyEl.textContent = r.report || '通知すべき診断結果はありませんでした（保有・候補なし）。';
     } catch (e) {
         bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
     }
@@ -11798,10 +11832,25 @@ window._reloadStockChart = async () => {
         return { x: new Date(c.date + 'T00:00:00').getTime(), y: +(s / n).toFixed(1) };
     });
 
+    // 出来高（チャート下部に棒グラフで重ねる）。陽線=緑/陰線=赤で色分け。
+    const volData = candles.map(c => ({ x: new Date(c.date + 'T00:00:00').getTime(), y: (c.volume != null ? c.volume : 0) }));
+    const volColors = candles.map(c => {
+        const up = (c.open != null && c.close != null) ? (c.close >= c.open) : true;
+        return up ? 'rgba(38,166,154,0.40)' : 'rgba(239,83,80,0.40)';
+    });
+    const maxVol = Math.max(1, ...candles.map(c => c.volume || 0));
+    // 出来高棒が下部 ~22% に収まるよう、第2軸の最大値を実最大の約4.5倍に取る
+    const volDataset = {
+        label: '出来高', type: 'bar', data: volData, backgroundColor: volColors,
+        yAxisID: 'vol', order: 1, maxBarThickness: 6, borderWidth: 0,
+    };
+
     const last = [...closes].reverse().find(v => v != null);
     const first = closes.find(v => v != null);
     const chg = (first && last) ? ((last - first) / first * 100) : 0;
-    if (meta) meta.textContent = `終値 ${last ?? '-'} / 期間騰落 ${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%`;
+    const lastVol = [...candles].reverse().find(c => c.volume != null)?.volume;
+    const volStr = (lastVol != null) ? ` / 出来高 ${Number(lastVol).toLocaleString()}` : '';
+    if (meta) meta.textContent = `終値 ${last ?? '-'} / 期間騰落 ${chg >= 0 ? '+' : ''}${chg.toFixed(1)}%${volStr}`;
 
     _destroyStockChart();
     const ctx = document.getElementById('stock-chart-canvas');
@@ -11819,8 +11868,25 @@ window._reloadStockChart = async () => {
     const commonOpts = {
         responsive: true, maintainAspectRatio: false,
         interaction: { mode: 'index', intersect: false },
-        plugins: { legend: { labels: { boxWidth: 10, font: { size: 10 } } } },
-        scales: { x: xScale, y: { ticks: { font: { size: 9 } } } },
+        plugins: {
+            legend: { labels: { boxWidth: 10, font: { size: 10 } } },
+            tooltip: { callbacks: { label: (item) => {
+                if (item.dataset.label === '出来高') {
+                    return `出来高 ${Number(item.parsed.y).toLocaleString()}`;
+                }
+                const y = (item.parsed && item.parsed.y != null) ? item.parsed.y : null;
+                return `${item.dataset.label}: ${y != null ? y : '-'}`;
+            } } },
+        },
+        scales: {
+            x: xScale,
+            y: { ticks: { font: { size: 9 } } },
+            // 出来高用の第2軸（右・非表示）。下部に棒が収まるよう最大値を持ち上げる。
+            vol: {
+                position: 'right', display: false, beginAtZero: true,
+                max: maxVol * 4.5, grid: { display: false },
+            },
+        },
     };
 
     if (hasCandle) {
@@ -11830,6 +11896,7 @@ window._reloadStockChart = async () => {
                 { label: '株価', data: ohlc, color: { up: '#26a69a', down: '#ef5350', unchanged: '#888' }, borderColor: { up: '#26a69a', down: '#ef5350', unchanged: '#888' } },
                 { label: 'SMA25', type: 'line', data: smaPoints(25), borderColor: '#ffd454', borderWidth: 1, pointRadius: 0, spanGaps: true },
                 { label: 'SMA75', type: 'line', data: smaPoints(75), borderColor: '#4ea1ff', borderWidth: 1, pointRadius: 0, spanGaps: true },
+                volDataset,
             ] },
             options: commonOpts,
         });
@@ -11840,6 +11907,7 @@ window._reloadStockChart = async () => {
                 { label: '終値', data: candles.map(c => ({ x: new Date(c.date + 'T00:00:00').getTime(), y: c.close })), borderColor: '#4ea1ff', borderWidth: 1.4, pointRadius: 0, tension: 0.1, spanGaps: true },
                 { label: 'SMA25', data: smaPoints(25), borderColor: '#ffd454', borderWidth: 1, pointRadius: 0, spanGaps: true },
                 { label: 'SMA75', data: smaPoints(75), borderColor: '#ff8a8a', borderWidth: 1, pointRadius: 0, spanGaps: true },
+                volDataset,
             ] },
             options: commonOpts,
         });

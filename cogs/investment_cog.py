@@ -324,6 +324,7 @@ class InvestmentCog(commands.Cog):
                 self.auto_news_sentiment_task,
                 self.auto_holdings_noon_review_task,
                 self.auto_decision_review_verify_task,
+                self.auto_breakout_advise_task,
             ):
                 try:
                     task.start()
@@ -337,6 +338,7 @@ class InvestmentCog(commands.Cog):
             self.auto_news_sentiment_task,
             self.auto_holdings_noon_review_task,
             self.auto_decision_review_verify_task,
+            self.auto_breakout_advise_task,
         ):
             try:
                 task.cancel()
@@ -678,6 +680,132 @@ class InvestmentCog(commands.Cog):
             parts.append(f"🔁 {rot.get('reason', '')}")
         parts.append("")
         parts.append("※ テクニカル(トレンド)×ファンダの決定論的診断です。12:30 の売買判断の参考に。")
+        return {"ok": True, "report": "\n".join(p for p in parts if p is not None)}
+
+    @tasks.loop(time=datetime.time(hour=16, minute=0, tzinfo=JST))
+    async def auto_breakout_advise_task(self):
+        """平日 16:00 (JST) 大引け後に「じわじわ高値ブレイク」(topix500)で新規候補を抽出し、
+        保有＋候補を一括診断して通知ログへ。当日確定の日足で判定するので翌日の作戦に使える。"""
+        if datetime.datetime.now(JST).weekday() >= 5:
+            return
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("auto_breakout_advise"):
+            return
+        try:
+            result = await self.run_breakout_advise()
+        except Exception:
+            logging.exception("auto_breakout_advise_task failed")
+            return
+        if not result.get("ok") or not result.get("report"):
+            return
+        await self._notify_long("breakout_advise", "🚀 じわじわ高値ブレイク×一括診断", result["report"])
+
+    @auto_breakout_advise_task.before_loop
+    async def _before_auto_breakout_advise(self):
+        await self.bot.wait_until_ready()
+
+    async def run_breakout_advise(self, universe: str = "topix500", top_n: int = 10) -> dict:
+        """「じわじわ高値ブレイク」で新規候補を抽出し、保有＋候補を一括診断するレポートを作る。
+        スクリーニング(run_multi_screening) → 診断(advise_portfolio) を連結する（決定論的・無料）。"""
+        screener = self.bot.get_cog("ScreenerCog")
+        if not screener:
+            return {"ok": False, "error": "ScreenerCog 未ロード"}
+
+        # 1) じわじわ高値ブレイクで新規候補を抽出
+        cand_input = []
+        breakout_brief = []
+        try:
+            scr = await screener.run_multi_screening(
+                styles=["creeping_breakout"], top_n=int(top_n), universe_name=universe,
+            )
+        except Exception as e:
+            logging.warning(f"run_breakout_advise screening失敗: {e}")
+            scr = {"ok": False}
+        if scr.get("ok"):
+            for c in (scr.get("candidates") or []):
+                code = c.get("code")
+                if not code:
+                    continue
+                cand_input.append({"code": code, "name": c.get("name"), "sector": c.get("sector")})
+                nm = " (部分合致)" if c.get("is_near_miss") else ""
+                breakout_brief.append(
+                    f"- {code} {c.get('name', '')}（{c.get('sector', '') or '-'}）"
+                    f"{(' ' + str(c.get('score')) + '点') if c.get('score') is not None else ''}{nm}"
+                )
+
+        # 2) 保有＋候補を一括診断
+        advice = await screener.advise_portfolio(candidates=cand_input, with_financials=False)
+        if not advice.get("ok"):
+            return advice
+
+        holds = [h for h in (advice.get("holdings") or []) if h.get("ok")]
+        cands = [c for c in (advice.get("candidates") or []) if c.get("ok")]
+        # 通知すべき中身が何も無ければ送らない
+        if not holds and not cands:
+            return {"ok": True, "report": ""}
+
+        sell_labels = {"SELL": "🔴 売却・撤退", "TRIM": "🟠 一部利確・縮小"}
+
+        def _hold_line(r):
+            v = r["verdict"]
+            t = r.get("trend") or {}
+            pnl = r.get("pnl") or {}
+            pnl_s = f" / 含み{pnl['pnl_pct']:+.1f}%" if pnl.get("pnl_pct") is not None else ""
+            stop = t.get("trailing_stop")
+            stop_s = f" / トレイル{stop:g}円" if stop is not None else ""
+            return (f"- {r['code']} {r.get('name', '')}: "
+                    f"{sell_labels.get(v['action'], v['action_label'])}（{r.get('score')}点）"
+                    f"{stop_s}{pnl_s}\n  {v.get('note', '')}")
+
+        def _buy_line(r):
+            v = r["verdict"]
+            proj = r.get("projection") or {}
+            proj_s = f" / 利確目安: {proj.get('verdict')}" if proj.get("verdict") else ""
+            tr = r.get("track_record") or {}
+            tr_s = (f" / 過去このトレンドの的中{tr.get('hit_rate')}%({tr.get('samples')}件)"
+                    if tr.get("hit_rate") is not None else "")
+            return (f"- {r['code']} {r.get('name', '')}: "
+                    f"🟢 {v.get('action_label', '新規買い')}（{r.get('score')}点）{proj_s}{tr_s}\n  {v.get('note', '')}")
+
+        sells = [r for r in holds if r["verdict"]["action"] in ("SELL", "TRIM")]
+        buys = [r for r in cands if r["verdict"]["action"] == "BUY"]
+
+        today = (datetime.datetime.now(JST).strftime("%-m/%-d")
+                 if os.name != "nt" else datetime.datetime.now(JST).strftime("%m/%d"))
+        parts = [f"🚀 じわじわ高値ブレイク × 一括診断（{today} 大引け後）",
+                 advice.get("summary", ""), ""]
+
+        caution = advice.get("over_trading_caution")
+        if caution:
+            parts += [caution, ""]
+
+        if sells:
+            parts.append("【保有：売却/縮小の検討】")
+            parts.extend(_hold_line(r) for r in sells)
+            parts.append("")
+        if buys:
+            parts.append("【新規買い候補（テクニカル×ファンダ 両方で買い）】")
+            parts.extend(_buy_line(r) for r in buys)
+            parts.append("")
+        elif cand_input:
+            parts.append("※ 抽出した高値ブレイク候補で「両方で買い」に達した銘柄はありませんでした。")
+            parts.append("")
+
+        rotations = (advice.get("rotations") or [])[:3]
+        if rotations:
+            parts.append("【入替の検討】")
+            parts.extend(f"🔁 {rot.get('reason', '')}" for rot in rotations)
+            parts.append("")
+
+        if breakout_brief:
+            parts.append(f"【じわじわ高値ブレイク 上位（{universe}）】")
+            parts.extend(breakout_brief)
+            parts.append("")
+        elif not scr.get("ok"):
+            parts.append("※ 高値ブレイクのスクリーニングは実行できませんでした（保有のみ診断）。")
+            parts.append("")
+
+        parts.append("※ 当日確定の日足による決定論的診断です。新規買いは過熱・妙味薄を除外。最終判断は自己責任で。")
         return {"ok": True, "report": "\n".join(p for p in parts if p is not None)}
 
     # ==========================================================
