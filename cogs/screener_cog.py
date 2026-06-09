@@ -122,6 +122,10 @@ class ScreenerCog(commands.Cog):
     async def analyze_projection(self, code: str, days: int = 750) -> dict:
         return await self.service.analyze_projection(code, days)
 
+    async def score_all_methods(self, code: str, days: int = 300) -> dict:
+        """1銘柄を登録済み全メソッドで採点し、メソッド別の点数と得意メソッドを返す。"""
+        return await self.service.score_all_methods(code, days)
+
     async def advise_portfolio(
         self,
         candidates: Optional[list[dict]] = None,

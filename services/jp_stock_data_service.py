@@ -311,6 +311,8 @@ class YFinanceProvider(StockDataProvider):
                 "roe": info.get("returnOnEquity"),
                 "operating_margin": info.get("operatingMargins"),
                 "profit_margin": info.get("profitMargins"),
+                "revenue": info.get("totalRevenue"),
+                "shares_outstanding": info.get("sharesOutstanding"),
                 "revenue_growth": info.get("revenueGrowth"),
                 "earnings_growth": info.get("earningsGrowth"),
                 "dividend_yield": info.get("dividendYield"),

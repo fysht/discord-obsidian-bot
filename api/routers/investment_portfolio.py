@@ -36,6 +36,7 @@ class PortfolioEditRequest(BaseModel):
     currency: Optional[str] = None
     notes: Optional[str] = None
     opened_at: Optional[str] = None  # 実際の購入日(YYYY-MM-DD)に補正できる。
+    preferred_method: Optional[str] = None  # この銘柄が有利に見えるメソッド(style_name)
 
 
 @router.get("", dependencies=[Depends(verify_api_key)])

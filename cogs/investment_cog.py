@@ -2020,7 +2020,7 @@ class InvestmentCog(commands.Cog):
                 return {"ok": False, "error": "avg_cost は正の値が必要です"}
             existing["avg_cost"] = round(new_cost, 4)
 
-        for key in ("name", "sector", "currency", "notes"):
+        for key in ("name", "sector", "currency", "notes", "preferred_method"):
             if key in fields and fields[key] is not None:
                 existing[key] = fields[key]
 

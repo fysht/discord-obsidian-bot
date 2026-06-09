@@ -10727,10 +10727,25 @@ async function _loadScreenerStyles() {
         chipsEl.innerHTML = '<span class="loading-placeholder">スタイルが登録されていません。</span>';
         return;
     }
-    chipsEl.innerHTML = _screenerStylesCache.map(s => {
+    // カテゴリ（テクニカル / ファンダ / 複合）ごとに見出しを付けてグループ表示
+    const _catLabels = { technical: 'テクニカル分析', fundamental: 'ファンダメンタルズ分析', hybrid: '複合' };
+    const _catOrder = ['technical', 'fundamental', 'hybrid'];
+    const _chip = (s) => {
         const active = _screenerSelectedStyles.has(s.name) ? ' active' : '';
         return `<button class="chip-btn${active}" data-style="${escapeHtml(s.name)}" title="${escapeHtml(s.description || '')}" onclick="_selectScreenerStyle('${s.name.replace(/'/g, '&#39;')}')">${escapeHtml(s.display_name)}</button>`;
-    }).join('');
+    };
+    const _groups = {};
+    _screenerStylesCache.forEach(s => {
+        const c = s.category || 'fundamental';
+        (_groups[c] = _groups[c] || []).push(s);
+    });
+    const _cats = _catOrder.filter(c => _groups[c]).concat(
+        Object.keys(_groups).filter(c => !_catOrder.includes(c)));
+    chipsEl.innerHTML = _cats.map(c => `
+        <div class="screener-cat-group" style="width:100%;margin-bottom:6px;">
+            <div style="font-size:0.72rem;color:var(--text-muted);font-weight:700;margin:4px 0 4px;">${escapeHtml(_catLabels[c] || c)}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">${_groups[c].map(_chip).join('')}</div>
+        </div>`).join('');
     _renderScreenerFilters();
 }
 
@@ -11191,6 +11206,7 @@ function _renderScreenerCandidates(data) {
                         <span style="display:flex;gap:4px;flex-shrink:0;">
                             <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openStockChart('${codeEsc}','${nameEsc}')">📈 チャート</button>
                             <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openStockProjection('${codeEsc}','${nameEsc}')" title="過去の高値ブレイク後の値動きから上昇余地・利確/損切り目安を見る">🎯 利確目安</button>
+                            <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openMethodScores('${codeEsc}','${nameEsc}',{})" title="各メソッドから見た魅力(点数)を比較する">📊 メソッド</button>
                             <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();_addScreenerToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${sourceEsc}')">⭐ 注目</button>
                         </span>
                     </div>
@@ -11269,6 +11285,44 @@ function _renderProjection(r) {
     `).join('');
     const notes = (r.notes || []).map(n => `<li style="margin-bottom:3px;">${escapeHtml(n)}</li>`).join('');
     const rrColor = (r.risk_reward != null && r.risk_reward >= 2) ? '#7ee0a0' : (r.risk_reward != null && r.risk_reward < 1 ? '#ff8a8a' : 'var(--text-primary)');
+
+    // 営業利益倍率法の目標株価（DUKE 7章）
+    const tbm = r.target_by_multiple;
+    let multipleHtml = '';
+    if (tbm && tbm.ok) {
+        const tg = tbm.targets || {};
+        const row = (label, t) => t ? `
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;">
+                <span style="color:var(--text-secondary);">${escapeHtml(label)}</span>
+                <span style="font-weight:700;color:#7ee0a0;">${num(t.price)}円 <span style="color:var(--text-muted);font-weight:400;">(+${num(t.upside_pct)}%)</span></span>
+            </div>` : '';
+        multipleHtml = `
+            <div style="font-weight:700;margin:10px 0 4px;">🏷️ 目標株価（営業利益倍率法・3年後）</div>
+            ${row('保守（現倍率×0.8）', tg['保守'])}
+            ${row('本命（現倍率維持）', tg['本命'])}
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">${escapeHtml(tbm.note || '')}</div>`;
+    } else if (tbm && tbm.reason) {
+        multipleHtml = `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">🏷️ 倍率法の目標株価: ${escapeHtml(tbm.reason)}</div>`;
+    }
+
+    // 5分割法 + -10%損切り（DUKE 6章）
+    const bp = r.buy_plan;
+    let buyPlanHtml = '';
+    if (bp && bp.tranches) {
+        const trows = bp.tranches.map(t => `
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed rgba(255,255,255,0.06);">
+                <span style="color:var(--text-secondary);">${t.no}/5（${t.ratio_pct}%）${escapeHtml(t.trigger)}</span>
+                <span style="color:var(--text-primary);">${t.ref_price != null ? num(t.ref_price) + '円' : '—'}</span>
+            </div>`).join('');
+        buyPlanHtml = `
+            <div style="font-weight:700;margin:10px 0 4px;">🧩 買い増し計画（5分割法）</div>
+            ${trows}
+            <div style="display:flex;justify-content:space-between;gap:8px;margin-top:4px;">
+                <span>🚨 最終損切りライン（-10%ルール）</span>
+                <span style="font-weight:700;color:#ff8a8a;">${num(bp.hard_stop_price)}円 <span style="color:var(--text-muted);font-weight:400;">(${num(bp.hard_stop_pct)}%)</span></span>
+            </div>
+            <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">${escapeHtml(bp.note || '')}</div>`;
+    }
     return `
         <div style="background:rgba(255,212,84,0.10);border:1px solid rgba(255,212,84,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:#ffd454;font-weight:600;">
             ${escapeHtml(r.verdict || '')}
@@ -11301,6 +11355,9 @@ function _renderProjection(r) {
             </div>`;
         })()}
 
+        ${buyPlanHtml}
+        ${multipleHtml}
+
         <div style="font-weight:700;margin:10px 0 4px;">🔁 過去の高値ブレイク統計（${num(h.sample)}件）</div>
         <div style="font-size:0.78rem;color:var(--text-secondary);">
             ブレイク後の上昇率: 控えめ +${num(h.gain_p25_pct, '%')} / 中央 +${num(h.gain_p50_pct, '%')} / 強気 +${num(h.gain_p75_pct, '%')}<br>
@@ -11313,6 +11370,108 @@ function _renderProjection(r) {
         </div>
     `;
 }
+
+// ===== メソッド別スコア（注目/保有銘柄を全メソッドで採点・得意メソッド保存） =====
+// style_name → 表示名（_screenerStylesCache から引く）
+function _methodLabel(style) {
+    const s = (_screenerStylesCache || []).find(x => x.name === style);
+    return s ? s.display_name : style;
+}
+
+// code: 銘柄コード, opts.isHolding: 保有銘柄なら得意メソッド設定ボタンを表示, opts.preferred: 現在の得意メソッド
+window.openMethodScores = async (code, name, opts = {}) => {
+    let modal = document.getElementById('method-scores-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="method-scores-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:560px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 id="method-scores-title" style="margin:0;font-size:1rem;">📊 メソッド別スコア</h3>
+                        <button class="mini-link" onclick="document.getElementById('method-scores-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="method-scores-body" style="margin-top:10px;font-size:0.84rem;line-height:1.5;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('method-scores-modal');
+    }
+    const titleEl = document.getElementById('method-scores-title');
+    const bodyEl = document.getElementById('method-scores-body');
+    if (titleEl) titleEl.textContent = `📊 ${code} ${name || ''} メソッド別スコア`;
+    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">各メソッドで採点中…</div>';
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch(`/api/investment/screener/score/${encodeURIComponent(code)}`);
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '採点できませんでした')}</div>`;
+            return;
+        }
+        bodyEl.innerHTML = _renderMethodScores(r, code, opts);
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで採点できませんでした</div>';
+    }
+};
+
+function _renderMethodScores(r, code, opts) {
+    const catLabels = { technical: 'テクニカル分析', fundamental: 'ファンダメンタルズ分析', hybrid: '複合' };
+    const isHolding = !!opts.isHolding;
+    const current = opts.preferred || '';
+    const bar = (s) => {
+        const w = Math.max(0, Math.min(100, s || 0));
+        const col = (s != null && s >= 60) ? '#7ee0a0' : '#4ea1ff';
+        return `<div style="flex:1;min-width:60px;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;"><div style="width:${w}%;height:100%;background:${col};"></div></div>`;
+    };
+    const scoreColor = (s, passed) => passed ? '#7ee0a0' : (s == null ? 'var(--text-muted)' : (s >= 60 ? '#ffd454' : 'var(--text-secondary)'));
+    const groups = {};
+    (r.methods || []).forEach(m => { (groups[m.category] = groups[m.category] || []).push(m); });
+    let html = '';
+    if (r.best_method) {
+        html += `<div style="background:rgba(126,224,160,0.10);border:1px solid rgba(126,224,160,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;">
+            🏅 一番有利なメソッド: <b>${escapeHtml(r.best_method.display_name)}</b>（${r.best_method.score}点）</div>`;
+    }
+    ['technical', 'fundamental', 'hybrid'].forEach(cat => {
+        const arr = groups[cat];
+        if (!arr || !arr.length) return;
+        html += `<div style="font-weight:700;margin:8px 0 4px;">${catLabels[cat] || cat}</div>`;
+        arr.forEach(m => {
+            const sc = (m.score == null) ? '—' : m.score;
+            const setBtn = isHolding
+                ? `<button class="mini-link" style="font-size:0.7rem;padding:2px 6px;white-space:nowrap;" onclick="setPreferredMethod('${code.replace(/'/g, '&#39;')}','${m.style}')">${current === m.style ? '★得意' : '☆得意に'}</button>`
+                : '';
+            html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed rgba(255,255,255,0.06);">
+                <div style="min-width:140px;color:${current === m.style ? '#ffd454' : 'var(--text-primary)'};">${m.passed ? '✅ ' : ''}${escapeHtml(m.display_name)}</div>
+                ${bar(m.score)}
+                <div style="min-width:38px;text-align:right;font-weight:700;color:${scoreColor(m.score, m.passed)};">${sc}</div>
+                ${setBtn}
+            </div>`;
+        });
+    });
+    html += `<div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:8px;">
+        ※ 点数は各メソッドの条件通過率（near-miss含む）。✅は全条件通過。${r.has_fundamentals ? '' : '（ファンダ未取得のためファンダ系は採点不可の場合あり）'}</div>`;
+    return html;
+}
+
+// 保有銘柄に「この銘柄が有利に見えるメソッド」を保存する
+window.setPreferredMethod = async (code, style) => {
+    try {
+        const data = await apiFetch('/api/investment/portfolio/edit', {
+            method: 'POST',
+            body: JSON.stringify({ code, preferred_method: style }),
+        });
+        if (data && data.ok) {
+            showToast(`得意メソッドを「${_methodLabel(style)}」に保存しました`);
+            const h = (_investHoldingsCache || []).find(x => x.code === code);
+            if (h) h.preferred_method = style;
+            window.openMethodScores(code, (h && h.name) || code, { isHolding: true, preferred: style });
+            if (typeof loadPortfolio === 'function') loadPortfolio();
+        } else {
+            showToast(data?.error || '保存に失敗しました', true);
+        }
+    } catch (e) {
+        showToast('保存に失敗しました: ' + (e.message || e), true);
+    }
+};
 
 // ===== ポートフォリオ・アドバイザー（保有＋候補をテクニカル×ファンダで一括診断） =====
 // useCandidates=true なら直近スクリーニング候補も診断対象に含める。
@@ -11398,11 +11557,11 @@ function _renderAdviceCard(r) {
         }).join('');
         safeHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">🏦 財務(EDINET ${escapeHtml(sf.period_end || '')}): ${sf.cs_pattern ? escapeHtml(sf.cs_pattern) : ''}<br>${chips}</div>`;
     }
-    // 利確目安（projection）— 候補のみ。過熱/余地を表示
+    // 利確目安（projection）— 候補のみ。新規エントリーの妙味薄(entry_caution)だけ注意色
     let projHtml = '';
     const pj = r.projection;
     if (pj && pj.verdict) {
-        const pjColor = pj.overheated ? '#ffb454' : 'var(--text-muted)';
+        const pjColor = pj.entry_caution ? '#ffb454' : 'var(--text-muted)';
         const rrTxt = (pj.risk_reward != null) ? ` / RR ${pj.risk_reward}` : '';
         const remTxt = (pj.remaining_estimate_pct != null) ? ` / 残り余地 約${pj.remaining_estimate_pct}%` : '';
         projHtml = `<div style="margin:3px 0;font-size:0.72rem;color:${pjColor};">🎯 利確目安: ${escapeHtml(pj.verdict)}${rrTxt}${remTxt}</div>`;
@@ -12337,6 +12496,7 @@ window.loadWatchlist = async () => {
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="hub">📒 まとめ</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="memo">📝 メモ編集</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="snapshot">📷 スナップ</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="score">📊 メソッド</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="audit">🎯 審査</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="peer">🔬 同業</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="news">📰 ニュース</button>
@@ -12447,6 +12607,12 @@ function _bindPortfolioDelegation(container) {
         const handler = {
             open: () => window.openHoldingActionModal(code),
             hub: () => window.openTickerHubModal(code),
+            score: () => {
+                const h = (_investHoldingsCache || []).find(x => x.code === code);
+                window.openMethodScores(code, (h && h.name) || code, {
+                    isHolding: true, preferred: (h && h.preferred_method) || '',
+                });
+            },
         }[action];
         if (typeof handler === 'function') {
             e.stopPropagation();
@@ -12475,6 +12641,7 @@ function _bindWatchlistDelegation(container) {
             hub: () => window.openTickerHubModal(code),
             memo: () => window.openWatchlistMemoModal(code),
             snapshot: () => window.runSnapshotForTicker(code),
+            score: () => window.openMethodScores(code, (window._watchlistByCode?.[code.toUpperCase()]?.name) || code, {}),
             audit: () => window.runAuditForTicker(code),
             peer: () => window.runPeerComparisonForTicker(code),
             news: () => window.runNewsSentimentForTicker(code),
@@ -12833,15 +13000,20 @@ window.loadPortfolio = async () => {
             const memoBlock = memo
                 ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;white-space:pre-wrap;">📝 ${escapeHtml(memo)}</div>`
                 : '';
+            const prefBadge = h.preferred_method
+                ? `<div style="font-size:0.72rem;color:#ffd454;margin-top:3px;">🎯 得意メソッド: ${escapeHtml(_methodLabel(h.preferred_method))}</div>`
+                : '';
             // F-1 委譲化: onclick を撤廃し data-pf-action で記述
             return `<div class="invest-row portfolio-item" data-code="${ticker.replace(/"/g, '&quot;')}" data-pf-action="open" style="cursor:pointer;flex-wrap:wrap;">
                 <span class="portfolio-handle" data-pf-action="nop" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:10px 10px 10px 0;user-select:none;" title="長押しして並び替え">⠿</span>
                 <div class="row-main">
                     <div class="row-title">${name} (${ticker})</div>
                     <div class="row-meta">${meta}</div>
+                    ${prefBadge}
                     ${memoBlock}
                 </div>
                 <div class="row-actions" style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <button class="mini-link" style="font-size:0.72rem;" data-pf-action="score" title="各メソッドで採点して得意メソッドを保存">📊 メソッド</button>
                     <button class="mini-link" style="font-size:0.72rem;" data-pf-action="hub" title="メモと日記をまとめて見る">📒 まとめ</button>
                     <button data-pf-action="open">▾ 操作</button>
                 </div>

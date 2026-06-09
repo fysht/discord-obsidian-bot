@@ -145,6 +145,14 @@ async def screener_ohlcv(code: str, days: int = 120):
     return _json_sanitize(await cog.get_ohlcv_series(code, days))
 
 
+@router.get("/score/{code}", dependencies=[Depends(verify_api_key)])
+async def screener_score(code: str, days: int = 300):
+    """1銘柄を登録済みの全メソッド（テクニカル/ファンダ/複合）で採点し、メソッド別の
+    魅力（点数）と一番有利なメソッドを返す。注目銘柄・保有銘柄の横断評価に使う。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.score_all_methods(code, days))
+
+
 @router.get("/projection/{code}", dependencies=[Depends(verify_api_key)])
 async def screener_projection(code: str, days: int = 750):
     """1 銘柄の過去の高値ブレイク後の値動きから、上昇余地・利確目標・損切り目安を返す

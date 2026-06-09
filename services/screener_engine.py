@@ -130,27 +130,174 @@ class TechnicalSignals:
         return (new - old) / old
 
     @staticmethod
-    def avg_wick_ratio(open_s, high, low, close, n: int = 10) -> tuple[float, float]:
-        """直近 n 本の (上ひげ平均比, 下ひげ平均比) を全足レンジ比で返す。
+    def wick_stats(open_s, high, low, close, n: int = 10) -> tuple[float, float, float]:
+        """直近 n 本の (上ひげ・下ひげのレンジ加重平均比, 最長の単独上ひげ比) を返す。
 
         上ひげ比 = (high - max(open, close)) / (high - low)
         下ひげ比 = (min(open, close) - low)  / (high - low)
+
+        単純平均だとレンジが極小の足（ほぼ寄引同事）でひげ比が過大に出て平均を歪める。
+        そこで「Σひげ ÷ Σレンジ」のレンジ加重平均にして、実体の大きい（＝意味のある）
+        足を重く扱う。加えて、直近 n 本で最も長い単独の上ひげ比（突出した戻り売り＝
+        天井サイン）も返し、平均では薄まる一本値を別途チェックできるようにする。
         """
         import pandas as pd  # type: ignore
         if len(close) < n or len(open_s) < n:
-            return 0.0, 0.0
+            return 0.0, 0.0, 0.0
         o = open_s.tail(n).reset_index(drop=True)
         h = high.tail(n).reset_index(drop=True)
         l = low.tail(n).reset_index(drop=True)
         c = close.tail(n).reset_index(drop=True)
-        rng = (h - l).replace(0, float("nan"))
+        rng = (h - l)
         body_high = pd.concat([o, c], axis=1).max(axis=1)
         body_low = pd.concat([o, c], axis=1).min(axis=1)
-        upper = ((h - body_high) / rng).dropna()
-        lower = ((body_low - l) / rng).dropna()
-        u = float(upper.mean()) if len(upper) else 0.0
-        d = float(lower.mean()) if len(lower) else 0.0
-        return u, d
+        upper_abs = (h - body_high)
+        lower_abs = (body_low - l)
+        total_rng = float(rng.sum())
+        if total_rng <= 0:
+            return 0.0, 0.0, 0.0
+        u = float(upper_abs.sum()) / total_rng
+        d = float(lower_abs.sum()) / total_rng
+        # 単独上ひげ比は、レンジが極小の足のノイズを避けるため
+        # レンジが直近平均の30%以上ある足だけを対象にする。
+        avg_rng = total_rng / n
+        per_candle = (upper_abs / rng.replace(0, float("nan")))
+        mask = rng >= (avg_rng * 0.30)
+        sel = per_candle[mask].dropna()
+        u_max = float(sel.max()) if len(sel) else u
+        return u, d, u_max
+
+    # --- チャートパターン検出（DUKE『新高値ブレイク投資法』4章）---
+    # いずれもヒューリスティック近似。パターンは本質的に曖昧なので、保守的に判定する。
+
+    @staticmethod
+    def detect_box_breakout(close, high, low, volume, *, window: int = 80,
+                            box_tol: float = 0.20, vol_mult: float = 1.3) -> dict:
+        """ボックス（持ち合い）を上抜けたかを判定する。
+
+        直近 window 日のうち末尾3日を除いた区間を「ボックス」とみなし、値幅が box_tol
+        以内に収まる横ばいなら、最新終値がボックス上限を上抜け＋出来高増加でブレイク成立。
+        """
+        n = len(close)
+        if n < window + 5:
+            return {"detected": False}
+        region_high = high.iloc[-window:-3]
+        region_low = low.iloc[-window:-3]
+        box_high = float(region_high.max())
+        box_low = float(region_low.min())
+        if not (box_high > 0 and box_low > 0):
+            return {"detected": False}
+        box_range = (box_high - box_low) / box_low
+        tight = box_range <= box_tol
+        last_close = float(close.iloc[-1])
+        broke = last_close > box_high
+        vr = TechnicalSignals.latest_volume_vs_avg(volume, 20)
+        detected = bool(tight and broke and vr >= vol_mult)
+        return {
+            "detected": detected, "box_high": round(box_high, 2), "box_low": round(box_low, 2),
+            "box_range_pct": round(box_range * 100, 1), "vol_ratio": round(vr, 2),
+        }
+
+    @staticmethod
+    def _swings(high, low, k: int = 3) -> list[tuple[int, float, str]]:
+        """±k 本で極大/極小となる点を (位置, 価格, "H"/"L") で返す素朴なスイング検出。"""
+        n = len(high)
+        sw: list[tuple[int, float, str]] = []
+        for i in range(k, n - k):
+            hi = float(high.iloc[i])
+            lo = float(low.iloc[i])
+            if hi == float(high.iloc[i - k:i + k + 1].max()):
+                sw.append((i, hi, "H"))
+            elif lo == float(low.iloc[i - k:i + k + 1].min()):
+                sw.append((i, lo, "L"))
+        return sw
+
+    @staticmethod
+    def detect_vcp(close, high, low, volume, *, lookback: int = 70,
+                   max_base_depth: float = 0.35, final_contraction_max: float = 0.12,
+                   near_pivot_tol: float = 0.06) -> dict:
+        """VCP（ボラティリティ収縮）を判定する。
+
+        高値→安値の押し幅が2回以上連続で縮小し、最後の押しが浅く、現値が直近高値
+        （ピボット）近辺にある状態を成立とする（ミネルヴィニ／ダーバス）。近似。
+        """
+        n = len(close)
+        if n < lookback + 5:
+            return {"detected": False}
+        h = high.tail(lookback).reset_index(drop=True)
+        l = low.tail(lookback).reset_index(drop=True)
+        sw = TechnicalSignals._swings(h, l, k=3)
+        depths: list[float] = []
+        last_high = None
+        for _idx, price, kind in sw:
+            if kind == "H":
+                last_high = price
+            elif kind == "L" and last_high and last_high > 0:
+                depths.append((last_high - price) / last_high)
+                last_high = None
+        if len(depths) < 2:
+            return {"detected": False}
+        recent = depths[-3:]
+        contracting = all(recent[i] <= recent[i - 1] * 0.9 for i in range(1, len(recent)))
+        final_shallow = recent[-1] <= final_contraction_max
+        base_ok = max(recent) <= max_base_depth
+        pivot = float(h.max())
+        last_close = float(close.iloc[-1])
+        near_pivot = bool(pivot > 0 and (pivot - last_close) / pivot <= near_pivot_tol)
+        v = volume.tail(lookback)
+        vol_dry = bool(len(v) >= 30 and float(v.tail(10).mean()) <= float(v.tail(30).head(20).mean()))
+        detected = bool(contracting and final_shallow and base_ok and near_pivot)
+        return {
+            "detected": detected,
+            "contractions_pct": [round(d * 100, 1) for d in recent],
+            "pivot": round(pivot, 2), "near_pivot": near_pivot, "vol_dry": vol_dry,
+        }
+
+    @staticmethod
+    def detect_cup_with_handle(close, high, low, volume, *, max_cup: int = 180,
+                               min_depth: float = 0.12, max_depth: float = 0.50,
+                               handle_max_depth: float = 0.15, near_pivot_tol: float = 0.07) -> dict:
+        """カップウィズハンドルを判定する。
+
+        左縁→底→右縁（左縁付近まで回復）で丸いカップを作り、右縁近くで浅い押し（ハンドル）
+        を経て、現値がピボット（ハンドル高値≒左縁）近辺/上にある状態（オニール）。近似。
+        """
+        n = len(close)
+        if n < 38:
+            return {"detected": False}
+        span = min(max_cup, n - 1)
+        H = high.tail(span).reset_index(drop=True)
+        L = low.tail(span).reset_index(drop=True)
+        C = close.tail(span).reset_index(drop=True)
+        m = len(C)
+        left_n = max(3, m // 7)
+        left_rim_idx = int(H.iloc[:left_n].idxmax())
+        left_rim = float(H.iloc[:left_n].max())
+        bottom_region = L.iloc[left_rim_idx + 1: m - left_n]
+        if len(bottom_region) < 5 or left_rim <= 0:
+            return {"detected": False}
+        bottom = float(bottom_region.min())
+        bottom_idx = int(bottom_region.idxmin())
+        depth = (left_rim - bottom) / left_rim
+        if not (min_depth <= depth <= max_depth):
+            return {"detected": False}
+        right_high = float(H.iloc[bottom_idx + 1:].max()) if bottom_idx + 1 < m else 0.0
+        recovered = right_high >= left_rim * 0.93
+        handle = C.tail(min(20, max(5, m // 4)))
+        handle_high = float(handle.max())
+        handle_low = float(handle.min())
+        handle_depth = (handle_high - handle_low) / handle_high if handle_high > 0 else 1.0
+        cup_mid = (left_rim + bottom) / 2
+        handle_ok = bool(handle_depth <= handle_max_depth and handle_low >= cup_mid)
+        pivot = max(handle_high, left_rim)
+        last_close = float(close.iloc[-1])
+        near_pivot = bool(pivot > 0 and (pivot - last_close) / pivot <= near_pivot_tol)
+        detected = bool(recovered and handle_ok and near_pivot)
+        return {
+            "detected": detected, "depth_pct": round(depth * 100, 1),
+            "handle_depth_pct": round(handle_depth * 100, 1),
+            "pivot": round(pivot, 2), "near_pivot": near_pivot,
+        }
 
 
 # --- データクラス ---
@@ -212,6 +359,10 @@ class StyleStrategy(ABC):
     filters: list[FilterDef] = []
     # True の戦略は評価に fundamentals（get_fundamentals）の取得を要する
     needs_fundamentals: bool = False
+    # メソッドの大分類: "technical"（テクニカル）/ "fundamental"（ファンダ）/ "hybrid"（複合）
+    category: str = "fundamental"
+    # True の戦略は UI のメソッド一覧・採点比較から隠す（他メソッドの内部部品など）
+    hidden: bool = False
 
     @abstractmethod
     def evaluate(
@@ -340,8 +491,9 @@ class StyleStrategy(ABC):
 
 class CreepingBreakoutStrategy(StyleStrategy):
     style_name = "creeping_breakout"
-    display_name = "じわじわ高値ブレイク（低ボラ）"
+    display_name = "新高値ブレイク（じわじわ・低ボラ）"
     description = "52週高値圏でじわじわ上昇し直近で高値を更新、急騰や下抜けがない銘柄"
+    category = "technical"
     filters = [
         # 【位置】高値圏に位置している
         FilterDef("near_high", "52週高値乖離 ≤ 5%", "高値圏に位置している", True),
@@ -357,7 +509,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
         FilterDef("no_big_pop", "直近10日 大陽線（+5%超）なし", "大跳ねしていない", True),
         FilterDef("no_prev_low_break", "直近5日 前日安値割れなし", "押し目が浅い", True),
         # 【品質】ひげが長くない（騙し抑制）
-        FilterDef("short_upper_wick", "上ひげ平均 ≤ 35%", "戻り売りに押されていない", True),
+        FilterDef("short_upper_wick", "上ひげ ≤ 35%（加重平均・突出なし）", "戻り売りに押されていない（天井サインの長い上ひげが無い）", True),
         FilterDef("short_lower_wick", "下ひげ平均 ≤ 35%", "押し戻しが軽い", True),
     ]
 
@@ -413,8 +565,9 @@ class CreepingBreakoutStrategy(StyleStrategy):
 
         open_s = df["Open"] if "Open" in df.columns else close
         bullish_streak = TechnicalSignals.consecutive_bullish_candles(open_s, close, 10)
-        avg_upper_wick, avg_lower_wick = TechnicalSignals.avg_wick_ratio(open_s, high, low, close, n=10)
-        short_upper = avg_upper_wick <= 0.35
+        avg_upper_wick, avg_lower_wick, max_upper_wick = TechnicalSignals.wick_stats(open_s, high, low, close, n=10)
+        # 上ひげ: レンジ加重平均が小さく、かつ単独で突出した長い上ひげ(戻り売り＝天井サイン)も無いこと
+        short_upper = (avg_upper_wick <= 0.35) and (max_upper_wick <= 0.60)
         short_lower = avg_lower_wick <= 0.35
 
         sigs = [
@@ -436,7 +589,7 @@ class CreepingBreakoutStrategy(StyleStrategy):
             Signal("ATR/Close < 3%（低ボラ）", f"{atr_pct * 100:.2f}%" if atr_pct else "N/A", "<3.00%", low_vol),
             Signal("直近10日 大陽線（+5%超）なし", f"最大{max_daily_ret * 100:+.2f}%", "≤+5.00%", no_big_pop),
             Signal("直近5日 前日安値割れなし", f"{breaks}回" if breaks < 99 else "N/A", "0回", no_prev_low_break),
-            Signal("上ひげ平均 ≤ 35%", f"{avg_upper_wick * 100:.1f}%", "≤35%", short_upper),
+            Signal("上ひげ ≤ 35%（加重平均・突出なし）", f"平均{avg_upper_wick * 100:.0f}%/最長{max_upper_wick * 100:.0f}%", "平均≤35%かつ最長≤60%", short_upper),
             Signal("下ひげ平均 ≤ 35%", f"{avg_lower_wick * 100:.1f}%", "≤35%", short_lower),
         ]
         signal_keys = [
@@ -456,9 +609,10 @@ class CreepingBreakoutStrategy(StyleStrategy):
 
 class ValueStrategy(StyleStrategy):
     style_name = "value"
-    display_name = "バリュー（割安+配当）"
+    display_name = "バリュー（割安・配当）"
     description = "PER/PBR が低く、財務健全で配当も出ている銘柄"
     needs_fundamentals = True
+    category = "fundamental"
     filters = [
         FilterDef("per", "PER < 15", "利益面で割安", True),
         FilterDef("pbr", "PBR < 1.5", "純資産面で割安", True),
@@ -492,9 +646,10 @@ class ValueStrategy(StyleStrategy):
 
 class GrowthStrategy(StyleStrategy):
     style_name = "growth"
-    display_name = "グロース（成長性重視）"
+    display_name = "グロース（成長）"
     description = "売上・利益成長率と ROE が高い銘柄"
     needs_fundamentals = True
+    category = "fundamental"
     filters = [
         FilterDef("revenue_growth", "売上成長率 ≥ 15%", "トップライン成長", True),
         FilterDef("earnings_growth", "利益成長率 ≥ 15%", "ボトムライン成長", True),
@@ -626,9 +781,10 @@ class FundamentalGateStrategy(StyleStrategy):
     「テクニカルでもファンダでも買い」の二重ゲートを作るための土台。
     """
     style_name = "fundamental_gate"
-    display_name = "ファンダ・ゲート（決算分析の地図）"
+    display_name = "ファンダ総合（決算分析の地図）"
     description = "会計視点(収益性・資本効率)とファイナンス視点(成長性・割安性)の両面が揃った銘柄"
     needs_fundamentals = True
+    category = "fundamental"
     filters = [
         FilterDef("roe", "ROE ≥ 8%", "資本効率（伊藤レポート基準）", True),
         FilterDef("op_margin", "営業利益率 ≥ 8%", "本業の収益性（会計視点）", True),
@@ -652,11 +808,293 @@ class FundamentalGateStrategy(StyleStrategy):
         return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
 
 
+class BreakoutPatternStrategy(StyleStrategy):
+    """DUKE『新高値ブレイク投資法』4章の代表的チャート型（カップウィズハンドル・VCP・
+    ボックスブレイク）を検出する順張りストラテジー。52週高値圏で型が成立した銘柄を拾う。
+    """
+    style_name = "breakout_patterns"
+    display_name = "新高値ブレイク（チャート型）"
+    description = "52週高値圏で、カップウィズハンドル・VCP・ボックスのいずれかのブレイク型が成立した銘柄"
+    category = "technical"
+    # 「新高値ブレイク投資術」(new_high_breakout) の内部部品。単体運用も可能だが、
+    # 複合メソッドと重複するため一覧からは隠す（必要なら combine で名指し可能）。
+    hidden = True
+    filters = [
+        FilterDef("near_high", "52週高値乖離 ≤ 10%", "高値圏に位置", True),
+        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
+        FilterDef("chart_pattern", "カップ/VCP/ボックスのいずれか成立", "代表的なブレイク型", True),
+        FilterDef("vol_breakout", "出来高 ≥ 20日平均の1.3x", "ブレイク時の出来高増加", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if df is None or len(df) < 200:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+        is_near, gap, _ = TechnicalSignals.near_52w_high(close, high, tolerance=0.10)
+        sma200 = TechnicalSignals.sma(close, 200)
+        sma200_val = float(sma200.iloc[-1]) if sma200.iloc[-1] == sma200.iloc[-1] else None
+        last_close = float(close.iloc[-1])
+        above_sma200 = bool(sma200_val and last_close > sma200_val)
+
+        box = TechnicalSignals.detect_box_breakout(close, high, low, volume)
+        vcp = TechnicalSignals.detect_vcp(close, high, low, volume)
+        cup = TechnicalSignals.detect_cup_with_handle(close, high, low, volume)
+        matched = [lbl for lbl, d in (("ボックス", box), ("VCP", vcp), ("カップ", cup)) if d.get("detected")]
+        pattern_ok = len(matched) > 0
+        vr = TechnicalSignals.latest_volume_vs_avg(volume, 20)
+
+        sigs = [
+            Signal("52週高値乖離 ≤ 10%", f"{gap * 100:.2f}%", "≤10.00%", is_near),
+            Signal(
+                "200日MA上抜け",
+                f"{((last_close - sma200_val) / sma200_val * 100):+.2f}%" if sma200_val else "N/A",
+                ">0%", above_sma200,
+            ),
+            Signal("チャート型成立", "・".join(matched) if matched else "なし", "いずれか成立", pattern_ok),
+            Signal("出来高 ≥ 1.3x", f"{vr:.2f}x", "≥1.30x", vr >= 1.30),
+        ]
+        signal_keys = ["near_high", "above_sma200", "chart_pattern", "vol_breakout"]
+        bonus = 10.0 * len(matched)  # 複数の型が同時成立するほど加点
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, score_bonus=bonus, near_miss=near_miss)
+
+
+def evaluate_growth_gate(fundamentals: Optional[dict]) -> dict:
+    """DUKE『新高値ブレイク投資法』5章の強気な業績基準を get_fundamentals の値で近似判定する。
+
+    本来は「営業利益 四半期 前年同期比 +20%以上」「売上 +10%以上」だが、yfinance からは
+    四半期QoQの営業利益系列が取れないため、年次YoY成長率（revenue_growth/earnings_growth）と
+    営業利益率・ROE の水準で代替する。決定論的スコアカード。
+    """
+    f = fundamentals or {}
+    rev = f.get("revenue_growth")
+    earn = f.get("earnings_growth")
+    opm = f.get("operating_margin")
+    roe = f.get("roe")
+
+    def _pct(v):
+        return f"{v * 100:.2f}%" if v is not None else "N/A"
+
+    checks = [
+        {"key": "revenue_growth", "name": "売上成長率(YoY)", "value": _pct(rev), "threshold": "≥10%",
+         "passed": bool(rev is not None and rev >= 0.10), "available": rev is not None},
+        {"key": "earnings_growth", "name": "利益成長率(YoY)", "value": _pct(earn), "threshold": "≥20%",
+         "passed": bool(earn is not None and earn >= 0.20), "available": earn is not None},
+        {"key": "operating_margin", "name": "営業利益率", "value": _pct(opm), "threshold": "≥10%",
+         "passed": bool(opm is not None and opm >= 0.10), "available": opm is not None},
+        {"key": "roe", "name": "ROE", "value": _pct(roe), "threshold": "≥12%",
+         "passed": bool(roe is not None and roe >= 0.12), "available": roe is not None},
+    ]
+    available = sum(1 for c in checks if c["available"])
+    passed = sum(1 for c in checks if c["passed"])
+    total = len(checks)
+    score = round(passed / total * 100, 1)
+    # 強気ゲートなので厳しめ：取得できた指標の 75% 以上を通過（最低3指標は必要）
+    ok = bool(available >= 3 and (passed / available) >= 0.75)
+    return {"checks": checks, "passed": passed, "available": available,
+            "total": total, "score": score, "ok": ok}
+
+
+class AggressiveGrowthStrategy(StyleStrategy):
+    """DUKE 5章の業績基準（売上+10%・利益+20%・営業利益率10%・ROE12%超）を、年次YoYで
+    近似した強気グロース・ゲート。チャート型(breakout_patterns)と AND 結合する想定。
+    """
+    style_name = "aggressive_growth"
+    display_name = "強気グロース（高成長）"
+    description = "売上+10%・利益+20%・営業利益率10%・ROE12%超の高成長銘柄（新高値ブレイクの業績基準を年次YoYで近似）"
+    needs_fundamentals = True
+    category = "fundamental"
+    # 「新高値ブレイク投資術」(new_high_breakout) の内部部品（ファンダ側）。一覧からは隠す。
+    hidden = True
+    filters = [
+        FilterDef("revenue_growth", "売上成長率 ≥ 10%", "トップライン高成長", True),
+        FilterDef("earnings_growth", "利益成長率 ≥ 20%", "ボトムライン高成長", True),
+        FilterDef("operating_margin", "営業利益率 ≥ 10%", "本業の高収益性", True),
+        FilterDef("roe", "ROE ≥ 12%", "高い資本効率", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if not fundamentals:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        gate = evaluate_growth_gate(fundamentals)
+        sigs, signal_keys = [], []
+        for c in gate["checks"]:
+            sigs.append(Signal(c["name"], c["value"], c["threshold"], c["passed"], "yfinance fundamentals"))
+            signal_keys.append(c["key"])
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
+
+
+class NewHighBreakoutStrategy(StyleStrategy):
+    """DUKE『新高値ブレイク投資術』を、テクニカル(新高値ブレイク)×ファンダ(強気業績)を
+    1 つに内包した自己完結の独立した投資法として登録する。
+
+    既存の部品（creeping_breakout / breakout_patterns / aggressive_growth など）とは
+    切り離した独立メソッド。本書の核「テクニカルでもファンダでも買い」を、この戦略単体で
+    AND 評価する（needs_fundamentals=True）。複数投資法を掛け合わせたいときは、これを
+    他スタイルと combine_mode="all" で併用すればよい。
+    """
+    style_name = "new_high_breakout"
+    display_name = "新高値ブレイク投資術"
+    description = ("テクニカル(52週高値圏＋カップ/VCP/ボックス＋出来高)とファンダ(売上+10%/利益+20%/"
+                  "営業利益率10%/ROE12%)の両方を満たす複合メソッド。単体で『両方で買い』を判定（DUKE）")
+    needs_fundamentals = True
+    category = "hybrid"
+    filters = [
+        # --- テクニカル（新高値ブレイク）---
+        FilterDef("near_high", "52週高値乖離 ≤ 10%", "高値圏に位置", True),
+        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
+        FilterDef("chart_pattern", "カップ/VCP/ボックスのいずれか成立", "代表的なブレイク型", True),
+        FilterDef("vol_breakout", "出来高 ≥ 20日平均の1.3x", "ブレイク時の出来高増加", True),
+        # --- ファンダ（強気業績・5章）---
+        FilterDef("revenue_growth", "売上成長率(YoY) ≥ 10%", "トップライン高成長", True),
+        FilterDef("earnings_growth", "利益成長率(YoY) ≥ 20%", "ボトムライン高成長", True),
+        FilterDef("operating_margin", "営業利益率 ≥ 10%", "本業の高収益性", True),
+        FilterDef("roe", "ROE ≥ 12%", "高い資本効率", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if df is None or len(df) < 200:
+            return None
+        if not fundamentals:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+
+        # --- テクニカル ---
+        is_near, gap, _ = TechnicalSignals.near_52w_high(close, high, tolerance=0.10)
+        sma200 = TechnicalSignals.sma(close, 200)
+        sma200_val = float(sma200.iloc[-1]) if sma200.iloc[-1] == sma200.iloc[-1] else None
+        last_close = float(close.iloc[-1])
+        above_sma200 = bool(sma200_val and last_close > sma200_val)
+        box = TechnicalSignals.detect_box_breakout(close, high, low, volume)
+        vcp = TechnicalSignals.detect_vcp(close, high, low, volume)
+        cup = TechnicalSignals.detect_cup_with_handle(close, high, low, volume)
+        matched = [lbl for lbl, d in (("ボックス", box), ("VCP", vcp), ("カップ", cup)) if d.get("detected")]
+        pattern_ok = len(matched) > 0
+        vr = TechnicalSignals.latest_volume_vs_avg(volume, 20)
+
+        # --- ファンダ（強気業績ゲートを共有）---
+        gate = evaluate_growth_gate(fundamentals)
+        gate_by_key = {c["key"]: c for c in gate["checks"]}
+
+        def _fund_sig(key, label):
+            c = gate_by_key.get(key, {})
+            return Signal(label, c.get("value", "N/A"), c.get("threshold", ""), bool(c.get("passed")),
+                          "yfinance fundamentals")
+
+        sigs = [
+            Signal("52週高値乖離 ≤ 10%", f"{gap * 100:.2f}%", "≤10.00%", is_near),
+            Signal(
+                "200日MA上抜け",
+                f"{((last_close - sma200_val) / sma200_val * 100):+.2f}%" if sma200_val else "N/A",
+                ">0%", above_sma200,
+            ),
+            Signal("チャート型成立", "・".join(matched) if matched else "なし", "いずれか成立", pattern_ok),
+            Signal("出来高 ≥ 1.3x", f"{vr:.2f}x", "≥1.30x", vr >= 1.30),
+            _fund_sig("revenue_growth", "売上成長率(YoY)"),
+            _fund_sig("earnings_growth", "利益成長率(YoY)"),
+            _fund_sig("operating_margin", "営業利益率"),
+            _fund_sig("roe", "ROE"),
+        ]
+        signal_keys = [
+            "near_high", "above_sma200", "chart_pattern", "vol_breakout",
+            "revenue_growth", "earnings_growth", "operating_margin", "roe",
+        ]
+        bonus = 10.0 * len(matched)  # 複数の型が同時成立するほど加点
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, score_bonus=bonus, near_miss=near_miss)
+
+
+def evaluate_excel_stock_gate(fundamentals: Optional[dict]) -> dict:
+    """森口亮『1日5分の分析から月13万円を稼ぐExcel株投資』のファンダ基準を決定論的に判定する。
+
+    会社四季報の数字で「成長×収益×割安」を見る同書のウォッチ/本命基準を get_fundamentals
+    の値で近似。署名的な指標は『40%ルール』(増収率+営業利益率≥40%)と『PSR』(時価総額÷売上高)。
+    四半期QoQ系列が無いため成長率は年次YoYで近似する。
+    """
+    f = fundamentals or {}
+    rev = f.get("revenue_growth")
+    earn = f.get("earnings_growth")
+    opm = f.get("operating_margin")
+    per = f.get("per") or f.get("forward_per")
+    mcap = f.get("market_cap_jpy")
+    revenue = f.get("revenue")
+    psr = (mcap / revenue) if (mcap and revenue and revenue > 0) else None
+    # 40%ルール: 増収率(%) + 営業利益率(%)
+    forty = ((rev + opm) * 100) if (rev is not None and opm is not None) else None
+
+    def _pct(v):
+        return f"{v * 100:.2f}%" if v is not None else "N/A"
+
+    checks = [
+        {"key": "revenue_growth", "name": "売上高成長率", "value": _pct(rev), "threshold": "≥10%",
+         "passed": bool(rev is not None and rev >= 0.10), "available": rev is not None},
+        {"key": "earnings_growth", "name": "利益成長率", "value": _pct(earn), "threshold": "≥10%",
+         "passed": bool(earn is not None and earn >= 0.10), "available": earn is not None},
+        {"key": "operating_margin", "name": "営業利益率", "value": _pct(opm), "threshold": "≥10%",
+         "passed": bool(opm is not None and opm >= 0.10), "available": opm is not None},
+        {"key": "forty_rule", "name": "40%ルール(増収率+営業利益率)",
+         "value": (f"{forty:.1f}%" if forty is not None else "N/A"), "threshold": "≥40%",
+         "passed": bool(forty is not None and forty >= 40.0), "available": forty is not None},
+        {"key": "valuation", "name": "PER割安", "value": (f"{per:.2f}" if per else "N/A"),
+         "threshold": "0<PER≤25", "passed": bool(per and 0 < per <= 25), "available": per is not None},
+        {"key": "psr", "name": "PSR割安", "value": (f"{psr:.2f}倍" if psr is not None else "N/A"),
+         "threshold": "≤10倍", "passed": bool(psr is not None and psr <= 10), "available": psr is not None},
+    ]
+    available = sum(1 for c in checks if c["available"])
+    passed = sum(1 for c in checks if c["passed"])
+    total = len(checks)
+    score = round(passed / total * 100, 1)
+    # 取得できた指標の 70% 以上を通過（最低4指標は必要）
+    ok = bool(available >= 4 and (passed / available) >= 0.7)
+    return {"checks": checks, "passed": passed, "available": available,
+            "total": total, "score": score, "ok": ok}
+
+
+class ExcelStockStrategy(StyleStrategy):
+    """森口亮『Excel株投資』の銘柄選定法を独立メソッド化した、決定論的ファンダ投資法。
+
+    会社四季報の業績で「成長(売上・利益10%超)×収益(営業利益率10%超)×割安(PER/PSR)」を見て、
+    署名的な『40%ルール』(増収率+営業利益率≥40%)を満たすウォッチ/本命銘柄を抽出する。
+    既存の fundamental_gate（村上式）や aggressive_growth とは切り離した独立メソッド。
+    """
+    style_name = "excel_stock"
+    display_name = "Excel株投資（森口式）"
+    description = ("売上・利益10%超成長×営業利益率10%超×割安(PER/PSR)＋40%ルール(増収率+営業利益率≥40%)"
+                  "で選ぶ、会社四季報ベースのファンダ投資法（森口亮『Excel株投資』）")
+    needs_fundamentals = True
+    category = "fundamental"
+    filters = [
+        FilterDef("revenue_growth", "売上高成長率 ≥ 10%", "トップライン成長", True),
+        FilterDef("earnings_growth", "利益成長率 ≥ 10%", "ボトムライン成長", True),
+        FilterDef("operating_margin", "営業利益率 ≥ 10%", "本業の収益性", True),
+        FilterDef("forty_rule", "40%ルール（増収率＋営業利益率 ≥ 40%）", "成長性＋収益性の合算指標", True),
+        FilterDef("valuation", "PER 割安 (0<PER≤25)", "利益面の割安さ", True),
+        FilterDef("psr", "PSR ≤ 10倍", "売上面の割安さ（時価総額÷売上高）", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if not fundamentals:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        gate = evaluate_excel_stock_gate(fundamentals)
+        sigs, signal_keys = [], []
+        for c in gate["checks"]:
+            sigs.append(Signal(c["name"], c["value"], c["threshold"], c["passed"],
+                               "yfinance fundamentals（会社四季報相当）"))
+            signal_keys.append(c["key"])
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
+
+
 STRATEGY_REGISTRY: dict[str, StyleStrategy] = {
     s.style_name: s for s in [
+        NewHighBreakoutStrategy(),    # ← DUKE『新高値ブレイク投資術』の独立メソッド
+        ExcelStockStrategy(),         # ← 森口『Excel株投資』の独立メソッド
         CreepingBreakoutStrategy(),
+        BreakoutPatternStrategy(),    # 部品(hidden): 新高値ブレイクのテクニカル単体
         ValueStrategy(),
         GrowthStrategy(),
+        AggressiveGrowthStrategy(),   # 部品(hidden): 強気業績ゲート単体
         FundamentalGateStrategy(),
     ]
 }
@@ -672,10 +1110,12 @@ def list_strategies() -> list[dict]:
             "name": s.style_name,
             "display_name": s.display_name,
             "description": s.description,
+            "category": s.category,
             "needs_fundamentals": s.needs_fundamentals,
             "filters": s.list_filters(),
         }
         for s in STRATEGY_REGISTRY.values()
+        if not getattr(s, "hidden", False)
     ]
 
 
@@ -859,25 +1299,53 @@ def analyze_breakout_projection(
             notes.append(f"52週高値まであと約{gap_to_52w * 100:.1f}%（直近高値が当面の上値メド）。")
     if remaining_pct is not None:
         if current_gain >= (g50 or 0):
-            notes.append(f"現レッグは起点から約{current_gain * 100:.0f}%上昇で、過去中央値（{(g50 or 0) * 100:.0f}%）を既に超過。利益確定を意識する局面。")
+            notes.append(f"現レッグは起点から約{current_gain * 100:.0f}%上昇で、過去中央値（{(g50 or 0) * 100:.0f}%）を超過＝強いトレンドのサイン。"
+                         "本当に上がる銘柄は過去の範囲を超えて伸びるので、ここで降りず利を伸ばす局面。下のトレイリングストップで下落転換に備える。")
         else:
             notes.append(f"現レッグは起点から約{current_gain * 100:.0f}%上昇。過去中央値まで概算で残り約{remaining_pct:.0f}%の余地。")
 
-    # 総合判定（ざっくり）
-    if rr is not None and rr >= 2 and (current_gain < (g50 or 0)):
-        verdict = "妙味あり：リスクリワード良好で、過去の典型的な上昇余地もまだ残る。"
-    elif current_gain >= (g75 or 1e9):
-        verdict = "過熱気味：過去ブレイクの上位25%水準まで上昇済み。新規は慎重に、保有分は利確検討。"
-    elif rr is not None and rr < 1:
-        verdict = "見送り寄り：直近高値までの距離が近く、損切り幅に対する利幅が小さい。"
+    # 総合判定（ざっくり）。
+    # 方針：過去の値動きを「上限」として天井を決めつけない。大きく上がる銘柄ほど過去の
+    # 典型を超えて伸びるので、伸びている＝強いトレンドと捉え、利確はトレイリングストップ
+    # 割れ（＝下落転換の兆し）で行う。新規エントリーの可否だけは損切り幅(R/R)で慎重に見る。
+    # entry_caution: 新規で飛び乗るには損切り幅が広く R/R が悪い（保有継続の妨げにはしない）。
+    entry_caution = bool(rr is not None and rr < 1)
+    if current_gain >= (g75 or 1e9):
+        verdict = ("強いトレンド：過去ブレイクの上位水準を超えて上昇中。天井を決めつけず、"
+                   "トレイリングストップ割れまで保有して利を伸ばす（下落転換の兆しが出たら利確）。")
+    elif rr is not None and rr >= 2:
+        verdict = "妙味あり：リスクリワード良好で、過去の典型的な上昇余地もまだ残る。トレンドに沿って利を伸ばす。"
+    elif entry_caution:
+        verdict = ("新規は慎重：直近高値まで近く損切り幅に対する当面の利幅が小さい。"
+                   "打診的に小さく入るか、押し目・再ブレイクを待つ（既保有なら継続でよい）。")
     else:
-        verdict = "中立：T1（控えめ目標）での部分利確を起点に、トレンド継続を見ながら。"
+        verdict = "順張り継続：トレンドに沿って保有し利を伸ばす。トレイリングストップ（下記）割れで利確。"
+
+    # --- 5分割法 + -10%損切り（DUKE 6章の資金管理）---
+    buy_plan = None
+    if last_close and last_close > 0:
+        buy_plan = {
+            "method": "5分割法",
+            "tranches": [
+                {"no": 1, "ratio_pct": 20, "trigger": "試し玉（ピボット/現値）", "ref_price": round(last_close, 1)},
+                {"no": 2, "ratio_pct": 20, "trigger": "含み益が出たら（+3%目安）", "ref_price": round(last_close * 1.03, 1)},
+                {"no": 3, "ratio_pct": 20, "trigger": "上のボックス上抜けで（+7%目安）", "ref_price": round(last_close * 1.07, 1)},
+                {"no": 4, "ratio_pct": 20, "trigger": "押し目→再度の高値更新で", "ref_price": None},
+                {"no": 5, "ratio_pct": 20, "trigger": "新高値ブレイクの度に（任意）", "ref_price": None},
+            ],
+            "hard_stop_pct": -10,
+            "hard_stop_price": round(last_close * 0.9, 1),
+            "note": ("資金を5分割し、最初の1/5を試し玉として打診買い。含み益が出たら高値ブレイクの度に"
+                     "買い増し、含み損なら買い増さない。1回の損切りは最大-10%（平均取得単価比）。"
+                     "※上の『損切り目安』(トレイル/ATR)は利を伸ばすための防御線で、-10%は新規買いの最終防衛ライン。"),
+        }
 
     return {
         "ok": True,
         "as_of": as_of,
         "last_close": round(last_close, 1) if last_close else None,
         "atr": round(last_atr, 2) if last_atr else None,
+        "buy_plan": buy_plan,
         "atr_pct": round(last_atr / last_close * 100, 2) if (last_atr and last_close) else None,
         "leg": {
             "origin_low": round(origin_low, 1) if origin_low else None,
@@ -901,7 +1369,50 @@ def analyze_breakout_projection(
         "risk_reward": rr,
         "remaining_estimate_pct": remaining_pct,
         "verdict": verdict,
+        "entry_caution": entry_caution,
         "notes": notes,
+    }
+
+
+def estimate_target_price_by_multiple(
+    fundamentals: Optional[dict], last_close: Optional[float],
+    *, years: int = 3, growth_cap: float = 0.40,
+) -> dict:
+    """営業利益倍率（時価総額 ÷ 営業利益）を使った目標株価の概算（DUKE 7章の類似会社比較法の簡易版）。
+
+    現在の営業利益倍率を維持すると仮定し、years 年後の営業利益（利益成長率で複利）に同倍率を
+    掛けて将来時価総額→1株あたりに割り戻す。yfinance に四半期/中計が無いため、年次の
+    earnings_growth を営業利益成長の代理に使う（暴走を避けるため growth_cap で上限）。
+    """
+    f = fundamentals or {}
+    mcap = f.get("market_cap_jpy")
+    rev = f.get("revenue")
+    opm = f.get("operating_margin")
+    shares = f.get("shares_outstanding")
+    growth = f.get("earnings_growth")
+    if not (mcap and rev and opm and shares and last_close and growth is not None):
+        return {"ok": False, "reason": "営業利益倍率の算出に必要なデータ（時価総額/売上/営業利益率/株数/成長率）が不足"}
+    op_income = rev * opm
+    if op_income <= 0:
+        return {"ok": False, "reason": "営業利益がゼロ以下のため倍率法は適用外"}
+    op_multiple = mcap / op_income
+    g = max(-0.5, min(float(growth), growth_cap))  # 過度な成長率を抑制
+    future_op = op_income * ((1 + g) ** years)
+    targets = {}
+    for label, mult in (("保守", op_multiple * 0.8), ("本命", op_multiple)):
+        tgt_price = future_op * mult / shares
+        targets[label] = {
+            "price": round(tgt_price, 1),
+            "upside_pct": round((tgt_price - last_close) / last_close * 100, 1),
+        }
+    return {
+        "ok": True,
+        "op_multiple": round(op_multiple, 1),
+        "assumed_growth_pct": round(g * 100, 1),
+        "years": years,
+        "targets": targets,
+        "note": (f"現在の営業利益倍率 約{op_multiple:.1f}倍を基準に、利益成長 {g * 100:.0f}%/年で"
+                 f"{years}年後営業利益を複利推定（年次YoYを営業利益成長の代理に使用）。"),
     }
 
 

@@ -15,6 +15,7 @@ from config import JST
 from services.jp_stock_data_service import StockDataProvider, get_provider
 from services.screener_engine import (
     ScreeningResult,
+    StyleStrategy,
     get_strategy,
     list_strategies,
 )
@@ -239,10 +240,75 @@ class ScreenerService:
             })
         return {"ok": True, "code": code, "candles": candles}
 
+    async def score_all_methods(self, code: str, days: int = 300) -> dict:
+        """1 銘柄を登録済みの全メソッドで採点し、メソッド別の魅力（点数）と一番有利な
+        メソッドを返す。near_miss=True で部分点も含めて評価するので、完全合致しなくても
+        「どのメソッドから見て魅力的か」が点数で比較できる。注目銘柄・保有銘柄の横断評価用。"""
+        from services.screener_engine import STRATEGY_REGISTRY
+        code = str(code or "").strip()
+        if not code:
+            return {"ok": False, "error": "code が空です"}
+        try:
+            df = await self.provider.get_ohlcv(code, days=max(int(days or 300), 60))
+        except Exception as e:
+            return {"ok": False, "error": f"価格取得失敗: {e}"}
+        if df is None or len(df) == 0:
+            return {"ok": False, "error": "価格データがありません"}
+        try:
+            fundamentals = await self.provider.get_fundamentals(code)
+        except Exception:
+            fundamentals = None
+
+        methods: list[dict] = []
+        for name, strat in STRATEGY_REGISTRY.items():
+            if getattr(strat, "hidden", False):
+                continue  # 他メソッドの内部部品は採点比較から除外
+            entry = {
+                "style": name,
+                "display_name": strat.display_name,
+                "category": getattr(strat, "category", "fundamental"),
+                "needs_fundamentals": bool(getattr(strat, "needs_fundamentals", False)),
+                "score": None, "passed": False, "evaluable": False, "signals": [],
+            }
+            try:
+                res = strat.evaluate(code, "", "", df, fundamentals,
+                                     enabled_filters=None, near_miss=True)
+            except Exception as e:
+                logging.debug(f"score_all_methods evaluate {name} {code}: {e}")
+                res = None
+            if res is not None:
+                d = res.to_dict()
+                entry["score"] = d.get("score")
+                entry["passed"] = not res.is_near_miss
+                entry["evaluable"] = True
+                entry["signals"] = d.get("signals", [])
+            methods.append(entry)
+
+        # 採点できたメソッドの最高点を「得意メソッド」候補に
+        scored = sorted([m for m in methods if m["score"] is not None],
+                        key=lambda m: m["score"], reverse=True)
+        best = scored[0] if scored else None
+        # 表示順: カテゴリ(テクニカル→ファンダ→複合)ごとに点数降順
+        cat_order = {"technical": 0, "fundamental": 1, "hybrid": 2}
+        methods.sort(key=lambda m: (cat_order.get(m["category"], 9),
+                                    -(m["score"] if m["score"] is not None else -1)))
+        return {
+            "ok": True,
+            "code": code,
+            "as_of": StyleStrategy._data_as_of(df),
+            "has_fundamentals": bool(fundamentals),
+            "best_method": ({"style": best["style"], "display_name": best["display_name"],
+                             "category": best["category"], "score": best["score"]} if best else None),
+            "methods": methods,
+            "price_snapshot": StyleStrategy._build_snapshot(df),
+        }
+
     async def analyze_projection(self, code: str, days: int = 750) -> dict:
         """1 銘柄の過去の高値ブレイク後の値動きから、上昇余地・利確目標・損切り目安を返す。
         スクリーニングと同じ分割調整済み OHLCV を使うので、シグナルと整合する。"""
-        from services.screener_engine import analyze_breakout_projection
+        from services.screener_engine import (
+            analyze_breakout_projection, estimate_target_price_by_multiple,
+        )
         days = max(250, min(int(days or 750), 1500))
         try:
             df = await self.provider.get_ohlcv(code, days=days)
@@ -254,6 +320,14 @@ class ScreenerService:
             res = analyze_breakout_projection(df)
         except Exception as e:
             return {"ok": False, "error": f"分析に失敗しました: {e}"}
+        # 目標株価（営業利益倍率法・DUKE 7章）をファンダから併算
+        if res.get("ok"):
+            try:
+                fundamentals = await self.provider.get_fundamentals(code)
+                res["target_by_multiple"] = estimate_target_price_by_multiple(
+                    fundamentals, res.get("last_close"))
+            except Exception as e:
+                logging.debug(f"target_by_multiple 算出エラー {code}: {e}")
         res["code"] = code
         return res
 
@@ -352,8 +426,10 @@ class ScreenerService:
                 except Exception as e:
                     logging.debug(f"advise analyze_position エラー {code}: {e}")
                     res = {"ok": False, "error": f"診断失敗: {e}"}
-                # 新規候補は「利確目安(projection)」と整合させる。過熱/リスクリワード劣後なら
-                # 新規買いは見送り（BUY→WATCH）。保有銘柄は利を伸ばすため過熱でも維持。
+                # 新規候補は「利確目安(projection)」と整合させる。新規エントリーの R/R が悪い
+                # （損切り幅に対し当面の利幅が小さい）場合のみ新規買いは見送り（BUY→WATCH）。
+                # 「過去の典型を超えて上昇＝強いトレンド」は売り/見送り材料にしない（天井を
+                # 決めつけず利を伸ばす方針）。保有銘柄は当然そのまま継続。
                 if (not held) and res.get("ok"):
                     try:
                         proj = analyze_breakout_projection(df)
@@ -361,27 +437,21 @@ class ScreenerService:
                         proj = None
                     if proj and proj.get("ok"):
                         verdict_txt = proj.get("verdict") or ""
-                        overheated = verdict_txt.startswith("過熱")
-                        avoid = verdict_txt.startswith("見送り")
+                        entry_caution = bool(proj.get("entry_caution"))
                         res["projection"] = {
                             "verdict": verdict_txt,
                             "risk_reward": proj.get("risk_reward"),
                             "remaining_estimate_pct": proj.get("remaining_estimate_pct"),
-                            "overheated": overheated,
+                            "entry_caution": entry_caution,
                         }
-                        # 利確目安が「見送り寄り」(リスクリワード劣後)なら新規買いは見送り(BUY→WATCH)。
-                        # 「過熱気味」は BUY のまま残すが overheated フラグを立て、入替候補からは除外する
-                        # （後段の rotations で利用）。これで利確目安と一括診断の判断が食い違わない。
-                        if res["verdict"]["action"] == "BUY" and avoid:
+                        # 新規の R/R が悪いときだけ BUY→WATCH（飛び乗り回避）。
+                        if res["verdict"]["action"] == "BUY" and entry_caution:
                             res["verdict"]["action"] = "WATCH"
                             res["verdict"]["action_label"] = "ウォッチ（妙味薄）"
                             res["verdict"]["note"] = (
-                                "テクニカル・ファンダは買い方向だが、利確目安が「見送り寄り」"
-                                "（直近高値まで近く損切り幅に対し利幅が小さい）。新規買いは見送り。"
-                            )
-                        elif res["verdict"]["action"] == "BUY" and overheated:
-                            res["verdict"]["note"] += (
-                                "（ただし利確目安は『過熱気味』。新規・入替で飛び乗るより押し目待ちが無難）"
+                                "テクニカル・ファンダは買い方向だが、利確目安の R/R が劣後"
+                                "（直近高値まで近く損切り幅に対し利幅が小さい）。新規買いは打診的に、"
+                                "または押し目・再ブレイクを待つ。"
                             )
             res["code"] = code
             res["name"] = name
@@ -436,10 +506,10 @@ class ScreenerService:
 
         sells = [r for r in holdings_out
                  if r.get("ok") and r["verdict"]["action"] in ("SELL", "TRIM")]
-        # 入替先(buys)からは利確目安で「過熱気味」の銘柄を除外（高値掴みの入替を避ける）。
+        # 入替先(buys)＝新規買い水準の候補。過去の典型を超えて上昇中でも「強いトレンド」
+        # として入替候補に残す（天井を決めつけず大きな値幅を狙う方針）。
         buys = [r for r in candidates_out
-                if r.get("ok") and r["verdict"]["action"] == "BUY"
-                and not (r.get("projection") or {}).get("overheated")]
+                if r.get("ok") and r["verdict"]["action"] == "BUY"]
         # 入れ替えは同一市場内のみ（日本株↔日本株、米国株↔米国株）
         rotations = []
         for mkt in ("JP", "US"):
