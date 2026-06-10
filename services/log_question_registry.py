@@ -13,6 +13,13 @@ AI 一文抽出は Phase 2 以降で追加する。設計は docs/log_question_f
 #   "text"   … 自由記載（textarea のみ）
 #   "choice" … 選択チップ中心（1 タップ回答を想定。自由記載も併用可）
 #   "extract"… AI が一文から複数フィールドへ分解（Phase 2 で実装）
+#
+# 任意キー:
+#   "label"    … 表示名／掘り下げプロンプトに渡す種類名。
+#   "self_log" … True なら「マネージャーの質問を待たず、自分から先に記録できる」入口を出す。
+#                記録は質問への回答と同じ reflect パイプを通る（質問起点と自発で挙動を揃える）。
+#   "followup" … "ai" なら回答後に AI が「掘り下げる価値あり」と判断したときだけ追質問を生成し、
+#                未回答インボックスに静かに積む（push 通知なし・深さ上限つき・スキップ可）。
 LOG_QUESTION_SCOPES: dict[str, dict] = {
     # --- 既存スコープ（挙動はそのまま。ここではメタデータのみ集約） ---
     "summary": {"answer_type": "text", "icon": "📝", "chips": None},
@@ -37,10 +44,27 @@ LOG_QUESTION_SCOPES: dict[str, dict] = {
         "icon": "🌤",
         "chips": ["順調 👍", "ぼちぼち 😐", "疲れてきた 😪", "集中できてない"],
     },
-    # 今日学んだこと・気づき（自由記載）
-    "learning": {"answer_type": "text", "icon": "💡", "chips": None},
-    # 今日良かったこと・感謝（自由記載）
-    "gratitude": {"answer_type": "text", "icon": "🙏", "chips": None},
+    # 今日の出来事（自由記載・自発記録OK・AI掘り下げ対象）
+    "event": {
+        "answer_type": "text", "icon": "📌", "label": "出来事",
+        "chips": None, "self_log": True, "followup": "ai",
+    },
+    # 今日学んだこと・気づき（自由記載・自発記録OK・AI掘り下げ対象）
+    "learning": {
+        "answer_type": "text", "icon": "💡", "label": "学び",
+        "chips": None, "self_log": True, "followup": "ai",
+    },
+    # 今日良かったこと・感謝（自由記載・自発記録OK・AI掘り下げ対象）
+    "gratitude": {
+        "answer_type": "text", "icon": "🙏", "label": "良かったこと",
+        "chips": None, "self_log": True, "followup": "ai",
+    },
+    # MIT（今日の最重要タスク・自発記録OK。掘り下げはしない＝計画なので）。
+    # 記録は append ではなく1日1セットの set（Obsidian の ## 🎯 MIT を置き換え）。
+    "mit": {
+        "answer_type": "text", "icon": "🎯", "label": "MIT",
+        "chips": None, "self_log": True,
+    },
     # 読書メモ（多項目→AI抽出で書名＋学びに分解）
     "reading": {"answer_type": "extract", "icon": "📖", "chips": None},
     # 英単語/フレーズのクイズ（学習。選択肢は context.chips に都度格納）
@@ -56,6 +80,11 @@ MAX_CHIPS = 8
 def get_scope_config(scope: str) -> dict:
     """scope の設定を返す（未登録ならデフォルト）。"""
     return LOG_QUESTION_SCOPES.get(scope or "", DEFAULT_SCOPE)
+
+
+def should_followup(scope: str) -> bool:
+    """この scope の回答後に AI 掘り下げ質問を生成してよいか。"""
+    return get_scope_config(scope).get("followup") == "ai"
 
 
 def resolve_chips(scope: str, context: dict | None) -> list[str]:

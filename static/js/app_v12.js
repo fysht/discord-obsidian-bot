@@ -1029,7 +1029,7 @@ window.skipInlineQuestion = (btn) => {
 
 // ===== A: 未回答ログ質問のまとめ回答ビュー＋バッジ =====
 // ログ質問フレームワークの scope（チャットに流れて埋もれがちなもの）だけを対象にする。
-const LOG_INBOX_SCOPES = ['meal', 'expense', 'mood', 'condition', 'reading', 'english_quiz', 'afternoon', 'learning', 'gratitude'];
+const LOG_INBOX_SCOPES = ['meal', 'expense', 'mood', 'condition', 'reading', 'english_quiz', 'afternoon', 'learning', 'gratitude', 'event'];
 
 async function _fetchLogQuestions() {
     try {
@@ -1058,8 +1058,15 @@ window.openLogInbox = async () => {
         wrap.innerHTML = `
             <div id="log-inbox-modal" class="modal-overlay hidden">
                 <div class="modal-card" style="max-width:520px;max-height:88vh;overflow-y:auto;">
-                    <h3 style="margin-top:0;">📥 未回答のログ</h3>
-                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">溜まった記録をまとめて。チップなら1タップ、不要なら🗑で消せます。</p>
+                    <h3 style="margin-top:0;">📥 記録ボード</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">マネージャーの質問を待たずに自分から記録できます。質問への回答も同じ場所でまとめて。</p>
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
+                        <button type="button" class="chip-btn" onclick="openQuickLogModal('event')">📌 出来事</button>
+                        <button type="button" class="chip-btn" onclick="openQuickLogModal('learning')">💡 学び</button>
+                        <button type="button" class="chip-btn" onclick="openQuickLogModal('gratitude')">🙏 良かったこと</button>
+                        <button type="button" class="chip-btn" onclick="openQuickLogModal('mit')">🎯 MIT</button>
+                    </div>
+                    <div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:6px;">未回答（マネージャーから）</div>
                     <div id="log-inbox-list"></div>
                     <div class="modal-actions" style="margin-top:12px;">
                         <button class="modal-btn cancel" onclick="document.getElementById('log-inbox-modal').classList.add('hidden')">閉じる</button>
@@ -1081,7 +1088,7 @@ window.renderLogInbox = async () => {
         listEl.innerHTML = '<div style="font-size:0.82rem;color:var(--text-muted);padding:12px 4px;">未回答のログはありません 🎉</div>';
         return;
     }
-    const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣', afternoon: '🌤', learning: '💡', gratitude: '🙏' };
+    const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣', afternoon: '🌤', learning: '💡', gratitude: '🙏', event: '📌' };
     listEl.innerHTML = items.map(q => {
         const chips = Array.isArray(q.chips) ? q.chips : [];
         const chipsHtml = chips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
@@ -8450,6 +8457,7 @@ window.openQuickLogModal = (scope = 'event', presetText = '') => {
                         <button type="button" class="chip-btn" data-scope="event"     onclick="setQuickLogScope('event')">📌 出来事</button>
                         <button type="button" class="chip-btn" data-scope="learning"  onclick="setQuickLogScope('learning')">💡 学び</button>
                         <button type="button" class="chip-btn" data-scope="gratitude" onclick="setQuickLogScope('gratitude')">🙏 良かったこと</button>
+                        <button type="button" class="chip-btn" data-scope="mit"       onclick="setQuickLogScope('mit')">🎯 MIT</button>
                     </div>
                     <textarea id="quick-log-text" class="modern-input" rows="3" placeholder="ひとことでOK" style="width:100%;font-family:inherit;"></textarea>
                     <div class="modal-actions" style="margin-top:10px;">
@@ -8471,6 +8479,9 @@ window.setQuickLogScope = (scope) => {
     document.querySelectorAll('#quick-log-types .chip-btn').forEach(b => {
         b.classList.toggle('special', b.dataset.scope === scope);
     });
+    // MIT は1日3つまでの「設定」なので入力ヒントを切り替える（改行で複数行）。
+    const ta = document.getElementById('quick-log-text');
+    if (ta) ta.placeholder = scope === 'mit' ? '今日のMITを最大3つ（改行区切り）' : 'ひとことでOK';
 };
 
 window.submitQuickLog = async () => {
@@ -8486,6 +8497,13 @@ window.submitQuickLog = async () => {
         });
         showToast(`${res.icon || '📝'} ${res.label || ''}を記録しました ✓`);
         if (ta) { ta.value = ''; ta.focus(); }  // 続けて入力できるよう開いたまま
+        // 自発記録に対する AI 掘り下げが未回答インボックスに積まれることがあるのでバッジを更新。
+        if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
+        // 記録ボードを開いたまま記録した場合は、未回答リストもその場で更新する。
+        const inbox = document.getElementById('log-inbox-modal');
+        if (inbox && !inbox.classList.contains('hidden') && typeof renderLogInbox === 'function') {
+            renderLogInbox();
+        }
     } catch (e) {
         showToast('記録に失敗しました', true);
     } finally {

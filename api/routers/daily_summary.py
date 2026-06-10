@@ -197,16 +197,50 @@ class QuickLogRequest(BaseModel):
 
 @router.post("/daily_questions/quick_log", dependencies=[Depends(verify_api_key)])
 async def daily_questions_quick_log(req: QuickLogRequest):
-    """出来事 / 学び / 良かったこと等を、質問を介さずその場で1件記録する。
-    「残しておこう」と思った瞬間に何度でも入力できるようにするための入口
-    （夜にまとめてではなく都度・複数入力を可能にする）。"""
+    """出来事 / 学び / 良かったこと / MIT 等を、マネージャーの質問を待たず自分から記録する。
+    「残しておこう」と思った瞬間に何度でも入力できる入口（夜にまとめてではなく都度・複数入力）。
+
+    記録は質問への回答と同じ扱いで、対象 scope（registry の followup="ai"）には回答後に
+    AI 掘り下げ質問が静かに積まれる＝自発記録が会話の種まきになる。"""
     scope = (req.scope or "").strip()
     text = (req.text or "").strip()
-    if scope not in _JOURNAL_SCOPE_META:
-        raise HTTPException(status_code=422, detail="対応していない種類です")
     if not text:
         raise HTTPException(status_code=422, detail="本文が空です")
+
+    # MIT は append ではなく1日1セットの set（Obsidian の ## 🎯 MIT を置き換え）。
+    # 朝の MorningMitCog が同じ MIT を再度聞かないよう morning_mit 質問も resolved 化する。
+    if scope == "mit":
+        import re as _re
+        items = []
+        for ln in text.splitlines():
+            ln = _re.sub(r"^\s*[0-9]+[.)、]\s*", "", ln).strip()
+            ln = _re.sub(r"^[-・*]\s*", "", ln).strip()
+            if ln:
+                items.append(ln[:60])
+        items = items[:3]
+        if not items:
+            raise HTTPException(status_code=422, detail="MIT が空です")
+        from api import app
+        bot = getattr(app.state, "bot", None)
+        partner_cog = bot.get_cog("PartnerCog") if bot else None
+        if not partner_cog:
+            raise HTTPException(status_code=503, detail="Obsidian に接続できませんでした")
+        await partner_cog._set_mit_to_obsidian(items)
+        today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        try:
+            await resolve_questions(today, scope="morning_mit")
+        except Exception as e:
+            logging.debug(f"quick_log MIT: morning_mit resolve skipped: {e}")
+        return {"ok": True, "icon": "🎯", "label": "MIT", "scope": "mit"}
+
+    if scope not in _JOURNAL_SCOPE_META:
+        raise HTTPException(status_code=422, detail="対応していない種類です")
     icon, label = await _append_journal_line(scope, text)
+    # 自発記録にも質問起点と同じ AI 掘り下げを適用（深さ0から・push なし）。
+    try:
+        await _maybe_generate_followup(scope, text, depth=0)
+    except Exception as e:
+        logging.debug(f"quick_log followup skipped ({scope}): {e}")
     return {"ok": True, "icon": icon, "label": label, "scope": scope}
 
 
@@ -291,6 +325,21 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
             await _reflect_english_quiz_answer(rq, req.answer)
         elif rscope in ("afternoon", "learning", "gratitude", "event"):
             await _reflect_journal_answer(qid, req.answer, rscope)
+
+        # 掘り下げ：回答後に AI が価値ありと判断したら追質問を静かに積む。
+        # 親質問の context.depth を引き継いで深さ上限で連鎖を止める（mood は専用の理由
+        # 追質問を持つので followup="ai" 対象外＝ここでは発火しない）。
+        if rscope:
+            import json as _fj
+            depth = 0
+            try:
+                _ctx = _fj.loads(rq.get("context") or "{}") if isinstance(rq, dict) else {}
+                depth = int(_ctx.get("depth") or 0)
+            except Exception:
+                depth = 0
+            await _maybe_generate_followup(
+                rscope, req.answer, date=(rq.get("date") if isinstance(rq, dict) else None), depth=depth,
+            )
     except Exception as e:
         logging.error(f"log-question reflect エラー: {e}")
 
@@ -414,6 +463,80 @@ async def _reflect_journal_answer(qid: int, answer_text: str, scope: str):
     await resolve_question_by_id(qid)
     await notification_service.save_message_and_notify(
         "assistant", f"{icon} {label}を記録したよ（{text}）", title=f"{icon} {label}記録",
+    )
+
+
+# 掘り下げ（フォローアップ質問）の最大深さ。回答→追質問→回答 を最大この回数だけ繰り返す。
+# 自発記録モードで「答えるたびに質問が増え続ける」のを防ぐためのループ上限。
+_FOLLOWUP_MAX_DEPTH = 1
+
+
+async def _maybe_generate_followup(scope: str, answer_text: str, *, date: str | None = None, depth: int = 0):
+    """回答（質問起点・自発記録のどちらでも）に対し、AI が「掘り下げる価値あり」と判断した
+    ときだけ追質問を1つ生成し、未回答インボックスに静かに積む。
+
+    設計上の約束（docs/log_question_framework.md / 自発記録の掘り下げ）:
+      - 文面は固定テンプレで縛らず AI 自由生成（registry の followup="ai" が対象）。
+      - 価値判定も AI に任せ、一言の事実メモなど掘る余地が乏しいものは掘らない。
+      - 深さ上限（_FOLLOWUP_MAX_DEPTH）で連鎖を打ち切りループを防ぐ。
+      - push 通知は出さず save_message のみ＝平日昼に鳴らさず、夜インボックスを開いた時に気づく。
+    """
+    import json as _json
+    from services.log_question_registry import should_followup, get_scope_config
+
+    if not should_followup(scope):
+        return
+    if depth >= _FOLLOWUP_MAX_DEPTH:
+        return
+    text = (answer_text or "").strip()
+    if not text:
+        return
+
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        return
+
+    cfg = get_scope_config(scope)
+    label = cfg.get("label") or scope
+    prompt = (
+        "あなたは利用者に寄り添うパーソナルマネージャーです。利用者が残した記録を読み、"
+        "もう一歩だけ考えたくなる短い追質問を作るか判断してください。\n"
+        f"記録の種類: {label}\n記録の内容: {text}\n\n"
+        "判断基準:\n"
+        "- 事実の羅列・一言メモなど掘る余地が乏しければ掘らない（deepen=false）。\n"
+        "- 感情・判断・学び・次の行動につながりそうな含みがあるときだけ掘る。\n"
+        "- 追質問は1つ・30字程度・本人が答えたくなる具体的な問いにする。詰問にしない。\n"
+        "必ず以下の JSON だけ返す。前置き禁止。\n"
+        '{"deepen": true/false, "question": "追質問（なければ空文字）"}'
+    )
+    try:
+        from google.genai import types as _gt
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("partner_chat", default_pro=False)
+        resp = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[_gt.Part.from_text(text=prompt)]),
+            config=_gt.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        data = _json.loads(resp.text)
+    except Exception as e:
+        logging.debug(f"followup gen failed ({scope}): {e}")
+        return
+    if not (isinstance(data, dict) and data.get("deepen")):
+        return
+    question = (data.get("question") or "").strip()
+    if not question:
+        return
+
+    from api.database import add_daily_question, save_message
+    day = date or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    ctx = _json.dumps({"followup": True, "depth": depth + 1}, ensure_ascii=False)
+    await add_daily_question(day, question, scope=scope, context=ctx)
+    # push なしでチャットに積むだけ（インライン回答欄が後で描画される）。
+    await save_message(
+        "assistant",
+        f"{cfg.get('icon', '💬')} {question}\n[QUESTIONS:{scope}:{day}]",
     )
 
 
