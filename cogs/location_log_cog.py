@@ -1,11 +1,11 @@
 import os
 import logging
-import json
+import tempfile
 from datetime import datetime, time, timedelta
-import io
 import asyncio
 import re
 
+import ijson
 from discord.ext import commands, tasks
 import googlemaps
 from geopy.distance import great_circle
@@ -124,23 +124,34 @@ class LocationLogCog(commands.Cog):
     def _rename_file(self, service, file_id, new_name):
         service.files().update(fileId=file_id, body={"name": new_name}).execute()
 
-    def _read_json(self, service, file_id):
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, service.files().get_media(fileId=file_id))
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        return json.loads(fh.getvalue().decode("utf-8"))
+    def _read_and_extract(self, service, file_id, target_dates: set[str] = None) -> dict:
+        """Timeline JSON を一時ファイルへストリーム保存し、semanticSegments を ijson で
+        1 件ずつ読みながらログ抽出する。巨大なタイムライン JSON でも全体をメモリへ
+        展開しないため、Render の 23:50 メモリ超過を防ぐ。"""
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+                tmp_path = tf.name
+                downloader = MediaIoBaseDownload(
+                    tf, service.files().get_media(fileId=file_id)
+                )
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+            with open(tmp_path, "rb") as f:
+                segments = ijson.items(f, "semanticSegments.item")
+                return self._extract_logs_from_json(segments, target_dates=target_dates)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
-    def _extract_logs_from_json(
-        self, data: dict, target_dates: set[str] = None
-    ) -> dict:
-        segments = data.get("semanticSegments", [])
-        if not segments:
-            return None
-
+    def _extract_logs_from_json(self, segments, target_dates: set[str] = None) -> dict:
+        """semanticSegments の iterable（ijson ストリーム or list）からログを抽出する。"""
         events_by_date = {}
-        for seg in segments:
+        for seg in (segments or []):
             start_time = self._parse_iso_timestamp(seg.get("startTime", ""))
             end_time = self._parse_iso_timestamp(seg.get("endTime", ""))
             if not start_time or not end_time:
@@ -303,13 +314,12 @@ class LocationLogCog(commands.Cog):
             return "タイムラインのJSONファイルが見つかりません。"
 
         try:
-            data = await loop.run_in_executor(
-                None, self._read_json, service, latest_file["id"]
+            logs_by_date = await loop.run_in_executor(
+                None, self._read_and_extract, service, latest_file["id"], {target_date}
             )
         except Exception as e:
             return f"JSON読み込みエラー: {e}"
 
-        logs_by_date = self._extract_logs_from_json(data, target_dates={target_date})
         if not logs_by_date or target_date not in logs_by_date:
             return f"⚠️ `{latest_file['name']}` 内に **{target_date}** の移動データが見つかりませんでした。"
 
@@ -350,13 +360,11 @@ class LocationLogCog(commands.Cog):
             file_name = file_info["name"]
 
             try:
-                data = await loop.run_in_executor(
-                    None, self._read_json, service, file_id
+                logs_by_date = await loop.run_in_executor(
+                    None, self._read_and_extract, service, file_id, target_dates
                 )
             except Exception:
                 continue
-
-            logs_by_date = self._extract_logs_from_json(data, target_dates=target_dates)
 
             processed_dates = []
             if logs_by_date:

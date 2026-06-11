@@ -699,10 +699,10 @@ function switchTab(tab) {
     if (tab === 'info') {
         _restoreCardStates();
     }
-    // ログタブを開いたときに Fitbit データとデイリーサマリーを自動ロード
+    // ログタブを開いたときに Fitbit データとデイリーノート（昨日）を自動ロード
     if (tab === 'log') {
         if (!_fitbitRows.length) loadFitbitAllData(false);
-        loadDailySummary();
+        if (typeof loadDailyNote === 'function') loadDailyNote();
         if (typeof loadMediaItems === 'function') loadMediaItems();
     }
     if (tab === 'invest') {
@@ -1051,22 +1051,81 @@ window.refreshLogInboxBadge = async () => {
     badge.style.display = n > 0 ? '' : 'none';
 };
 
+// 「今日の記録」ボードの自発記録項目。質問を待たず、埋めたい欄にその場で入力できる＝1日の記入フォーム。
+//  - MIT … 今日／明日を設定（値は残し、編集して再記録で更新）。
+//  - 気分・体調 … 選択式（チップをタップで記録）。
+//  - 出来事／学び／良かったこと … 追記（記録後も値を上に残し、入力欄は空にして続けて入力できる）。
+const BOARD_APPEND_ITEMS = [
+    { scope: 'event',     icon: '📌', label: '出来事',       placeholder: 'あった出来事をひとこと' },
+    { scope: 'learning',  icon: '💡', label: '学び',         placeholder: '気づき・学んだこと' },
+    { scope: 'gratitude', icon: '🙏', label: '良かったこと', placeholder: '良かったこと・感謝' },
+];
+const BOARD_CHOICE_ITEMS = [
+    { scope: 'mood',      icon: '😀', label: '気分', chips: ['絶好調 🤩', '良い 🙂', 'ふつう 😐', 'もやもや 😕', 'しんどい 😫'] },
+    { scope: 'condition', icon: '🩺', label: '体調', chips: ['絶好調', '普通', '疲れ気味', '不調'] },
+];
+
+function _boardTomorrowStr() {
+    const d = new Date(`${_todayStr()}T00:00:00`);
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().slice(0, 10);
+}
+
+function _boardMitRow(key, label) {
+    return `
+        <div class="board-mit-row" data-mitkey="${key}" style="margin-bottom:8px;">
+            <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:3px;">${label}</div>
+            <textarea class="modern-input board-mit-text" rows="3" placeholder="MITを最大3つ（改行区切り）" style="width:100%;padding:6px;font-size:0.85rem;"></textarea>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
+                <span class="board-mit-status" style="font-size:0.72rem;color:var(--text-muted);margin-right:auto;"></span>
+                <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitBoardMit(this, '${key}')">記録</button>
+            </div>
+        </div>`;
+}
+
+function _boardChoiceRow(it) {
+    const chips = it.chips.map(c => `<button type="button" class="board-chip" onclick="submitBoardChoice(this, '${it.scope}', '${escapeHtml(c)}')" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('');
+    return `
+        <div class="board-choice" data-scope="${it.scope}" style="margin-bottom:10px;">
+            <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${it.icon} ${it.label} <span class="board-choice-status" style="font-size:0.72rem;color:var(--text-muted);"></span></div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">${chips}</div>
+        </div>`;
+}
+
+function _boardAppendRow(it) {
+    return `
+        <div class="board-append" data-scope="${it.scope}" style="margin-bottom:10px;">
+            <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${it.icon} ${it.label}</div>
+            <div class="board-append-list"></div>
+            <textarea class="modern-input board-append-text" rows="2" placeholder="${it.placeholder}" style="width:100%;padding:6px;font-size:0.85rem;"></textarea>
+            <div style="display:flex;justify-content:flex-end;margin-top:4px;">
+                <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitBoardAppend(this, '${it.scope}')">記録</button>
+            </div>
+        </div>`;
+}
+
+// 1ボタンで開く「今日の記録」ボード。自発記録の入力欄と、マネージャーからの未回答質問を
+// 1枚に縦に並べ、埋めたいところだけ埋められるようにする（旧 サッと記録／未回答ログ を統合）。
 window.openLogInbox = async () => {
     let modal = document.getElementById('log-inbox-modal');
     if (!modal) {
+        const selfLogHtml = `
+            <div style="margin-bottom:10px;">
+                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">🎯 MIT</div>
+                ${_boardMitRow('today', '今日')}
+                ${_boardMitRow('tomorrow', '明日')}
+            </div>
+            ${BOARD_CHOICE_ITEMS.map(_boardChoiceRow).join('')}
+            ${BOARD_APPEND_ITEMS.map(_boardAppendRow).join('')}`;
         const wrap = document.createElement('div');
         wrap.innerHTML = `
             <div id="log-inbox-modal" class="modal-overlay hidden">
                 <div class="modal-card" style="max-width:520px;max-height:88vh;overflow-y:auto;">
-                    <h3 style="margin-top:0;">📥 記録ボード</h3>
-                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">マネージャーの質問を待たずに自分から記録できます。質問への回答も同じ場所でまとめて。</p>
-                    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;">
-                        <button type="button" class="chip-btn" onclick="openQuickLogModal('event')">📌 出来事</button>
-                        <button type="button" class="chip-btn" onclick="openQuickLogModal('learning')">💡 学び</button>
-                        <button type="button" class="chip-btn" onclick="openQuickLogModal('gratitude')">🙏 良かったこと</button>
-                        <button type="button" class="chip-btn" onclick="openQuickLogModal('mit')">🎯 MIT</button>
-                    </div>
-                    <div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:6px;">未回答（マネージャーから）</div>
+                    <h3 style="margin-top:0;">📝 今日の記録</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">今日の項目を埋めていきましょう。入力したいところだけでOK。質問への回答も同じ場所で。</p>
+                    <div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:6px;">自分から記録</div>
+                    ${selfLogHtml}
+                    <div id="log-inbox-questions-head" style="font-size:0.76rem;color:var(--text-muted);margin:14px 0 6px;">マネージャーから（未回答）</div>
                     <div id="log-inbox-list"></div>
                     <div class="modal-actions" style="margin-top:12px;">
                         <button class="modal-btn cancel" onclick="document.getElementById('log-inbox-modal').classList.add('hidden')">閉じる</button>
@@ -1080,14 +1139,85 @@ window.openLogInbox = async () => {
     await renderLogInbox();
 };
 
+// MIT（今日/明日）を設定。値は残し、編集して再記録すれば更新できる。
+window.submitBoardMit = async (btn, key) => {
+    const row = btn.closest('.board-mit-row');
+    const ta = row && row.querySelector('.board-mit-text');
+    const status = row && row.querySelector('.board-mit-status');
+    const text = (ta && ta.value || '').trim();
+    if (!text) { showToast('内容を入力してください', true); return; }
+    const date = key === 'tomorrow' ? _boardTomorrowStr() : '';
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = '記録中…';
+    try {
+        await apiFetch('/api/daily_questions/quick_log', {
+            method: 'POST', body: JSON.stringify({ scope: 'mit', text, date }),
+        });
+        if (status) status.textContent = '設定しました ✓';
+        showToast(`🎯 ${key === 'tomorrow' ? '明日' : '今日'}のMITを設定しました ✓`);
+    } catch (e) {
+        showToast('記録に失敗しました', true);
+    } finally { btn.disabled = false; btn.textContent = orig; }
+};
+
+// 気分・体調：チップをタップしてその場で記録。選択を強調＋状態表示。
+window.submitBoardChoice = async (btn, scope, value) => {
+    const box = btn.closest('.board-choice');
+    const status = box && box.querySelector('.board-choice-status');
+    if (box) box.querySelectorAll('.board-chip').forEach(b => { b.style.background = 'rgba(255,212,84,0.12)'; b.style.fontWeight = 'normal'; });
+    btn.style.background = 'rgba(255,212,84,0.35)'; btn.style.fontWeight = 'bold';
+    try {
+        const res = await apiFetch('/api/daily_questions/quick_log', {
+            method: 'POST', body: JSON.stringify({ scope, text: value }),
+        });
+        if (status) status.textContent = `記録しました（${value}）✓`;
+        showToast(`${res.icon || ''} ${res.label || ''}を記録しました ✓`);
+    } catch (e) {
+        showToast('記録に失敗しました', true);
+        if (status) status.textContent = '記録に失敗しました';
+    }
+};
+
+// 出来事/学び/良かったこと：記録すると入力値を上の履歴に残し、入力欄は空にして続けて入力できる。
+window.submitBoardAppend = async (btn, scope) => {
+    const box = btn.closest('.board-append');
+    const ta = box && box.querySelector('.board-append-text');
+    const list = box && box.querySelector('.board-append-list');
+    const text = (ta && ta.value || '').trim();
+    if (!text) { showToast('内容を入力してください', true); return; }
+    btn.disabled = true; const orig = btn.textContent; btn.textContent = '記録中…';
+    try {
+        const res = await apiFetch('/api/daily_questions/quick_log', {
+            method: 'POST', body: JSON.stringify({ scope, text }),
+        });
+        // 記録した値を履歴として残す（消えない）。入力欄は空にして続けて入力できるようにする。
+        if (list) {
+            const entry = document.createElement('div');
+            entry.style.cssText = 'font-size:0.8rem;color:var(--text-muted);padding:3px 0;border-bottom:1px dashed rgba(255,255,255,0.08);';
+            entry.textContent = `✓ ${text}`;
+            list.appendChild(entry);
+        }
+        if (ta) { ta.value = ''; ta.focus(); }
+        showToast(`${res.icon || '📝'} ${res.label || ''}を記録しました ✓`);
+        // 自発記録への AI 掘り下げが未回答に積まれることがあるので、その場で反映。
+        if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
+        await renderLogInbox();
+    } catch (e) {
+        showToast('記録に失敗しました', true);
+    } finally { btn.disabled = false; btn.textContent = orig; }
+};
+
 window.renderLogInbox = async () => {
     const listEl = document.getElementById('log-inbox-list');
     if (!listEl) return;
+    const head = document.getElementById('log-inbox-questions-head');
     const items = (await _fetchLogQuestions()).sort((a, b) => (a.id || 0) - (b.id || 0));
     if (!items.length) {
-        listEl.innerHTML = '<div style="font-size:0.82rem;color:var(--text-muted);padding:12px 4px;">未回答のログはありません 🎉</div>';
+        // 未回答が無ければ見出しごと隠して、記入フォームをすっきり見せる。
+        if (head) head.style.display = 'none';
+        listEl.innerHTML = '';
         return;
     }
+    if (head) head.style.display = '';
     const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣', afternoon: '🌤', learning: '💡', gratitude: '🙏', event: '📌' };
     listEl.innerHTML = items.map(q => {
         const chips = Array.isArray(q.chips) ? q.chips : [];
@@ -9266,6 +9396,61 @@ window.shiftDailySummaryDate = (deltaDays) => {
     // 未来日は開かない
     if (next > _todayStr()) { showToast('今日より先には進めません'); return; }
     loadDailySummary(next);
+};
+
+// ===== デイリーノート（Obsidian の .md を生 Markdown で表示・編集）=====
+// ログタブで「昨日のノート」を既定表示し、どんなノートが作られたかを確認・修正できる。
+let _dailyNoteDate = '';  // 表示中の日付（YYYY-MM-DD・既定は昨日）
+function _yesterdayStr() {
+    const d = new Date(`${_todayStr()}T00:00:00`);
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+}
+window.loadDailyNote = async (date = '') => {
+    const ed = $('#daily-note-editor');
+    if (!ed) return;
+    _dailyNoteDate = date || _dailyNoteDate || _yesterdayStr();
+    const label = $('#daily-note-date');
+    const status = $('#daily-note-status');
+    if (label) label.textContent = _dailyNoteDate;
+    if (status) status.textContent = '読み込み中…';
+    ed.value = '';
+    try {
+        const data = await apiFetch(`/api/daily_note?date=${encodeURIComponent(_dailyNoteDate)}`);
+        ed.value = data.text || '';
+        if (status) status.textContent = data.exists ? '' : '（この日のノートはまだありません）';
+    } catch (e) {
+        if (status) status.textContent = '読み込みに失敗しました';
+    }
+};
+window.shiftDailyNoteDate = (delta) => {
+    const cur = _dailyNoteDate || _yesterdayStr();
+    const d = new Date(`${cur}T00:00:00`);
+    d.setDate(d.getDate() + delta);
+    const next = d.toISOString().slice(0, 10);
+    if (next > _todayStr()) { showToast('今日より先には進めません'); return; }
+    loadDailyNote(next);
+};
+window.saveDailyNote = async () => {
+    const ed = $('#daily-note-editor');
+    if (!ed) return;
+    const status = $('#daily-note-status');
+    const btn = $('#daily-note-save-btn');
+    if (btn) btn.disabled = true;
+    if (status) status.textContent = '保存中…';
+    try {
+        await apiFetch('/api/daily_note', {
+            method: 'POST',
+            body: JSON.stringify({ date: _dailyNoteDate || _yesterdayStr(), text: ed.value }),
+        });
+        if (status) status.textContent = '保存しました ✓';
+        showToast('デイリーノートを保存しました ✓');
+    } catch (e) {
+        if (status) status.textContent = '保存に失敗しました';
+        showToast('保存に失敗しました', true);
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 };
 
 // 共通: デイリー系カードの軽量 Markdown レンダラ

@@ -110,8 +110,7 @@
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('start')">▶ タスク開始</button>
                         <button class="chip-btn special" onclick="openIntelligentTaskModal('end')">■ タスク終了</button>
                         <button class="chip-btn special" onclick="openMemoModal()" title="永久ノートに保存">📝 メモ</button>
-                        <button class="chip-btn special" onclick="openQuickLogModal('event')" title="出来事・学び・良かったことをその場で記録">✏️ サッと記録</button>
-                        <button class="chip-btn special" onclick="openLogInbox()" id="log-inbox-chip" title="未回答のログ質問をまとめて回答">📥 未回答ログ<span id="log-inbox-badge" style="margin-left:4px;display:none;background:#ff5468;color:#fff;border-radius:8px;padding:1px 5px;font-size:0.65rem;">0</span></button>
+                        <button class="chip-btn special" onclick="openLogInbox()" id="log-inbox-chip" title="今日の記録を入力・未回答の質問にまとめて回答">📝 今日の記録<span id="log-inbox-badge" style="margin-left:4px;display:none;background:#ff5468;color:#fff;border-radius:8px;padding:1px 5px;font-size:0.65rem;">0</span></button>
                         <button class="chip-btn chip-more" onclick="toggleMoreChips()" id="chip-more-toggle">＋ その他</button>
                     </div>
                     <div class="action-chips-more hidden" id="action-chips-more">
@@ -240,6 +239,18 @@
                         </summary>
                         <div id="dash-drum-roadmap" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
                     </details>
+
+                    <div class="card manager-notice-card">
+                        <div class="card-header">
+                            <span class="card-icon">📨</span>
+                            <span class="card-title">マネージャーからのお知らせ</span>
+                            <span id="manager-notices-unread" class="notice-unread-badge" style="display:none;"></span>
+                            <button class="mini-link" id="notice-select-all-btn" onclick="toggleSelectAllNotices()" style="margin-left:auto;">☑ 全選択</button>
+                            <button class="mini-link" id="notice-bulk-delete-btn" onclick="deleteSelectedNotices()" style="display:none;color:#e2574c;">🗑 選択削除</button>
+                            <button class="mini-link" id="notice-refresh-btn" onclick="reloadManagerNotices()">更新</button>
+                        </div>
+                        <div id="dash-manager-notices" class="card-body list-body manager-notices-body"><div class="loading-placeholder">読み込み中…</div></div>
+                    </div>
 
                 </div>
             </div>
@@ -446,48 +457,21 @@
                             </div>
                         </div>
                     </div>
-                    <!-- 以下、振り返り系カード（ログタブ末尾へ移動）
-                         流れ: 主観の日記 → 客観の振り返り → マネージャーのメタ観察 -->
-                    <div class="card journal-card">
+                    <!-- Obsidian デイリーノート（既定で昨日）の生 Markdown 表示・編集。
+                         どんなノートが作られたかをアプリ上で確認・修正できる。 -->
+                    <div class="card daily-note-card">
                         <div class="card-header">
                             <span class="card-icon">📔</span>
                             <span class="card-title">デイリーノート</span>
-                            <button class="mini-link" onclick="openDailyJournalEditor()">編集</button>
+                            <button class="mini-link" onclick="shiftDailyNoteDate(-1)" title="前日へ">◀ 前日</button>
+                            <span id="daily-note-date" style="font-size:0.78rem;color:var(--text-muted);">---</span>
+                            <button class="mini-link" id="daily-note-next" onclick="shiftDailyNoteDate(1)" title="翌日へ">翌日 ▶</button>
+                            <button class="mini-link" id="daily-note-save-btn" onclick="saveDailyNote()" style="margin-left:auto;">保存</button>
                         </div>
-                        <div id="dash-daily-journal" class="card-body diary-content"></div>
-                    </div>
-                    <div class="card summary-card">
-                        <div class="card-header">
-                            <span class="card-icon">📅</span>
-                            <span class="card-title">今日の振り返り</span>
-                            <button class="mini-link" onclick="openDailySummaryEditor()">編集</button>
+                        <div class="card-body">
+                            <textarea id="daily-note-editor" class="modern-input" rows="18" spellcheck="false" placeholder="（この日のデイリーノートはまだありません）" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.8rem;line-height:1.5;white-space:pre;overflow-wrap:normal;overflow-x:auto;"></textarea>
+                            <div id="daily-note-status" style="font-size:0.74rem;color:var(--text-muted);margin-top:4px;min-height:1.1em;"></div>
                         </div>
-                        <div id="dash-summary-nav" style="display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:0.78rem;color:var(--text-muted);">
-                            <button class="mini-link" onclick="shiftDailySummaryDate(-1)" title="前日へ">◀ 前日</button>
-                            <input type="date" id="dash-summary-date" class="modern-input" style="padding:3px 6px;font-size:0.78rem;width:auto;" onchange="loadDailySummary(this.value)">
-                            <button class="mini-link" id="dash-summary-next" onclick="shiftDailySummaryDate(1)" title="翌日へ">翌日 ▶</button>
-                            <button class="mini-link" onclick="loadDailySummary()" title="今日へ戻る" style="margin-left:auto;">今日</button>
-                        </div>
-                        <div id="dash-daily-summary-questions" class="card-body" style="border-bottom:1px solid var(--border-glass);"></div>
-                        <div id="dash-daily-summary" class="card-body diary-content"></div>
-                    </div>
-                    <div class="card diary-card">
-                        <div class="card-header">
-                            <span class="card-icon">📒</span>
-                            <span class="card-title">マネージャーの気づき</span>
-                        </div>
-                        <div id="dash-alter-log" class="card-body diary-content"></div>
-                    </div>
-                    <div class="card manager-notice-card">
-                        <div class="card-header">
-                            <span class="card-icon">📨</span>
-                            <span class="card-title">マネージャー通知ログ</span>
-                            <span id="manager-notices-unread" class="notice-unread-badge" style="display:none;"></span>
-                            <button class="mini-link" id="notice-select-all-btn" onclick="toggleSelectAllNotices()" style="margin-left:auto;">☑ 全選択</button>
-                            <button class="mini-link" id="notice-bulk-delete-btn" onclick="deleteSelectedNotices()" style="display:none;color:#e2574c;">🗑 選択削除</button>
-                            <button class="mini-link" id="notice-refresh-btn" onclick="reloadManagerNotices()">更新</button>
-                        </div>
-                        <div id="dash-manager-notices" class="card-body list-body manager-notices-body"><div class="loading-placeholder">読み込み中…</div></div>
                     </div>
                 </div>
             </div>
@@ -495,15 +479,6 @@
             <!-- ========== SCHEDULE TAB (CALENDAR/TASKS) ========== -->
             <div id="tab-schedule" class="tab-pane">
                 <div class="scroll-container">
-
-                    <div class="card" id="mit-schedule-card">
-                        <div class="card-header">
-                            <span class="card-icon">🎯</span>
-                            <span class="card-title">今日のMIT</span>
-                            <button class="mini-link" onclick="openMitModal()">設定</button>
-                        </div>
-                        <div id="mit-schedule-items" class="card-body"></div>
-                    </div>
 
                     <div class="card next-actions-card">
                         <div class="card-header">

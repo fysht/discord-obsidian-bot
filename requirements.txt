@@ -29,6 +29,7 @@ fitbit
 # Other Utilities
 python-dotenv
 filelock
+ijson
 pytz
 geopy
 pillow

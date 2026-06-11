@@ -193,6 +193,7 @@ async def daily_questions_pending():
 class QuickLogRequest(BaseModel):
     scope: str
     text: str
+    date: str | None = None  # MIT で「明日の分」を設定する等、対象日を指定する場合に使う
 
 
 @router.post("/daily_questions/quick_log", dependencies=[Depends(verify_api_key)])
@@ -225,13 +226,36 @@ async def daily_questions_quick_log(req: QuickLogRequest):
         partner_cog = bot.get_cog("PartnerCog") if bot else None
         if not partner_cog:
             raise HTTPException(status_code=503, detail="Obsidian に接続できませんでした")
-        await partner_cog._set_mit_to_obsidian(items)
         today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        target_date = (req.date or "").strip()
+        if target_date and target_date != today:
+            # 明日（など今日以外）の MIT は対象日のノートへ前もって設定する。
+            await partner_cog._set_mit_for_date(target_date, items)
+            return {"ok": True, "icon": "🎯", "label": "MIT", "scope": "mit"}
+        await partner_cog._set_mit_to_obsidian(items)
+        # 朝の MorningMitCog が同じ MIT を再度聞かないよう morning_mit 質問も resolved 化する。
         try:
             await resolve_questions(today, scope="morning_mit")
         except Exception as e:
             logging.debug(f"quick_log MIT: morning_mit resolve skipped: {e}")
         return {"ok": True, "icon": "🎯", "label": "MIT", "scope": "mit"}
+
+    # 気分 / 体調は日次チェックインとして Daily Journal に時刻付き1行で追記する
+    # （質問経由の _reflect_mood_answer と同じ記録先。自発記録では理由の追質問は出さない）。
+    if scope in ("mood", "condition"):
+        from api import app
+        bot = getattr(app.state, "bot", None)
+        partner_cog = bot.get_cog("PartnerCog") if bot else None
+        label = "気分" if scope == "mood" else "体調"
+        icon = "😀" if scope == "mood" else "🩺"
+        if partner_cog:
+            try:
+                await partner_cog._append_raw_message_to_obsidian(
+                    f"{icon} {label}: {text}", target_heading=_CHECKIN_HEADING
+                )
+            except Exception as e:
+                logging.debug(f"quick_log {scope} obsidian append failed: {e}")
+        return {"ok": True, "icon": icon, "label": label, "scope": scope}
 
     if scope not in _JOURNAL_SCOPE_META:
         raise HTTPException(status_code=422, detail="対応していない種類です")

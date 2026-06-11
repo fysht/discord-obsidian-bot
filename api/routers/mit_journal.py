@@ -26,6 +26,18 @@ class DailyJournalUpdate(BaseModel):
     text: str
 
 
+class DailyNoteUpdate(BaseModel):
+    date: str
+    text: str
+
+
+def _resolve_note_date(date: str | None) -> str:
+    """date 未指定なら昨日を既定にする（YYYY-MM-DD）。"""
+    if date and _re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        return date
+    return (datetime.datetime.now(JST) - datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+
 @router.post("/mit_set", dependencies=[Depends(verify_api_key)])
 async def mit_set(req: MitSetRequest):
     """今日の MIT を DailyNote の `## 🎯 MIT` セクションに書き込む。"""
@@ -172,4 +184,55 @@ async def daily_journal_set(req: DailyJournalUpdate):
         return {"status": "success"}
     except Exception as e:
         logging.error(f"daily_journal_set error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/daily_note", dependencies=[Depends(verify_api_key)])
+async def daily_note_get(date: str | None = None):
+    """指定日（既定は昨日）の Obsidian デイリーノート .md を丸ごと返す。
+    どんなノートが作られたかを確認・編集するための生 Markdown 表示用。"""
+    from api import app
+    date_str = _resolve_note_date(date)
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        return {"date": date_str, "text": "", "exists": False}
+    try:
+        drive = chat_service.drive_service
+        service = drive.get_service()
+        folder_id = await drive.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+        if not folder_id:
+            return {"date": date_str, "text": "", "exists": False}
+        f_id = await drive.find_file(service, folder_id, f"{date_str}.md")
+        if not f_id:
+            return {"date": date_str, "text": "", "exists": False}
+        content = await drive.read_text_file(service, f_id)
+        return {"date": date_str, "text": content or "", "exists": True}
+    except Exception as e:
+        logging.debug(f"daily_note_get error: {e}")
+        return {"date": date_str, "text": "", "exists": False}
+
+
+@router.post("/daily_note", dependencies=[Depends(verify_api_key)])
+async def daily_note_set(req: DailyNoteUpdate):
+    """指定日のデイリーノート .md を丸ごと上書き保存する（アプリ上での編集を反映）。"""
+    from api import app
+    date_str = _resolve_note_date(req.date)
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service or not chat_service.drive_service:
+        raise HTTPException(status_code=503, detail="Drive サービス未設定")
+    try:
+        drive = chat_service.drive_service
+        service = drive.get_service()
+        folder_id = await drive.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+        if not folder_id:
+            folder_id = await drive.create_folder(service, chat_service.drive_folder_id, "DailyNotes")
+        f_id = await drive.find_file(service, folder_id, f"{date_str}.md")
+        new_content = req.text or ""
+        if f_id:
+            await drive.update_text(service, f_id, new_content)
+        else:
+            await drive.upload_text(service, folder_id, f"{date_str}.md", new_content)
+        return {"status": "success", "date": date_str}
+    except Exception as e:
+        logging.error(f"daily_note_set error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
