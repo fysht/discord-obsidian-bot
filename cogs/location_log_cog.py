@@ -47,6 +47,9 @@ class LocationLogCog(commands.Cog):
             if self.google_places_api_key
             else None
         )
+        # place_id → 地名のキャッシュ。同じ場所（いつもの駅・店など）の
+        # 重複した Places API 課金を避ける。
+        self._place_name_cache: dict[str, str] = {}
 
         self.process_timeline_json.start()
         self.location_save_reminder_task.start()
@@ -58,17 +61,26 @@ class LocationLogCog(commands.Cog):
     def _get_place_name_from_id(self, place_id: str) -> str:
         if not self.gmaps:
             return f"場所ID: {place_id}"
+        # 同一 place_id はキャッシュから返し、重複した課金を避ける。
+        cached = self._place_name_cache.get(place_id)
+        if cached is not None:
+            return cached
+        # fields=["name"] を指定して取得フィールドを名前のみに絞り、課金 SKU を最小化する。
+        name = f"場所ID: {place_id}"
         try:
-            place_details = self.gmaps.place(place_id=place_id, language="ja")
+            place_details = self.gmaps.place(
+                place_id=place_id, language="ja", fields=["name"]
+            )
             if (
                 place_details
                 and "result" in place_details
                 and "name" in place_details["result"]
             ):
-                return place_details["result"]["name"]
+                name = place_details["result"]["name"]
         except Exception as e:
             logging.error(f"Places APIからの名前取得に失敗: {e}")
-        return f"場所ID: {place_id}"
+        self._place_name_cache[place_id] = name
+        return name
 
     def _parse_coordinates(self, coord_str: str | None) -> tuple[float, float] | None:
         if not coord_str:
@@ -179,11 +191,8 @@ class LocationLogCog(commands.Cog):
                 except (ValueError, IndexError):
                     continue
 
-                place_name = "不明な場所"
-                place_id = top_candidate.get("placeId")
-                if place_id:
-                    place_name = self._get_place_name_from_id(place_id)
-
+                # 自宅・勤務先の判定を Places API 呼び出しより先に行う。
+                # 最も頻度の高い自宅/勤務先では有料 API を呼ばず、コストを抑える。
                 if (
                     self.home_coordinates
                     and great_circle(place_coords, self.home_coordinates).meters
@@ -196,6 +205,11 @@ class LocationLogCog(commands.Cog):
                     < self.exclude_radius_meters
                 ):
                     place_name = "勤務先"
+                else:
+                    place_name = "不明な場所"
+                    place_id = top_candidate.get("placeId")
+                    if place_id:
+                        place_name = self._get_place_name_from_id(place_id)
 
                 event.update(
                     {"type": "stay", "name": place_name, "duration": duration_formatted}
@@ -249,6 +263,30 @@ class LocationLogCog(commands.Cog):
             logs_by_date[d_str] = "\n".join(log_entries)
 
         return logs_by_date
+
+    async def _dates_with_location_history(self, service, dates: set[str]) -> set[str]:
+        """指定日のうち、既に DailyNote に Location History が書かれている日を返す。
+        Places API（有料）を呼ぶ前のプレフィルタ用。Drive の読み取りは無料。"""
+        recorded: set[str] = set()
+        try:
+            folder_id = await self.drive_service.find_file(
+                service, self.drive_folder_id, "DailyNotes"
+            )
+        except Exception:
+            folder_id = None
+        if not folder_id:
+            return recorded
+        for d in dates:
+            try:
+                f_id = await self.drive_service.find_file(service, folder_id, f"{d}.md")
+                if not f_id:
+                    continue
+                content = await self.drive_service.read_text_file(service, f_id)
+                if content and re.search(r"## 📍 Location History\s*-", content):
+                    recorded.add(d)
+            except Exception:
+                continue
+        return recorded
 
     async def _write_to_obsidian(
         self, date_str: str, log_text: str, force: bool = False
@@ -355,24 +393,33 @@ class LocationLogCog(commands.Cog):
             for i in range(lookback_days)
         }
 
+        # 既に Location History が書かれている日は除外し、新規の日だけを抽出対象にする。
+        # これにより既記録日の Places API 課金（force=False で書き込みはどのみちスキップ
+        # されていた分）をまるごと無くす。
+        recorded = await self._dates_with_location_history(service, target_dates)
+        pending_dates = target_dates - recorded
+
         for file_info in json_files:
             file_id = file_info["id"]
             file_name = file_info["name"]
 
-            try:
-                logs_by_date = await loop.run_in_executor(
-                    None, self._read_and_extract, service, file_id, target_dates
-                )
-            except Exception:
-                continue
-
             processed_dates = []
-            if logs_by_date:
-                for date_str, log_text in logs_by_date.items():
-                    if await self._write_to_obsidian(date_str, log_text, force=False):
-                        processed_dates.append(date_str)
-                        # 外食らしき滞在を検知したら meal ログ質問を投下（事後の振り返り）
-                        await self._maybe_ask_meal_from_location(date_str, log_text)
+            # 新規対象日が無いときは抽出（API 呼び出し）自体を行わず、ファイルの
+            # リネーム（処理済み化）だけ行う。空集合を渡すと全日処理になる点に注意。
+            if pending_dates:
+                try:
+                    logs_by_date = await loop.run_in_executor(
+                        None, self._read_and_extract, service, file_id, pending_dates
+                    )
+                except Exception:
+                    logs_by_date = None
+
+                if logs_by_date:
+                    for date_str, log_text in logs_by_date.items():
+                        if await self._write_to_obsidian(date_str, log_text, force=False):
+                            processed_dates.append(date_str)
+                            # 外食らしき滞在を検知したら meal ログ質問を投下（事後の振り返り）
+                            await self._maybe_ask_meal_from_location(date_str, log_text)
 
             timestamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
             await loop.run_in_executor(

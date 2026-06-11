@@ -803,7 +803,7 @@ async def _auto_finalize_summary(date_str: str, answers_map: dict) -> bool:
         try:
             await notification_service.save_message_and_notify(
                 "assistant",
-                "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 下のボタンから今日の振り返りを見てね🌙\n[ACTION:open_reflection]",
+                "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 下のボタンからデイリーノートを見てね🌙\n[ACTION:open_reflection]",
                 title="📅 デイリーサマリー保存",
             )
         except Exception as e:

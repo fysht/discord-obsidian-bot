@@ -147,6 +147,18 @@
                     <!-- Date at top of Info Tab -->
                     <div class="date-header" id="dash-date-label">---</div>
 
+                    <div class="card manager-notice-card">
+                        <div class="card-header">
+                            <span class="card-icon">📨</span>
+                            <span class="card-title">マネージャーからのお知らせ</span>
+                            <span id="manager-notices-unread" class="notice-unread-badge" style="display:none;"></span>
+                            <button class="mini-link" id="notice-select-all-btn" onclick="toggleSelectAllNotices()" style="margin-left:auto;">☑ 全選択</button>
+                            <button class="mini-link" id="notice-bulk-delete-btn" onclick="deleteSelectedNotices()" style="display:none;color:#e2574c;">🗑 選択削除</button>
+                            <button class="mini-link" id="notice-refresh-btn" onclick="reloadManagerNotices()">更新</button>
+                        </div>
+                        <div id="dash-manager-notices" class="card-body list-body manager-notices-body"><div class="loading-placeholder">読み込み中…</div></div>
+                    </div>
+
                     <div class="card weather-card">
                         <div class="card-header">
                             <span class="card-icon">☁️</span>
@@ -239,18 +251,6 @@
                         </summary>
                         <div id="dash-drum-roadmap" class="card-body list-body"><div class="loading-placeholder">展開すると読み込みます。</div></div>
                     </details>
-
-                    <div class="card manager-notice-card">
-                        <div class="card-header">
-                            <span class="card-icon">📨</span>
-                            <span class="card-title">マネージャーからのお知らせ</span>
-                            <span id="manager-notices-unread" class="notice-unread-badge" style="display:none;"></span>
-                            <button class="mini-link" id="notice-select-all-btn" onclick="toggleSelectAllNotices()" style="margin-left:auto;">☑ 全選択</button>
-                            <button class="mini-link" id="notice-bulk-delete-btn" onclick="deleteSelectedNotices()" style="display:none;color:#e2574c;">🗑 選択削除</button>
-                            <button class="mini-link" id="notice-refresh-btn" onclick="reloadManagerNotices()">更新</button>
-                        </div>
-                        <div id="dash-manager-notices" class="card-body list-body manager-notices-body"><div class="loading-placeholder">読み込み中…</div></div>
-                    </div>
 
                 </div>
             </div>

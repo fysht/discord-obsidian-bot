@@ -117,7 +117,7 @@ class DailySummaryCog(commands.Cog):
                     from api.notification_service import save_message_and_notify
                     await save_message_and_notify(
                         "assistant",
-                        "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 下のボタンから今日の振り返りを見てね🌙\n[ACTION:open_reflection]",
+                        "今日のデイリーサマリーをまとめてObsidianに保存したよ📅 下のボタンからデイリーノートを見てね🌙\n[ACTION:open_reflection]",
                         title="📅 デイリーサマリー保存", proactive=True,
                     )
                 except Exception as e:

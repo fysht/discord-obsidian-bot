@@ -1068,7 +1068,8 @@ const BOARD_CHOICE_ITEMS = [
 function _boardTomorrowStr() {
     const d = new Date(`${_todayStr()}T00:00:00`);
     d.setDate(d.getDate() + 1);
-    return d.toISOString().slice(0, 10);
+    // toISOString は UTC 変換で JST だと日付がずれるためローカル整形（_fmtLocalDate）を使う。
+    return _fmtLocalDate(d);
 }
 
 function _boardMitRow(key, label) {
@@ -1372,8 +1373,8 @@ function describeAction(payload) {
         case 'meal_quick':   return `✓ 外食を記録: ${args.name || ''}`;
         case 'open_meals':   return `🍽 食事ログを開く`;
         case 'open_expenses': return `💰 支出ログを開く`;
-        case 'open_reflection': return `📅 今日の振り返りを開く`;
-        case 'open_insights': return `📒 マネージャーの気づきを開く`;
+        case 'open_reflection': return `📔 デイリーノートを開く`;
+        case 'open_insights': return `📔 デイリーノートを開く`;
         case 'expense_confirm': return `💰 支出を確認して保存: ${args.vendor || ''} ¥${args.amount || 0}`;
         default:             return `▶ ${action} を実行`;
     }
@@ -1457,25 +1458,16 @@ window.executeAction = async function(encodedPayload, btn) {
         }, 300);
         return;
     }
-    // ナビゲーション系: 今日の振り返り（デイリーサマリー）カードへ移動
-    if (action === 'open_reflection') {
+    // ナビゲーション系: デイリーノート（今日）カードへ移動。
+    // 旧「今日の振り返り」「マネージャーの気づき」カードの統合先。内容は今日のノートに集約済み。
+    if (action === 'open_reflection' || action === 'open_insights') {
         switchTab('log');
         setTimeout(() => {
-            if (typeof loadDailySummary === 'function') loadDailySummary();
-            const el = document.getElementById('dash-daily-summary');
-            if (el && el.closest('.card')) el.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' });
-            else if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }, 300);
-        return;
-    }
-    // ナビゲーション系: マネージャーの気づき（メタ観察）カードへ移動
-    if (action === 'open_insights') {
-        switchTab('log');
-        setTimeout(() => {
-            if (typeof loadFitbitAllData === 'function' && !(_fitbitRows && _fitbitRows.length)) loadFitbitAllData(false);
-            const el = document.getElementById('dash-alter-log');
-            if (el && el.closest('.card')) el.closest('.card').scrollIntoView({ behavior: 'smooth', block: 'start' });
-            else if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            if (typeof loadDailyNote === 'function') {
+                loadDailyNote(typeof _todayStr === 'function' ? _todayStr() : '');
+            }
+            const el = document.querySelector('.daily-note-card');
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
         return;
     }
@@ -9401,10 +9393,17 @@ window.shiftDailySummaryDate = (deltaDays) => {
 // ===== デイリーノート（Obsidian の .md を生 Markdown で表示・編集）=====
 // ログタブで「昨日のノート」を既定表示し、どんなノートが作られたかを確認・修正できる。
 let _dailyNoteDate = '';  // 表示中の日付（YYYY-MM-DD・既定は昨日）
+// ローカル日付を YYYY-MM-DD に整形（toISOString は UTC 変換で JST だと日付がずれるため使わない）。
+function _fmtLocalDate(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
 function _yesterdayStr() {
     const d = new Date(`${_todayStr()}T00:00:00`);
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10);
+    return _fmtLocalDate(d);
 }
 window.loadDailyNote = async (date = '') => {
     const ed = $('#daily-note-editor');
@@ -9427,7 +9426,7 @@ window.shiftDailyNoteDate = (delta) => {
     const cur = _dailyNoteDate || _yesterdayStr();
     const d = new Date(`${cur}T00:00:00`);
     d.setDate(d.getDate() + delta);
-    const next = d.toISOString().slice(0, 10);
+    const next = _fmtLocalDate(d);
     if (next > _todayStr()) { showToast('今日より先には進めません'); return; }
     loadDailyNote(next);
 };
