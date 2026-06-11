@@ -878,8 +878,13 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         lastMsgDate = dStr;
     }
 
+    // LINE風: 直前が同じ役割のメッセージなら「グループ化」してアバター/名前/しっぽを省く。
+    // （日付セパレータは上で挿入済みなので、日が変わると prevEl が .message でなくなり自然にグループが切れる）
+    const prevEl = chatMessages.lastElementChild;
+    const grouped = !!(prevEl && prevEl.classList && prevEl.classList.contains('message') && prevEl.classList.contains(role));
+
     const div = document.createElement('div');
-    div.className = `message ${role}` + (opts.starred ? ' starred' : '');
+    div.className = `message ${role}` + (opts.starred ? ' starred' : '') + (grouped ? ' grouped' : '');
     if (opts.id) div.dataset.msgId = String(opts.id);
     if (opts.starred) div.dataset.starred = '1';
 
@@ -944,10 +949,16 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         ttsHtml = `<button onclick="speakText('${safeText}')" style="background:none;border:none;cursor:pointer;font-size:0.9rem;opacity:0.6;padding:2px 4px;margin-left:4px;" title="読み上げ">🔊</button>`;
     }
 
+    // 相手（マネージャー）の名前ラベルとしっぽは、グループ先頭の発言だけに付ける。
+    const nameHtml = (role === 'assistant' && !grouped) ? `<div class="msg-name">マネージャー</div>` : '';
+    const tailHtml = grouped ? '' : `<span class="msg-tail"></span>`;
     html += `
         <div class="msg-content">
-            <div class="msg-bubble" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}${actionHtml}</div>
-            <div class="msg-time">${tStr}${ttsHtml}</div>
+            ${nameHtml}
+            <div class="msg-line">
+                <div class="msg-bubble" data-raw="${escapeHtml(content)}">${quoteHtml}${processedContent}${actionHtml}${tailHtml}</div>
+                <div class="msg-time">${tStr}${ttsHtml}</div>
+            </div>
         </div>
     `;
     div.innerHTML = html;
@@ -960,6 +971,73 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
     return div;
 }
 
+// ===== 食事の質問: 自由記述ではなく食事ログの入力UIへ誘導する =====
+// マネージャーの質問は残し、回答欄を [📷写真][✍️手入力]＋よく食べるものチップに置き換える。
+// 写真/手入力は食事ログのモーダル（解析・構造化入力）を食事区分を引き継いで開き、
+// 保存できたら質問を resolve して未回答に残さない。
+let _mealQuestionToResolve = null;  // 食事ログのモーダル保存後に閉じる質問ID
+let _mealQuestionMealType = '';     // 写真解析で食事区分が消えないよう保持
+
+function _mealQuestionControlsHtml(q) {
+    let mealType = '';
+    try { const c = JSON.parse(q.context || '{}'); mealType = (c && c.meal_type) || ''; } catch (e) { /* ignore */ }
+    const mt = escapeHtml(mealType);
+    const chips = Array.isArray(q.chips) ? q.chips : [];
+    const chipsHtml = chips.length
+        ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
+          + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="recordMealChip(this, ${q.id})" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
+          + `</div>`
+        : '';
+    return `${chipsHtml}
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+            <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="openMealFromQuestion(${q.id}, '${mt}', true)">📷 写真で記録</button>
+            <button class="modal-btn cancel" style="padding:4px 12px;font-size:0.78rem;" onclick="openMealFromQuestion(${q.id}, '${mt}', false)">✍️ 手入力</button>
+        </div>`;
+}
+
+// チップ1タップで食事を記録（回答エンドポイント→AIが栄養推定して保存＋resolve）。
+window.recordMealChip = async (btn, qid) => {
+    const val = btn.dataset.val || btn.textContent || '';
+    if (!val) return;
+    btn.disabled = true;
+    try {
+        await apiFetch(`/api/daily_questions/${qid}/answer`, {
+            method: 'POST', body: JSON.stringify({ answer: val }),
+        });
+        showToast('🍽 食事を記録しました ✓');
+        _afterMealQuestionRecorded(qid, val);
+    } catch (e) {
+        btn.disabled = false;
+        showToast('記録に失敗しました', true);
+    }
+};
+
+// 食事区分の日本語→モーダルselectの値（英語）変換。質問の context は日本語で持つため。
+const MEAL_TYPE_JP2EN = { '朝食': 'breakfast', '昼食': 'lunch', '夕食': 'dinner', '間食': 'snack' };
+
+// 食事の質問から食事ログのモーダルを開く（写真 or 手入力）。区分を引き継ぎ、保存で質問を閉じる。
+window.openMealFromQuestion = (qid, mealType, withPhoto) => {
+    _mealQuestionToResolve = qid;
+    const mealTypeEn = MEAL_TYPE_JP2EN[mealType] || mealType || '';
+    _mealQuestionMealType = mealTypeEn;
+    openMealManualModal(null, { meal_type: mealTypeEn });
+    if (withPhoto) {
+        // 写真の変更ハンドラ（解析→確認モーダル）が未登録でも動くよう保証してからピッカーを起動。
+        if (typeof _installMealImageListener === 'function') _installMealImageListener();
+        setTimeout(() => { const inp = document.getElementById('meal-image-input'); if (inp) inp.click(); }, 120);
+    }
+};
+
+// 食事の質問が記録されたあとの共通後処理：該当の回答欄を「✓ 記録済み」にして一覧/バッジを更新。
+function _afterMealQuestionRecorded(qid, text) {
+    document.querySelectorAll(`.inline-q[data-qid="${qid}"]`).forEach(el => {
+        el.innerHTML = `<div style="font-size:0.85rem;color:var(--text-secondary);">✓ ${escapeHtml(text || '記録しました')}</div>`;
+    });
+    if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
+    const inbox = document.getElementById('log-inbox-list');
+    if (inbox && typeof renderLogInbox === 'function') renderLogInbox();
+}
+
 // [QUESTIONS:scope:YYYY-MM-DD] 付きメッセージにインライン回答UIを描画する
 async function renderInlineQuestionForm(msgDiv, scope, date) {
     const wrap = document.createElement('div');
@@ -969,18 +1047,34 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
     const contentEl = msgDiv.querySelector('.msg-content') || msgDiv;
     contentEl.appendChild(wrap);
     try {
-        const data = await apiFetch('/api/daily_questions/pending');
-        const all = (data && data.questions) || [];
-        // API は id DESC で返すが、チャット本文の質問番号 (1,2,3...) と順序を揃えるため
-        // ここで id ASC に並べ替える
-        const items = all
-            .filter(q => q.date === date && (q.scope || 'summary') === scope && q.status !== 'resolved')
+        // resolved も含めて取得（回答済みは「回答そのもの」を表示するため）。
+        const data = await apiFetch(`/api/daily_questions/by_marker?date=${encodeURIComponent(date)}&scope=${encodeURIComponent(scope)}`);
+        const items = ((data && data.questions) || [])
+            .slice()
             .sort((a, b) => (a.id || 0) - (b.id || 0));
         if (!items.length) {
-            wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">（すべての質問に回答済み）</div>';
+            // 質問が無い（削除済み等）なら回答欄ごと消す。
+            wrap.remove();
             return;
         }
         wrap.innerHTML = items.map(q => {
+            // 記録済み（resolved）は編集フォームではなく回答そのものを読み取り専用で表示する。
+            if (q.status === 'resolved') {
+                const ans = (q.answer || '').trim();
+                return `
+                <div class="inline-q" data-qid="${q.id}" style="margin-bottom:8px;">
+                    <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:2px;">${escapeHtml(q.question)}</div>
+                    <div style="font-size:0.85rem;color:var(--text-secondary);">✓ ${ans ? escapeHtml(ans) : '（回答なし）'}</div>
+                </div>`;
+            }
+            // 食事は自由記述ではなく食事ログの入力UI（写真/手入力/よく食べるもの）へ誘導する。
+            if (scope === 'meal') {
+                return `
+                <div class="inline-q" data-qid="${q.id}" style="margin-bottom:8px;">
+                    <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${escapeHtml(q.question)}</div>
+                    ${_mealQuestionControlsHtml(q)}
+                </div>`;
+            }
             const answered = q.status === 'answered' && q.answer;
             const savedMark = answered ? '<span class="inline-q-saved">✓ 保存済み（編集可）</span>' : '';
             // morning_mit は未回答時、候補リストを回答欄の初期値として流し込む
@@ -1138,6 +1232,23 @@ window.openLogInbox = async () => {
     }
     modal.classList.remove('hidden');
     await renderLogInbox();
+    renderBoardSelfLogHistory();
+};
+
+// 出来事/学び/良かったことの「今日すでに記録した分」をサーバー（Obsidian）から読み戻して
+// 各欄の上に表示する。これでリロード後も過去の回答が消えず、複数件すべて見える。
+window.renderBoardSelfLogHistory = async () => {
+    let data;
+    try { data = await apiFetch('/api/daily_journal_entries'); } catch (e) { return; }
+    const entries = (data && data.entries) || {};
+    BOARD_APPEND_ITEMS.forEach(it => {
+        const box = document.querySelector(`.board-append[data-scope="${it.scope}"] .board-append-list`);
+        if (!box) return;
+        const list = entries[it.scope] || [];
+        box.innerHTML = list.map(e =>
+            `<div style="font-size:0.8rem;color:var(--text-muted);padding:3px 0;border-bottom:1px dashed rgba(255,255,255,0.08);">✓ ${escapeHtml(e.text)}${e.time ? ` <span style="opacity:0.6;">(${escapeHtml(e.time)})</span>` : ''}</div>`
+        ).join('');
+    });
 };
 
 // MIT（今日/明日）を設定。値は残し、編集して再記録すれば更新できる。
@@ -1221,6 +1332,14 @@ window.renderLogInbox = async () => {
     if (head) head.style.display = '';
     const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣', afternoon: '🌤', learning: '💡', gratitude: '🙏', event: '📌' };
     listEl.innerHTML = items.map(q => {
+        // 食事は食事ログの入力UI（写真/手入力/よく食べるもの）へ誘導する。
+        if (q.scope === 'meal') {
+            return `
+            <div class="inline-q" data-qid="${q.id}" style="margin-bottom:10px;padding:8px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
+                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">🍽 ${escapeHtml(q.question)}</div>
+                ${_mealQuestionControlsHtml(q)}
+            </div>`;
+        }
         const chips = Array.isArray(q.chips) ? q.chips : [];
         const chipsHtml = chips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
             + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="pickInlineChip(this)" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
@@ -1366,7 +1485,7 @@ function describeAction(payload) {
         }
         case 'save_thought_reflection': return `💭 思考整理を保存: ${args.theme || ''}`;
         case 'habit_complete': return `✅ 習慣を完了: ${args.habit_name || ''}`;
-        case 'open_notices': return `📨 マネージャー通知ログを開く`;
+        case 'open_notices': return `📨 マネージャーからのお知らせを開く`;
         case 'open_location_log': return `📍 ロケーションログを開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
         case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
@@ -1398,9 +1517,9 @@ window.cancelAction = function(btn) {
 window.executeAction = async function(encodedPayload, btn) {
     const payload = decodeURIComponent(encodedPayload);
     const { action, args } = _parseActionPayload(payload);
-    // ナビゲーション系アクション: マネージャー通知ログを開く（ボタンは無効化しない）
+    // ナビゲーション系アクション: マネージャーからのお知らせを開く（情報タブに移設済み）
     if (action === 'open_notices') {
-        switchTab('log');
+        switchTab('info');
         setTimeout(() => {
             if (typeof loadManagerNotices === 'function') loadManagerNotices();
             const card = document.querySelector('.manager-notice-card');
@@ -6637,9 +6756,11 @@ window.openMealManualModal = async (id = null, seed = null) => {
                         <option value="">— レシピを選んで追加 —</option>
                     </select>
 
-                    <label style="font-size:0.78rem;color:var(--text-muted);">料理名（複数メニューは「＋」で連結）</label>
-                    <input id="meal-name" class="modern-input" style="margin-bottom:4px;" placeholder="例: カレー ＋ サラダ" onblur="_autoEstimateMealNutrition()">
-                    <div style="text-align:right;margin-bottom:8px;">
+                    <label style="font-size:0.78rem;color:var(--text-muted);">料理名（品目ごとに入力。2品以上は「＋ 品目を追加」）</label>
+                    <div id="meal-dish-list" style="margin-bottom:4px;"></div>
+                    <input id="meal-name" type="hidden">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <button type="button" class="mini-link" onclick="addMealDishRow()">＋ 品目を追加</button>
                         <button type="button" class="mini-link" onclick="estimateMealNutrition(true)" title="料理名からカロリー・PFCをAIで見積もる">🔢 カロリー自動見積</button>
                     </div>
 
@@ -6795,10 +6916,10 @@ window.openMealManualModal = async (id = null, seed = null) => {
         // 失敗してもモーダル本体は使えるようにする
     }
 
-    $('#meal-name').value = m.name || '';
+    _renderMealDishRows(_splitMealName(m.name));
     $('#meal-date').value = m.date || _todayStr();
     $('#meal-time').value = m.time || '';
-    $('#meal-type').value = m.meal_type || '';
+    $('#meal-type').value = m.meal_type || _mealQuestionMealType || '';
     $('#meal-kcal').value = m.calories ?? '';
     $('#meal-p').value = m.protein_g ?? '';
     $('#meal-f').value = m.fat_g ?? '';
@@ -6819,10 +6940,60 @@ window.openMealManualModal = async (id = null, seed = null) => {
 window.closeMealEditModal = () => {
     $('#meal-edit-modal')?.classList.add('hidden');
     _pendingMealAnalysis = null;
+    // 食事の質問との紐付けを解除（保存後・キャンセル後ともにここで確実にクリア）。
+    _mealQuestionToResolve = null;
+    _mealQuestionMealType = '';
 };
 
 // 保存済みレシピ選択 → 料理名に「追加」する（1食に複数メニュー/レシピを入力できる）。
 // 上書きではなく追記し、選択後はピッカーをリセットして続けて別レシピも足せるようにする。
+// ===== 料理名: 品目ごとの入力欄（2品以上は行を足す。「＋」連結はやめる）=====
+// 既存ロジック（栄養推定・保存）は隠し input #meal-name を「、」連結で同期して使う。
+function _mealDishRowHtml(value) {
+    return `<div class="meal-dish-row" style="display:flex;gap:6px;margin-bottom:4px;">
+        <input class="modern-input meal-dish" style="flex:1;" placeholder="例: カレー" value="${escapeHtml(value || '')}" oninput="_syncMealName()" onblur="_autoEstimateMealNutrition()">
+        <button type="button" class="mini-link" onclick="removeMealDishRow(this)" title="この品目を削除" style="white-space:nowrap;">✕</button>
+    </div>`;
+}
+function _splitMealName(name) {
+    // 旧データの「＋」連結や「、」「改行」区切りを品目に分解する。
+    return (name || '').split(/\s*[＋+、]\s*|\n/).map(s => s.trim()).filter(Boolean);
+}
+function _renderMealDishRows(names) {
+    const list = document.getElementById('meal-dish-list');
+    if (!list) return;
+    const arr = (names && names.length) ? names : [''];
+    list.innerHTML = arr.map(n => _mealDishRowHtml(n)).join('');
+    _syncMealName();
+}
+function _getMealDishNames() {
+    return Array.from(document.querySelectorAll('#meal-dish-list .meal-dish'))
+        .map(el => (el.value || '').trim()).filter(Boolean);
+}
+window._syncMealName = () => {
+    const hidden = document.getElementById('meal-name');
+    if (hidden) hidden.value = _getMealDishNames().join('、');
+};
+window.addMealDishRow = (value = '') => {
+    const list = document.getElementById('meal-dish-list');
+    if (!list) return;
+    list.insertAdjacentHTML('beforeend', _mealDishRowHtml(typeof value === 'string' ? value : ''));
+    if (!value) {
+        const rows = list.querySelectorAll('.meal-dish');
+        const last = rows[rows.length - 1];
+        if (last) last.focus();
+    }
+    _syncMealName();
+};
+window.removeMealDishRow = (btn) => {
+    const list = document.getElementById('meal-dish-list');
+    const row = btn.closest('.meal-dish-row');
+    if (row) row.remove();
+    // 最低1行は残す。
+    if (list && !list.querySelector('.meal-dish-row')) _renderMealDishRows(['']);
+    _syncMealName();
+};
+
 window.onMealRecipePicked = () => {
     const picker = $('#meal-recipe-picker');
     if (!picker || !picker.value) return;
@@ -6833,14 +7004,12 @@ window.onMealRecipePicked = () => {
     if (!r) return;
     const title = (r.title || '').trim();
 
-    // 料理名に追記（複数メニューは「 ＋ 」で連結。同じメニューの重複追加は避ける）
-    const nameEl = $('#meal-name');
-    if (nameEl && title) {
-        const cur = nameEl.value.trim();
-        const items = cur ? cur.split(/\s*[＋+]\s*/).map(s => s.trim()).filter(Boolean) : [];
-        if (!items.includes(title)) {
-            nameEl.value = cur ? `${cur} ＋ ${title}` : title;
-        }
+    // 料理名に品目行として追加（重複追加は避ける）。空行があればそこに入れる。
+    if (title && !_getMealDishNames().includes(title)) {
+        const list = document.getElementById('meal-dish-list');
+        const emptyRow = list && Array.from(list.querySelectorAll('.meal-dish')).find(el => !(el.value || '').trim());
+        if (emptyRow) { emptyRow.value = title; _syncMealName(); }
+        else addMealDishRow(title);
     }
 
     // メモにレシピのURL・要点を追記（重複行は足さない）
@@ -6864,6 +7033,7 @@ window.onMealRecipePicked = () => {
 // 料理名からカロリー/PFCをAIで推定して欄を埋める（自分でカロリーが分からなくてもOK）
 let _mealEstimating = false;
 window.estimateMealNutrition = async (force = false, quiet = false) => {
+    if (typeof _syncMealName === 'function') _syncMealName();
     const nameEl = $('#meal-name');
     const kcalEl = $('#meal-kcal');
     const name = (nameEl?.value || '').trim();
@@ -6903,6 +7073,9 @@ window.saveMealFromModal = async () => {
     const btn = $('#meal-save-btn');
     if (!btn || btn.disabled) return;
     const id = btn?.dataset.mealId ? parseInt(btn.dataset.mealId, 10) : null;
+    // 食事の質問から開いた新規記録なら、保存成功後にその質問を閉じる（未回答に残さない）。
+    const linkedQid = id ? null : _mealQuestionToResolve;
+    if (typeof _syncMealName === 'function') _syncMealName();
     const payload = {
         name: ($('#meal-name')?.value || '').trim(),
         date: $('#meal-date')?.value || '',
@@ -6932,6 +7105,13 @@ window.saveMealFromModal = async () => {
         } else {
             await apiFetch('/api/meals', { method: 'POST', body: JSON.stringify(payload) });
             showToast('食事を記録しました');
+            // 食事の質問から開いていた場合は、その質問を resolve して未回答から外す。
+            if (linkedQid) {
+                try {
+                    await apiFetch(`/api/daily_questions/${linkedQid}/resolve`, { method: 'POST', body: '{}' });
+                } catch (e) { /* resolve 失敗は致命的でない */ }
+                if (typeof _afterMealQuestionRecorded === 'function') _afterMealQuestionRecorded(linkedQid, payload.name);
+            }
         }
         closeMealEditModal();
         // 編集/追加した日付に表示を合わせる（過去日付を入れた場合もその日を表示）
@@ -10052,8 +10232,8 @@ const TUTORIAL_SLIDES = [
         <div class="tut-grid">
             <div class="tut-card"><b>💬 チャット</b><br><small>マネージャーAI と対話</small></div>
             <div class="tut-card"><b>📅 予定</b><br><small>MIT・次のアクション・カレンダー・タスク</small></div>
-            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・食事・支出・日記・マネージャー通知ログ</small></div>
-            <div class="tut-card"><b>📰 情報</b><br><small>天気・ニュース・リンク</small></div>
+            <div class="tut-card"><b>📒 ログ</b><br><small>習慣・食事・支出・デイリーノート</small></div>
+            <div class="tut-card"><b>📰 情報</b><br><small>お知らせ・天気・ニュース・リンク</small></div>
             <div class="tut-card"><b>💹 投資</b><br><small>銘柄分析・スクリーナー</small></div>
         </div>
         <p style="margin-top:10px;font-size:0.85rem;color:var(--text-muted);">下のナビでタブを切り替えます（左から推奨利用順）。</p>`
@@ -10247,15 +10427,13 @@ const TUTORIAL_SLIDES = [
         </ul>`
     },
     {
-        title: '今日の振り返り / デイリーノート / マネージャーの気づき',
+        title: 'デイリーノート',
         target: 'log',
-        body: `<p>ログタブの最上部に「今日の記録」グループとして並びます。</p>
+        body: `<p>ログタブ末尾の <b>📔 デイリーノート</b> では、Obsidian の DailyNotes（既定で<b>昨日</b>の分）を生 Markdown でそのまま表示し、どんなノートが作られたかを確認できます。</p>
         <ul>
-            <li>📅 <b>今日の振り返り</b>: 毎晩22:00にマネージャーが質問→チャット内の回答欄で全部答えると <b>自動でサマリー生成・Obsidianへ保存</b>（確定保存ボタンを押す必要なし）。残った質問を放置した場合はカード上の「✓ 確定保存」で強制保存も可能。</li>
-            <li>📔 <b>デイリーノート</b>: Obsidian の DailyNotes。「編集」ボタンで内容を書き換え可能</li>
-            <li>📒 <b>マネージャーの気づき</b>: 対話から見つけた傾向・パターンの観察ノート</li>
-            <li>🎨 3カードとも左ボーダー付きで見た目を統一</li>
-            <li>📨 <b>マネージャー通知ログ</b>: 朝刊ニュース・地合いなどの長文配信。未読バッジ・既読/未読切替・削除ボタン付き。</li>
+            <li>◀ 前日 / 翌日 ▶ で日付を切り替え（今日まで）</li>
+            <li>その場で本文を編集し「保存」で Obsidian に反映</li>
+            <li>毎晩22:00のデイリーサマリーやメタ観察も、このノートに集約されます</li>
         </ul>`
     },
     {
@@ -10263,7 +10441,6 @@ const TUTORIAL_SLIDES = [
         target: 'schedule',
         body: `<p>予定タブのカードは次の順に並びます。</p>
         <ul>
-            <li>🎯 <b>今日のMIT</b> — 今日必ず終わらせたい3件</li>
             <li>🚀 <b>次のアクション</b> — マネージャーが提案する次の一手。タスクへは <b>自動登録されず</b>、夜の整理メッセージにボタン形式で出るので、タップ承認で初めて Google Tasks に追加されます。</li>
             <li>📅 <b>カレンダー</b> — Google Calendar の今日の予定</li>
             <li>💼/🏠 <b>仕事 / プライベート</b> — Google Tasks</li>
@@ -10271,10 +10448,10 @@ const TUTORIAL_SLIDES = [
     },
     {
         title: '今日の MIT',
-        target: 'schedule',
+        target: 'chat',
         body: `<p>その日に必ず終わらせたい <b>3 つのタスク</b>を設定。</p>
         <ul>
-            <li>「設定」ボタンですぐ入力画面が開きます</li>
+            <li>「📝 今日の記録」ボードの 🎯 MIT から <b>今日・明日</b>の分を設定できます</li>
             <li>チャット上部にバナーで常時表示</li>
             <li>達成チェックは Obsidian に反映</li>
             <li>🌅 毎朝 6:30 に AI が Calendar を参照してMIT候補を提案（通知あり）</li>
@@ -10306,9 +10483,9 @@ const TUTORIAL_SLIDES = [
         </ul>`
     },
     {
-        title: 'マネージャー通知ログ',
-        target: 'log',
-        body: `<p>📨 朝の市場の地合い・保有銘柄ニュース朝刊などの <b>長文の自動配信</b> は、チャットを埋めないよう「ログ」タブの「マネージャー通知ログ」に格納されます。</p>
+        title: 'マネージャーからのお知らせ',
+        target: 'info',
+        body: `<p>📨 朝の市場の地合い・保有銘柄ニュース朝刊などの <b>長文の自動配信</b> は、チャットを埋めないよう「情報」タブの「マネージャーからのお知らせ」に格納されます。</p>
         <ul>
             <li>未読件数バッジ・未読カードのハイライト・カテゴリアイコン・相対時刻表示</li>
             <li>カードを展開すると自動で既読化。「◯ 未読」ボタンで未読に戻せます</li>

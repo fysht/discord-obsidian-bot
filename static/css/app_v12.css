@@ -547,12 +547,26 @@ details.card > summary > .card-header { border-bottom: none; }
 
 .message { max-width: 85%; align-self: flex-start; display: flex; gap: 10px; }
 .message.user { align-self: flex-end; flex-direction: row-reverse; }
+/* LINE風: 同じ相手の連続発言は間隔を詰めてグループ化 */
+.message.grouped { margin-top: -12px; }
 .msg-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; border: 1.2px solid var(--accent); flex-shrink: 0; }
-.msg-content { display: flex; flex-direction: column; gap: 4px; }
-.msg-bubble { padding: 10px 14px; border-radius: 18px; font-size: 0.92rem; line-height: 1.5; background: var(--bg-elevated); border: 1px solid var(--border-glass); word-break: normal; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+/* グループ化された連続発言はアバターを隠す（位置は保つ） */
+.message.grouped .msg-avatar { visibility: hidden; }
+.msg-content { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* 整列は msg-line の row / row-reverse に任せる（msg-content は既存どおり stretch のまま）。 */
+/* 相手の名前ラベル（グループ先頭のみ表示） */
+.msg-name { font-size: 0.72rem; color: var(--text-muted); margin: 0 4px 2px; }
+/* 吹き出しと時刻を横並び（下端揃え）にする＝LINEらしさの肝 */
+.msg-line { display: flex; align-items: flex-end; gap: 6px; max-width: 100%; }
+.message.user .msg-line { flex-direction: row-reverse; }
+.msg-bubble { position: relative; padding: 10px 14px; border-radius: 18px; font-size: 0.92rem; line-height: 1.5; background: var(--bg-elevated); border: 1px solid var(--border-glass); word-break: normal; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
 .message.user .msg-bubble { background: var(--accent); color: #000; border: none; border-top-right-radius: 4px; }
 .message.assistant .msg-bubble { border-top-left-radius: 4px; }
-.msg-time { font-size: 0.65rem; color: var(--text-muted); opacity: 0.7; margin-top: 4px; }
+.msg-time { font-size: 0.65rem; color: var(--text-muted); opacity: 0.7; flex-shrink: 0; white-space: nowrap; }
+/* 吹き出しのしっぽ（三角）。グループ先頭の吹き出しだけに付ける（msg-tail 要素の有無で制御） */
+.msg-tail { position: absolute; top: 5px; width: 0; height: 0; border: 6px solid transparent; }
+.message.assistant .msg-tail { left: -5px; border-right-color: var(--bg-elevated); border-left-width: 0; }
+.message.user .msg-tail { right: -5px; border-left-color: var(--accent); border-right-width: 0; }
 .msg-date-separator { align-self: center; background: rgba(0,0,0,0.3); color: var(--text-muted); font-size: 0.75rem; padding: 4px 12px; border-radius: 12px; margin: 10px 0; font-weight: 600; }
 
 .action-chips-container { padding: 12px 0; border-top: 1px solid var(--border-glass); overflow-x: auto; -webkit-overflow-scrolling: touch; flex-shrink: 0; }

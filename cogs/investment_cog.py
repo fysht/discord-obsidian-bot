@@ -364,7 +364,7 @@ class InvestmentCog(commands.Cog):
             logging.error(f"InvestmentCog notify error: {e}")
 
     async def _notify_long(self, category: str, title: str, body: str):
-        """長文レポートを「マネージャー通知ログ」に保存し、チャットには短いリードのみ送る。
+        """長文レポートを「マネージャーからのお知らせ」に保存し、チャットには短いリードのみ送る。
 
         category 例: market_sentiment / news_sentiment / alerts / weekend_stocks など
         """
@@ -378,10 +378,10 @@ class InvestmentCog(commands.Cog):
             logging.error(f"manager_notices save error: {e}")
 
         # 2) チャットには短いリードのみ。末尾の [ACTION:open_notices] により
-        #    フロント側で「マネージャー通知ログを開く」ボタンが描画される。
+        #    フロント側で「マネージャーからのお知らせを開く」ボタンが描画される。
         #    AI を通すとアクションタグが欠落するため、リードは直接送信する。
         lead = (
-            f"📨 {title} を更新したよ。詳しくは下のボタンからマネージャー通知ログを見てね。\n"
+            f"📨 {title} を更新したよ。詳しくは下のボタンからお知らせを見てね。\n"
             "[ACTION:open_notices]"
         )
         try:

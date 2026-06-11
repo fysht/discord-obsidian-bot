@@ -164,11 +164,11 @@ async def send_notice_batch(items: list[dict], push_title: str, push_url: str = 
     if not saved:
         return 0
 
-    # チャットにも導線を残す。プッシュを見逃しても、どんな項目が通知ログに
+    # チャットにも導線を残す。プッシュを見逃しても、どんな項目がお知らせに
     # 入ったか一覧でき、[ACTION:open_notices] ボタンから1タップで開ける。
     # （プッシュは下で1発だけ送るので、ここではチャット保存のみ。）
     try:
-        lead_lines = [f"📨 {push_title}を {saved} 件お届けしたよ。下のボタンから通知ログを見てね。"]
+        lead_lines = [f"📨 {push_title}を {saved} 件お届けしたよ。下のボタンからお知らせを見てね。"]
         for t in saved_titles:
             lead_lines.append(f"・{t}")
         lead_lines.append("[ACTION:open_notices]")
