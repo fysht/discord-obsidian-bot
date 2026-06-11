@@ -1495,6 +1495,10 @@ function describeAction(payload) {
         case 'open_reflection': return `📔 デイリーノートを開く`;
         case 'open_insights': return `📔 デイリーノートを開く`;
         case 'expense_confirm': return `💰 支出を確認して保存: ${args.vendor || ''} ¥${args.amount || 0}`;
+        case 'journal_log': {
+            const j = { event: '📌 出来事', learning: '💡 学び', gratitude: '🙏 良かったこと', mood: '😀 気分', condition: '🩺 体調' };
+            return `${j[args.scope] || '📝 記録'}として記録: ${args.text || ''}`;
+        }
         default:             return `▶ ${action} を実行`;
     }
 }
@@ -1553,6 +1557,25 @@ window.executeAction = async function(encodedPayload, btn) {
             if (btn) { btn.textContent = '記録した ✓'; btn.classList.add('done'); }
         } catch (e) {
             if (btn) { btn.disabled = false; btn.textContent = '✓ 外食を記録'; }
+            showToast('記録に失敗しました', true);
+        }
+        return;
+    }
+    // チャットから判別された 出来事/学び/良かったこと をワンタップで記録する。
+    if (action === 'journal_log') {
+        const scope = args.scope || '';
+        const text = args.text || '';
+        if (!scope || !text) { showToast('記録できる内容がありませんでした', true); return; }
+        if (btn) { btn.disabled = true; btn.textContent = '記録中…'; }
+        try {
+            const res = await apiFetch('/api/daily_questions/quick_log', {
+                method: 'POST', body: JSON.stringify({ scope, text }),
+            });
+            showToast(`${res.icon || '📝'} ${res.label || ''}を記録しました ✓`);
+            if (btn) { btn.textContent = '記録した ✓'; btn.classList.add('done'); }
+            if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
+        } catch (e) {
+            if (btn) { btn.disabled = false; btn.textContent = '記録'; }
             showToast('記録に失敗しました', true);
         }
         return;

@@ -380,11 +380,15 @@ class PartnerCog(commands.Cog):
                     ),
                     types.FunctionDeclaration(
                         name="check_tasks",
-                        description="タスクを確認する。",
+                        description=(
+                            "ユーザーが**明示的に**『タスク／ToDo／やること／残ってる作業』の一覧を見せてと"
+                            "頼んだときだけ呼ぶ。雑談・相談・記録・その他の話題では絶対に呼ばないこと。"
+                            "判断に迷ったら呼ばずに普通に会話で返す。"
+                        ),
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
                             properties={
-                                "list_name": types.Schema(type=types.Type.STRING)
+                                "list_name": types.Schema(type=types.Type.STRING, description="'仕事' または 'プライベート'。指定が無ければ省略可")
                             },
                         ),
                     ),
@@ -660,6 +664,32 @@ class PartnerCog(commands.Cog):
                                 ),
                             },
                             required=["title", "category"],
+                        ),
+                    ),
+                    types.FunctionDeclaration(
+                        name="log_journal_entry",
+                        description=(
+                            "ユーザー自身が会話の中で『今日の出来事』『学び・気づき』『良かったこと・感謝』"
+                            "『気分』『体調』『食べたもの』『使ったお金』を話したとき、その内容を該当ログに"
+                            "記録することを提案する。即時保存せず、ワンタップで記録できる確認ボタンを返す。"
+                            "ask_log_question が『質問して答えてもらう』のに対し、こちらは『すでに話された内容を"
+                            "そのまま記録に回す』ためのもの。相談・質問・雑談・予定の話には使わない。"
+                            "scope は event（出来事）/ learning（学び・気づき）/ gratitude（良かったこと・感謝）/ "
+                            "mood（気分）/ condition（体調）/ meal（食事）/ expense（支出）。"
+                        ),
+                        parameters=types.Schema(
+                            type=types.Type.OBJECT,
+                            properties={
+                                "scope": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="event / learning / gratitude / mood / condition / meal / expense",
+                                ),
+                                "text": types.Schema(
+                                    type=types.Type.STRING,
+                                    description="記録する本文（ユーザーの発言を簡潔に整えたもの。食事なら料理名、支出なら『品目 金額』）",
+                                ),
+                            },
+                            required=["scope", "text"],
                         ),
                     ),
                     types.FunctionDeclaration(
@@ -987,6 +1017,45 @@ class PartnerCog(commands.Cog):
             return "削除はアプリから直接行うか、詳細を教えてね。"
         elif name == "ask_log_question":
             return await self._ask_log_question(args.get("scope"), args.get("question"))
+        elif name == "log_journal_entry":
+            # ユーザーが話した内容をそのまま記録に回す確認ボタン。即時保存はしない。
+            # scope ごとに最適な記録先へ振り分ける（食事=食事モーダル、支出=支出確認モーダル）。
+            scope = (args.get("scope") or "").strip()
+            text = (args.get("text") or "").replace("|", " ").replace("=", " ").replace("\n", " ").strip()
+            if not text:
+                return "（記録する内容が読み取れなかったので、記録の提案はしないでね。）"
+            if scope == "meal":
+                # 既存の食事ログ登録ボタン（押すと食事モーダルが料理名プリフィルで開く）。
+                return f"[ACTION:log_meal:name={text[:40]}] (今の食事、食事ログに記録する？ボタンから登録できるよ。)"
+            if scope == "expense":
+                # 既存の支出確認フローに合わせ、テキストから金額等を抽出して確認ボタンを返す。
+                try:
+                    from api.routers.expenses import analyze_expense_text
+                    ex = await analyze_expense_text(text)
+                except Exception:
+                    ex = {}
+
+                def _s(x):
+                    return str(x or "").replace("|", " ").replace("=", " ").replace("\n", " ")
+                amount = int(ex.get("amount") or 0)
+                vendor = _s(ex.get("vendor"))
+                category = _s(ex.get("category") or "その他")
+                date = _s(ex.get("date")) or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+                return (
+                    f"[ACTION:expense_confirm:amount={amount}|vendor={vendor}|category={category}"
+                    f"|payment_method={_s(ex.get('payment_method'))}|memo={_s(ex.get('memo') or text)}|date={date}] "
+                    f"(支出を記録する？内容を確認して保存してね。)"
+                )
+            label = {
+                "event": "出来事", "learning": "学び", "gratitude": "良かったこと",
+                "mood": "気分", "condition": "体調",
+            }.get(scope)
+            if not label:
+                return "（種別が判別できなかったので、記録の提案はしないでね。）"
+            return (
+                f"[ACTION:journal_log:scope={scope}|text={text}] "
+                f"(今の話、「{label}」として記録する？ボタンを押すと残せるよ。)"
+            )
 
         try:
             if name == "log_life_activity":
