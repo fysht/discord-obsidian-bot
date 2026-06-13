@@ -1948,6 +1948,153 @@ def hit_rate_risk_multiplier(hit_rate, samples, *, min_samples: int = 10) -> flo
     return round(max(0.5, min(1.3, m)), 2)
 
 
+def learning_adjustment(lenses, *, min_samples: int = 10, demote_below: float = 45.0) -> dict:
+    """事後検証の複数レンズ（トレンド状態別・メソッド別など）の的中率を統合し、
+    新規買いのしきい値（建玉倍率・WATCH格下げ）を自動調整する。決定論的。
+
+    Args:
+        lenses: [{"name": str, "hit_rate": float|None, "samples": int}, ...]
+        min_samples: この件数未満のレンズは「実績不足」として無視（中立）。
+        demote_below: 有効レンズのいずれかがこの的中率を下回れば BUY→WATCH に格下げ。
+
+    Returns:
+        {"ok", "hit_rate"(件数加重平均), "samples"(有効レンズ合計),
+         "multiplier"(建玉倍率・有効レンズの倍率平均), "demote"(bool),
+         "weakest"(最低的中レンズ名), "lenses"(採用したレンズ)}
+    閾値を「全レンズ実績不足→中立1.0・格下げなし」に倒すので、データが貯まるほど
+    効きが強くなる（学習が建玉とアクションへ反映される）。"""
+    valid = [l for l in (lenses or [])
+             if l and l.get("hit_rate") is not None and (l.get("samples") or 0) >= min_samples]
+    if not valid:
+        return {"ok": False, "hit_rate": None, "samples": 0, "multiplier": 1.0,
+                "demote": False, "weakest": None, "lenses": []}
+    tot = sum(l["samples"] for l in valid)
+    wavg = sum(l["hit_rate"] * l["samples"] for l in valid) / tot if tot else None
+    mult = sum(hit_rate_risk_multiplier(l["hit_rate"], l["samples"], min_samples=min_samples)
+               for l in valid) / len(valid)
+    weak = min(valid, key=lambda l: l["hit_rate"])
+    demote = weak["hit_rate"] < demote_below
+    return {
+        "ok": True,
+        "hit_rate": round(wavg, 1) if wavg is not None else None,
+        "samples": tot,
+        "multiplier": round(max(0.5, min(1.3, mult)), 2),
+        "demote": demote,
+        "weakest": weak.get("name") if demote else None,
+        "lenses": [{"name": l.get("name"), "hit_rate": l["hit_rate"], "samples": l["samples"]} for l in valid],
+    }
+
+
+def signal_lens(active_labels, by_signal_map, *, min_total: int = 3) -> dict:
+    """銘柄がいま立てている指標（パーフェクトオーダー/25日線上 等）ごとの過去的中率を、
+    件数加重で1つのレンズにまとめる。指標別チューニングを学習へ載せる。決定論的。
+
+    active_labels: いま True の指標ラベル一覧（by_signal のキーと同じ語彙）。
+    by_signal_map: {label: {"hit_rate", "win", "lose"}}。
+    各指標の決着数(win+lose)が min_total 未満は標本不足として無視。"""
+    parts = []
+    for lbl in active_labels or []:
+        b = (by_signal_map or {}).get(lbl)
+        if not b or b.get("hit_rate") is None:
+            continue
+        samp = (b.get("win", 0) or 0) + (b.get("lose", 0) or 0)
+        if samp >= min_total:
+            parts.append((lbl, b["hit_rate"], samp))
+    if not parts:
+        return {"ok": False, "hit_rate": None, "samples": 0, "signals": []}
+    tot = sum(p[2] for p in parts)
+    wavg = sum(p[1] * p[2] for p in parts) / tot if tot else None
+    return {
+        "ok": True,
+        "hit_rate": round(wavg, 1) if wavg is not None else None,
+        "samples": tot,
+        "signals": [{"label": p[0], "hit_rate": p[1], "samples": p[2]} for p in parts],
+    }
+
+
+_RELVAL_METRICS = ("per", "pbr", "psr")  # 低いほど割安（バリュエーション指標）
+
+
+def _median(vals):
+    s = sorted(v for v in vals if v is not None)
+    n = len(s)
+    if n == 0:
+        return None
+    mid = n // 2
+    return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def compute_sector_medians(records, *, min_n: int = 5) -> dict:
+    """走査したユニバース全体（不偏標本）からセクター別の中央値を出す。
+    相対評価（同業他社比でどれだけ割安/割高か）の基準。決定論的。
+
+    records: [{"sector", "per", "pbr", "psr", "roe", "operating_margin"}, ...]
+    バリュエーション指標(per/pbr/psr)は正値のみ採用（赤字・債務超過の外れ値を除外）。
+    各セクター・各指標で有効値が min_n 未満なら中央値を出さない（標本不足）。"""
+    by_sector: dict[str, dict] = {}
+    for r in records or []:
+        sec = (r.get("sector") or "").strip()
+        if not sec:
+            continue
+        b = by_sector.setdefault(sec, {"per": [], "pbr": [], "psr": [], "roe": [], "operating_margin": []})
+        for m in _RELVAL_METRICS:
+            v = r.get(m)
+            if isinstance(v, (int, float)) and v > 0:
+                b[m].append(float(v))
+        for m in ("roe", "operating_margin"):
+            v = r.get(m)
+            if isinstance(v, (int, float)):
+                b[m].append(float(v))
+    out: dict[str, dict] = {}
+    for sec, b in by_sector.items():
+        med = {}
+        n_val = max(len(b["per"]), len(b["pbr"]), len(b["psr"]))
+        for m, vals in b.items():
+            med[m] = _median(vals) if len(vals) >= min_n else None
+        med["n"] = n_val
+        out[sec] = med
+    return out
+
+
+def evaluate_relative_valuation(fundamentals, sector_med, *,
+                                cheap_disc: float = 0.20, rich_prem: float = 0.20) -> dict:
+    """銘柄のバリュエーションを同業セクター中央値と比較して割安/割高を判定。決定論的。
+
+    fundamentals: per/pbr に加え market_cap_jpy・revenue から psr を内製。
+    sector_med: compute_sector_medians の当該セクター辞書。
+    vs%（=value/median-1）が負ほど割安。per/pbr/psr の有効分の平均で cheap/fair/rich。"""
+    if not fundamentals or not sector_med:
+        return {"ok": False}
+    f = dict(fundamentals)
+    if f.get("psr") is None:
+        mcap, rev = f.get("market_cap_jpy"), f.get("revenue")
+        if isinstance(mcap, (int, float)) and isinstance(rev, (int, float)) and rev > 0:
+            f["psr"] = mcap / rev
+    vs = {}
+    diffs = []
+    for m in _RELVAL_METRICS:
+        v, med = f.get(m), sector_med.get(m)
+        if isinstance(v, (int, float)) and v > 0 and isinstance(med, (int, float)) and med > 0:
+            d = v / med - 1.0
+            vs[m] = round(d * 100, 1)
+            diffs.append(d)
+    if not diffs:
+        return {"ok": False}
+    avg = sum(diffs) / len(diffs)
+    if avg <= -cheap_disc:
+        verdict, label = "cheap", "同業比 割安"
+    elif avg >= rich_prem:
+        verdict, label = "rich", "同業比 割高"
+    else:
+        verdict, label = "fair", "同業比 妥当"
+    return {
+        "ok": True, "verdict": verdict, "verdict_label": label,
+        "avg_vs_pct": round(avg * 100, 1),
+        "per_vs_pct": vs.get("per"), "pbr_vs_pct": vs.get("pbr"), "psr_vs_pct": vs.get("psr"),
+        "sector_n": sector_med.get("n"),
+    }
+
+
 def assess_market_regime(index_df, *, slow: int = 200, fast: int = 50) -> dict:
     """指数(N225/GSPC)から地合いレジームを判定。200日線の上下＋傾きで risk_on/neutral/risk_off。
     『上昇相場でのみ攻める』ための地合いフィルタ。決定論的。"""
@@ -1978,6 +2125,65 @@ def assess_market_regime(index_df, *, slow: int = 200, fast: int = 50) -> dict:
     }
 
 
+def _cyclical_phase(df, *, slow: int = 200, fast: int = 50, mom_days: int = 60) -> dict:
+    """景気敏感プロキシ1本の循環フェーズを判定。決定論的。
+    200日線の上下（谷圏か）×短期の向き（50日線上＋3ヶ月モメンタム）で4象限：
+    回復初動(+2) / 拡張(+1) / 後退(-1) / ピークアウト(-2)。"""
+    if df is None or "Close" not in df or len(df) < slow + 5:
+        return {"ok": False, "score": 0}
+    close = df["Close"].astype(float)
+    last = float(close.iloc[-1])
+    ma_slow = float(close.rolling(slow).mean().iloc[-1])
+    ma_fast = float(close.rolling(fast).mean().iloc[-1])
+    base = float(close.iloc[-mom_days]) if len(close) > mom_days else float(close.iloc[0])
+    mom = (last / base - 1.0) if base else 0.0
+    below = last < ma_slow            # 200日線下＝景気の谷圏
+    turning_up = (last > ma_fast) and (mom > 0)  # 短期は上向き＝反転
+    if below and turning_up:
+        phase, label, score = "recovery", "回復初動（谷から反転）", 2
+    elif (not below) and turning_up:
+        phase, label, score = "expansion", "拡張（既に上昇局面）", 1
+    elif below and (not turning_up):
+        phase, label, score = "contraction", "後退（谷探し継続）", -1
+    else:
+        phase, label, score = "peak", "ピークアウト懸念", -2
+    return {"ok": True, "phase": phase, "label": label, "score": score,
+            "below_200ma": below, "turning_up": turning_up, "mom_pct": round(mom * 100, 1)}
+
+
+def assess_cyclical_regime(proxies) -> dict:
+    """複数の景気敏感プロキシ（銅・原油・半導体など）から景気循環フェーズを集約し、
+    シクリカルバリュー（谷で買い・反転初動）の買い向き度を裏取りする。決定論的。
+
+    proxies: [{"name": str, "df": DataFrame}, ...]
+    supportive=True ＝ 平均スコアが回復寄り（谷から反転している＝買いに追い風）。
+    まだ後退（谷継続）なら待ち、ピークアウトなら危険。"""
+    parts = []
+    for p in proxies or []:
+        ph = _cyclical_phase(p.get("df"))
+        if ph.get("ok"):
+            parts.append({"name": p.get("name"), **ph})
+    if not parts:
+        return {"ok": False, "supportive": False, "label": "景気指標データ不足（中立）",
+                "note": "景気敏感プロキシが取得できず循環フェーズ不明（中立扱い）。", "proxies": []}
+    avg = sum(p["score"] for p in parts) / len(parts)
+    if avg >= 1.0:
+        phase, label, supportive = "recovery", "景気は回復初動（谷から反転）", True
+    elif avg <= -1.0:
+        phase, label, supportive = "contraction", "景気は後退（谷継続）", False
+    else:
+        phase, label, supportive = "mixed", "景気はまちまち（方向感に乏しい）", False
+    detail = "／".join(f"{p['name']}:{p['label']}({p['mom_pct']:+.0f}%)" for p in parts)
+    return {
+        "ok": True, "phase": phase, "label": label, "supportive": supportive,
+        "avg_score": round(avg, 2), "proxies": parts,
+        "note": (f"{label}。{detail}。"
+                 + ("谷からの反転を外部指標も支持＝シクリカルの買い向き。" if supportive
+                    else ("まだ谷を探す局面＝反転を待つ。" if phase == "contraction"
+                          else "方向感に乏しく、銘柄ごとの反転初動を厳選。"))),
+    }
+
+
 def assess_liquidity(df, market: str = "JP", *, days: int = 20) -> dict:
     """直近の平均売買代金（出来高×終値）から流動性を評価。薄商いは約定困難＝入替枚数を制限する。
     thin 目安: JP 1億円/日未満・US 100万ドル/日未満。max_buyable=日次代金の10%。決定論的。"""
@@ -1992,6 +2198,49 @@ def assess_liquidity(df, market: str = "JP", *, days: int = 20) -> dict:
         "ok": True, "avg_turnover": round(turnover), "thin": turnover < floor,
         "max_buyable_value": round(turnover * 0.10),
         "unit": "JPY" if market == "JP" else "USD",
+    }
+
+
+def merge_fundamentals(yf: Optional[dict], financials: Optional[dict]) -> dict:
+    """yfinance ファンダに EDINET/EDGAR 有報の正確な実績を重ねる。決定論的・純粋関数。
+    EDINET で確実に取れる ROE・売上高・自己資本比率・純資産・営業CF・FCF を上書き/追加し、
+    市場データ（時価総額/PER/PBR/配当）は yfinance のまま。スクリーニング2段目（精査）で使う。"""
+    merged = dict(yf or {})
+    if not financials:
+        merged.setdefault("_source", "yfinance")
+        return merged
+    for key in ("roe", "revenue", "equity_ratio", "net_assets",
+                "operating_cf", "fcf", "net_income", "total_assets"):
+        v = financials.get(key)
+        if v is not None:
+            merged[key] = v
+    merged["_source"] = "EDINET+yfinance"
+    merged["_financials_period"] = financials.get("period_end")
+    return merged
+
+
+def assess_quality(fundamentals: Optional[dict], df, market: str = "JP") -> dict:
+    """全スタイル共通のクオリティ前処理：流動性（薄商い）・健全性（債務超過/営業CF赤字）を判定。
+    決定論的。除外するかは呼び出し側が決める（ここは判定のみ）。"""
+    f = fundamentals or {}
+    reasons = []
+    liq = assess_liquidity(df, market) if df is not None else {"ok": False}
+    thin = bool(liq.get("ok") and liq.get("thin"))
+    if thin:
+        reasons.append("薄商い")
+    net_assets, eq = f.get("net_assets"), f.get("equity_ratio")
+    insolvent = bool((net_assets is not None and net_assets < 0) or (eq is not None and eq <= 0))
+    if insolvent:
+        reasons.append("債務超過（純資産マイナス）")
+    ocf = f.get("operating_cf")
+    weak_cf = bool(ocf is not None and ocf < 0)
+    if weak_cf:
+        reasons.append("営業CFマイナス")
+    return {
+        "ok": not (thin or insolvent), "thin": thin, "insolvent": insolvent, "weak_cf": weak_cf,
+        "avg_turnover": liq.get("avg_turnover"), "turnover_unit": liq.get("unit"),
+        "reasons": reasons,
+        "checked_with_financials": ("equity_ratio" in f or "net_assets" in f),
     }
 
 

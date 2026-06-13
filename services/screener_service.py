@@ -18,6 +18,9 @@ from services.screener_engine import (
     StyleStrategy,
     get_strategy,
     list_strategies,
+    compute_sector_medians,
+    evaluate_relative_valuation,
+    assess_cyclical_regime,
 )
 
 
@@ -66,6 +69,23 @@ class ScreenerService:
     async def list_universes(self) -> list[str]:
         return await self.provider.list_universes()
 
+    # 景気敏感プロキシ（外部マクロ）：銅・原油・半導体。シクリカルの谷→反転の裏取りに使う。
+    _CYCLICAL_PROXIES = [("HG=F", "銅"), ("CL=F", "原油"), ("SOXX", "半導体")]
+
+    async def assess_cyclical_macro(self) -> dict:
+        """景気敏感プロキシ群を取得し景気循環フェーズ（谷→回復）を集約する。
+        シクリカルバリュー候補の外部裏取り。取得失敗分は無視（ベストエフォート）。"""
+        proxies = []
+        for sym, label in self._CYCLICAL_PROXIES:
+            try:
+                df = await self.provider.get_ohlcv(sym, days=400)
+            except Exception as e:
+                logging.debug(f"景気プロキシ取得エラー {sym}: {e}")
+                df = None
+            if df is not None:
+                proxies.append({"name": label, "df": df})
+        return assess_cyclical_regime(proxies)
+
     async def run_screening(
         self,
         style: str,
@@ -74,6 +94,7 @@ class ScreenerService:
         min_market_cap_jpy: Optional[int] = None,
         exclude_sectors: Optional[list[str]] = None,
         enabled_filters: Optional[list[str]] = None,
+        refine: bool = False,
     ) -> dict:
         """機械スクリーニング (Phase A) を実行する。
 
@@ -118,6 +139,8 @@ class ScreenerService:
 
         # near-miss 候補も収集して、0件時のフォールバックに使う
         near_miss_results: list[ScreeningResult] = []
+        # 相対評価用：走査したユニバース全体のファンダを集める（不偏標本でセクター中央値を作る）
+        fund_by_code: dict[str, dict] = {}
 
         async def _process(item: dict):
             code = item["code"]
@@ -140,6 +163,16 @@ class ScreenerService:
                         fundamentals = None
                     if not fundamentals:
                         return None, None
+                    # 相対評価の標本に追加（東証業種=universe sector で揃える）
+                    mcap, rev = fundamentals.get("market_cap_jpy"), fundamentals.get("revenue")
+                    psr = (mcap / rev) if (isinstance(mcap, (int, float))
+                                           and isinstance(rev, (int, float)) and rev > 0) else None
+                    fund_by_code[code] = {
+                        "sector": sector, "per": fundamentals.get("per"),
+                        "pbr": fundamentals.get("pbr"), "psr": psr,
+                        "roe": fundamentals.get("roe"),
+                        "operating_margin": fundamentals.get("operating_margin"),
+                    }
                 if min_market_cap_jpy:
                     mcap = (fundamentals or {}).get("market_cap_jpy")
                     if not mcap or mcap < min_market_cap_jpy:
@@ -190,9 +223,46 @@ class ScreenerService:
         data_as_of = top[0].data_as_of if top else datetime.datetime.now(JST).strftime("%Y-%m-%d")
         executed_at = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M JST")
 
+        # 2段階スクリーニング（精査）：1段目(yfinance)を通った候補だけ EDINET/EDGAR の有報実績で
+        # 再確認し、ROE/売上/自己資本比率/債務超過/流動性で精度を上げる（refine=True 時のみ・重い）。
+        refined = False
+        if refine and needs_fundamentals and top:
+            try:
+                candidate_dicts = await self._refine_candidates(strategy, top, enabled_set)
+                refined = True
+            except Exception as e:
+                logging.warning(f"run_screening refine 失敗 {style}: {e}")
+                candidate_dicts = [r.to_dict() for r in top]
+        else:
+            candidate_dicts = [r.to_dict() for r in top]
+
+        # 相対評価（同業セクター中央値比の割安/割高）を候補へ付与。
+        # 標本は走査したユニバース全体（不偏）。ファンダ取得スタイルのみ。
+        if fund_by_code:
+            try:
+                sector_medians = compute_sector_medians(list(fund_by_code.values()))
+                for d in candidate_dicts:
+                    fb = fund_by_code.get(d.get("code"))
+                    med = sector_medians.get((d.get("sector") or "").strip()) if fb else None
+                    if fb and med:
+                        rv = evaluate_relative_valuation(fb, med)
+                        if rv.get("ok"):
+                            d["relative_valuation"] = rv
+            except Exception as e:
+                logging.debug(f"run_screening 相対評価 付与エラー: {e}")
+
+        # シクリカルは外部の景気敏感指標（銅・原油・半導体）で谷→反転を裏取りする。
+        cyclical_regime = None
+        if style == "cyclical_value" and top:
+            try:
+                cyclical_regime = await self.assess_cyclical_macro()
+            except Exception as e:
+                logging.debug(f"run_screening 景気フェーズ 付与エラー: {e}")
+
         return {
             "ok": True,
             "style": style,
+            "cyclical_regime": cyclical_regime,
             "style_display": strategy.display_name,
             "universe": universe_name,
             "data_as_of": data_as_of,
@@ -201,8 +271,92 @@ class ScreenerService:
             "qualified": len(results),
             "applied_filters": applied_filters,
             "used_near_miss": used_near_miss,
-            "candidates": [r.to_dict() for r in top],
+            "refined": refined,
+            "candidates": candidate_dicts,
         }
+
+    async def _refine_candidates(self, strategy, top: list, enabled_set) -> list:
+        """1段目候補を EDINET(JP)/EDGAR(US) の有報実績で再評価し、精度を上げる（2段目）。
+        EDINET実績で基準を満たさない候補は除外、債務超過は除外、薄商いはフラグ。決定論的＋ネットI/O。"""
+        from services.screener_engine import merge_fundamentals, assess_quality
+        codes = [str(r.code) for r in top]
+        jp = [c for c in codes if c.isdigit()]
+        us = [c for c in codes if not c.isdigit()]
+        fin_by_code: dict = {}
+        if jp:
+            try:
+                from services.edinet_financials import get_financials_for_codes as _edinet
+                fin_by_code.update(await _edinet(jp))
+            except Exception as e:
+                logging.debug(f"refine EDINET取得エラー: {e}")
+        if us:
+            try:
+                from services.edgar_financials import get_financials_for_codes as _edgar
+                fin_us = await _edgar(us)
+                for c in us:
+                    s = fin_us.get(c.upper())
+                    if s:
+                        fin_by_code[c] = s
+            except Exception as e:
+                logging.debug(f"refine EDGAR取得エラー: {e}")
+
+        sem = asyncio.Semaphore(4)
+
+        async def _one(r):
+            code = str(r.code)
+            mk = "JP" if code.isdigit() else "US"
+            fin = fin_by_code.get(code) or fin_by_code.get(code.upper())
+            async with sem:
+                try:
+                    df = await self.provider.get_ohlcv(code, days=300)
+                    yf = await self.provider.get_fundamentals(code)
+                except Exception:
+                    df, yf = None, None
+            merged = merge_fundamentals(yf, fin)
+            qual = assess_quality(merged, df, mk)
+            if fin:
+                try:
+                    rehit = strategy.evaluate(code, r.name, r.sector, df, merged, enabled_filters=enabled_set)
+                except Exception:
+                    rehit = None
+                if rehit is not None:
+                    d = rehit.to_dict()
+                    d["data_confidence"] = "EDINET確認済"
+                else:
+                    d = r.to_dict()
+                    d["data_confidence"] = "要確認（有報実績で基準未達）"
+                    d["refined_out"] = True
+                d["financials_source"] = merged.get("_source")
+                d["financials_period"] = merged.get("_financials_period")
+                # 連続増収増益（有報5年サマリーから）
+                cr, cp = fin.get("consecutive_revenue_growth"), fin.get("consecutive_profit_growth")
+                if cr or cp:
+                    d["growth_streak"] = {"revenue": cr or 0, "profit": cp or 0}
+            else:
+                d = r.to_dict()
+                d["data_confidence"] = "yfinanceのみ（有報未取得）"
+                d["financials_source"] = "yfinance"
+            d["quality"] = qual
+            # ヒストリカルPER（対自分株価の割安度）を併用（top の少数のみなので許容）
+            try:
+                from services.screener_engine import evaluate_historical_per
+                ph = await self.provider.get_per_history(code)
+                if ph and ph.get("ok"):
+                    cur_per = ph.get("current_per") or (merged or {}).get("per")
+                    hp = evaluate_historical_per(ph["history"], cur_per)
+                    if hp.get("ok"):
+                        d["historical_per"] = {"verdict": hp["verdict"], "verdict_label": hp["verdict_label"],
+                                               "current_per": hp["current_per"], "median": hp["median"],
+                                               "percentile": hp["percentile"]}
+            except Exception as e:
+                logging.debug(f"refine ヒストリカルPER {code}: {e}")
+            return d
+
+        refined = await asyncio.gather(*[_one(r) for r in top])
+        # 精度フィルタ：有報実績で基準未達＝除外、債務超過＝除外（薄商いは残してフラグ）
+        out = [d for d in refined
+               if not d.get("refined_out") and not (d.get("quality") or {}).get("insolvent")]
+        return out or refined  # 全部消えるなら元を返す（空回避）
 
     async def get_ohlcv_series(self, code: str, days: int = 120) -> dict:
         """1 銘柄の OHLCV を JSON 化して返す（アプリ内チャート表示用）。
@@ -493,6 +647,7 @@ class ScreenerService:
             classify_portfolio_bucket, build_allocation_plan,
             assess_liquidity, assess_market_regime, build_pyramid_plan,
             compute_rotation_friction, hit_rate_risk_multiplier,
+            learning_adjustment, signal_lens,
         )
 
         holdings = holdings or []
@@ -696,6 +851,8 @@ class ScreenerService:
         try:
             track = await self.decision_review_report(horizon="d60", auto_verify=False)
             tr_by_trend = {b["key"]: b for b in (track.get("by_trend") or []) if b.get("key")}
+            st_by_style = {b["key"]: b for b in (track.get("by_style") or []) if b.get("key")}
+            sg_by_signal = {b["key"]: b for b in (track.get("by_signal") or []) if b.get("key")}
             for r in ok_all:
                 st = (r.get("trend") or {}).get("state_label")
                 b = tr_by_trend.get(st)
@@ -709,6 +866,29 @@ class ScreenerService:
         except Exception as e:
             logging.debug(f"advise track_record 付与エラー: {e}")
             tr_by_trend = {}
+            st_by_style = {}
+            sg_by_signal = {}
+
+        # シクリカル銘柄が含まれるなら、外部の景気敏感指標（銅・原油・半導体）で谷→反転を裏取り。
+        # 保有・候補のどちらかが景気循環セクター/メソッドのときだけ取得する（無関係なら省略）。
+        from services.screener_engine import _CYCLICAL_SECTORS
+
+        def _is_cyclical(r):
+            if r.get("style") == "cyclical_value" or r.get("preferred_method") == "cyclical_value":
+                return True
+            sec = r.get("sector") or ""
+            return any(k in sec for k in _CYCLICAL_SECTORS)
+
+        cyclical_regime = None
+        if any(_is_cyclical(r) for r in ok_all):
+            try:
+                cyclical_regime = await self.assess_cyclical_macro()
+            except Exception as e:
+                logging.debug(f"advise 景気フェーズ取得エラー: {e}")
+        if cyclical_regime and cyclical_regime.get("ok"):
+            for r in ok_all:
+                if _is_cyclical(r):
+                    r["cyclical_regime"] = cyclical_regime
 
         # 学習ループを実際の判断に反映：新規候補の建玉を的中率で増減し、地合いリスクオフ／
         # 低的中率の状態では新規買いを WATCH に格下げ（攻めるのは上昇相場＋実績のある状態だけ）。
@@ -716,26 +896,60 @@ class ScreenerService:
             if not r.get("ok"):
                 continue
             st = (r.get("trend") or {}).get("state_label")
-            b = tr_by_trend.get(st) or {}
-            hr = b.get("hit_rate")
-            samp = (b.get("win", 0) + b.get("lose", 0)) if b else 0
-            mult = hit_rate_risk_multiplier(hr, samp)
+            tb = tr_by_trend.get(st) or {}
+            tr_samp = (tb.get("win", 0) + tb.get("lose", 0)) if tb else 0
+            # メソッド（style）別の的中率レンズ。表示名・style_name どちらで記録されていても拾う。
+            stl = r.get("style")
+            stl_disp = r.get("style_display")
+            sb = st_by_style.get(stl) or st_by_style.get(stl_disp) or {}
+            stl_samp = (sb.get("win", 0) + sb.get("lose", 0)) if sb else 0
+            # 指標別レンズ：いま立てている指標（PO/25日線上/75日線上）の過去的中率を集約
+            tr = r.get("trend") or {}
+            active_sig = []
+            if tr.get("perfect_order"):
+                active_sig.append("パーフェクトオーダー")
+            if tr.get("above_fast"):
+                active_sig.append("25日線上")
+            if tr.get("above_mid"):
+                active_sig.append("75日線上")
+            sl = signal_lens(active_sig, sg_by_signal)
+            # トレンド状態×メソッド×指標の3レンズを統合し、しきい値（建玉倍率・格下げ）を自動調整
+            adj = learning_adjustment([
+                {"name": f"状態:{st}", "hit_rate": tb.get("hit_rate"), "samples": tr_samp},
+                {"name": f"手法:{stl_disp or stl}", "hit_rate": sb.get("hit_rate"), "samples": stl_samp},
+                {"name": "指標:" + "/".join(active_sig) if active_sig else "指標",
+                 "hit_rate": sl.get("hit_rate"), "samples": sl.get("samples", 0)},
+            ])
+            mult = adj["multiplier"]
             reg = (regime_by_market.get(r.get("market")) or {}).get("regime")
-            r["learning"] = {"trend_state": st, "hit_rate": hr, "samples": samp,
-                             "risk_multiplier": mult, "regime": reg}
+            r["learning"] = {
+                "trend_state": st, "hit_rate": tb.get("hit_rate"), "samples": tr_samp,
+                "style_hit_rate": sb.get("hit_rate"), "style_samples": stl_samp,
+                "signal_hit_rate": sl.get("hit_rate"), "signal_samples": sl.get("samples", 0),
+                "signals": sl.get("signals", []),
+                "combined_hit_rate": adj["hit_rate"], "risk_multiplier": mult,
+                "regime": reg, "demote": adj["demote"], "weakest": adj["weakest"],
+            }
             v = r["verdict"]
             if v["action"] == "BUY":
                 if reg == "risk_off":
                     v["action"], v["action_label"] = "WATCH", "ウォッチ（地合い）"
                     v["note"] = (v.get("note", "") + " 地合いがリスクオフ（指数が200日線下・下向き）。"
                                  "新規買いは見送り、相場の回復を待つ。").strip()
-                elif hr is not None and samp >= 10 and hr < 45:
+                elif (_is_cyclical(r) and (cr := r.get("cyclical_regime"))
+                      and not cr.get("supportive") and cr.get("phase") == "contraction"):
+                    # シクリカルは外部の景気敏感指標が「谷継続（まだ下落）」なら反転を待つ
+                    v["action"], v["action_label"] = "WATCH", "ウォッチ（景気）"
+                    v["note"] = (v.get("note", "") + f" 景気敏感指標が{cr.get('label')}＝"
+                                 "シクリカルの底入れ反転はまだ。谷からの反転初動を待つ。").strip()
+                elif adj["demote"]:
                     v["action"], v["action_label"] = "WATCH", "ウォッチ（学習）"
-                    v["note"] = (v.get("note", "") + f" この状態は過去の的中率が{hr}%（{samp}件）と低く、"
+                    v["note"] = (v.get("note", "") + f" {adj['weakest']} は過去の的中率"
+                                 f"（統合{adj['hit_rate']}%・{adj['samples']}件）が低く、"
                                  "新規買いは慎重に（押し目・再ブレイクを待つ）。").strip()
                 elif (capital and mult != 1.0 and r.get("position_size", {}).get("ok")
                       and r.get("_entry") and r.get("_stop")):
-                    # 的中率で建玉サイズを増減（高的中の状態は厚く・低い状態は薄く）
+                    # 的中率で建玉サイズを増減（高的中の状態・手法は厚く・低いものは薄く）
                     ps = compute_position_size(
                         capital, r["_entry"], r["_stop"], risk_per_trade=0.01 * mult,
                         lot_size=(100 if r["code"].isdigit() else 1))

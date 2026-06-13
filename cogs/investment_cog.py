@@ -2053,6 +2053,7 @@ class InvestmentCog(commands.Cog):
         self._snapshot_trade_decision(
             code=code, name=holding.get("name") or code, market=market,
             trade_action="buy", price=avg_cost,
+            style=holding.get("preferred_method") or "",
         )
         return {"ok": True, "holdings": holdings}
 
@@ -2122,6 +2123,7 @@ class InvestmentCog(commands.Cog):
             code=code, name=existing.get("name") or code,
             market=existing.get("market") or ("JP" if str(code).isdigit() else "US"),
             trade_action="sell", price=sell_price,
+            style=existing.get("preferred_method") or "",
         )
         return {
             "ok": True, "holdings": holdings,
@@ -2253,7 +2255,7 @@ class InvestmentCog(commands.Cog):
         return {"ok": True, "transactions": items}
 
     def _snapshot_trade_decision(
-        self, code: str, name: str, market: str, trade_action: str, price=None
+        self, code: str, name: str, market: str, trade_action: str, price=None, style: str = ""
     ) -> None:
         """売買成立時に、その瞬間の診断（テクニカル状態・推奨・利確目安）を事後検証用に
         スナップショット記録する。ScreenerCog に委譲し、バックグラウンドで実行するので
@@ -2266,7 +2268,7 @@ class InvestmentCog(commands.Cog):
             try:
                 await cog.record_trade_decision(
                     code=code, name=name or code, market=market,
-                    trade_action=trade_action, price=price,
+                    trade_action=trade_action, price=price, style=style,
                 )
             except Exception as e:
                 logging.debug(f"判断スナップショット記録に失敗 {code}: {e}")

@@ -58,6 +58,7 @@ class ScreenerCog(commands.Cog):
         min_market_cap_jpy: Optional[int] = None,
         exclude_sectors: Optional[list[str]] = None,
         enabled_filters: Optional[list[str]] = None,
+        refine: bool = False,
     ) -> dict:
         return await self.service.run_screening(
             style=style,
@@ -66,6 +67,7 @@ class ScreenerCog(commands.Cog):
             min_market_cap_jpy=min_market_cap_jpy,
             exclude_sectors=exclude_sectors,
             enabled_filters=enabled_filters,
+            refine=refine,
         )
 
     async def apply_secondary_style(
@@ -260,12 +262,15 @@ class ScreenerCog(commands.Cog):
         exclude_sectors: Optional[list[str]] = None,
         filter_overrides: Optional[dict[str, list[str]]] = None,
         combine_mode: str = "any",
+        refine: bool = False,
     ) -> dict:
         """複数スタイルを並列実行して結果をマージ。
 
         combine_mode="any" (OR): いずれかのスタイルに合致した銘柄を返す。
         combine_mode="all" (AND): すべてのスタイルに合致した銘柄のみを返す。
         filter_overrides: {style_name: [enabled_filter_keys, ...], ...}
+        refine: 単一スタイル時のみ、1段目通過を EDINET/EDGAR の有報実績で再確認して精度を上げる
+                （多スタイルは EDINET 走査がスタイル数ぶん重くなるため無効）。
         """
         import asyncio as _asyncio
         if not styles:
@@ -283,6 +288,7 @@ class ScreenerCog(commands.Cog):
                 min_market_cap_jpy=min_market_cap_jpy,
                 exclude_sectors=exclude_sectors,
                 enabled_filters=_filters_for(styles[0]),
+                refine=refine,
             )
             if result.get("ok"):
                 if result.get("candidates"):
@@ -418,6 +424,7 @@ class ScreenerCog(commands.Cog):
         exclude_sectors: Optional[list[str]] = None,
         filter_overrides: Optional[dict[str, list[str]]] = None,
         combine_mode: str = "any",
+        refine: bool = False,
     ) -> dict:
         """機械スクリーニング (Phase A) をバックグラウンドで実行し job_id を返す。
         全銘柄ユニバースのように時間がかかるケース向け。完了時に Push 通知。"""
@@ -447,6 +454,7 @@ class ScreenerCog(commands.Cog):
             "exclude_sectors": exclude_sectors or [],
             "filter_overrides": filter_overrides or {},
             "combine_mode": combine_mode,
+            "refine": bool(refine),
         }
         try:
             from api.database import screener_job_update
@@ -465,6 +473,7 @@ class ScreenerCog(commands.Cog):
                 exclude_sectors=exclude_sectors,
                 filter_overrides=filter_overrides,
                 combine_mode=combine_mode,
+                refine=refine,
             ),
             name=f"screener_machine_{job_id}",
         )
@@ -486,6 +495,7 @@ class ScreenerCog(commands.Cog):
         exclude_sectors: Optional[list[str]],
         filter_overrides: Optional[dict[str, list[str]]],
         combine_mode: str,
+        refine: bool = False,
     ) -> None:
         from api.database import screener_job_update
         import json as _json
@@ -499,6 +509,7 @@ class ScreenerCog(commands.Cog):
                 exclude_sectors=exclude_sectors,
                 filter_overrides=filter_overrides,
                 combine_mode=combine_mode,
+                refine=refine,
             )
             payload = _json.dumps(result, ensure_ascii=False, default=str)
             if not result.get("ok"):

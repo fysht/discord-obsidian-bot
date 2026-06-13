@@ -125,6 +125,43 @@ def _select_current(rows: list[dict], tag_suffix: str) -> Optional[float]:
     return None
 
 
+def _select_series(rows: list[dict], tag_suffix: str) -> list:
+    """「主要な経営指標等の推移」から、当期→過去の時系列（最大5期）を取り出す。純粋関数。
+    コンテキストの CurrentYear=0 / Prior1Year=1 ... を年オフセットに使い、連結優先。"""
+    import re
+    best: dict = {}  # offset -> (value, is_consolidated)
+    for r in rows:
+        if not r.get("element", "").endswith(tag_suffix):
+            continue
+        ctx = r.get("context") or ""
+        if "CurrentYear" in ctx:
+            off = 0
+        else:
+            m = re.search(r"Prior(\d)Year", ctx)
+            off = int(m.group(1)) if m else None
+        if off is None:
+            continue
+        v = _to_float(r.get("value"))
+        if v is None:
+            continue
+        is_cons = "NonConsolidated" not in ctx
+        if off not in best or (is_cons and not best[off][1]):
+            best[off] = (v, is_cons)
+    return [best[o][0] for o in sorted(best)]  # 当期→過去の順
+
+
+def _consecutive_growth(series: list) -> int:
+    """当期→過去の系列で、最新から連続して前年を上回っている期数を数える。純粋関数。"""
+    cnt = 0
+    for i in range(len(series) - 1):
+        a, b = series[i], series[i + 1]
+        if a is not None and b is not None and a > b:
+            cnt += 1
+        else:
+            break
+    return cnt
+
+
 def _cs_pattern_label(o: Optional[float], i: Optional[float], f: Optional[float]) -> Optional[str]:
     """営業/投資/財務 CF の符号からキャッシュフロー 8 パターンを判定（決算分析の地図 3章）。"""
     if o is None or i is None or f is None:
@@ -145,6 +182,10 @@ def _cs_pattern_label(o: Optional[float], i: Optional[float], f: Optional[float]
 def extract_financial_summary(rows: list[dict]) -> dict:
     """パース済み行から、安全性/キャッシュの定量サマリーを組み立てる。純粋関数。"""
     vals = {k: _select_current(rows, suf) for k, suf in _SUMMARY_TAGS.items()}
+
+    # 「主要な経営指標等の推移」(5年)から売上・純利益の時系列を取り、連続増収増益を数える
+    rev_series = _select_series(rows, _SUMMARY_TAGS["revenue"])
+    ni_series = _select_series(rows, _SUMMARY_TAGS["net_income"])
 
     eq = vals.get("equity_ratio")
     if eq is not None and abs(eq) > 1.5:  # % 表記なら比率へ
@@ -169,6 +210,10 @@ def extract_financial_summary(rows: list[dict]) -> dict:
         "fcf": fcf_val,
         "net_income": vals.get("net_income"),
         "revenue": vals.get("revenue"),
+        "revenue_series": rev_series,
+        "net_income_series": ni_series,
+        "consecutive_revenue_growth": _consecutive_growth(rev_series),
+        "consecutive_profit_growth": _consecutive_growth(ni_series),
         "cs_pattern": _cs_pattern_label(ocf, icf, vals.get("financing_cf")),
         "source": "EDINET",
     }

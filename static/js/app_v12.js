@@ -11294,7 +11294,9 @@ window.openGeminiGemForScreener = async () => {
     }
     const data = _screenerLastResult || {};
     const styleLabel = data.style_display || (data.styles || []).join(' / ') || '-';
-    const header = `# 機械スクリーニング結果 (${styleLabel})\n実行: ${data.executed_at || ''} / 基準日: ${data.data_as_of || ''} / 走査 ${data.scanned || '-'} → 通過 ${data.qualified || '-'} → 上位 ${selected.length} 件\n\n`;
+    const cr = data.cyclical_regime;
+    const crLine = (cr && cr.ok) ? `景気指標: ${cr.label}${cr.supportive ? '（買い向き）' : '（反転待ち）'}\n` : '';
+    const header = `# 機械スクリーニング結果 (${styleLabel})\n実行: ${data.executed_at || ''} / 基準日: ${data.data_as_of || ''} / 走査 ${data.scanned || '-'} → 通過 ${data.qualified || '-'} → 上位 ${selected.length} 件\n${crLine}\n`;
     const rows = selected.map((c, i) => {
         const ps = c.price_snapshot || {};
         const sigs = (c.signals || []).map(s => `${s.name}=${s.value}`).join(', ');
@@ -11406,6 +11408,8 @@ window.runScreener = async () => {
         const combineMode = document.querySelector('input[name="screener-combine-mode"]:checked')?.value || 'any';
         const body = { styles: [..._screenerSelectedStyles], universe, top_n: topN, combine_mode: combineMode };
         if (minMcapJpy) body.min_market_cap_jpy = minMcapJpy;
+        // EDINET/EDGAR有報で精査（精度UP・1スタイル選択時のみ有効・時間がかかる）
+        if ($('#screener-refine')?.checked && _screenerSelectedStyles.size === 1) body.refine = true;
         const filter_overrides = {};
         for (const styleName of _screenerSelectedStyles) {
             if (_screenerStyleFilters[styleName]) {
@@ -11579,6 +11583,15 @@ function _renderScreenerCandidates(data) {
         ? `<div style="padding:8px;margin-bottom:8px;background:rgba(255,212,84,0.12);border-left:3px solid #ffd454;border-radius:4px;font-size:0.78rem;color:#ffd454;">⚠️ 全条件を満たす銘柄が指定数に届かなかったため、不足分を「条件に近い銘柄」で補っています（赤バッジ＝満たさなかった条件）。</div>`
         : '';
 
+    // シクリカル：外部の景気敏感指標（銅・原油・半導体）で「谷→反転」を裏取り
+    let cyclicalBanner = '';
+    const cr = data.cyclical_regime;
+    if (cr && cr.ok) {
+        const cbg = cr.supportive ? 'rgba(126,224,160,0.12)' : 'rgba(255,180,84,0.12)';
+        const cbc = cr.supportive ? '#7ee0a0' : '#ffb454';
+        cyclicalBanner = `<div style="padding:8px;margin-bottom:8px;background:${cbg};border-left:3px solid ${cbc};border-radius:4px;font-size:0.78rem;color:${cbc};">🌐 景気指標：${escapeHtml(cr.label)}${cr.supportive ? '（買い向き）' : '（反転待ち）'}<div style="color:var(--text-muted);font-size:0.72rem;margin-top:2px;">${escapeHtml(cr.note || '')}</div></div>`;
+    }
+
     const bulkToggle = `<div style="font-size:0.74rem;margin-bottom:6px;color:var(--text-secondary);">
         <a href="#" onclick="event.preventDefault();_screenerCheckAll(true);" style="color:#4ea1ff;cursor:pointer;text-decoration:underline;">☑ すべて選択</a>
         <span style="opacity:0.5;margin:0 4px;">/</span>
@@ -11596,6 +11609,34 @@ function _renderScreenerCandidates(data) {
         const ps = c.price_snapshot || {};
         const matchedStyles = c.matched_styles || [];
         const styleBadges = matchedStyles.map(ms => `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(78,161,255,0.15);color:#4ea1ff;font-size:0.70rem;">${escapeHtml(ms)}</span>`).join('');
+        // 精査（refine）時の信頼度＋クオリティ（薄商い/債務超過等）バッジ
+        let confBadge = '';
+        const q = c.quality || {};
+        const qtxt = (q.reasons && q.reasons.length) ? ' ・ ⚠️' + q.reasons.join('・') : '';
+        // 相対評価（同業セクター中央値比）バッジ＝refine 有無に関わらず付与される
+        const rv = c.relative_valuation;
+        let relBadge = '';
+        if (rv && rv.ok) {
+            const rc = rv.verdict === 'cheap' ? '#7ee0a0' : (rv.verdict === 'rich' ? '#ff8a8a' : 'var(--text-muted)');
+            const parts = [];
+            if (rv.per_vs_pct != null) parts.push(`PER${rv.per_vs_pct >= 0 ? '+' : ''}${rv.per_vs_pct}%`);
+            if (rv.pbr_vs_pct != null) parts.push(`PBR${rv.pbr_vs_pct >= 0 ? '+' : ''}${rv.pbr_vs_pct}%`);
+            if (rv.psr_vs_pct != null) parts.push(`PSR${rv.psr_vs_pct >= 0 ? '+' : ''}${rv.psr_vs_pct}%`);
+            relBadge = `<div style="font-size:0.7rem;color:${rc};margin-bottom:4px;">📊 ${escapeHtml(rv.verdict_label)}（同業中央値比 ${escapeHtml(parts.join('/'))}・n=${rv.sector_n}）</div>`;
+        }
+        if (c.data_confidence) {
+            const conf = c.data_confidence;
+            const cc = conf.indexOf('EDINET確認済') >= 0 ? '#7ee0a0' : (conf.indexOf('要確認') >= 0 ? '#ff8a8a' : 'var(--text-muted)');
+            const period = c.financials_period ? `（${c.financials_period}）` : '';
+            const gs = c.growth_streak;
+            const streak = (gs && (gs.revenue || gs.profit)) ? ` ・ 連続増収${gs.revenue || 0}期/増益${gs.profit || 0}期` : '';
+            const hp = c.historical_per;
+            const hpc = hp ? (hp.verdict === 'cheap' ? '#7ee0a0' : (hp.verdict === 'rich' ? '#ff8a8a' : 'var(--text-muted)')) : '';
+            const hpTxt = hp ? ` ・ <span style="color:${hpc};">ヒストリカルPER ${escapeHtml(hp.verdict_label || '')}（${hp.current_per}倍/中央${hp.median}倍）</span>` : '';
+            confBadge = `<div style="font-size:0.7rem;color:${cc};margin-bottom:4px;">🔬 ${escapeHtml(conf)}${escapeHtml(period)}${escapeHtml(streak)}${escapeHtml(qtxt)}${hpTxt}</div>`;
+        } else if (qtxt) {
+            confBadge = `<div style="font-size:0.7rem;color:#ffb454;margin-bottom:4px;">${escapeHtml(qtxt.replace(' ・ ', ''))}</div>`;
+        }
         const codeEsc = c.code.replace(/'/g, "\\'");
         const nameEsc = (c.name || '').replace(/'/g, "\\'");
         const sectorEsc = (c.sector || '').replace(/'/g, "\\'");
@@ -11617,6 +11658,8 @@ function _renderScreenerCandidates(data) {
                         </span>
                     </div>
                     ${styleBadges ? `<div style="margin-bottom:4px;">${styleBadges}</div>` : ''}
+                    ${relBadge}
+                    ${confBadge}
                     ${failedBadge}
                     <div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:4px;">終値 ${ps.close ?? '-'} (${ps.change_pct ?? 0}%) / 52週: ${ps.low_52w ?? '-'}〜${ps.high_52w ?? '-'}</div>
                     <div>${sigBadges}</div>
@@ -11636,7 +11679,7 @@ function _renderScreenerCandidates(data) {
             <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();openHoldingsReview();" title="平日12時の自動「昼チェック」を今すぐ実行">🕛 昼チェック</button>
         </div>
     </div>`;
-    el.innerHTML = andBanner + meta + nearMissBanner + adviseBar + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
+    el.innerHTML = andBanner + meta + cyclicalBanner + nearMissBanner + adviseBar + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 
     // 副条件（スタイル横断フィルタ）UI: スタイル選択肢の補充とボタン有効化
     _populateSecondaryStyleSelect();
@@ -12077,15 +12120,28 @@ function _renderAdviceCard(r) {
     // 学習（事後検証の的中率→建玉/判断への反映）
     let learnHtml = '';
     const lr = r.learning;
-    if (lr && lr.hit_rate != null && lr.samples >= 10) {
+    if (lr && lr.combined_hit_rate != null) {
         const mc = lr.risk_multiplier > 1 ? '#7ee0a0' : (lr.risk_multiplier < 1 ? '#ffb454' : 'var(--text-muted)');
-        learnHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">🧠 学習: この状態の過去的中率 ${num(lr.hit_rate, '%')}（${num(lr.samples)}件）→ 建玉倍率 <span style="color:${mc};">×${num(lr.risk_multiplier)}</span></div>`;
+        const lenses = [];
+        if (lr.hit_rate != null && lr.samples >= 10) lenses.push(`状態 ${num(lr.hit_rate, '%')}(${num(lr.samples)})`);
+        if (lr.style_hit_rate != null && lr.style_samples >= 10) lenses.push(`手法 ${num(lr.style_hit_rate, '%')}(${num(lr.style_samples)})`);
+        if (lr.signal_hit_rate != null && lr.signal_samples >= 10) lenses.push(`指標 ${num(lr.signal_hit_rate, '%')}(${num(lr.signal_samples)})`);
+        const detail = lenses.length ? ` <span style="color:var(--text-muted);">[${lenses.join(' / ')}]</span>` : '';
+        const demote = lr.demote ? ` <span style="color:#ff8a8a;">▼${escapeHtml(lr.weakest || '')}が低く格下げ</span>` : '';
+        learnHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">🧠 学習: 統合的中率 ${num(lr.combined_hit_rate, '%')}${detail} → 建玉倍率 <span style="color:${mc};">×${num(lr.risk_multiplier)}</span>${demote}</div>`;
     }
     // 流動性（薄商い警告）
     let liqHtml = '';
     const lq = r.liquidity;
     if (lq && lq.ok && lq.thin) {
         liqHtml = `<div style="margin:3px 0;font-size:0.72rem;color:#ffb454;">💧 薄商い（日次売買代金 約${(lq.avg_turnover || 0).toLocaleString()}${lq.unit === 'JPY' ? '円' : '＄'}）→ 建玉・入替は控えめに</div>`;
+    }
+    // シクリカル：外部の景気敏感指標（銅・原油・半導体）による谷→反転の裏取り
+    let cycHtml = '';
+    const cyc = r.cyclical_regime;
+    if (cyc && cyc.ok) {
+        const cycc = cyc.supportive ? '#7ee0a0' : '#ffb454';
+        cycHtml = `<div style="margin:3px 0;font-size:0.72rem;color:${cycc};">🌐 景気指標: ${escapeHtml(cyc.label)}${cyc.supportive ? '（買い向き）' : '（反転待ち）'}</div>`;
     }
     const codeEsc = (r.code || '').replace(/'/g, "\\'");
     const nameEsc = (r.name || '').replace(/'/g, "\\'");
@@ -12105,6 +12161,7 @@ function _renderAdviceCard(r) {
         ${posHtml}
         ${pyrHtml}
         ${learnHtml}
+        ${cycHtml}
         ${liqHtml}
         ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
         <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">

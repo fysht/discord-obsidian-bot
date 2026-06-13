@@ -114,7 +114,7 @@ yfinance に四半期サプライズが無いため、**決算ギャップ（窓
 | # | 関数 | 効果 |
 |---|---|---|
 | ① 税/手数料 | `compute_rotation_friction` | 入替の足切りを `required_gap = 10 + 摩擦%` に。含み益大の勝ち株は実力差が大きくないと入替提案しない＝オーバートレード抑制 |
-| ② 学習→建玉 | `hit_rate_risk_multiplier` | 事後検証の的中率で新規候補の建玉を増減（60%↑→×1.3／40%↓→×0.5）。的中率<45%の状態は BUY→WATCH |
+| ② 学習→建玉 | `hit_rate_risk_multiplier` / `learning_adjustment` | 事後検証の的中率で新規候補の建玉を増減（60%↑→×1.3／40%↓→×0.5）。**トレンド状態別×メソッド別の2レンズを `learning_adjustment` で統合**（件数加重で統合的中率＋倍率平均、いずれかが45%未満なら BUY→WATCH 格下げ）。メソッド別が効くよう売買記録に保有の `preferred_method` を style として保存（by_style が初めて機能） |
 | ③ 地合い | `assess_market_regime` | 指数200日線の上下＋傾きで risk_on/off。リスクオフは新規買いを WATCH に格下げ（上昇相場でのみ攻める） |
 | ④ 買い増し | `build_pyramid_plan` | 含み益＋perfect_order の保有に買い増し＋損切りを建値へ引き上げ（勝ちを伸ばし守る） |
 | ⑤ 流動性 | `assess_liquidity` | 薄商い銘柄の入替枚数を日次売買代金10%上限にキャップ |
@@ -129,6 +129,30 @@ yfinance に四半期サプライズが無いため、**決算ギャップ（窓
 
 設計思想：エントリー精度より**勝ち逃げ/損切りの非対称性**と**回転コストの抑制**が損益を支配する。
 事後検証ループ（`decision_review_report`）の「握り続けた方が得だった」傾向（over_trading_caution）と整合。
+
+## 3.7. 抽出精度の強化（2段階スクリーニング・フェーズ1）
+
+ファンダ系メソッドの主データ yfinance `.info` は日本の小型株で欠損/古い/不正確になりがち。
+これを **EDINET(JP)/EDGAR(US) の有報実績で2段目確認**して精度を上げる（`run_screening(refine=True)`、
+単一スタイル時のみ＝EDINET走査が重いため）。
+
+- `merge_fundamentals(yf, financials)`：EDINETで確実に取れる **ROE・売上高・自己資本比率・純資産・営業CF・FCF**
+  を上書き/追加（市場データ=時価総額/PER/PBR/配当は yfinance のまま）。例：yfinanceのROE 0.18→有報実績 0.09 に補正。
+- `assess_quality(fundamentals, df, market)`：**薄商い**（売買代金）・**債務超過**（純資産マイナス）・**営業CFマイナス**を判定。
+- `_refine_candidates`（service）：1段目通過候補を有報実績で**再評価**し、基準未達(`refined_out`)・債務超過は**除外**、薄商いはフラグ。
+  各候補に `data_confidence`（EDINET確認済/要確認/yfinanceのみ）・`financials_source`・`quality` を付与。
+- UI：スクリーナーに「🔬 EDINET/EDGAR有報で精査」チェック、候補行に信頼度＋品質バッジ。
+- 日次の多スタイル自動タスクには載せない（スタイル数ぶん EDINET 走査が重くなるため）。
+
+**フェーズ2（時系列＋相対評価）も精査(refine)に追加：**
+- **連続増収増益**：`edinet_financials._select_series`（有報「主要な経営指標等の推移」5年の売上/純利益を CurrentYear/PriorNYear コンテキストから時系列化・連結優先）＋`_consecutive_growth`。`consecutive_revenue_growth`/`consecutive_profit_growth` を refine 候補に `growth_streak` で付与＝一時的でなく**実績が連続して伸びているか**を確認。
+- **ヒストリカルPER（対自分株価）**：refine の各候補に `get_per_history`→`evaluate_historical_per` を併用（top の少数のみ）。絶対PERでなく**自社の過去レンジ比で割安か**を相対評価。
+- UI：候補バッジに「連続増収N期/増益M期」「ヒストリカルPER 割安/割高（現在倍/中央倍）」。
+- **的中率での閾値自動調整（実装済）**：`learning_adjustment`（engine純粋関数）がトレンド状態別×メソッド別の的中率レンズを統合し、`advise_portfolio` で新規候補の建玉倍率と BUY→WATCH 格下げを自動調整。メソッド別レンズを機能させるため売買スナップショット（`record_trade_decision`）に保有の `preferred_method` を style として記録（従来は空で by_style が無効だった）。UI：advise カードの 🧠学習 に「統合的中率／状態・手法の内訳／建玉倍率／格下げ理由」。
+- **セクター中央値の相対評価（実装済）**：`compute_sector_medians`（走査したユニバース**全体**を不偏標本にセクター別 PER/PBR/PSR の中央値を算出・正値のみ・各指標 n≥5）＋`evaluate_relative_valuation`（候補の per/pbr/psr を同業中央値と比較し vs%・平均で cheap/fair/rich）。`run_screening` で**refine 有無に関わらず**ファンダ取得スタイルの候補へ `relative_valuation` を付与（標本が上位少数でなくユニバース全体なので偏らない＝以前見送った理由を解消）。UI：候補に「📊 同業比 割安/割高（PER±%/PBR±%/PSR±%・n）」バッジ。ヒストリカルPER（対自分株価）と相互補完＝**自社の過去比＋同業他社比**の二面で割安度を見る。
+- **cyclical用の外部景気指標（実装済）**：`assess_cyclical_regime`（engine純粋関数）＋`_cyclical_phase`（プロキシ1本を200日線の上下×短期の向き=50日線上＋3ヶ月モメンタムで 回復初動/拡張/後退/ピークアウト の4象限に分類）。service `assess_cyclical_macro` が銅(HG=F)・原油(CL=F)・半導体(SOXX)を `provider.get_ohlcv` で取得し集約。`run_screening` で `style=="cyclical_value"` のとき結果に `cyclical_regime`（supportive=谷から反転で買い向き）を付与。UI：スクリーニング結果上部に「🌐 景気指標：回復初動/後退…（買い向き/反転待ち）」バナー＋Markdownレポートにも1行。シクリカルの谷判定（低営業利益率・低PSR・60日MA上の反転初動）を**外部マクロが谷→反転を支持しているか**で裏取りする。
+- **指標別チューニング（実装済）**：`signal_lens`（engine純粋関数）が銘柄のいま立てている指標（パーフェクトオーダー/25日線上/75日線上）ごとの過去的中率（`by_signal`）を件数加重で1レンズに集約。`advise_portfolio` の学習を **状態×メソッド×指標の3レンズ統合**に拡張（`learning_adjustment` に第3レンズ追加）。UI：🧠学習に「指標 N%(件)」を追加。
+- **cyclical 景気指標の advise 反映（実装済）**：`advise_portfolio` で保有・候補にシクリカル（style==cyclical_value か景気循環セクター）が含まれるときだけ `assess_cyclical_macro` を取得し、該当 r に `cyclical_regime` を付与。BUY 候補は景気指標が「後退（谷継続）」なら BUY→WATCH（ウォッチ（景気））に格下げ＝反転を待つ。UI：advise カードに「🌐 景気指標」行。
 
 ## 4. 取捨選択の根拠（ユーザー確定）
 

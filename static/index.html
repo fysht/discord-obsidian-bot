@@ -798,6 +798,11 @@
                     </div>
                 </div>
 
+                <label style="display:flex;align-items:center;gap:6px;font-size:0.78rem;color:var(--text-secondary);margin-bottom:8px;">
+                    <input type="checkbox" id="screener-refine">
+                    🔬 EDINET/EDGAR有報で精査（精度UP・1スタイル選択時のみ・数分かかる）
+                </label>
+
                 <div style="display:flex;gap:8px;margin-bottom:8px;">
                     <button class="modal-btn submit" style="flex:1;font-size:0.88rem;" onclick="runScreener()">📊 機械スクリーニング</button>
                     <button class="modal-btn cancel" id="screener-analyze-btn" style="flex:1;font-size:0.88rem;" onclick="runScreenerAnalyze()" disabled>🤖 質的分析（選択銘柄）</button>
@@ -1927,6 +1932,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=75"></script>
+    <script src="/static/js/app_v12.js?v=81"></script>
 </body>
 </html>

@@ -45,6 +45,7 @@ class ScreenerRunRequest(BaseModel):
     exclude_sectors: Optional[List[str]] = None
     filter_overrides: Optional[dict] = None
     combine_mode: str = "any"
+    refine: bool = False  # 単一スタイル時、EDINET/EDGAR有報で再確認して精度を上げる（重い）
 
 
 class ScreenerAnalyzeRequest(BaseModel):
@@ -96,6 +97,7 @@ async def screener_run(req: ScreenerRunRequest):
         exclude_sectors=req.exclude_sectors,
         filter_overrides=req.filter_overrides,
         combine_mode=req.combine_mode,
+        refine=req.refine,
     )
     return _json_sanitize(result)
 
@@ -116,6 +118,7 @@ async def screener_run_async(req: ScreenerRunRequest):
         exclude_sectors=req.exclude_sectors,
         filter_overrides=req.filter_overrides,
         combine_mode=req.combine_mode,
+        refine=req.refine,
     )
 
 
