@@ -126,9 +126,17 @@ class ScreenerCog(commands.Cog):
 
     async def backtest_rotation(self, codes: list, days: int = 750, rebalance_days: int = 20,
                                 top_k: int = 5, lookback: int = 60) -> dict:
-        """与えた銘柄群でローテーション戦略 vs buy&hold をバックテスト（ポート単位）。"""
+        """与えた銘柄群でローテーション戦略 vs buy&hold をバックテスト（市場別分離・ポート単位）。"""
         return await self.service.backtest_rotation(
             codes, days=days, rebalance_days=rebalance_days, top_k=top_k, lookback=lookback)
+
+    async def backtest_universe(self, universe_name: str = "topix500", days: int = 750,
+                                rebalance_days: int = 20, top_k: int = 10,
+                                lookback: int = 60, max_codes: int = 300) -> dict:
+        """ユニバース全体（構成員）でローテーション戦略 vs buy&hold をバックテスト（本格版）。"""
+        return await self.service.backtest_universe(
+            universe_name, days=days, rebalance_days=rebalance_days, top_k=top_k,
+            lookback=lookback, max_codes=max_codes)
 
     async def score_all_methods(self, code: str, days: int = 300) -> dict:
         """1銘柄を登録済み全メソッドで採点し、メソッド別の点数と得意メソッドを返す。"""

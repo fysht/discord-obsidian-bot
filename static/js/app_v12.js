@@ -12349,7 +12349,35 @@ window.openDeepResearch = async (code, name, sector = '', force = false) => {
     }
 };
 
-// ===== ポート単位バックテスト（回転戦略 vs 買い持ち） =====
+// ===== バックテスト共通レンダラ（by_market＋combined／市場別分離） =====
+function _renderBacktestResult(r) {
+    const num = (v, s = '') => (v === null || v === undefined) ? '-' : `${v}${s}`;
+    if (!r || !r.ok) return `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || 'バックテストできませんでした')}</div>`;
+    const c = r.combined || {};
+    const wc = c.beats_buyhold ? '#7ee0a0' : '#ff8a8a';
+    const banner = c.markets ? `<div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-glass);border-radius:8px;padding:8px 10px;margin-bottom:8px;color:${wc};font-weight:600;">
+        ${c.beats_buyhold ? '✅ 回転戦略が買い持ちに勝っています' : '⚠️ 回転戦略は買い持ちに負けています（過度な回転は逆効果の可能性）'}
+        <div style="font-weight:400;font-size:0.74rem;margin-top:2px;color:var(--text-secondary);">合成（${c.markets.map(m => m === 'JP' ? '日本株' : '米国株').join('＋')}・1:1）: 回転 ${num(c.strategy_return_pct, '%')} ／ 買い持ち ${num(c.buyhold_return_pct, '%')}（超過 ${c.excess_pct >= 0 ? '+' : ''}${num(c.excess_pct)}%）</div>
+    </div>` : '';
+    const marketBlock = (mk, b) => {
+        const label = mk === 'JP' ? '日本株' : '米国株';
+        if (!b) return '';
+        if (!b.ok) return `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:6px;">${label}: ${escapeHtml(b.reason || '検証不可')}</div>`;
+        const bw = b.beats_buyhold ? '#7ee0a0' : '#ff8a8a';
+        return `<div style="margin-top:8px;padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;">
+            <div style="font-weight:700;font-size:0.8rem;">${label}（${num(b.n_codes)}銘柄・${num(b.periods)}回リバランス）</div>
+            <div style="display:flex;justify-content:space-between;font-size:0.74rem;padding:2px 0;"><span style="color:var(--text-secondary);">トータル</span><span><b>回転 ${num(b.strategy_return_pct, '%')}</b> ／ 買い持ち ${num(b.buyhold_return_pct, '%')} <span style="color:${bw};">(${b.excess_pct >= 0 ? '+' : ''}${num(b.excess_pct)}pt)</span></span></div>
+            <div style="display:flex;justify-content:space-between;font-size:0.74rem;padding:2px 0;"><span style="color:var(--text-secondary);">年率・最大DD</span><span>CAGR ${num(b.strategy_cagr_pct, '%')} ／ DD ${num(b.strategy_maxdd_pct, '%')}</span></div>
+            <div style="font-size:0.7rem;color:var(--text-muted);">期間勝率 ${num(b.win_rate, '%')}・平均回転率 ${num(b.avg_turnover_pct, '%')}</div>
+        </div>`;
+    };
+    const bm = r.by_market || {};
+    const uni = r.universe ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:6px;">ユニバース: <b>${escapeHtml(r.universe)}</b>（検証 ${num(r.tested_codes)}/${num(r.universe_size)}銘柄）${r.survivorship_note ? '<br>※ ' + escapeHtml(r.survivorship_note) : ''}</div>` : '';
+    return `${uni}${banner}${marketBlock('JP', bm.JP)}${marketBlock('US', bm.US)}
+        <div style="font-size:0.7rem;color:var(--text-muted);margin-top:6px;border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;">※ 各市場を同一カレンダーで個別検証（混在の近似を排除）。回転コスト込みの決定論的バックテスト。過去の結果は将来を保証しません。</div>`;
+}
+
+// ===== ポート単位バックテスト（回転戦略 vs 買い持ち）＋ ユニバース全体版 =====
 window.openRotationBacktest = async () => {
     const codes = (window._lastAdviceBacktestCodes || []).filter(Boolean);
     let modal = document.getElementById('rotation-bt-modal');
@@ -12362,6 +12390,15 @@ window.openRotationBacktest = async () => {
                         <h3 style="margin:0;font-size:1rem;">📊 戦略バックテスト（回転 vs 買い持ち）</h3>
                         <button class="mini-link" onclick="document.getElementById('rotation-bt-modal').classList.add('hidden')">✕</button>
                     </div>
+                    <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:0.74rem;">
+                        <span style="color:var(--text-muted);">ユニバース全体で検証:</span>
+                        <select id="bt-universe-select" class="modern-input" style="width:auto;padding:3px 6px;font-size:0.74rem;">
+                            <option value="topix500">日本株 topix500</option>
+                            <option value="us_sp500">米国株 sp500</option>
+                            <option value="us_mega">米国株 mega</option>
+                        </select>
+                        <button class="mini-link" style="font-size:0.72rem;padding:2px 8px;" onclick="event.preventDefault();runUniverseBacktest();">▶ 実行（数分）</button>
+                    </div>
                     <div id="rotation-bt-body" style="margin-top:10px;font-size:0.84rem;line-height:1.6;"></div>
                 </div>
             </div>`;
@@ -12369,41 +12406,36 @@ window.openRotationBacktest = async () => {
         modal = document.getElementById('rotation-bt-modal');
     }
     const bodyEl = $('#rotation-bt-body');
+    modal.classList.remove('hidden');
     if (codes.length < 3) {
-        bodyEl.innerHTML = '<div style="color:#ffb454;">バックテストには3銘柄以上が必要です（保有＋候補が不足）。</div>';
-        modal.classList.remove('hidden');
+        bodyEl.innerHTML = '<div style="color:#ffb454;">保有＋候補のバックテストには3銘柄以上が必要です。上のユニバース全体検証は利用できます。</div>';
         return;
     }
-    bodyEl.innerHTML = `<div class="loading-placeholder">${codes.length}銘柄でリバランス回転 vs 買い持ちを検証中…（数十秒）</div>`;
-    modal.classList.remove('hidden');
+    bodyEl.innerHTML = `<div class="loading-placeholder">保有＋候補 ${codes.length}銘柄を市場別に検証中…（数十秒）</div>`;
     try {
         const r = await apiFetch('/api/investment/screener/backtest', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ codes, days: 750, rebalance_days: 20, top_k: 5, lookback: 60 }),
         });
-        if (!r || !r.ok) {
-            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || 'バックテストできませんでした')}</div>`;
-            return;
-        }
-        const num = (v, s = '') => (v === null || v === undefined) ? '-' : `${v}${s}`;
-        const wc = r.beats_buyhold ? '#7ee0a0' : '#ff8a8a';
-        const row = (label, a, b) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed rgba(255,255,255,0.08);">
-            <span style="color:var(--text-secondary);">${escapeHtml(label)}</span><span><b>回転 ${a}</b> ／ 買い持ち ${b}</span></div>`;
-        bodyEl.innerHTML = `
-            <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-glass);border-radius:8px;padding:8px 10px;margin-bottom:8px;color:${wc};font-weight:600;">
-                ${r.beats_buyhold ? '✅ 回転戦略が買い持ちに勝っています' : '⚠️ 回転戦略は買い持ちに負けています（過度な回転は逆効果の可能性）'}
-            </div>
-            ${row('トータルリターン', num(r.strategy_return_pct, '%'), num(r.buyhold_return_pct, '%'))}
-            ${row('年率（CAGR）', num(r.strategy_cagr_pct, '%'), num(r.buyhold_cagr_pct, '%'))}
-            ${row('最大ドローダウン', num(r.strategy_maxdd_pct, '%'), num(r.buyhold_maxdd_pct, '%'))}
-            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;"><span style="color:var(--text-secondary);">超過リターン</span><span style="font-weight:700;color:${wc};">${r.excess_pct >= 0 ? '+' : ''}${num(r.excess_pct)}%</span></div>
-            <div style="font-size:0.74rem;color:var(--text-muted);margin-top:6px;">
-                ${num(r.periods)}回リバランス（${num(r.rebalance_days)}営業日毎・モメンタム上位${num(r.top_k)}・${num(r.n_codes)}銘柄）／ 期間勝率 ${num(r.win_rate, '%')}・平均回転率 ${num(r.avg_turnover_pct, '%')}
-            </div>
-            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:6px;border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;">${escapeHtml(r.note || '')}<br>※ 回転コスト込みの決定論的バックテスト。日米混在は営業日カレンダー差で近似。過去の結果は将来を保証しません。</div>`;
+        bodyEl.innerHTML = _renderBacktestResult(r);
     } catch (e) {
         bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーでバックテストできませんでした</div>';
+    }
+};
+
+window.runUniverseBacktest = async () => {
+    const universe = $('#bt-universe-select')?.value || 'topix500';
+    const bodyEl = $('#rotation-bt-body');
+    if (!bodyEl) return;
+    bodyEl.innerHTML = `<div class="loading-placeholder">${escapeHtml(universe)} の全構成員でリバランス回転 vs 買い持ちを検証中…（数分・初回は重め）</div>`;
+    try {
+        const r = await apiFetch('/api/investment/screener/backtest_universe', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ universe, days: 750, rebalance_days: 20, top_k: 10, lookback: 60, max_codes: 300 }),
+        });
+        bodyEl.innerHTML = _renderBacktestResult(r);
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーでユニバース検証できませんでした</div>';
     }
 };
 

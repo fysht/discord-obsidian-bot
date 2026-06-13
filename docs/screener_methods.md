@@ -120,6 +120,13 @@ yfinance に四半期サプライズが無いため、**決算ギャップ（窓
 | ⑤ 流動性 | `assess_liquidity` | 薄商い銘柄の入替枚数を日次売買代金10%上限にキャップ |
 | ⑥ シグナル検証 | `backtest_entry_signal` | エントリー（新高値/PO）の過去 forward リターン vs buy&hold の優位性（銘柄単位の裏取り） |
 
+**ポート単位バックテスト**（`backtest_portfolio_rotation`）：定期リバランスでモメンタム上位を等加重保有 vs 等加重 buy&hold を
+ポイントインタイム・回転コスト込みで比較。service `backtest_rotation`（与えた銘柄群を**JP/US 市場別に分離**して個別検証＝
+営業日カレンダー差の近似を排除→1:1 合成 `combined`）／`backtest_universe`（ユニバース構成員で本格検証・現在構成員のみ＝
+生存者バイアス注記）。API `POST /screener/backtest`・`/screener/backtest_universe`。UI は一括診断の「📊 戦略バックテスト」
+（市場別＋合成表示・ユニバース全体select）。**回転コストを織り込むと回転が買い持ちに負けるケースが普通に出る**＝
+「厳選入替＋勝ち株を伸ばす」方針の数値的裏付け。
+
 設計思想：エントリー精度より**勝ち逃げ/損切りの非対称性**と**回転コストの抑制**が損益を支配する。
 事後検証ループ（`decision_review_report`）の「握り続けた方が得だった」傾向（over_trading_caution）と整合。
 

@@ -211,13 +211,31 @@ class ScreenerBacktestRequest(BaseModel):
 
 @router.post("/backtest", dependencies=[Depends(verify_api_key)])
 async def screener_backtest(req: ScreenerBacktestRequest):
-    """与えた銘柄群で『定期リバランスでモメンタム上位を保有』する回転戦略 vs 等加重 buy&hold を
-    過去データで検証する（ポート単位の本格バックテスト・回転コスト込み・決定論的）。
-    『毎日入れ替えが買い持ちに勝つか』をコスト込みで裏取りする。"""
+    """与えた銘柄群で回転戦略 vs 等加重 buy&hold を検証（日米は市場別に分離して各々＋1:1合成）。
+    回転コスト込み・決定論的。『毎日入れ替えが買い持ちに勝つか』をコスト込みで裏取りする。"""
     cog = _get_screener_cog()
     return _json_sanitize(await cog.backtest_rotation(
         req.codes, days=req.days, rebalance_days=req.rebalance_days,
         top_k=req.top_k, lookback=req.lookback))
+
+
+class ScreenerBacktestUniverseRequest(BaseModel):
+    universe: str = "topix500"
+    days: int = 750
+    rebalance_days: int = 20
+    top_k: int = 10
+    lookback: int = 60
+    max_codes: int = 300
+
+
+@router.post("/backtest_universe", dependencies=[Depends(verify_api_key)])
+async def screener_backtest_universe(req: ScreenerBacktestUniverseRequest):
+    """ユニバース全体（構成員）でローテーション戦略 vs 等加重 buy&hold を検証する本格版。
+    現在の構成員で検証（生存者バイアスに留意）。OHLCV取得が重いので max_codes で上限・数分かかる。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.backtest_universe(
+        req.universe, days=req.days, rebalance_days=req.rebalance_days,
+        top_k=req.top_k, lookback=req.lookback, max_codes=req.max_codes))
 
 
 class ScreenerDeepResearchRequest(BaseModel):

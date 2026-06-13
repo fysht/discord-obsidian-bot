@@ -365,19 +365,12 @@ class ScreenerService:
         res["code"] = code
         return res
 
-    async def backtest_rotation(self, codes: list, days: int = 750,
-                               rebalance_days: int = 20, top_k: int = 5,
-                               lookback: int = 60) -> dict:
-        """与えた銘柄群で『定期リバランスでモメンタム上位を保有』する回転戦略 vs 等加重 buy&hold を
-        過去データで検証する（ポート単位の本格バックテスト）。回転コスト込み。決定論的。
-        codes は同一市場で揃える方が精度が高い（日米混在は営業日カレンダー差で近似になる）。"""
+    async def _backtest_one_market(self, codes: list, market: str, *, days: int,
+                                   rebalance_days: int, top_k: int, lookback: int) -> dict:
+        """単一市場の銘柄群でローテーション戦略をバックテスト（同一カレンダーなので精度が高い）。"""
         from services.screener_engine import backtest_portfolio_rotation
         import pandas as pd  # type: ignore
-        codes = [str(c).strip() for c in (codes or []) if str(c).strip()][:60]
-        if len(codes) < 3:
-            return {"ok": False, "error": "3銘柄以上を指定してください"}
-        days = max(300, min(int(days or 750), 1500))
-        sem = asyncio.Semaphore(6)
+        sem = asyncio.Semaphore(8)
         series: dict = {}
 
         async def _fetch(c):
@@ -392,13 +385,75 @@ class ScreenerService:
 
         await asyncio.gather(*[_fetch(c) for c in codes])
         if len(series) < 3:
-            return {"ok": False, "error": "価格データが取得できた銘柄が不足（3銘柄以上必要）"}
+            return {"ok": False, "reason": f"{market}: 価格データが取得できた銘柄が不足（3銘柄以上必要）"}
         panel = pd.DataFrame(series)
         bt = backtest_portfolio_rotation(panel, rebalance_days=rebalance_days,
                                          top_k=top_k, lookback=lookback)
         if bt.get("ok"):
+            bt["market"] = market
             bt["codes"] = list(series.keys())
         return bt
+
+    @staticmethod
+    def _blend_backtests(ran: dict) -> dict:
+        """市場別バックテストを 1:1 で合成（各市場の戦略/買い持ちリターンの単純平均）。"""
+        import statistics
+        strat = statistics.mean(b["strategy_return_pct"] for b in ran.values())
+        bh = statistics.mean(b["buyhold_return_pct"] for b in ran.values())
+        cagr_s = statistics.mean(b["strategy_cagr_pct"] for b in ran.values())
+        cagr_b = statistics.mean(b["buyhold_cagr_pct"] for b in ran.values())
+        return {
+            "markets": list(ran.keys()), "strategy_return_pct": round(strat, 1),
+            "buyhold_return_pct": round(bh, 1), "excess_pct": round(strat - bh, 1),
+            "strategy_cagr_pct": round(cagr_s, 1), "buyhold_cagr_pct": round(cagr_b, 1),
+            "beats_buyhold": strat > bh,
+            "note": (f"{'＋'.join('日本株' if m == 'JP' else '米国株' for m in ran)}を市場別に検証し1:1で合成。"
+                     f"戦略 {strat:+.1f}% vs buy&hold {bh:+.1f}%（超過 {strat - bh:+.1f}%）。"),
+        }
+
+    async def backtest_rotation(self, codes: list, days: int = 750,
+                               rebalance_days: int = 20, top_k: int = 5,
+                               lookback: int = 60) -> dict:
+        """与えた銘柄群で回転戦略 vs 等加重 buy&hold を検証。日米は市場別に分離して各々バックテストし
+        （営業日カレンダー差の近似を排除）、1:1 で合成した combined も返す。決定論的。"""
+        codes = [str(c).strip() for c in (codes or []) if str(c).strip()]
+        # 重複排除（順序保持）
+        seen = set()
+        codes = [c for c in codes if not (c in seen or seen.add(c))][:200]
+        if len(codes) < 3:
+            return {"ok": False, "error": "3銘柄以上を指定してください"}
+        days = max(300, min(int(days or 750), 1500))
+        jp = [c for c in codes if c.isdigit()]
+        us = [c for c in codes if not c.isdigit()]
+        by_market: dict = {}
+        for mk, cs in (("JP", jp), ("US", us)):
+            if len(cs) >= 3:
+                by_market[mk] = await self._backtest_one_market(
+                    cs, mk, days=days, rebalance_days=rebalance_days, top_k=top_k, lookback=lookback)
+        ran = {mk: b for mk, b in by_market.items() if b.get("ok")}
+        if not ran:
+            return {"ok": False, "by_market": by_market,
+                    "error": "各市場で3銘柄以上の価格データが必要です（日米は別々に検証します）"}
+        return {"ok": True, "by_market": by_market, "combined": self._blend_backtests(ran)}
+
+    async def backtest_universe(self, universe_name: str = "topix500", days: int = 750,
+                                rebalance_days: int = 20, top_k: int = 10,
+                                lookback: int = 60, max_codes: int = 300) -> dict:
+        """ユニバース全体（構成員）でローテーション戦略 vs 等加重 buy&hold を検証する本格版。
+        構成員は現在のユニバースCSVを使う（過去の組入変更は反映しない＝生存者バイアスに留意）。
+        OHLCV取得が重いので max_codes で上限。決定論的。"""
+        universe = await self.provider.get_universe(universe_name)
+        if not universe:
+            return {"ok": False, "error": f"ユニバースが空: {universe_name}"}
+        all_codes = [str(u.get("code")).strip() for u in universe if u.get("code")]
+        codes = all_codes[:max(3, int(max_codes))]
+        res = await self.backtest_rotation(codes, days=days, rebalance_days=rebalance_days,
+                                           top_k=top_k, lookback=lookback)
+        res["universe"] = universe_name
+        res["universe_size"] = len(all_codes)
+        res["tested_codes"] = len(codes)
+        res["survivorship_note"] = "現在の構成員で検証（過去の組入変更は未反映＝生存者バイアスあり）。"
+        return res
 
     # =========================================================
     # ポートフォリオ・アドバイザー：保有銘柄＋候補を横断診断する
