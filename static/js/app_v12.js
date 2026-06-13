@@ -11624,13 +11624,17 @@ function _renderScreenerCandidates(data) {
             </label>
         </div>`;
     }).join('');
-    const adviseBar = `<div style="margin-bottom:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
-        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(126,224,160,0.12);color:#7ee0a0;border:1px solid rgba(126,224,160,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true);" title="保有銘柄＋この候補を、テクニカル(トレンド)×ファンダ(健全性)の二重視点で一括診断します">🧭 保有＆候補を一括診断</button>
-        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioPerformance();" title="保有ポートフォリオが市場平均（日経平均等）をアウトパフォームできているかを測定します">📊 市場平均と比較</button>
-        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();openHoldingsReview();" title="平日12時の自動「保有銘柄の昼チェック」と同じ診断を今すぐ実行します">🕛 保有を今すぐ昼チェック</button>
-        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(255,138,101,0.12);color:#ff8a65;border:1px solid rgba(255,138,101,0.35);border-radius:6px;" onclick="event.preventDefault();openBreakoutAdvise();" title="「じわじわ高値ブレイク」(topix500)で新規候補を抽出し、保有＋候補を一括診断します（平日16時の自動実行と同じ・約1〜3分）">🚀 高値ブレイク→一括診断</button>
-        <button class="mini-link" style="font-size:0.78rem;padding:4px 10px;background:rgba(196,160,255,0.12);color:#c4a0ff;border:1px solid rgba(196,160,255,0.35);border-radius:6px;" onclick="event.preventDefault();openTradeReview();" title="過去の売買が正しかったか（市場平均との比較）と、自分の売買が生んだ実現損益を振り返ります">🔎 売買の振り返り</button>
-        <span style="font-size:0.7rem;color:var(--text-muted);">継続/売却・新規買い・入替の助言／アウトパフォーム測定／売買の答え合わせ（昼チェックは平日12時に自動通知）</span>
+    const adviseBar = `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid rgba(126,224,160,0.3);border-radius:8px;background:rgba(126,224,160,0.06);">
+        <div style="font-weight:700;font-size:0.82rem;color:#7ee0a0;margin-bottom:6px;">🧭 ここからの進め方</div>
+        <button class="mini-link" style="display:block;width:100%;text-align:left;font-size:0.84rem;font-weight:700;padding:8px 12px;background:rgba(126,224,160,0.18);color:#7ee0a0;border:1px solid rgba(126,224,160,0.5);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true);" title="保有＋候補を、守り(出口)→保有管理→新規候補→入替→配分/検証 の順に一括診断します">▶ 毎日ここから：保有＆候補を一括診断</button>
+        <div style="font-size:0.7rem;color:var(--text-muted);margin:4px 0 8px;">守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示。中の「📋 進め方ガイド」も参照。</div>
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:3px;">週次・月次の補助：</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(255,138,101,0.12);color:#ff8a65;border:1px solid rgba(255,138,101,0.35);border-radius:6px;" onclick="event.preventDefault();openBreakoutAdvise();" title="「じわじわ高値ブレイク」(topix500)で新規候補を抽出し一括診断（平日16時の自動と同じ）">🚀 候補を抽出（週次）</button>
+            <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioPerformance();" title="保有が市場平均（日経平均等）をアウトパフォームできているか測定">📊 市場平均と比較（月次）</button>
+            <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(196,160,255,0.12);color:#c4a0ff;border:1px solid rgba(196,160,255,0.35);border-radius:6px;" onclick="event.preventDefault();openTradeReview();" title="過去の売買が正しかったか（市場比）と実現損益を振り返る">🔎 売買の振り返り（月次）</button>
+            <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();openHoldingsReview();" title="平日12時の自動「昼チェック」を今すぐ実行">🕛 昼チェック</button>
+        </div>
     </div>`;
     el.innerHTML = andBanner + meta + nearMissBanner + adviseBar + bulkToggle + rows + `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:8px;">⚠️ 機械的なフィルタ結果です。質的分析ボタンで Gemini が直近 IR・ニュース・決算情報を出典 URL 付きで補強します。</div>`;
 
