@@ -12160,30 +12160,62 @@ function _renderPortfolioAdvice(r) {
                 <div style="font-size:0.68rem;color:var(--text-muted);margin-top:2px;">時価合計 約${(alloc.total_value || 0).toLocaleString()}${alloc.fx_approx ? `・米国株は1ドル=${num(alloc.usdjpy)}円(概算)で円換算` : `・1ドル=${num(alloc.usdjpy)}円換算`}</div>
             </div>`;
     }
-    const holdsHtml = holds.length
-        ? holds.map(_renderAdviceCard).join('')
-        : '<div style="font-size:0.78rem;color:var(--text-muted);">保有銘柄は登録されていません。</div>';
+    // 保有を「要対応(売却/縮小)＝守りで即対応」と「継続(握る)」に分ける
+    const actionHolds = holds.filter(h => h.verdict && ['SELL', 'TRIM'].includes(h.verdict.action));
+    const keepHolds = holds.filter(h => !(h.verdict && ['SELL', 'TRIM'].includes(h.verdict.action)));
+    const actionHoldsHtml = actionHolds.length
+        ? actionHolds.map(_renderAdviceCard).join('')
+        : '<div style="font-size:0.78rem;color:#7ee0a0;">✅ 今日すぐ対応が必要な保有はありません（損切り/トレイル割れなし）。</div>';
+    const keepHoldsHtml = keepHolds.length
+        ? keepHolds.map(_renderAdviceCard).join('')
+        : (holds.length ? '' : '<div style="font-size:0.78rem;color:var(--text-muted);">保有銘柄は登録されていません。</div>');
     const candsHtml = cands.length
         ? cands.map(_renderAdviceCard).join('')
         : '<div style="font-size:0.78rem;color:var(--text-muted);">診断対象の新規候補はありません（スクリーニング結果から実行すると候補も診断します）。</div>';
     const finBar = r.with_financials
-        ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:8px;">🏦 EDINET有報の財務（自己資本比率・FCF・CF型）を ${r.financials_count || 0} 件分 織り込み済み。</div>`
-        : `<div style="margin-bottom:8px;"><button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true,true);" title="EDINET有報の自己資本比率・FCF・キャッシュフロー型を取得して再診断（1〜2分）">🏦 EDINET財務で精査して再診断</button></div>`;
+        ? `<div style="font-size:0.72rem;color:var(--text-muted);">🏦 EDINET有報の財務を ${r.financials_count || 0} 件分 織り込み済み。</div>`
+        : `<button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true,true);" title="EDINET有報の自己資本比率・FCF・キャッシュフロー型を取得して再診断（1〜2分）">🏦 EDINET財務で精査して再診断</button>`;
+    // セクション見出し（ワークフローの段階を示す）
+    const head = (label, color) => `<div style="font-weight:700;margin:14px 0 6px;padding-bottom:3px;border-bottom:2px solid ${color};color:${color};">${label}</div>`;
+    const guideHtml = `
+        <details style="margin-bottom:10px;background:rgba(78,161,255,0.06);border:1px solid rgba(78,161,255,0.25);border-radius:8px;padding:6px 10px;">
+            <summary style="cursor:pointer;font-weight:700;font-size:0.82rem;color:#9ec5ff;">📋 進め方ガイド（タップで開く）</summary>
+            <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:6px;line-height:1.7;">
+                <b>毎日（守り・5分）</b>：①地合い → ②保有の「要対応」(🔴売却/🚪損切り)だけ即対応 → ③それ以外は握る。新規は眺めるだけ。<br>
+                <b>週1〜2回（攻めの精査）</b>：強い候補(🔵BUY・手法ラベル複数)に絞り、カードの🧪検証・🔬深掘り・🧠学習を見て買う。地合いオン＋妙味あり(ウォッチでない)時だけ。<br>
+                <b>月1（検証・舵取り）</b>：📊バックテストで回転が買い持ちに勝つか確認し、配分(4:1/1:1)のドリフトを入替で寄せる。<br>
+                <b>入替は厳選</b>：🎯目標に寄せる＋税の摩擦を超える実力差がある時だけ（毎日は入れ替えない）。
+            </div>
+        </details>`;
     return `
-        <div style="background:rgba(126,224,160,0.10);border:1px solid rgba(126,224,160,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:#7ee0a0;font-weight:600;">
+        ${guideHtml}
+        <div style="background:rgba(126,224,160,0.10);border:1px solid rgba(126,224,160,0.35);border-radius:8px;padding:8px 10px;margin-bottom:6px;color:#7ee0a0;font-weight:600;">
             ${escapeHtml(r.summary || '')}
         </div>
-        ${finBar}
-        <div style="margin-bottom:8px;"><button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(126,224,160,0.12);color:#7ee0a0;border:1px solid rgba(126,224,160,0.35);border-radius:6px;" onclick="event.preventDefault();openRotationBacktest();" title="保有＋候補で『定期リバランスでモメンタム上位を保有』する回転戦略 vs 買い持ちを過去データで検証（コスト込み）">📊 戦略バックテスト（回転 vs 買い持ち）</button></div>
+
+        ${head('① 日次｜守り（まずここだけ）', '#ff8a8a')}
         ${regimeHtml}
-        ${allocHtml}
-        ${rotHtml}
-        <div style="font-weight:700;margin:12px 0 4px;">📦 保有銘柄の診断</div>
-        ${holdsHtml}
-        <div style="font-weight:700;margin:12px 0 4px;">🆕 新規候補の診断（両方で買い＝🔵BUY）</div>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin:2px 0 4px;">要対応の保有（損切り・トレイル割れ・撤退）：</div>
+        ${actionHoldsHtml}
+
+        ${head('② 保有の管理（握る・勝ち株は伸ばす📈）', '#7ee0a0')}
+        ${keepHoldsHtml || '<div style="font-size:0.78rem;color:var(--text-muted);">継続保有中の銘柄はありません。</div>'}
+
+        ${head('③ 週次｜攻めの精査（新規候補）', '#4ea1ff')}
+        <div style="font-size:0.74rem;color:var(--text-muted);margin:-2px 0 4px;">🔵BUY＋手法ラベル複数を優先。カードの🧪検証・🔬ディープリサーチ・🧠学習で裏取りしてから。</div>
         ${candsHtml}
-        <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:8px;">
-            ※ トレンド(テクニカル)×ファンダの決定論的診断です。出口は固定の利確目標ではなく「トレンド崩れ（トレイル割れ）またはファンダ悪化」を基本に。将来を保証するものではありません。
+
+        ${rots.length ? head('④ 入替の検討（厳選・目標に寄せる）', '#ffd454') + rotHtml : ''}
+
+        ${head('⑤ 週次〜月次｜舵取り・検証', '#c9a0ff')}
+        ${allocHtml}
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(201,160,255,0.12);color:#c9a0ff;border:1px solid rgba(201,160,255,0.35);border-radius:6px;" onclick="event.preventDefault();openRotationBacktest();" title="保有＋候補/ユニバースで回転戦略 vs 買い持ちを過去データで検証（コスト込み）">📊 戦略バックテスト</button>
+            ${finBar}
+        </div>
+
+        <div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:10px;">
+            ※ トレンド(テクニカル)×ファンダの決定論的診断。出口は固定利確ではなく「トレンド崩れ／ファンダ悪化」を基本に。将来を保証しません。
         </div>
     `;
 }

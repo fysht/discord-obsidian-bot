@@ -38,20 +38,20 @@
 
 ## 2. メソッド一覧（上層）と軸
 
-| メソッド (style_name) | 出典 | category | 軸 |
-|---|---|---|---|
-| new_high_breakout | DUKE『新高値ブレイク投資術』 | hybrid | trend, pattern, growth, quality |
-| excel_stock | 森口『Excel株投資』(40%ルール/PSR) | fundamental | growth, quality, value_earnings |
-| earnings_momentum | kenmo『5年で1億』決算モメンタム | technical | event, trend |
-| small_cap_growth | 片山『勝つ投資』/kenmo 中長期・小型成長 | fundamental | small_cap, growth, quality, value_earnings |
-| asset_value | たーちゃん『50万円を50億円に』資産バリュー | fundamental | value_asset, safety |
-| cyclical_value | たーちゃん『50万円を50億円に』シクリカルバリュー | hybrid | cyclical, value_earnings, trend |
-| creeping_breakout | じわじわ新高値・低ボラ | technical | trend |
-| value | バリュー（割安・配当） | fundamental | value_earnings, value_asset |
-| growth | グロース（成長） | fundamental | growth, quality |
-| fundamental_gate | 村上『決算分析の地図』 | fundamental | growth, quality, value_earnings |
-| breakout_patterns *(hidden)* | 新高値ブレイクのテクニカル単体 | technical | trend, pattern |
-| aggressive_growth *(hidden)* | 強気業績ゲート単体 | fundamental | growth, quality |
+| メソッド (style_name) | 表示名 | 出典 | category | 軸 |
+|---|---|---|---|---|
+| new_high_breakout | 新高値ブレイク（DUKE） | DUKE『新高値ブレイク投資術』 | hybrid | trend, pattern, growth, quality |
+| excel_stock | Excel株投資（森口亮） | 森口亮『Excel株投資』(40%ルール/PSR) | fundamental | growth, quality, value_earnings |
+| earnings_momentum | 決算モメンタム（kenmo） | kenmo『5年で1億』 | technical | event, trend |
+| small_cap_growth | 中長期・小型成長（片山晃/kenmo） | 片山晃『勝つ投資』/kenmo | fundamental | small_cap, growth, quality, value_earnings |
+| asset_value | 資産バリュー（たーちゃん） | たーちゃん『50万円を50億円に』 | fundamental | value_asset, safety |
+| cyclical_value | シクリカルバリュー（たーちゃん） | たーちゃん『50万円を50億円に』 | hybrid | cyclical, value_earnings, trend |
+| creeping_breakout | 新高値ブレイク（じわじわ・低ボラ） | ユーザーのオリジナル | technical | trend |
+| fundamental_gate | ファンダ総合（村上茂久） | 村上茂久『決算分析の地図』 | fundamental | growth, quality, value_earnings |
+| breakout_patterns *(hidden)* | 新高値ブレイク（チャート型） | 新高値ブレイクのテクニカル単体 | technical | trend, pattern |
+| aggressive_growth *(hidden)* | 強気グロース（高成長） | 強気業績ゲート単体 | fundamental | growth, quality |
+
+※ `value`(バリュー)・`growth`(グロース) はユーザー指示で除外（2026-06）。
 
 軸マップで重複が見える（成長性=5・収益性=5・割安利益=4メソッドが共有）。
 hidden は他メソッドの内部部品（一覧から隠す）。

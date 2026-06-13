@@ -823,7 +823,7 @@ class FundamentalGateStrategy(StyleStrategy):
     「テクニカルでもファンダでも買い」の二重ゲートを作るための土台。
     """
     style_name = "fundamental_gate"
-    display_name = "ファンダ総合（決算分析の地図）"
+    display_name = "ファンダ総合（村上茂久）"
     description = "会計視点(収益性・資本効率)とファイナンス視点(成長性・割安性)の両面が揃った銘柄"
     needs_fundamentals = True
     category = "fundamental"
@@ -977,7 +977,7 @@ class NewHighBreakoutStrategy(StyleStrategy):
     他スタイルと combine_mode="all" で併用すればよい。
     """
     style_name = "new_high_breakout"
-    display_name = "新高値ブレイク投資術"
+    display_name = "新高値ブレイク（DUKE）"
     description = ("テクニカル(52週高値圏＋カップ/VCP/ボックス＋出来高)とファンダ(売上+10%/利益+20%/"
                   "営業利益率10%/ROE12%)の両方を満たす複合メソッド。単体で『両方で買い』を判定（DUKE）")
     needs_fundamentals = True
@@ -1101,7 +1101,7 @@ class ExcelStockStrategy(StyleStrategy):
     既存の fundamental_gate（村上式）や aggressive_growth とは切り離した独立メソッド。
     """
     style_name = "excel_stock"
-    display_name = "Excel株投資（森口式）"
+    display_name = "Excel株投資（森口亮）"
     description = ("売上・利益10%超成長×営業利益率10%超×割安(PER/PSR)＋40%ルール(増収率+営業利益率≥40%)"
                   "で選ぶ、会社四季報ベースのファンダ投資法（森口亮『Excel株投資』）")
     needs_fundamentals = True
@@ -1242,7 +1242,7 @@ class SmallCapGrowthStrategy(StyleStrategy):
     （対自分株価の割安度）は単一銘柄診断 analyze_projection 側で併用する。
     """
     style_name = "small_cap_growth"
-    display_name = "中長期・小型成長（五月/kenmo）"
+    display_name = "中長期・小型成長（片山晃/kenmo）"
     description = ("時価総額の小さい中小型株で、売上の伸び（増収）を絶対条件に、収益性・ROE・"
                   "割安(PSR)が揃った銘柄を中長期で拾う（片山『勝つ投資』/kenmo 中長期投資）")
     needs_fundamentals = True
@@ -1292,7 +1292,7 @@ class AssetValueStrategy(StyleStrategy):
     PBR≤0.5（純資産の半値以下）を核に、黒字（利益面でも割高でない）とインカム下支えで近似する。
     """
     style_name = "asset_value"
-    display_name = "資産バリュー（たー）"
+    display_name = "資産バリュー（たーちゃん）"
     description = ("PBRが極端に低く（純資産の半値以下）、利益面でも割高でなく配当で下支えされた、"
                   "資産価値に対して激安な銘柄を拾う（たーちゃん『50万円を50億円に』資産バリュー）")
     needs_fundamentals = True
@@ -1339,7 +1339,7 @@ class CyclicalValueStrategy(StyleStrategy):
     PERではなくPSRと景気フェーズで判定する独立メソッド。景気は約4年で循環する。
     """
     style_name = "cyclical_value"
-    display_name = "シクリカルバリュー（たー）"
+    display_name = "シクリカルバリュー（たーちゃん）"
     description = ("景気循環業種で、いま採算が悪化し（低営業利益率）売上に対して激安（低PSR）な銘柄を、"
                   "谷からの反転初動で拾う。赤字→黒字転換を狙う（たーちゃん『50万円を50億円に』シクリカル）")
     needs_fundamentals = True
@@ -1396,8 +1396,6 @@ STRATEGY_REGISTRY: dict[str, StyleStrategy] = {
         CyclicalValueStrategy(),      # ← たーちゃん『50万円を50億円に』シクリカルバリューの独立メソッド
         CreepingBreakoutStrategy(),
         BreakoutPatternStrategy(),    # 部品(hidden): 新高値ブレイクのテクニカル単体
-        ValueStrategy(),
-        GrowthStrategy(),
         AggressiveGrowthStrategy(),   # 部品(hidden): 強気業績ゲート単体
         FundamentalGateStrategy(),
     ]
@@ -1438,8 +1436,6 @@ STRATEGY_AXES: dict[str, list[str]] = {
     "cyclical_value": ["cyclical", "value_earnings", "trend"],
     "creeping_breakout": ["trend"],
     "breakout_patterns": ["trend", "pattern"],
-    "value": ["value_earnings", "value_asset"],
-    "growth": ["growth", "quality"],
     "aggressive_growth": ["growth", "quality"],
     "fundamental_gate": ["growth", "quality", "value_earnings"],
 }
