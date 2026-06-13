@@ -833,24 +833,23 @@ class InvestmentCog(commands.Cog):
     async def _before_auto_daily_screening(self):
         await self.bot.wait_until_ready()
 
-    async def run_daily_screening(
+    async def gather_daily_candidates(
         self, universes: Optional[list] = None,
         styles: Optional[list] = None, top_n: int = 3, max_per_market: int = 10,
-        deep_research_top_n: int = 2,
     ) -> dict:
-        """全メソッドで日本株＋米国株を横断抽出（手法ラベル付き union）し、保有＋候補を一括診断する。
-        run_multi_screening(combine_mode="any") を JP/US 各ユニバースで実行 → advise_portfolio を連結。
-        日次ワークフロー①「平日チャート分析→候補を手法ラベル付きでピックアップ＋保有分析」。
-        日米1:1 配分のため候補も両市場から拾う（決定論的・無料）。"""
+        """全メソッドで日米ユニバースを横断し、買い候補（手法ラベル付き union）を抽出する。
+        自動の日次スクリーニング（run_daily_screening）と、PWA「毎日ここから一括診断」の
+        auto_screen の双方が共有する“候補生成”部。各候補がどの手法で拾われたかを matched_by_code に残す。
+        戻り値: {"ok", "candidates": [{code,name,sector}], "matched_by_code": {code: [styles]}}"""
         screener = self.bot.get_cog("ScreenerCog")
         if not screener:
-            return {"ok": False, "error": "ScreenerCog 未ロード"}
+            return {"ok": False, "error": "ScreenerCog 未ロード", "candidates": [], "matched_by_code": {}}
 
         if styles is None:
             from services.screener_engine import list_strategies
             styles = [s["name"] for s in list_strategies()]
 
-        # 1) JP/US 各ユニバースを全メソッドで union 抽出（各候補に matched_styles＝どの手法が拾ったか）
+        # JP/US 各ユニバースを全メソッドで union 抽出（各候補に matched_styles＝どの手法が拾ったか）
         matched_by_code: dict[str, list] = {}
         cand_input: list[dict] = []
         any_ok = False
@@ -864,7 +863,7 @@ class InvestmentCog(commands.Cog):
                     styles=styles, top_n=int(top_n), universe_name=universe, combine_mode="any",
                 )
             except Exception as e:
-                logging.warning(f"run_daily_screening screening失敗({universe}): {e}")
+                logging.warning(f"gather_daily_candidates screening失敗({universe}): {e}")
                 return
             if not scr.get("ok"):
                 return
@@ -881,6 +880,27 @@ class InvestmentCog(commands.Cog):
         # 日本株 topix500 ＋ 米国株 sp500/mega を横断（重複コードは先勝ちでスキップ）。
         for u in (universes or ["topix500", "us_sp500", "us_mega"]):
             await _screen(u)
+        return {"ok": any_ok, "candidates": cand_input, "matched_by_code": matched_by_code}
+
+    async def run_daily_screening(
+        self, universes: Optional[list] = None,
+        styles: Optional[list] = None, top_n: int = 3, max_per_market: int = 10,
+        deep_research_top_n: int = 2,
+    ) -> dict:
+        """全メソッドで日本株＋米国株を横断抽出（手法ラベル付き union）し、保有＋候補を一括診断する。
+        run_multi_screening(combine_mode="any") を JP/US 各ユニバースで実行 → advise_portfolio を連結。
+        日次ワークフロー①「平日チャート分析→候補を手法ラベル付きでピックアップ＋保有分析」。
+        日米1:1 配分のため候補も両市場から拾う（決定論的・無料）。"""
+        screener = self.bot.get_cog("ScreenerCog")
+        if not screener:
+            return {"ok": False, "error": "ScreenerCog 未ロード"}
+
+        # 1) 候補生成（全メソッド・JP/US 横断）は gather_daily_candidates に集約。
+        gathered = await self.gather_daily_candidates(
+            universes=universes, styles=styles, top_n=top_n, max_per_market=max_per_market)
+        matched_by_code = gathered.get("matched_by_code") or {}
+        cand_input = gathered.get("candidates") or []
+        any_ok = bool(gathered.get("ok"))
 
         # 2) 保有＋候補を一括診断（目標配分・入替数量込み）
         advice = await screener.advise_portfolio(candidates=cand_input, with_financials=False)

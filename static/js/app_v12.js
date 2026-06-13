@@ -11657,8 +11657,8 @@ function _renderScreenerCandidates(data) {
     }).join('');
     const adviseBar = `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid rgba(126,224,160,0.3);border-radius:8px;background:rgba(126,224,160,0.06);">
         <div style="font-weight:700;font-size:0.82rem;color:#7ee0a0;margin-bottom:6px;">🧭 ここからの進め方</div>
-        <button class="mini-link" style="display:block;width:100%;text-align:left;font-size:0.84rem;font-weight:700;padding:8px 12px;background:rgba(126,224,160,0.18);color:#7ee0a0;border:1px solid rgba(126,224,160,0.5);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true);" title="保有＋候補を、守り(出口)→保有管理→新規候補→入替→配分/検証 の順に一括診断します">▶ 毎日ここから：保有＆候補を一括診断</button>
-        <div style="font-size:0.7rem;color:var(--text-muted);margin:4px 0 8px;">守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示。中の「📋 進め方ガイド」も参照。</div>
+        <button class="mini-link" style="display:block;width:100%;text-align:left;font-size:0.84rem;font-weight:700;padding:8px 12px;background:rgba(126,224,160,0.18);color:#7ee0a0;border:1px solid rgba(126,224,160,0.5);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true, false, true);" title="全メソッドで日米を自動スクリーニングして新規候補を抽出し、保有＋候補を、守り(出口)→保有管理→新規候補→入替→配分/検証 の順に一括診断します（1〜3分）">▶ 毎日ここから：保有＆候補を一括診断</button>
+        <div style="font-size:0.7rem;color:var(--text-muted);margin:4px 0 8px;">全手法で日米を自動スクリーニング → 守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示（1〜3分）。中の「📋 進め方ガイド」も参照。</div>
         <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:3px;">週次・月次の補助：</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(255,138,101,0.12);color:#ff8a65;border:1px solid rgba(255,138,101,0.35);border-radius:6px;" onclick="event.preventDefault();openBreakoutAdvise();" title="「じわじわ高値ブレイク」(topix500)で新規候補を抽出し一括診断（平日16時の自動と同じ）">🚀 候補を抽出（週次）</button>
@@ -11990,7 +11990,13 @@ window.setScreenerCapital = () => {
     openPortfolioAdvice();
 };
 
-window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false) => {
+// 「毎日ここから」一括診断で使った候補のキャッシュ。資金設定/EDINET財務での再診断時に
+// 再スクリーニング（1〜3分）を繰り返さず、同じ候補で素早く診断し直すために使う。
+let _dailyAdviceCandidates = null;
+
+// useCandidates: 直近スクリーナー結果(_screenerLastResult)の候補を使うか
+// autoScreen   : true で全メソッド（JP/US 横断）を自動スクリーニングして新規候補を補充する
+window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false, autoScreen = false) => {
     let modal = document.getElementById('portfolio-advice-modal');
     if (!modal) {
         const wrap = document.createElement('div');
@@ -12011,21 +12017,41 @@ window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false
         modal = document.getElementById('portfolio-advice-modal');
     }
     const bodyEl = $('#portfolio-advice-body');
-    if (bodyEl) bodyEl.innerHTML = `<div class="loading-placeholder">保有銘柄と候補を診断中…${withFinancials ? '（EDINET財務も取得中。1〜2分かかる場合があります）' : '（数十秒かかる場合があります）'}</div>`;
+    // 候補の出どころを決める：
+    //  - autoScreen … 全メソッドを自動走査（サーバー側で抽出）。1〜3分かかる。
+    //  - 再診断（資金設定/EDINET）… 直近の一括診断で使った候補を再利用（_dailyAdviceCandidates）。
+    //  - それ以外 … セッション内の手動スクリーナー結果（_screenerLastResult）。
+    let candidates = [];
+    if (!autoScreen) {
+        if (_dailyAdviceCandidates && _dailyAdviceCandidates.length) {
+            candidates = _dailyAdviceCandidates;
+        } else if (useCandidates && _screenerLastResult && _screenerLastResult.candidates) {
+            candidates = _screenerLastResult.candidates;
+        }
+    }
+    if (bodyEl) {
+        const msg = autoScreen
+            ? '全メソッド（じわじわ高値ブレイク/新高値DUKE/決算モメンタムkenmo/片山/たーちゃん…）で日米を走査して候補抽出 → 保有＆候補を一括診断中…（1〜3分かかる場合があります）'
+            : `保有銘柄と候補を診断中…${withFinancials ? '（EDINET財務も取得中。1〜2分かかる場合があります）' : '（数十秒かかる場合があります）'}`;
+        bodyEl.innerHTML = `<div class="loading-placeholder">${msg}</div>`;
+    }
     modal.classList.remove('hidden');
-    const candidates = (useCandidates && _screenerLastResult && _screenerLastResult.candidates) ? _screenerLastResult.candidates : [];
     const _cap = parseFloat(localStorage.getItem('screener_capital') || '');
     const capital = (_cap > 0) ? _cap : null;
     try {
         const r = await apiFetch('/api/investment/screener/advise', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ candidates, with_financials: !!withFinancials, ...(capital ? { capital } : {}) }),
+            body: JSON.stringify({ candidates, auto_screen: !!autoScreen, with_financials: !!withFinancials, ...(capital ? { capital } : {}) }),
         });
         if (!r || !r.ok) {
             bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
             return;
         }
+        // 診断で使った候補を控えておき、資金設定/EDINET の再診断では再スクリーニングせず使い回す。
+        _dailyAdviceCandidates = (r.candidates || [])
+            .filter(c => c && c.code)
+            .map(c => ({ code: c.code, name: c.name, sector: c.sector }));
         bodyEl.innerHTML = _renderPortfolioAdvice(r);
     } catch (e) {
         bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
@@ -12131,6 +12157,11 @@ function _renderAdviceCard(r) {
         const cycc = cyc.supportive ? '#7ee0a0' : '#ffb454';
         cycHtml = `<div style="margin:3px 0;font-size:0.72rem;color:${cycc};">🌐 景気指標: ${escapeHtml(cyc.label)}${cyc.supportive ? '（買い向き）' : '（反転待ち）'}</div>`;
     }
+    // 手法ラベル（自動スクリーニング由来の新規候補のみ）：どのメソッドが拾ったかを示す。
+    let methodHtml = '';
+    if (Array.isArray(r.matched_styles) && r.matched_styles.length) {
+        methodHtml = `<div style="margin:2px 0;">${r.matched_styles.map(s => `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(78,161,255,0.14);color:#9ec5ff;font-size:0.7rem;">🏷 ${escapeHtml(s)}</span>`).join('')}</div>`;
+    }
     const codeEsc = (r.code || '').replace(/'/g, "\\'");
     const nameEsc = (r.name || '').replace(/'/g, "\\'");
     return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
@@ -12138,6 +12169,7 @@ function _renderAdviceCard(r) {
             <strong style="word-break:break-word;">${escapeHtml(r.code)} ${escapeHtml(r.name || '')}</strong>
             <span style="font-weight:700;color:${st.color};white-space:nowrap;">${escapeHtml(v.action_label || v.action)} ・ ${num(r.score)}点${blended}</span>
         </div>
+        ${methodHtml}
         <div style="font-size:0.74rem;color:var(--text-muted);margin:2px 0;">
             終値 ${num(r.last_close)}円 / トレイル目安 ${num(t.trailing_stop)}円${pnl}
         </div>
@@ -12220,7 +12252,7 @@ function _renderPortfolioAdvice(r) {
         : (holds.length ? '' : '<div style="font-size:0.78rem;color:var(--text-muted);">保有銘柄は登録されていません。</div>');
     const candsHtml = cands.length
         ? cands.map(_renderAdviceCard).join('')
-        : '<div style="font-size:0.78rem;color:var(--text-muted);">診断対象の新規候補はありません（スクリーニング結果から実行すると候補も診断します）。</div>';
+        : '<div style="font-size:0.78rem;color:var(--text-muted);">診断対象の新規候補はありません（全手法を走査しても地合い・条件に合う買い候補が無いか、銘柄スクリーナー未実行）。</div>';
     const finBar = r.with_financials
         ? `<div style="font-size:0.72rem;color:var(--text-muted);">🏦 EDINET有報の財務を ${r.financials_count || 0} 件分 織り込み済み。</div>`
         : `<button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true,true);" title="EDINET有報の自己資本比率・FCF・キャッシュフロー型を取得して再診断（1〜2分）">🏦 EDINET財務で精査して再診断</button>`;
