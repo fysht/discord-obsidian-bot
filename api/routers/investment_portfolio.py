@@ -19,6 +19,7 @@ class PortfolioAddRequest(BaseModel):
     currency: Optional[str] = None
     notes: Optional[str] = None
     opened_at: Optional[str] = None  # 実際の購入日(YYYY-MM-DD)。省略時は登録日。
+    account: Optional[str] = None    # "nisa"(非課税) / "taxable"(特定・一般)。入替の摩擦(税)計算に使う。
 
 
 class PortfolioRemoveRequest(BaseModel):
@@ -37,6 +38,7 @@ class PortfolioEditRequest(BaseModel):
     notes: Optional[str] = None
     opened_at: Optional[str] = None  # 実際の購入日(YYYY-MM-DD)に補正できる。
     preferred_method: Optional[str] = None  # この銘柄が有利に見えるメソッド(style_name)
+    account: Optional[str] = None  # "nisa"(非課税) / "taxable"(特定・一般)
 
 
 @router.get("", dependencies=[Depends(verify_api_key)])
@@ -92,3 +94,12 @@ async def investment_portfolio_breakout_advise():
     平日16時(大引け後)の自動通知と同じ内容をその場で実行する（手動トリガー・約1〜3分）。"""
     cog = _get_investment_cog()
     return await cog.run_breakout_advise()
+
+
+@router.post("/daily_screening", dependencies=[Depends(verify_api_key)])
+async def investment_portfolio_daily_screening():
+    """全メソッドで候補を抽出（どの投資手法が拾ったかのラベル付き）し、保有＋候補を一括診断
+    （目標配分のドリフト・入替数量つき）したレポートを返す。平日16:15(大引け後)の自動通知と
+    同じ内容をその場で実行する（手動トリガー・数分）。"""
+    cog = _get_investment_cog()
+    return await cog.run_daily_screening()

@@ -322,18 +322,98 @@ class ScreenerService:
             return {"ok": False, "error": f"分析に失敗しました: {e}"}
         # 目標株価（営業利益倍率法・DUKE 7章）をファンダから併算
         if res.get("ok"):
+            fundamentals = None
             try:
                 fundamentals = await self.provider.get_fundamentals(code)
                 res["target_by_multiple"] = estimate_target_price_by_multiple(
                     fundamentals, res.get("last_close"))
             except Exception as e:
                 logging.debug(f"target_by_multiple 算出エラー {code}: {e}")
+            # ヒストリカルPER（片山/kenmo）：自分の過去PERレンジ比で割安/割高を判定
+            try:
+                from services.screener_engine import evaluate_historical_per
+                ph = await self.provider.get_per_history(code)
+                if ph and ph.get("ok"):
+                    cur_per = ph.get("current_per") or (fundamentals or {}).get("per")
+                    hp = evaluate_historical_per(ph["history"], cur_per)
+                    if hp.get("ok"):
+                        hp["history"] = ph["history"]
+                    res["historical_per"] = hp
+            except Exception as e:
+                logging.debug(f"historical_per 算出エラー {code}: {e}")
+            # カタリスト（木原/エミン）：EDINET 大量保有報告書から大株主買い増し・物言う株主を検出
+            if str(code).isdigit():
+                try:
+                    from services.edinet_large_holdings import get_large_holdings_for_code
+                    from services.screener_engine import evaluate_catalyst
+                    holdings = await get_large_holdings_for_code(code, days=180)
+                    cat = evaluate_catalyst(holdings)
+                    if cat.get("ok"):
+                        cat["filings"] = holdings.get("filings", [])
+                        res["catalyst"] = cat
+                except Exception as e:
+                    logging.debug(f"catalyst 算出エラー {code}: {e}")
+            # ⑥ シグナル検証（簡易バックテスト）：新高値ブレイク/PO のエントリーが、その銘柄で
+            #    過去 buy&hold に対し優位だったかを集計（「高スコアへ入替が勝つか」の銘柄単位の裏取り）。
+            try:
+                from services.screener_engine import backtest_entry_signal
+                bt = backtest_entry_signal(df, signal="new_high")
+                if bt.get("ok"):
+                    res["backtest"] = bt
+            except Exception as e:
+                logging.debug(f"backtest 算出エラー {code}: {e}")
         res["code"] = code
         return res
+
+    async def backtest_rotation(self, codes: list, days: int = 750,
+                               rebalance_days: int = 20, top_k: int = 5,
+                               lookback: int = 60) -> dict:
+        """与えた銘柄群で『定期リバランスでモメンタム上位を保有』する回転戦略 vs 等加重 buy&hold を
+        過去データで検証する（ポート単位の本格バックテスト）。回転コスト込み。決定論的。
+        codes は同一市場で揃える方が精度が高い（日米混在は営業日カレンダー差で近似になる）。"""
+        from services.screener_engine import backtest_portfolio_rotation
+        import pandas as pd  # type: ignore
+        codes = [str(c).strip() for c in (codes or []) if str(c).strip()][:60]
+        if len(codes) < 3:
+            return {"ok": False, "error": "3銘柄以上を指定してください"}
+        days = max(300, min(int(days or 750), 1500))
+        sem = asyncio.Semaphore(6)
+        series: dict = {}
+
+        async def _fetch(c):
+            async with sem:
+                try:
+                    df = await self.provider.get_ohlcv(c, days=days)
+                except Exception as e:
+                    logging.debug(f"backtest OHLCV取得エラー {c}: {e}")
+                    df = None
+            if df is not None and not df.empty and "Close" in df:
+                series[c] = df["Close"]
+
+        await asyncio.gather(*[_fetch(c) for c in codes])
+        if len(series) < 3:
+            return {"ok": False, "error": "価格データが取得できた銘柄が不足（3銘柄以上必要）"}
+        panel = pd.DataFrame(series)
+        bt = backtest_portfolio_rotation(panel, rebalance_days=rebalance_days,
+                                         top_k=top_k, lookback=lookback)
+        if bt.get("ok"):
+            bt["codes"] = list(series.keys())
+        return bt
 
     # =========================================================
     # ポートフォリオ・アドバイザー：保有銘柄＋候補を横断診断する
     # =========================================================
+
+    async def _get_usdjpy(self) -> Optional[float]:
+        """USDJPY の直近終値を best-effort で取得（米国株時価の円換算用）。取れなければ None。"""
+        try:
+            df = await self.provider.get_ohlcv("USDJPY=X", days=10)
+            if df is not None and not df.empty:
+                v = float(df["Close"].iloc[-1])
+                return v if v and v > 0 else None
+        except Exception as e:
+            logging.debug(f"USDJPY 取得エラー: {e}")
+        return None
 
     async def advise_portfolio(
         self,
@@ -341,6 +421,8 @@ class ScreenerService:
         candidates: Optional[list[dict]] = None,
         days: int = 300,
         with_financials: bool = False,
+        capital: Optional[float] = None,
+        hard_stop_pct: float = -0.08,
     ) -> dict:
         """保有銘柄（holdings）と新規候補（candidates）を、テクニカル×ファンダの
         二重視点で一括診断し、継続保有/縮小/売却・新規買い/見送り・入替候補を返す。
@@ -352,6 +434,10 @@ class ScreenerService:
         """
         from services.screener_engine import (
             analyze_position, compute_relative_metrics, analyze_breakout_projection,
+            evaluate_exit_signals, compute_position_size,
+            classify_portfolio_bucket, build_allocation_plan,
+            assess_liquidity, assess_market_regime, build_pyramid_plan,
+            compute_rotation_friction, hit_rate_risk_multiplier,
         )
 
         holdings = holdings or []
@@ -359,6 +445,20 @@ class ScreenerService:
         held_codes = {str(h.get("code")) for h in holdings if h.get("code")}
         days = max(120, min(int(days or 300), 1000))
         sem = asyncio.Semaphore(4)
+
+        # 地合いレジーム（指数の200日線・傾き）。出現市場ぶんだけ取得し、新規買いの積極度に効かせる。
+        def _mk_of(it):
+            c = str(it.get("code") or "")
+            return it.get("market") or ("JP" if c.isdigit() else "US")
+        regime_by_market: dict[str, dict] = {}
+        for mk in {_mk_of(it) for it in (holdings + candidates)} or {"JP"}:
+            sym = self._BENCHMARKS.get(mk, "^N225")
+            try:
+                idx_df = await self.provider.get_ohlcv(sym, days=400)
+            except Exception as e:
+                logging.debug(f"advise 地合い指数取得エラー {sym}: {e}")
+                idx_df = None
+            regime_by_market[mk] = assess_market_regime(idx_df)
 
         # 財務サマリー（日本株=EDINET、米国株=SEC EDGAR）。
         # 1) まずキャッシュから読む（高速・常時）。一度精査すれば次回から自動で反映される。
@@ -453,14 +553,53 @@ class ScreenerService:
                                 "（直近高値まで近く損切り幅に対し利幅が小さい）。新規買いは打診的に、"
                                 "または押し目・再ブレイクを待つ。"
                             )
+                        # 出口層: 新規買い候補に建玉サイズを逆算（資金が与えられた時のみ）。
+                        if capital and res["verdict"]["action"] == "BUY":
+                            stop_price = (proj.get("stop") or {}).get("price")
+                            entry = res.get("last_close")
+                            if stop_price and entry:
+                                res["position_size"] = compute_position_size(
+                                    capital, entry, stop_price,
+                                    lot_size=(100 if code.isdigit() else 1),
+                                )
+                                res["_entry"], res["_stop"] = entry, stop_price
+                # 出口層: 保有銘柄は損切り/トレイリング/MA割れを統一判定（ハード損切りは
+                # 取得単価比。kenmo -8% / DUKE -10%）。ストップ抵触なら手仕舞いを最終権限に。
+                if held and res.get("ok"):
+                    try:
+                        ex = evaluate_exit_signals(
+                            df, avg_cost=item.get("avg_cost"), hard_stop_pct=hard_stop_pct)
+                    except Exception as e:
+                        logging.debug(f"advise exit判定エラー {code}: {e}")
+                        ex = None
+                    if ex and ex.get("ok"):
+                        res["exit"] = ex
+                        if ex["action"] == "SELL" and res["verdict"]["action"] in (
+                                "HOLD", "HOLD_WATCH", "TRIM"):
+                            res["verdict"]["action"] = "SELL"
+                            res["verdict"]["action_label"] = "売却・撤退"
+                            res["verdict"]["note"] = (
+                                ex["note"] + "（" + "・".join(t["label"] for t in ex["triggered"]) + "）"
+                            )
             res["code"] = code
             res["name"] = name
             res["sector"] = sector
             res["held"] = held
             # 入れ替えは同一市場内で行うため、市場を判定して付与（4桁数字=日本株）
             res["market"] = item.get("market") or ("JP" if code.isdigit() else "US")
+            if res.get("ok"):
+                res["liquidity"] = assess_liquidity(df, res["market"])  # 薄商い判定（入替枚数の上限に使う）
             if held:
                 res["shares"] = item.get("shares")
+                res["avg_cost"] = item.get("avg_cost")
+                res["account"] = item.get("account")  # "nisa"なら入替の税0で計算
+                # 勝ち株への買い増し（含み益＋トレンド継続中のみ）：勝ちを伸ばし守る
+                if res.get("ok") and res["verdict"]["action"] in ("HOLD", "HOLD_WATCH"):
+                    pnl_pct = (res.get("pnl") or {}).get("pnl_pct")
+                    if pnl_pct and pnl_pct > 0 and (res.get("trend") or {}).get("perfect_order"):
+                        pyr = build_pyramid_plan(res.get("last_close"), item.get("avg_cost"), res.get("atr"))
+                        if pyr.get("ok"):
+                            res["pyramid"] = pyr
             return res
 
         hold_results = await asyncio.gather(*[_eval(h, True) for h in holdings])
@@ -469,6 +608,28 @@ class ScreenerService:
 
         holdings_out = [r for r in hold_results if r]
         candidates_out = [r for r in cand_results if r]
+
+        # 目標配分レイヤー（最高値型:待ち型=4:1／日本株:米国株=1:1・目安表示＋ドリフト警告）。
+        # 米国株は USDJPY で円換算して時価を共通通貨に揃える（取れなければ概算 150円/$）。
+        usdjpy = await self._get_usdjpy()
+        fx, fx_approx = (usdjpy, False) if usdjpy else (150.0, True)
+        positions = []
+        for r in holdings_out:
+            if not r.get("ok"):
+                continue
+            sh, lc = r.get("shares"), r.get("last_close")
+            if not sh or not lc:
+                continue
+            val = float(sh) * float(lc)
+            if r.get("market") == "US":
+                val *= fx
+            r["bucket"] = classify_portfolio_bucket(r)
+            positions.append({"value": val, "bucket": r["bucket"], "market": r.get("market"),
+                              "code": r["code"], "name": r["name"]})
+        allocation = build_allocation_plan(positions)
+        if allocation.get("ok"):
+            allocation["usdjpy"] = round(fx, 1)
+            allocation["fx_approx"] = fx_approx
 
         ok_all = [r for r in holdings_out + candidates_out if r.get("ok")]
         # 宝石5：他社比較で相対スコア（blended_score）を付与（in place）
@@ -492,6 +653,39 @@ class ScreenerService:
                     }
         except Exception as e:
             logging.debug(f"advise track_record 付与エラー: {e}")
+            tr_by_trend = {}
+
+        # 学習ループを実際の判断に反映：新規候補の建玉を的中率で増減し、地合いリスクオフ／
+        # 低的中率の状態では新規買いを WATCH に格下げ（攻めるのは上昇相場＋実績のある状態だけ）。
+        for r in candidates_out:
+            if not r.get("ok"):
+                continue
+            st = (r.get("trend") or {}).get("state_label")
+            b = tr_by_trend.get(st) or {}
+            hr = b.get("hit_rate")
+            samp = (b.get("win", 0) + b.get("lose", 0)) if b else 0
+            mult = hit_rate_risk_multiplier(hr, samp)
+            reg = (regime_by_market.get(r.get("market")) or {}).get("regime")
+            r["learning"] = {"trend_state": st, "hit_rate": hr, "samples": samp,
+                             "risk_multiplier": mult, "regime": reg}
+            v = r["verdict"]
+            if v["action"] == "BUY":
+                if reg == "risk_off":
+                    v["action"], v["action_label"] = "WATCH", "ウォッチ（地合い）"
+                    v["note"] = (v.get("note", "") + " 地合いがリスクオフ（指数が200日線下・下向き）。"
+                                 "新規買いは見送り、相場の回復を待つ。").strip()
+                elif hr is not None and samp >= 10 and hr < 45:
+                    v["action"], v["action_label"] = "WATCH", "ウォッチ（学習）"
+                    v["note"] = (v.get("note", "") + f" この状態は過去の的中率が{hr}%（{samp}件）と低く、"
+                                 "新規買いは慎重に（押し目・再ブレイクを待つ）。").strip()
+                elif (capital and mult != 1.0 and r.get("position_size", {}).get("ok")
+                      and r.get("_entry") and r.get("_stop")):
+                    # 的中率で建玉サイズを増減（高的中の状態は厚く・低い状態は薄く）
+                    ps = compute_position_size(
+                        capital, r["_entry"], r["_stop"], risk_per_trade=0.01 * mult,
+                        lot_size=(100 if r["code"].isdigit() else 1))
+                    ps["risk_multiplier"] = mult
+                    r["position_size"] = ps
 
         def _rk(r):
             v = r.get("blended_score")
@@ -510,22 +704,71 @@ class ScreenerService:
         # として入替候補に残す（天井を決めつけず大きな値幅を狙う方針）。
         buys = [r for r in candidates_out
                 if r.get("ok") and r["verdict"]["action"] == "BUY"]
-        # 入れ替えは同一市場内のみ（日本株↔日本株、米国株↔米国株）
+        # 入れ替えは同一市場内のみ（日本株↔日本株、米国株↔米国株）。同一市場なので入替の
+        # 数量は為替不要で value-matched（売却代金に合わせて買い枚数を逆算）で出せる。
+        over_bucket = (allocation.get("bucket_axis") or {}).get("over_key") if allocation.get("ok") else None
         rotations = []
         for mkt in ("JP", "US"):
             sells_weak = sorted([s for s in sells if s.get("market") == mkt], key=_rk)
             buys_strong = sorted([b for b in buys if b.get("market") == mkt], key=_rk, reverse=True)
             mkt_label = "日本株" if mkt == "JP" else "米国株"
+            lot = 100 if mkt == "JP" else 1
             for s, b in zip(sells_weak, buys_strong):
-                if _rk(b) - _rk(s) >= 10:
-                    rotations.append({
-                        "sell": {"code": s["code"], "name": s["name"], "score": _rk(s),
-                                 "action_label": s["verdict"]["action_label"]},
-                        "buy": {"code": b["code"], "name": b["name"], "score": _rk(b)},
-                        "market": mkt,
-                        "reason": (f"[{mkt_label}] {s['name']}は{s['verdict']['action_label']}水準"
-                                   f"（総合{_rk(s)}点）。より強い{b['name']}（総合{_rk(b)}点）へ入替を検討。"),
-                    })
+                s_sh, s_lc, b_lc = s.get("shares"), s.get("last_close"), b.get("last_close")
+                # ① 入替の摩擦（譲渡益課税＋売買コスト）を見積もり、足切りを摩擦ぶん厳しくする。
+                #    勝ち株（含み益大）の入替は税で目減りするので、より大きな実力差を要求する。
+                fr = compute_rotation_friction(s_sh, s_lc, s.get("avg_cost"),
+                                               account=s.get("account") or "taxable")
+                friction_pct = fr.get("friction_pct", 0.0) if fr.get("ok") else 0.0
+                required_gap = 10 + friction_pct  # 摩擦が大きいほど高い実力差を要求
+                if _rk(b) - _rk(s) < required_gap:
+                    continue
+                # value-matched：売却代金 ÷ 買い候補株価 を lot 単位に丸めて買い枚数を逆算
+                sell_value = buy_shares = buy_value = None
+                thin_capped = False
+                if s_sh and s_lc and b_lc:
+                    sell_value = float(s_sh) * float(s_lc)
+                    buy_shares = int(sell_value // (float(b_lc) * lot)) * lot
+                    # ⑤ 流動性：買い候補が薄商いなら日次売買代金の10%までに枚数を制限
+                    liq = b.get("liquidity") or {}
+                    cap_val = liq.get("max_buyable_value")
+                    if cap_val and buy_shares * float(b_lc) > cap_val:
+                        capped = int(float(cap_val) // (float(b_lc) * lot)) * lot
+                        if capped < buy_shares:
+                            buy_shares, thin_capped = capped, True
+                    buy_value = round(buy_shares * float(b_lc)) if buy_shares else 0
+                # 目標配分への寄与：過配分バケットを売り・過少バケットを買いなら「目標に寄せる」
+                s_bucket = s.get("bucket") or classify_portfolio_bucket(s)
+                b_bucket = classify_portfolio_bucket(b)
+                toward = bool(over_bucket and s_bucket == over_bucket and b_bucket != over_bucket)
+                if s_bucket != b_bucket:
+                    alloc_effect = (f"配分: {('待ち型' if s_bucket=='wait' else '最高値型')}を減らし"
+                                    f"{('待ち型' if b_bucket=='wait' else '最高値型')}を増やす"
+                                    + ("（目標に寄せる）" if toward else ""))
+                else:
+                    alloc_effect = "配分は概ね不変"
+                qty_txt = (f" 売り{s_sh}株→買い{buy_shares}株（約{buy_value:,}）"
+                           if buy_shares else "")
+                friction_txt = ""
+                if fr.get("ok") and fr.get("friction"):
+                    friction_txt = (f" ／ 税・手数料の摩擦 約{fr['friction']:,}"
+                                    f"（含み益{fr['gain']:,}・実力差{required_gap:.0f}点超で正当化）")
+                thin_txt = "（買い候補が薄商い→枚数を流動性で制限）" if thin_capped else ""
+                rotations.append({
+                    "sell": {"code": s["code"], "name": s["name"], "score": _rk(s),
+                             "action_label": s["verdict"]["action_label"],
+                             "shares": s_sh, "value": round(sell_value) if sell_value else None},
+                    "buy": {"code": b["code"], "name": b["name"], "score": _rk(b),
+                            "shares": buy_shares, "price": b_lc, "value": buy_value},
+                    "market": mkt, "toward_target": toward, "alloc_effect": alloc_effect,
+                    "friction": fr if fr.get("ok") else None, "thin_capped": thin_capped,
+                    "reason": (f"[{mkt_label}] {s['name']}は{s['verdict']['action_label']}水準"
+                               f"（総合{_rk(s)}点）。より強い{b['name']}（総合{_rk(b)}点）へ入替を検討。"
+                               f"{qty_txt}{thin_txt}{friction_txt}"),
+                })
+        # 目標に寄せる入替を先頭へ（ソフト誘導）
+        rotations.sort(key=lambda x: (not x.get("toward_target"),
+                                      -(x["buy"]["score"] - x["sell"]["score"])))
 
         keep = [r for r in holdings_out if r.get("ok") and r["verdict"]["action"] in ("HOLD", "HOLD_WATCH")]
         buy_count = sum(1 for r in candidates_out if r.get("ok") and r["verdict"]["action"] == "BUY")
@@ -558,6 +801,8 @@ class ScreenerService:
             "candidates": candidates_out,
             "ranking": ranking_brief,
             "rotations": rotations,
+            "allocation": allocation if allocation.get("ok") else None,
+            "regime": regime_by_market,
             "over_trading_caution": over_trading_caution,
             # 過去の判断の事後検証から得た「効いているトレンド状態」の学習結果（参考）
             "decision_track_record": {
@@ -1306,6 +1551,31 @@ class ScreenerService:
             "## 定性面での懸念\n"
             "## 総括（テクニカル×ファンダの定量判断を、定性面が補強するか／覆すか）\n"
             "（1〜3行で簡潔に）\n"
+        )
+
+    @staticmethod
+    def build_deep_research_prompt(code: str, name: str = "", sector: str = "") -> str:
+        """ディープリサーチ（日次ワークフロー③）。決定論エンジンで『特に強い』と絞った1銘柄について、
+        Web検索で事実を網羅的に集める深掘り版。点数・目標株価・値動き予測は一切出さない（点数は④の
+        エンジン側で確定）。各主張に出典URL必須。"""
+        return (
+            "あなたは予測者ではなく、企業の公開情報を網羅的に整理する事実アナウンサーです。\n"
+            "**禁止事項**: 目標株価・値動き予測・『○％上昇/下落』・『○日後』・確率・独自の点数/格付けは一切書かない。\n"
+            "**必須事項**: 各主張に出典URLを併記。確認できない事実は「(出典確認できず)」と明記。\n"
+            "Web検索で、企業の公式IR・決算短信/説明資料・中期経営計画・有価証券報告書・統合報告書・"
+            "適時開示(TDnet)・大量保有報告書(EDINET)・主要メディアを参照すること。数値は引用元の値のみ。\n\n"
+            f"# 対象銘柄\n- コード: {code}\n- 名前: {name}\n- セクター: {sector}\n\n"
+            "# 出力フォーマット（以下の構造のみ。各項目に出典URL）\n"
+            "## 1. 事業の全体像\n（誰に何を売り、どこで稼ぐか。セグメント別の稼ぎ頭と収益構造）\n\n"
+            "## 2. 直近の決算で確認できる事実\n（売上・利益・ガイダンス改定の有無と進捗率。数値は引用元の値のみ）\n\n"
+            "## 3. 中期経営計画のKPIと進捗\n（売上/営業利益率/ROE/ROIC/FCF等の財務目標と目標年度、現状の到達度。事業KPIも）\n\n"
+            "## 4. 競争環境\n（主要競合・市場シェア・参入障壁・代替/価格競争のリスク）\n\n"
+            "## 5. 業界の追い風／逆風\n（マクロ・規制・為替・景気循環・需給。この企業がどちら向きか）\n\n"
+            "## 6. カタリスト（公開情報のみ）\n（TOB/MBO・アクティビスト/大量保有報告・自社株買い・増配・事業再編などの発表事実と発表日）\n\n"
+            "## 7. 主要リスク\n（有報『事業等のリスク』の上位＋財務・地政学・訴訟など）\n\n"
+            "## 8. バリュエーションの文脈\n（同業比・過去レンジの中での位置づけ。数値は引用元のみ。予測・推奨は禁止）\n\n"
+            "## 9. 総括（定量判断を定性が補強するか／覆すか）\n"
+            "（買い材料・懸念・購入前に要確認の事実を箇条書きで簡潔に。点数や推奨は書かない）\n"
         )
 
     @staticmethod

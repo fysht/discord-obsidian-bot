@@ -904,6 +904,11 @@
                 <label style="font-size:0.74rem;color:var(--text-muted);margin-bottom:-4px;">購入日 (任意・年率換算/市場平均比較に使用。省略時は登録日)</label>
                 <input type="date" id="portfolio-add-opened" class="modern-input">
                 <input type="text" id="portfolio-add-currency" class="modern-input" placeholder="通貨 (省略時 JPY/USD 自動)">
+                <label style="font-size:0.74rem;color:var(--text-muted);margin-bottom:-4px;">口座区分 (入替の税コスト計算に使用)</label>
+                <select id="portfolio-add-account" class="modern-input">
+                    <option value="taxable">特定/一般（課税・約20%）</option>
+                    <option value="nisa">NISA（非課税）</option>
+                </select>
                 <textarea id="portfolio-add-notes" class="modern-input" placeholder="メモ (任意)" style="min-height:60px;"></textarea>
             </div>
             <div class="modal-actions" style="margin-top:16px;">
@@ -929,6 +934,11 @@
                 <label style="font-size:0.74rem;color:var(--text-muted);margin-bottom:-4px;">購入日 (年率換算/市場平均比較の起点。実際の購入日に補正できます)</label>
                 <input type="date" id="portfolio-edit-opened" class="modern-input">
                 <input type="text" id="portfolio-edit-currency" class="modern-input" placeholder="通貨 (例: JPY / USD)">
+                <label style="font-size:0.74rem;color:var(--text-muted);margin-bottom:-4px;">口座区分 (入替の税コスト計算に使用)</label>
+                <select id="portfolio-edit-account" class="modern-input">
+                    <option value="taxable">特定/一般（課税・約20%）</option>
+                    <option value="nisa">NISA（非課税）</option>
+                </select>
                 <textarea id="portfolio-edit-notes" class="modern-input" placeholder="メモ (任意)" style="min-height:60px;"></textarea>
             </div>
             <div class="modal-actions" style="margin-top:16px;">

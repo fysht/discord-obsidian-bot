@@ -11176,8 +11176,12 @@ function _renderScreenerFilters() {
                 </div>
             </label>`;
         }).join('');
+        const axisBadges = (s.axis_labels || []).map(a =>
+            `<span style="display:inline-block;margin:1px 3px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(78,161,255,0.12);color:#9ec5ff;font-size:0.66rem;">${escapeHtml(a)}</span>`
+        ).join('');
         blocks.push(`<div style="margin-bottom:8px;padding:8px;border:1px solid var(--border-glass);border-radius:6px;">
             <div style="font-size:0.8rem;font-weight:700;color:var(--accent);margin-bottom:4px;">${escapeHtml(s.display_name)}</div>
+            ${axisBadges ? `<div style="margin-bottom:5px;" title="このメソッドが見るファクター軸（他メソッドと同じ軸＝重複・掛け合わせ＝軸の和集合）">${axisBadges}</div>` : ''}
             ${items}
         </div>`);
     }
@@ -11725,6 +11729,61 @@ function _renderProjection(r) {
             </div>
             <div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">${escapeHtml(bp.note || '')}</div>`;
     }
+
+    // ヒストリカルPER（対自分株価・片山/kenmo）
+    const hp = r.historical_per;
+    let histPerHtml = '';
+    if (hp && hp.ok) {
+        const vc = hp.verdict === 'cheap' ? '#7ee0a0' : (hp.verdict === 'rich' ? '#ff8a8a' : 'var(--text-primary)');
+        const bars = (hp.history || []).map(h => `${h.year}:${num(h.per)}倍`).join(' / ');
+        histPerHtml = `
+            <div style="font-weight:700;margin:10px 0 4px;">📐 ヒストリカルPER（対自分株価）</div>
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;">
+                <span style="color:var(--text-secondary);">現在 ${num(hp.current_per)}倍 ／ 過去 ${num(hp.min)}〜${num(hp.max)}倍（中央 ${num(hp.median)}倍）</span>
+                <span style="font-weight:700;color:${vc};">${escapeHtml(hp.verdict_label || '')}（下位${num(hp.percentile)}%）</span>
+            </div>
+            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">${escapeHtml(bars)}</div>
+            <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(hp.note || '')}</div>`;
+    }
+
+    // カタリスト（木原/エミン）：EDINET 大量保有報告書（大株主買い増し・物言う株主）
+    const cat = r.catalyst;
+    let catalystHtml = '';
+    if (cat && cat.ok) {
+        const cc = cat.verdict === 'strong' ? '#7ee0a0' : (cat.verdict === 'mild' ? '#ffb454' : 'var(--text-muted)');
+        const chips = (cat.signals || []).filter(s => s.hit).map(s =>
+            `<span style="display:inline-block;margin:1px 4px 1px 0;padding:1px 6px;border-radius:8px;background:rgba(126,224,160,0.12);color:#9ee8bd;font-size:0.7rem;">${escapeHtml(s.label)}</span>`
+        ).join('');
+        const ratioTxt = (cat.latest_ratio != null) ? `直近保有 ${num((cat.latest_ratio * 100).toFixed(1))}%（${escapeHtml(cat.latest_holder || '保有者不明')}）` : '';
+        catalystHtml = `
+            <div style="font-weight:700;margin:10px 0 4px;">🎯 カタリスト（大量保有・EDINET）</div>
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;">
+                <span style="color:var(--text-secondary);">${escapeHtml(ratioTxt)}</span>
+                <span style="font-weight:700;color:${cc};">${escapeHtml(cat.verdict_label || '')}（${num(cat.catalyst_score)}点）</span>
+            </div>
+            ${chips ? `<div style="margin-top:2px;">${chips}</div>` : ''}
+            ${cat.holders && cat.holders.length ? `<div style="font-size:0.72rem;color:var(--text-muted);margin-top:2px;">大株主: ${escapeHtml(cat.holders.join('・'))}</div>` : ''}
+            <div style="font-size:0.7rem;color:var(--text-muted);">${escapeHtml(cat.note || '')}</div>`;
+    }
+
+    // ⑥ シグナル検証（簡易バックテスト）：このエントリーが過去 buy&hold に勝てたか
+    const bt = r.backtest;
+    let btHtml = '';
+    if (bt && bt.ok) {
+        const rows = (bt.horizons || []).map(h => {
+            const d = (bt.results || {})[`d${h}`] || {};
+            if (!d.samples) return `<div style="font-size:0.72rem;color:var(--text-muted);">${h}営業日後: サンプル不足</div>`;
+            const ec = d.edge_pct > 0 ? '#7ee0a0' : (d.edge_pct < 0 ? '#ff8a8a' : 'var(--text-primary)');
+            return `<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:0.72rem;">
+                <span style="color:var(--text-secondary);">${h}営業日後（${num(d.samples)}回）</span>
+                <span>勝率 ${num(d.win_rate)}% ・ 平均 ${num(d.avg_return_pct, '%')} ／ buy&hold ${num(d.baseline_avg_pct, '%')} <span style="color:${ec};">(優位 ${d.edge_pct >= 0 ? '+' : ''}${num(d.edge_pct)}pt)</span></span>
+            </div>`;
+        }).join('');
+        btHtml = `
+            <div style="font-weight:700;margin:10px 0 4px;">🧪 シグナル検証（${escapeHtml(bt.signal_label || '')}・この銘柄の過去）</div>
+            ${rows}
+            <div style="font-size:0.68rem;color:var(--text-muted);">※ シグナル発生日からの前向きリターンを全期間平均(buy&hold相当)と比較。プラスの優位＝このエントリーに値幅の裏付け。</div>`;
+    }
     return `
         <div style="background:rgba(255,212,84,0.10);border:1px solid rgba(255,212,84,0.35);border-radius:8px;padding:8px 10px;margin-bottom:10px;color:#ffd454;font-weight:600;">
             ${escapeHtml(r.verdict || '')}
@@ -11758,6 +11817,9 @@ function _renderProjection(r) {
         })()}
 
         ${buyPlanHtml}
+        ${histPerHtml}
+        ${catalystHtml}
+        ${btHtml}
         ${multipleHtml}
 
         <div style="font-weight:700;margin:10px 0 4px;">🔁 過去の高値ブレイク統計（${num(h.sample)}件）</div>
@@ -11878,6 +11940,21 @@ window.setPreferredMethod = async (code, style) => {
 // ===== ポートフォリオ・アドバイザー（保有＋候補をテクニカル×ファンダで一括診断） =====
 // useCandidates=true なら直近スクリーニング候補も診断対象に含める。
 // withFinancials=true なら EDINET 有報の安全性/キャッシュ指標も織り込む（やや時間がかかる）。
+window.setScreenerCapital = () => {
+    const cur = localStorage.getItem('screener_capital') || '';
+    const v = prompt('総資金（円）を入力。新規買い候補の建玉サイズ（リスク1%/建玉上限20%）を逆算します。空欄で解除。', cur);
+    if (v === null) return;
+    const n = parseFloat(String(v).replace(/[,\s]/g, ''));
+    if (String(v).trim() === '' || !(n > 0)) {
+        localStorage.removeItem('screener_capital');
+        showToast('資金設定を解除しました');
+    } else {
+        localStorage.setItem('screener_capital', String(n));
+        showToast('資金を設定しました: ' + n.toLocaleString() + '円');
+    }
+    openPortfolioAdvice();
+};
+
 window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false) => {
     let modal = document.getElementById('portfolio-advice-modal');
     if (!modal) {
@@ -11887,7 +11964,10 @@ window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false
                 <div class="modal-card" style="max-width:600px;width:96%;max-height:90vh;overflow-y:auto;">
                     <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
                         <h3 style="margin:0;font-size:1rem;">🧭 保有＆候補 一括診断</h3>
-                        <button class="mini-link" onclick="document.getElementById('portfolio-advice-modal').classList.add('hidden')">✕</button>
+                        <div style="display:flex;gap:6px;">
+                            <button class="mini-link" onclick="setScreenerCapital()" title="総資金を設定すると新規買い候補の建玉サイズ（リスク1%/建玉上限20%）を逆算します">💰 資金設定</button>
+                            <button class="mini-link" onclick="document.getElementById('portfolio-advice-modal').classList.add('hidden')">✕</button>
+                        </div>
                     </div>
                     <div id="portfolio-advice-body" style="margin-top:10px;font-size:0.84rem;line-height:1.5;"></div>
                 </div>
@@ -11899,11 +11979,13 @@ window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false
     if (bodyEl) bodyEl.innerHTML = `<div class="loading-placeholder">保有銘柄と候補を診断中…${withFinancials ? '（EDINET財務も取得中。1〜2分かかる場合があります）' : '（数十秒かかる場合があります）'}</div>`;
     modal.classList.remove('hidden');
     const candidates = (useCandidates && _screenerLastResult && _screenerLastResult.candidates) ? _screenerLastResult.candidates : [];
+    const _cap = parseFloat(localStorage.getItem('screener_capital') || '');
+    const capital = (_cap > 0) ? _cap : null;
     try {
         const r = await apiFetch('/api/investment/screener/advise', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ candidates, with_financials: !!withFinancials }),
+            body: JSON.stringify({ candidates, with_financials: !!withFinancials, ...(capital ? { capital } : {}) }),
         });
         if (!r || !r.ok) {
             bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
@@ -11968,6 +12050,39 @@ function _renderAdviceCard(r) {
         const remTxt = (pj.remaining_estimate_pct != null) ? ` / 残り余地 約${pj.remaining_estimate_pct}%` : '';
         projHtml = `<div style="margin:3px 0;font-size:0.72rem;color:${pjColor};">🎯 利確目安: ${escapeHtml(pj.verdict)}${rrTxt}${remTxt}</div>`;
     }
+    // 出口層（保有）: 損切り/トレイリング/MA割れの統一判定
+    let exitHtml = '';
+    const ex = r.exit;
+    if (ex && ex.ok) {
+        const st2 = ex.stops || {};
+        const trig = (ex.triggered || []).map(tt => `⚠️${escapeHtml(tt.label)} ${num(tt.level)}円`).join('・');
+        exitHtml = `<div style="margin:3px 0;font-size:0.72rem;color:${trig ? '#ff8a8a' : 'var(--text-muted)'};">🚪 出口: 損切り ${num(st2.hard_stop)}円(${num(st2.hard_stop_pct, '%')}) / トレイル ${num(st2.trailing_stop)}円${trig ? '<br>' + trig : ''}</div>`;
+    }
+    // ポジションサイズ（新規候補・資金指定時）: リスク%から建玉を逆算
+    let posHtml = '';
+    const ps = r.position_size;
+    if (ps && ps.ok) {
+        posHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">🧮 建玉: ${num(ps.shares)}株（${num(ps.position_value)}円・総資金の${num(ps.position_pct, '%')}）／ 損失上限 ${num(ps.risk_amount)}円(${num(ps.risk_pct_of_capital, '%')})${ps.capped_by_max_position ? ' ※上限頭打ち' : ''}</div>`;
+    }
+    // 勝ち株の買い増し（保有・含み益＋トレンド継続）
+    let pyrHtml = '';
+    const pyr = r.pyramid;
+    if (pyr && pyr.ok) {
+        pyrHtml = `<div style="margin:3px 0;font-size:0.72rem;color:#7ee0a0;">📈 買い増し: ${escapeHtml(pyr.note || '')}</div>`;
+    }
+    // 学習（事後検証の的中率→建玉/判断への反映）
+    let learnHtml = '';
+    const lr = r.learning;
+    if (lr && lr.hit_rate != null && lr.samples >= 10) {
+        const mc = lr.risk_multiplier > 1 ? '#7ee0a0' : (lr.risk_multiplier < 1 ? '#ffb454' : 'var(--text-muted)');
+        learnHtml = `<div style="margin:3px 0;font-size:0.72rem;color:var(--text-muted);">🧠 学習: この状態の過去的中率 ${num(lr.hit_rate, '%')}（${num(lr.samples)}件）→ 建玉倍率 <span style="color:${mc};">×${num(lr.risk_multiplier)}</span></div>`;
+    }
+    // 流動性（薄商い警告）
+    let liqHtml = '';
+    const lq = r.liquidity;
+    if (lq && lq.ok && lq.thin) {
+        liqHtml = `<div style="margin:3px 0;font-size:0.72rem;color:#ffb454;">💧 薄商い（日次売買代金 約${(lq.avg_turnover || 0).toLocaleString()}${lq.unit === 'JPY' ? '円' : '＄'}）→ 建玉・入替は控えめに</div>`;
+    }
     const codeEsc = (r.code || '').replace(/'/g, "\\'");
     const nameEsc = (r.name || '').replace(/'/g, "\\'");
     return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
@@ -11982,19 +12097,69 @@ function _renderAdviceCard(r) {
         ${relHtml}
         ${safeHtml}
         ${projHtml}
+        ${exitHtml}
+        ${posHtml}
+        ${pyrHtml}
+        ${learnHtml}
+        ${liqHtml}
         ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
-        <div style="margin-top:4px;"><button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openBusinessModel('${codeEsc}','${nameEsc}')" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析（宝石7）">📄 事業/中計分析</button></div>
+        <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openBusinessModel('${codeEsc}','${nameEsc}')" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析（宝石7）">📄 事業/中計分析</button>
+            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openDeepResearch('${codeEsc}','${nameEsc}','${(r.sector||'').replace(/'/g,"\\'")}')" title="特に強い銘柄を網羅的に深掘り（決算事実・中計KPI・競合・カタリスト・リスク・出典URL付き）。点数は出さず情報収集に徹する（③）">🔬 ディープリサーチ</button>
+        </div>
     </div>`;
 }
 
 function _renderPortfolioAdvice(r) {
     const holds = r.holdings || [];
     const cands = r.candidates || [];
+    // ポート単位バックテスト用に、診断対象（保有＋候補）のコードを保持
+    window._lastAdviceBacktestCodes = [...holds, ...cands].filter(x => x && x.code).map(x => x.code);
     const rots = r.rotations || [];
     const rotHtml = rots.length ? `
         <div style="font-weight:700;margin:12px 0 4px;">🔁 入替の検討</div>
-        ${rots.map(x => `<div style="font-size:0.78rem;padding:6px 8px;border-left:3px solid #4ea1ff;background:rgba(78,161,255,0.08);border-radius:4px;margin-bottom:4px;">${escapeHtml(x.reason)}</div>`).join('')}
+        ${rots.map(x => {
+            const tt = x.toward_target
+                ? 'border-left:3px solid #7ee0a0;background:rgba(126,224,160,0.10);'
+                : 'border-left:3px solid #4ea1ff;background:rgba(78,161,255,0.08);';
+            const effect = x.alloc_effect ? `<div style="font-size:0.7rem;color:var(--text-muted);margin-top:2px;">${escapeHtml(x.alloc_effect)}</div>` : '';
+            return `<div style="font-size:0.78rem;padding:6px 8px;${tt}border-radius:4px;margin-bottom:4px;">${x.toward_target ? '🎯 ' : ''}${escapeHtml(x.reason)}${effect}</div>`;
+        }).join('')}
     ` : '';
+    // 地合い（レジーム）：上昇相場でのみ攻める。リスクオフは新規買い抑制。
+    const reg = r.regime || {};
+    let regimeHtml = '';
+    const regBits = ['JP', 'US'].filter(mk => reg[mk]).map(mk => {
+        const g = reg[mk] || {};
+        const c = g.regime === 'risk_on' ? '#7ee0a0' : (g.regime === 'risk_off' ? '#ff8a8a' : 'var(--text-muted)');
+        return `<span style="color:${c};">${mk === 'JP' ? '日本株' : '米国株'}: ${escapeHtml(g.label || '不明')}</span>`;
+    });
+    if (regBits.length) {
+        regimeHtml = `<div style="font-size:0.74rem;margin-bottom:8px;padding:5px 8px;border-radius:6px;background:rgba(255,255,255,0.03);border:1px solid var(--border-glass);">🌐 地合い: ${regBits.join(' ／ ')}</div>`;
+    }
+    // 目標配分（最高値型:待ち型=4:1／日本株:米国株=1:1）の目安表示＋ドリフト警告
+    const alloc = r.allocation;
+    let allocHtml = '';
+    if (alloc && alloc.ok) {
+        const num = (v) => (v === null || v === undefined) ? '-' : v;
+        const axisRow = (ax) => {
+            const dc = Math.abs(ax.drift_pct) >= 10 ? '#ffb454' : 'var(--text-muted)';
+            return `<div style="display:flex;justify-content:space-between;gap:8px;padding:2px 0;font-size:0.74rem;">
+                <span style="color:var(--text-secondary);">${escapeHtml(ax.axis)}</span>
+                <span>現状 <b>${num(ax.a.pct)}% : ${num(ax.b.pct)}%</b> ／ 目標 ${num(ax.a.target_pct)}:${num(ax.b.target_pct)} <span style="color:${dc};">(${ax.drift_pct >= 0 ? '+' : ''}${num(ax.drift_pct)}pt)</span></span>
+            </div>`;
+        };
+        const warn = (alloc.warnings || []).length
+            ? `<div style="font-size:0.72rem;color:#ffb454;margin-top:2px;">⚠️ ${(alloc.warnings || []).map(escapeHtml).join('／')}</div>` : '';
+        allocHtml = `
+            <div style="font-weight:700;margin:12px 0 4px;">⚖️ 目標配分（時価ベース・目安）</div>
+            <div style="padding:6px 8px;border:1px solid var(--border-glass);border-radius:6px;background:rgba(255,255,255,0.03);">
+                ${axisRow(alloc.bucket_axis)}
+                ${axisRow(alloc.market_axis)}
+                ${warn}
+                <div style="font-size:0.68rem;color:var(--text-muted);margin-top:2px;">時価合計 約${(alloc.total_value || 0).toLocaleString()}${alloc.fx_approx ? `・米国株は1ドル=${num(alloc.usdjpy)}円(概算)で円換算` : `・1ドル=${num(alloc.usdjpy)}円換算`}</div>
+            </div>`;
+    }
     const holdsHtml = holds.length
         ? holds.map(_renderAdviceCard).join('')
         : '<div style="font-size:0.78rem;color:var(--text-muted);">保有銘柄は登録されていません。</div>';
@@ -12009,6 +12174,9 @@ function _renderPortfolioAdvice(r) {
             ${escapeHtml(r.summary || '')}
         </div>
         ${finBar}
+        <div style="margin-bottom:8px;"><button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(126,224,160,0.12);color:#7ee0a0;border:1px solid rgba(126,224,160,0.35);border-radius:6px;" onclick="event.preventDefault();openRotationBacktest();" title="保有＋候補で『定期リバランスでモメンタム上位を保有』する回転戦略 vs 買い持ちを過去データで検証（コスト込み）">📊 戦略バックテスト（回転 vs 買い持ち）</button></div>
+        ${regimeHtml}
+        ${allocHtml}
         ${rotHtml}
         <div style="font-weight:700;margin:12px 0 4px;">📦 保有銘柄の診断</div>
         ${holdsHtml}
@@ -12130,6 +12298,112 @@ window.openBusinessModel = async (code, name, force = false) => {
         bodyEl.innerHTML = (window.renderMarkdown ? window.renderMarkdown(r.report || '') : escapeHtml(r.report || ''));
     } catch (e) {
         bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで分析できませんでした</div>';
+    }
+};
+
+// ===== ディープリサーチ（日次ワークフロー③：特に強い銘柄を網羅的に深掘り） =====
+window.openDeepResearch = async (code, name, sector = '', force = false) => {
+    let modal = document.getElementById('deep-research-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="deep-research-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:640px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 id="deep-research-title" style="margin:0;font-size:1rem;">🔬 ディープリサーチ</h3>
+                        <button class="mini-link" onclick="document.getElementById('deep-research-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="deep-research-meta" style="margin-top:4px;font-size:0.72rem;color:var(--text-muted);"></div>
+                    <div id="deep-research-body" style="margin-top:8px;font-size:0.84rem;line-height:1.6;white-space:pre-wrap;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('deep-research-modal');
+    }
+    const titleEl = $('#deep-research-title');
+    const metaEl = $('#deep-research-meta');
+    const bodyEl = $('#deep-research-body');
+    if (titleEl) titleEl.textContent = `🔬 ${code} ${name || ''} ディープリサーチ`;
+    if (metaEl) metaEl.innerHTML = '';
+    if (bodyEl) bodyEl.innerHTML = `<div class="loading-placeholder">${force ? '最新情報で再リサーチ中' : '保存済みを確認・無ければ網羅的に検索中'}…（初回は1分前後）</div>`;
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch('/api/investment/screener/deep_research', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, name: name || '', sector: sector || '', force: !!force }),
+        });
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || 'リサーチできませんでした')}</div>`;
+            return;
+        }
+        if (metaEl) {
+            const when = r.fetched_at ? String(r.fetched_at).slice(0, 10) : '';
+            const tag = r.cached ? `💾 保存済み（${when}）を表示` : '🆕 新規リサーチを保存しました';
+            const warn = (r.warnings && r.warnings.length) ? ` ・ <span style="color:#ffb454;">⚠️ 要注意表現: ${r.warnings.map(escapeHtml).join('・')}</span>` : '';
+            metaEl.innerHTML = `${tag}${warn} ・ <a href="#" style="color:#4ea1ff;" onclick="event.preventDefault();openDeepResearch('${(code||'').replace(/'/g,"\\'")}','${(name||'').replace(/'/g,"\\'")}','${(sector||'').replace(/'/g,"\\'")}',true)">🔄 最新で再リサーチ</a>`;
+        }
+        bodyEl.innerHTML = (window.renderMarkdown ? window.renderMarkdown(r.report || '') : escapeHtml(r.report || ''));
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーでリサーチできませんでした</div>';
+    }
+};
+
+// ===== ポート単位バックテスト（回転戦略 vs 買い持ち） =====
+window.openRotationBacktest = async () => {
+    const codes = (window._lastAdviceBacktestCodes || []).filter(Boolean);
+    let modal = document.getElementById('rotation-bt-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="rotation-bt-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:560px;width:96%;max-height:90vh;overflow-y:auto;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                        <h3 style="margin:0;font-size:1rem;">📊 戦略バックテスト（回転 vs 買い持ち）</h3>
+                        <button class="mini-link" onclick="document.getElementById('rotation-bt-modal').classList.add('hidden')">✕</button>
+                    </div>
+                    <div id="rotation-bt-body" style="margin-top:10px;font-size:0.84rem;line-height:1.6;"></div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('rotation-bt-modal');
+    }
+    const bodyEl = $('#rotation-bt-body');
+    if (codes.length < 3) {
+        bodyEl.innerHTML = '<div style="color:#ffb454;">バックテストには3銘柄以上が必要です（保有＋候補が不足）。</div>';
+        modal.classList.remove('hidden');
+        return;
+    }
+    bodyEl.innerHTML = `<div class="loading-placeholder">${codes.length}銘柄でリバランス回転 vs 買い持ちを検証中…（数十秒）</div>`;
+    modal.classList.remove('hidden');
+    try {
+        const r = await apiFetch('/api/investment/screener/backtest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ codes, days: 750, rebalance_days: 20, top_k: 5, lookback: 60 }),
+        });
+        if (!r || !r.ok) {
+            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || 'バックテストできませんでした')}</div>`;
+            return;
+        }
+        const num = (v, s = '') => (v === null || v === undefined) ? '-' : `${v}${s}`;
+        const wc = r.beats_buyhold ? '#7ee0a0' : '#ff8a8a';
+        const row = (label, a, b) => `<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;border-bottom:1px dashed rgba(255,255,255,0.08);">
+            <span style="color:var(--text-secondary);">${escapeHtml(label)}</span><span><b>回転 ${a}</b> ／ 買い持ち ${b}</span></div>`;
+        bodyEl.innerHTML = `
+            <div style="background:rgba(255,255,255,0.03);border:1px solid var(--border-glass);border-radius:8px;padding:8px 10px;margin-bottom:8px;color:${wc};font-weight:600;">
+                ${r.beats_buyhold ? '✅ 回転戦略が買い持ちに勝っています' : '⚠️ 回転戦略は買い持ちに負けています（過度な回転は逆効果の可能性）'}
+            </div>
+            ${row('トータルリターン', num(r.strategy_return_pct, '%'), num(r.buyhold_return_pct, '%'))}
+            ${row('年率（CAGR）', num(r.strategy_cagr_pct, '%'), num(r.buyhold_cagr_pct, '%'))}
+            ${row('最大ドローダウン', num(r.strategy_maxdd_pct, '%'), num(r.buyhold_maxdd_pct, '%'))}
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0;"><span style="color:var(--text-secondary);">超過リターン</span><span style="font-weight:700;color:${wc};">${r.excess_pct >= 0 ? '+' : ''}${num(r.excess_pct)}%</span></div>
+            <div style="font-size:0.74rem;color:var(--text-muted);margin-top:6px;">
+                ${num(r.periods)}回リバランス（${num(r.rebalance_days)}営業日毎・モメンタム上位${num(r.top_k)}・${num(r.n_codes)}銘柄）／ 期間勝率 ${num(r.win_rate, '%')}・平均回転率 ${num(r.avg_turnover_pct, '%')}
+            </div>
+            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:6px;border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;">${escapeHtml(r.note || '')}<br>※ 回転コスト込みの決定論的バックテスト。日米混在は営業日カレンダー差で近似。過去の結果は将来を保証しません。</div>`;
+    } catch (e) {
+        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーでバックテストできませんでした</div>';
     }
 };
 
@@ -13405,11 +13679,14 @@ window.loadPortfolio = async () => {
             const prefBadge = h.preferred_method
                 ? `<div style="font-size:0.72rem;color:#ffd454;margin-top:3px;">🎯 得意メソッド: ${escapeHtml(_methodLabel(h.preferred_method))}</div>`
                 : '';
+            const acctBadge = h.account === 'nisa'
+                ? `<span style="font-size:0.66rem;color:#7ee0a0;border:1px solid rgba(126,224,160,0.4);border-radius:6px;padding:0 5px;margin-left:6px;">NISA非課税</span>`
+                : '';
             // F-1 委譲化: onclick を撤廃し data-pf-action で記述
             return `<div class="invest-row portfolio-item" data-code="${ticker.replace(/"/g, '&quot;')}" data-pf-action="open" style="cursor:pointer;flex-wrap:wrap;">
                 <span class="portfolio-handle" data-pf-action="nop" style="cursor:grab;touch-action:none;color:var(--text-muted);font-size:1.1rem;padding:10px 10px 10px 0;user-select:none;" title="長押しして並び替え">⠿</span>
                 <div class="row-main">
-                    <div class="row-title">${name} (${ticker})</div>
+                    <div class="row-title">${name} (${ticker})${acctBadge}</div>
                     <div class="row-meta">${meta}</div>
                     ${prefBadge}
                     ${memoBlock}
@@ -13647,6 +13924,7 @@ window.openPortfolioEditModal = (holding) => {
     set('portfolio-edit-cost', holding.avg_cost != null ? holding.avg_cost : '');
     set('portfolio-edit-opened', holding.opened_at ? String(holding.opened_at).slice(0, 10) : '');
     set('portfolio-edit-currency', holding.currency || '');
+    set('portfolio-edit-account', holding.account === 'nisa' ? 'nisa' : 'taxable');
     set('portfolio-edit-notes', holding.notes || '');
     const modal = $('#invest-portfolio-edit-modal');
     if (modal) {
@@ -13677,6 +13955,8 @@ window.submitPortfolioEdit = async () => {
     const sector = $('#portfolio-edit-sector')?.value?.trim();
     const currency = $('#portfolio-edit-currency')?.value?.trim();
     const notes = $('#portfolio-edit-notes')?.value?.trim();
+    const account = $('#portfolio-edit-account')?.value;
+    if (account) body.account = account;
     if (name) body.name = name;
     if (sector) body.sector = sector;
     if (currency) body.currency = currency;
@@ -13705,6 +13985,8 @@ window.openPortfolioAddModal = () => {
         const el = $('#'+id);
         if (el) el.value = '';
     });
+    const accEl = $('#portfolio-add-account');
+    if (accEl) accEl.value = 'taxable';
     $('#invest-portfolio-modal')?.classList.remove('hidden');
 };
 window.closePortfolioAddModal = () => $('#invest-portfolio-modal')?.classList.add('hidden');
@@ -13728,6 +14010,7 @@ window.submitPortfolioAdd = async () => {
         currency: $('#portfolio-add-currency')?.value?.trim() || null,
         notes: $('#portfolio-add-notes')?.value?.trim() || null,
         opened_at: $('#portfolio-add-opened')?.value?.trim() || null,
+        account: $('#portfolio-add-account')?.value || null,
     };
     try {
         const data = await apiFetch('/api/investment/portfolio/add', { method: 'POST', body: JSON.stringify(body) });

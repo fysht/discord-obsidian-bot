@@ -92,6 +92,15 @@ class StockDataProvider(ABC):
             取得できない値は None として返す。
         """
 
+    async def get_per_history(self, code: str, years: int = 6) -> dict:
+        """年次EPS×年末株価からヒストリカルPER系列を組む（ベストエフォート）。
+
+        Returns:
+            dict: {"ok": bool, "history": [{"year", "eps", "per"}], "current_per": float|None}
+        既定は未対応（プロバイダ側で実装）。
+        """
+        return {"ok": False}
+
     async def get_ohlcv(self, code: str, days: int = 300, force_refresh: bool = False):
         """SQLite キャッシュ経由で OHLCV を取得する。
 
@@ -315,6 +324,8 @@ class YFinanceProvider(StockDataProvider):
                 "shares_outstanding": info.get("sharesOutstanding"),
                 "revenue_growth": info.get("revenueGrowth"),
                 "earnings_growth": info.get("earningsGrowth"),
+                "earnings_quarterly_growth": info.get("earningsQuarterlyGrowth"),
+                "next_earnings_ts": info.get("earningsTimestamp"),
                 "dividend_yield": info.get("dividendYield"),
                 "current_price": info.get("currentPrice") or info.get("regularMarketPrice"),
                 "currency": info.get("currency", "JPY"),
@@ -323,6 +334,86 @@ class YFinanceProvider(StockDataProvider):
                 "industry": info.get("industry"),
                 "fetched_at": datetime.datetime.now(JST).isoformat(),
             }
+
+    async def get_per_history(self, code: str, years: int = 6) -> dict:
+        try:
+            import yfinance as yf  # type: ignore
+        except ImportError:
+            return {"ok": False}
+        ticker = self._to_yf_ticker(code)
+
+        async with self._sem:
+            await asyncio.sleep(self._sleep)
+
+            def _fetch():
+                try:
+                    t = yf.Ticker(ticker)
+                    # --- 年次EPS（複数APIをフォールバック）---
+                    stmt = None
+                    for attr in ("income_stmt", "financials"):
+                        try:
+                            s = getattr(t, attr, None)
+                            if s is not None and not s.empty:
+                                stmt = s
+                                break
+                        except Exception:
+                            continue
+                    if stmt is None:
+                        return {"ok": False}
+                    eps_by_year: dict[int, float] = {}
+                    for row in ("Diluted EPS", "Basic EPS"):
+                        if row in stmt.index:
+                            for col, val in stmt.loc[row].items():
+                                try:
+                                    y = int(col.year)
+                                    v = float(val)
+                                    if v == v:
+                                        eps_by_year[y] = v
+                                except Exception:
+                                    continue
+                            if eps_by_year:
+                                break
+                    if not eps_by_year and "Net Income" in stmt.index:
+                        try:
+                            sh = float((t.info or {}).get("sharesOutstanding") or 0)
+                        except Exception:
+                            sh = 0.0
+                        if sh and sh > 0:
+                            for col, val in stmt.loc["Net Income"].items():
+                                try:
+                                    y = int(col.year)
+                                    v = float(val) / sh
+                                    if v == v:
+                                        eps_by_year[y] = v
+                                except Exception:
+                                    continue
+                    if not eps_by_year:
+                        return {"ok": False}
+                    # --- 年末株価 ---
+                    hist = t.history(period=f"{years + 1}y", interval="1mo")
+                    if hist is None or hist.empty:
+                        return {"ok": False}
+                    closes = hist["Close"]
+                    history = []
+                    for y, eps in sorted(eps_by_year.items()):
+                        if eps <= 0:
+                            continue
+                        yr_rows = closes[closes.index.year == y]
+                        if len(yr_rows) == 0:
+                            continue
+                        price = float(yr_rows.iloc[-1])
+                        per = price / eps
+                        if per > 0:
+                            history.append({"year": int(y), "eps": round(eps, 2), "per": round(per, 1)})
+                    if len(history) < 3:
+                        return {"ok": False}
+                    cur = (t.info or {}).get("trailingPE")
+                    return {"ok": True, "history": history, "current_per": cur}
+                except Exception as e:
+                    logging.debug(f"yfinance get_per_history error for {ticker}: {e}")
+                    return {"ok": False}
+
+            return await asyncio.to_thread(_fetch)
 
 
 class JQuantsProvider(StockDataProvider):

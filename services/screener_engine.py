@@ -299,6 +299,48 @@ class TechnicalSignals:
             "pivot": round(pivot, 2), "near_pivot": near_pivot,
         }
 
+    @staticmethod
+    def detect_earnings_gap(open_s, close, volume, *, lookback: int = 12,
+                            gap_min: float = 0.04, vol_mult: float = 1.5) -> dict:
+        """直近 lookback 営業日内の「窓を開けた急騰（決算ギャップ）」を検出する。
+
+        kenmo『5年で1億』の決算モメンタム投資の中核。yfinance に四半期サプライズが無いため、
+        ギャップ率 =(始値 − 前日終値)/前日終値 と当日の出来高急増を「好決算サプライズ」の
+        価格代理シグナルにする。最大ギャップの日を採用し、その後に終値を維持しているか
+        （held）も返す。OHLCV のみで決定論的。
+        """
+        n = min(len(close), len(open_s), len(volume))
+        if n < lookback + 21:
+            return {"detected": False}
+        best = None
+        for j in range(1, lookback + 1):
+            i = n - j
+            if i < 21:
+                break
+            prev_c = float(close.iloc[i - 1])
+            op = float(open_s.iloc[i])
+            if prev_c <= 0 or op != op or prev_c != prev_c:
+                continue
+            gap = (op - prev_c) / prev_c
+            vavg = float(volume.iloc[i - 20:i].mean())
+            vr = (float(volume.iloc[i]) / vavg) if vavg > 0 else 0.0
+            if gap >= gap_min and vr >= vol_mult:
+                if best is None or gap > best["gap"]:
+                    best = {"gap": gap, "days_ago": j, "vol_ratio": vr,
+                            "gap_close": float(close.iloc[i])}
+        if best is None:
+            return {"detected": False}
+        last_close = float(close.iloc[-1])
+        held = bool(best["gap_close"] > 0 and last_close >= best["gap_close"] * 0.97)
+        run_up = ((last_close - best["gap_close"]) / best["gap_close"]) if best["gap_close"] > 0 else 0.0
+        return {
+            "detected": True, "gap_pct": round(best["gap"] * 100, 1),
+            "days_ago": best["days_ago"], "held": held,
+            "vol_ratio": round(best["vol_ratio"], 2),
+            "gap_close": round(best["gap_close"], 1),
+            "run_up_pct": round(run_up * 100, 1),
+        }
+
 
 # --- データクラス ---
 
@@ -1086,10 +1128,272 @@ class ExcelStockStrategy(StyleStrategy):
         return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
 
 
+def evaluate_earnings_momentum(df, fundamentals: Optional[dict]) -> dict:
+    """決算モメンタム投資（kenmo『5年で1億』PART5）を決定論的に判定する。
+
+    好決算を起点に株価上昇へ勢い（モメンタム）がつき、まだ過熱していない銘柄を拾う。
+    yfinance に四半期サプライズが無いため、price の決算ギャップ（窓開け急騰＋出来高急増）を
+    好決算サプライズの代理とし、増益（earnings_growth / earnings_quarterly_growth > 0）で
+    裏付ける。さらに「ギャップ後に上昇を維持」「短期トレンド良好」「過熱しすぎていない」を見る。
+
+    返り値の checks 各要素: {key, name, value, threshold, passed, available}
+    df が無い/短い場合は ok=False。
+    """
+    if df is None or len(df) < 60:
+        return {"checks": [], "passed": 0, "available": 0, "total": 0, "score": 0.0, "ok": False}
+    close = df["Close"]
+    open_s = df["Open"] if "Open" in df.columns else close
+    volume = df["Volume"]
+    gap = TechnicalSignals.detect_earnings_gap(open_s, close, volume)
+
+    last_close = float(close.iloc[-1])
+    sma25 = TechnicalSignals.sma(close, 25)
+    sma25_val = float(sma25.iloc[-1]) if sma25.iloc[-1] == sma25.iloc[-1] else None
+    above_sma25 = bool(sma25_val and last_close > sma25_val)
+    rsi = TechnicalSignals.rsi(close)
+    rsi_val = float(rsi.iloc[-1]) if rsi.iloc[-1] == rsi.iloc[-1] else None
+
+    f = fundamentals or {}
+    earn = f.get("earnings_growth")
+    earn_q = f.get("earnings_quarterly_growth")
+    earn_pos = None
+    if earn_q is not None:
+        earn_pos = earn_q
+    elif earn is not None:
+        earn_pos = earn
+
+    detected = bool(gap.get("detected"))
+    run_up = gap.get("run_up_pct")
+    # 過熱なし: ギャップ起点からの上昇が +18% 以内（ひと相場の初動・まだ伸びしろ）
+    not_overheated = bool(detected and run_up is not None and run_up <= 18.0) and \
+        (rsi_val is None or rsi_val <= 78)
+
+    checks = [
+        {"key": "earnings_gap", "name": "決算ギャップ（窓開け急騰＋出来高）",
+         "value": (f"+{gap['gap_pct']}%・{gap['days_ago']}日前・出来高{gap['vol_ratio']}x" if detected else "なし"),
+         "threshold": "直近12日内に窓開け+4%超×出来高1.5x", "passed": detected, "available": True},
+        {"key": "gap_held", "name": "ギャップ後の上昇維持",
+         "value": (f"維持(終値≥ギャップ日終値の97%)" if gap.get("held") else "未維持") if detected else "N/A",
+         "threshold": "ギャップ後に終値を維持", "passed": bool(gap.get("held")), "available": detected},
+        {"key": "uptrend", "name": "短期トレンド（25日線上）",
+         "value": (f"{((last_close - sma25_val) / sma25_val * 100):+.1f}%" if sma25_val else "N/A"),
+         "threshold": "25日MA上", "passed": above_sma25, "available": sma25_val is not None},
+        {"key": "earnings_positive", "name": "好決算の裏付け（増益）",
+         "value": (f"{earn_pos * 100:+.1f}%" if earn_pos is not None else "N/A"),
+         "threshold": "増益（>0）", "passed": bool(earn_pos is not None and earn_pos > 0),
+         "available": earn_pos is not None},
+        {"key": "not_overheated", "name": "過熱なし（初動・伸びしろ）",
+         "value": (f"ギャップから+{run_up}%・RSI{rsi_val:.0f}" if (detected and rsi_val is not None) else (f"ギャップから+{run_up}%" if detected else "N/A")),
+         "threshold": "ギャップから+18%以内・RSI≤78", "passed": not_overheated, "available": detected},
+    ]
+    available = sum(1 for c in checks if c["available"])
+    passed = sum(1 for c in checks if c["passed"])
+    total = len(checks)
+    score = round(passed / total * 100, 1)
+    # 決算ギャップが大前提。検出された上で取得できた条件の 60% 以上を通過。
+    ok = bool(detected and available >= 3 and (passed / available) >= 0.6)
+    return {"checks": checks, "passed": passed, "available": available,
+            "total": total, "score": score, "ok": ok, "gap": gap}
+
+
+class EarningsMomentumStrategy(StyleStrategy):
+    """決算モメンタム投資（kenmo『5年で1億』PART5）の独立メソッド。
+
+    好決算を起点とした株価上昇の初動（窓開け急騰＝決算ギャップ）を、出来高急増・上昇維持・
+    増益・過熱なしで裏取りして拾う順張りイベントメソッド。yfinance に四半期サプライズが
+    無いため価格ギャップを代理シグナルにする近似。買い後は出口層（損切り/トレイリング）で
+    管理する想定。
+    """
+    style_name = "earnings_momentum"
+    display_name = "決算モメンタム（kenmo）"
+    description = ("好決算を起点に上昇へ勢いがついた初動を、決算ギャップ（窓開け急騰＋出来高急増）"
+                  "・上昇維持・増益・過熱なしで判定する順張りイベントメソッド（kenmo『5年で1億』）")
+    needs_fundamentals = True
+    category = "technical"
+    filters = [
+        FilterDef("earnings_gap", "決算ギャップ（窓開け+4%超×出来高1.5x）", "好決算サプライズの初動", True),
+        FilterDef("gap_held", "ギャップ後の上昇維持", "ギャップ日終値を維持している", True),
+        FilterDef("uptrend", "25日MA上（短期トレンド）", "上昇トレンドに乗っている", True),
+        FilterDef("earnings_positive", "増益（好決算の裏付け）", "利益が伸びている", True),
+        FilterDef("not_overheated", "過熱なし（ギャップから+18%以内・RSI≤78）", "まだ伸びしろがある初動", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if df is None or len(df) < 60:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        gate = evaluate_earnings_momentum(df, fundamentals)
+        if not gate["checks"]:
+            return None
+        sigs, signal_keys = [], []
+        for c in gate["checks"]:
+            sigs.append(Signal(c["name"], c["value"], c["threshold"], c["passed"],
+                               "yfinance OHLCV + fundamentals"))
+            signal_keys.append(c["key"])
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
+
+
+class SmallCapGrowthStrategy(StyleStrategy):
+    """中長期・小型成長株メソッド（片山『勝つ投資』/kenmo PART6）。
+
+    機関投資家がカバーしづらい中小型（情報の非効率）で、売上の伸びを絶対条件に、
+    収益性・資本効率・割安(PSR)が揃った銘柄を中長期目線で拾う。五月の『変化』と
+    小型成長の思想を、yfinance のファンダで判定する独立メソッド。真のヒストリカルPER
+    （対自分株価の割安度）は単一銘柄診断 analyze_projection 側で併用する。
+    """
+    style_name = "small_cap_growth"
+    display_name = "中長期・小型成長（五月/kenmo）"
+    description = ("時価総額の小さい中小型株で、売上の伸び（増収）を絶対条件に、収益性・ROE・"
+                  "割安(PSR)が揃った銘柄を中長期で拾う（片山『勝つ投資』/kenmo 中長期投資）")
+    needs_fundamentals = True
+    category = "fundamental"
+    filters = [
+        FilterDef("small_cap", "時価総額 ≤ 1000億円", "中小型株（情報の非効率に妙味）", True),
+        FilterDef("revenue_growth", "売上成長率 ≥ 10%", "売上の伸び（中長期の絶対条件）", True),
+        FilterDef("operating_margin", "営業利益率 ≥ 8%", "本業の収益性", True),
+        FilterDef("roe", "ROE ≥ 10%", "資本効率が高い", True),
+        FilterDef("psr", "PSR ≤ 10倍", "売上面で割高すぎない（暴騰後を避ける）", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if not fundamentals:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        mcap = fundamentals.get("market_cap_jpy")
+        rev = fundamentals.get("revenue_growth")
+        opm = fundamentals.get("operating_margin")
+        roe = fundamentals.get("roe")
+        revenue = fundamentals.get("revenue")
+        psr = (mcap / revenue) if (mcap and revenue and revenue > 0) else None
+        cap_oku = (mcap / 1e8) if mcap else None  # 円→億円
+
+        sigs = [
+            Signal("時価総額", f"{cap_oku:,.0f}億円" if cap_oku else "N/A", "≤1000億円",
+                   bool(mcap and mcap <= 1e11), "yfinance fundamentals"),
+            Signal("売上成長率", f"{rev * 100:.2f}%" if rev is not None else "N/A", "≥10%",
+                   bool(rev is not None and rev >= 0.10), "yfinance fundamentals"),
+            Signal("営業利益率", f"{opm * 100:.2f}%" if opm is not None else "N/A", "≥8%",
+                   bool(opm is not None and opm >= 0.08), "yfinance fundamentals"),
+            Signal("ROE", f"{roe * 100:.2f}%" if roe is not None else "N/A", "≥10%",
+                   bool(roe is not None and roe >= 0.10), "yfinance fundamentals"),
+            Signal("PSR", f"{psr:.2f}倍" if psr is not None else "N/A", "≤10倍",
+                   bool(psr is not None and psr <= 10), "yfinance fundamentals"),
+        ]
+        signal_keys = ["small_cap", "revenue_growth", "operating_margin", "roe", "psr"]
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
+
+
+class AssetValueStrategy(StyleStrategy):
+    """資産バリュー株メソッド（たーちゃん『50万円を50億円に』PART2）。
+
+    「資産」に対して株価が激安な銘柄を拾う。古い簿価のまま放置された土地・有価証券の
+    含み益が、TOB/MBO/アクティビスト・特別配当などをきっかけに顕在化して株価が上がる、
+    という資産価値ベースの順当な割安投資。真の含み資産（簿価vs時価）は yfinance に無いため、
+    PBR≤0.5（純資産の半値以下）を核に、黒字（利益面でも割高でない）とインカム下支えで近似する。
+    """
+    style_name = "asset_value"
+    display_name = "資産バリュー（たー）"
+    description = ("PBRが極端に低く（純資産の半値以下）、利益面でも割高でなく配当で下支えされた、"
+                  "資産価値に対して激安な銘柄を拾う（たーちゃん『50万円を50億円に』資産バリュー）")
+    needs_fundamentals = True
+    category = "fundamental"
+    filters = [
+        FilterDef("pbr", "PBR ≤ 0.5", "純資産の半値以下＝資産に対して激安", True),
+        FilterDef("per", "PER ≤ 15", "赤字垂れ流しでなく利益面でも割安", True),
+        FilterDef("dividend", "配当利回り ≥ 2%", "含み資産が動くまでのインカム下支え", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if not fundamentals:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        pbr = fundamentals.get("pbr")
+        per = fundamentals.get("per")
+        div_yield = fundamentals.get("dividend_yield")
+        if div_yield is not None and div_yield > 1:
+            div_yield = div_yield / 100.0
+
+        sigs = [
+            Signal("PBR", f"{pbr:.2f}" if pbr else "N/A", "≤0.5",
+                   bool(pbr and 0 < pbr <= 0.5), "yfinance fundamentals"),
+            Signal("PER", f"{per:.2f}" if per else "N/A", "≤15",
+                   bool(per and 0 < per <= 15), "yfinance fundamentals"),
+            Signal("配当利回り", f"{div_yield * 100:.2f}%" if div_yield is not None else "N/A", "≥2%",
+                   bool(div_yield is not None and div_yield >= 0.02), "yfinance fundamentals"),
+        ]
+        signal_keys = ["pbr", "per", "dividend"]
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
+
+
+# 景気循環（シクリカル）セクター。景気の波で業績・株価が大きく振れる業種（東証33業種の名称で部分一致）。
+_CYCLICAL_SECTORS = ("鉄鋼", "非鉄金属", "海運", "ガラス・土石", "石油・石炭", "化学",
+                     "繊維", "パルプ・紙", "機械", "電気機器", "輸送用機器", "ゴム製品", "金属製品")
+
+
+class CyclicalValueStrategy(StyleStrategy):
+    """シクリカルバリュー株メソッド（たーちゃん『50万円を50億円に』PART4）。
+
+    鉄鋼・海運・半導体・化学などの景気循環業種で、いま「景気の谷」にあり採算が悪化して
+    （低営業利益率・赤字含む）売上に対して激安（低PSR）な銘柄を、谷からの反転の初動で拾う。
+    赤字→黒字転換でインパクトが大きい。増益を絶対条件にする他メソッドと真逆の発想なので、
+    PERではなくPSRと景気フェーズで判定する独立メソッド。景気は約4年で循環する。
+    """
+    style_name = "cyclical_value"
+    display_name = "シクリカルバリュー（たー）"
+    description = ("景気循環業種で、いま採算が悪化し（低営業利益率）売上に対して激安（低PSR）な銘柄を、"
+                  "谷からの反転初動で拾う。赤字→黒字転換を狙う（たーちゃん『50万円を50億円に』シクリカル）")
+    needs_fundamentals = True
+    category = "hybrid"
+    filters = [
+        FilterDef("cyclical_sector", "景気循環セクター", "鉄鋼/海運/半導体/化学など景気の波で振れる業種", True),
+        FilterDef("trough_margin", "営業利益率 ≤ 5%", "景気の谷＝採算悪化（赤字含む）", True),
+        FilterDef("low_psr", "PSR ≤ 1倍", "売上に対して激安＝下値限定", True),
+        FilterDef("turnaround", "60日MA上（反転の初動）", "谷からの反転が始まっている", True),
+    ]
+
+    def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
+        if not fundamentals:
+            return None
+        enabled = self._resolve_enabled(enabled_filters)
+        mcap = fundamentals.get("market_cap_jpy")
+        revenue = fundamentals.get("revenue")
+        opm = fundamentals.get("operating_margin")
+        psr = (mcap / revenue) if (mcap and revenue and revenue > 0) else None
+        sec_txt = sector or fundamentals.get("sector") or ""
+        is_cyclical = any(k in sec_txt for k in _CYCLICAL_SECTORS)
+
+        ma_up = False
+        ma_val = None
+        if df is not None and len(df) >= 60:
+            close = df["Close"].astype(float)
+            try:
+                ma_val = float(TechnicalSignals.sma(close, 60).iloc[-1])
+                last = float(close.iloc[-1])
+                ma_up = bool(ma_val and last > ma_val)
+            except Exception:
+                ma_up = False
+
+        sigs = [
+            Signal("セクター", sec_txt or "N/A", "景気循環業種", bool(is_cyclical), "universe/yfinance"),
+            Signal("営業利益率", f"{opm * 100:.2f}%" if opm is not None else "N/A", "≤5%（谷）",
+                   bool(opm is not None and opm <= 0.05), "yfinance fundamentals"),
+            Signal("PSR", f"{psr:.2f}倍" if psr is not None else "N/A", "≤1倍",
+                   bool(psr is not None and psr <= 1.0), "yfinance fundamentals"),
+            Signal("60日MA", f"{ma_val:,.0f}円上" if (ma_up and ma_val) else ("MA下" if ma_val else "N/A"), "MA上で反転初動",
+                   bool(ma_up), "yfinance OHLCV"),
+        ]
+        signal_keys = ["cyclical_sector", "trough_margin", "low_psr", "turnaround"]
+        return self._finalize(code, name, sector, sigs, enabled, signal_keys, df, near_miss=near_miss)
+
+
 STRATEGY_REGISTRY: dict[str, StyleStrategy] = {
     s.style_name: s for s in [
         NewHighBreakoutStrategy(),    # ← DUKE『新高値ブレイク投資術』の独立メソッド
         ExcelStockStrategy(),         # ← 森口『Excel株投資』の独立メソッド
+        EarningsMomentumStrategy(),   # ← kenmo『5年で1億』決算モメンタムの独立メソッド
+        SmallCapGrowthStrategy(),     # ← 片山『勝つ投資』/kenmo 中長期・小型成長の独立メソッド
+        AssetValueStrategy(),         # ← たーちゃん『50万円を50億円に』資産バリューの独立メソッド
+        CyclicalValueStrategy(),      # ← たーちゃん『50万円を50億円に』シクリカルバリューの独立メソッド
         CreepingBreakoutStrategy(),
         BreakoutPatternStrategy(),    # 部品(hidden): 新高値ブレイクのテクニカル単体
         ValueStrategy(),
@@ -1104,6 +1408,48 @@ def get_strategy(name: str) -> Optional[StyleStrategy]:
     return STRATEGY_REGISTRY.get(name)
 
 
+# =========================================================
+# 2層モデルの可視化：共通ファクター軸（下層）とメソッド→軸の地図
+# =========================================================
+# 各メソッド（上層）は、下の共通ファクター軸（下層ゲート）の組み合わせとして表せる。
+# これを明示することで「どのメソッドがどの軸をカバーし、どこが重複か」「掛け合わせ＝
+# 軸の和集合」が一目で分かる。整理（方向性）の地図。
+FACTOR_AXES: dict[str, str] = {
+    "growth": "成長性（売上・利益の伸び）",
+    "quality": "収益性（営業利益率・ROE）",
+    "value_earnings": "割安・利益面（PER・PSR）",
+    "value_asset": "割安・資産面（PBR・自己資本・配当）",
+    "safety": "財務安全性（自己資本比率・営業CF・FCF）",
+    "trend": "トレンド（52週高値圏・移動平均）",
+    "pattern": "チャート型（カップ/VCP/ボックス）",
+    "small_cap": "小型（時価総額の小ささ＝情報の非効率）",
+    "event": "イベント（決算サプライズ・モメンタム）",
+    "cyclical": "景気循環（谷で買い・黒字転換）",
+    "catalyst": "カタリスト（大株主買い増し・物言う株主・TOB/MBO期待）",
+}
+
+# メソッド（style_name）→ 構成ファクター軸。これが「メソッド＝軸の組み合わせ」の単一の地図。
+STRATEGY_AXES: dict[str, list[str]] = {
+    "new_high_breakout": ["trend", "pattern", "growth", "quality"],
+    "excel_stock": ["growth", "quality", "value_earnings"],
+    "earnings_momentum": ["event", "trend"],
+    "small_cap_growth": ["small_cap", "growth", "quality", "value_earnings"],
+    "asset_value": ["value_asset", "safety"],
+    "cyclical_value": ["cyclical", "value_earnings", "trend"],
+    "creeping_breakout": ["trend"],
+    "breakout_patterns": ["trend", "pattern"],
+    "value": ["value_earnings", "value_asset"],
+    "growth": ["growth", "quality"],
+    "aggressive_growth": ["growth", "quality"],
+    "fundamental_gate": ["growth", "quality", "value_earnings"],
+}
+
+
+def factor_axes_catalog() -> list[dict]:
+    """共通ファクター軸（下層ゲートの語彙）の一覧を返す。"""
+    return [{"key": k, "label": v} for k, v in FACTOR_AXES.items()]
+
+
 def list_strategies() -> list[dict]:
     return [
         {
@@ -1112,6 +1458,8 @@ def list_strategies() -> list[dict]:
             "description": s.description,
             "category": s.category,
             "needs_fundamentals": s.needs_fundamentals,
+            "axes": STRATEGY_AXES.get(s.style_name, []),
+            "axis_labels": [FACTOR_AXES[a] for a in STRATEGY_AXES.get(s.style_name, []) if a in FACTOR_AXES],
             "filters": s.list_filters(),
         }
         for s in STRATEGY_REGISTRY.values()
@@ -1321,24 +1669,8 @@ def analyze_breakout_projection(
     else:
         verdict = "順張り継続：トレンドに沿って保有し利を伸ばす。トレイリングストップ（下記）割れで利確。"
 
-    # --- 5分割法 + -10%損切り（DUKE 6章の資金管理）---
-    buy_plan = None
-    if last_close and last_close > 0:
-        buy_plan = {
-            "method": "5分割法",
-            "tranches": [
-                {"no": 1, "ratio_pct": 20, "trigger": "試し玉（ピボット/現値）", "ref_price": round(last_close, 1)},
-                {"no": 2, "ratio_pct": 20, "trigger": "含み益が出たら（+3%目安）", "ref_price": round(last_close * 1.03, 1)},
-                {"no": 3, "ratio_pct": 20, "trigger": "上のボックス上抜けで（+7%目安）", "ref_price": round(last_close * 1.07, 1)},
-                {"no": 4, "ratio_pct": 20, "trigger": "押し目→再度の高値更新で", "ref_price": None},
-                {"no": 5, "ratio_pct": 20, "trigger": "新高値ブレイクの度に（任意）", "ref_price": None},
-            ],
-            "hard_stop_pct": -10,
-            "hard_stop_price": round(last_close * 0.9, 1),
-            "note": ("資金を5分割し、最初の1/5を試し玉として打診買い。含み益が出たら高値ブレイクの度に"
-                     "買い増し、含み損なら買い増さない。1回の損切りは最大-10%（平均取得単価比）。"
-                     "※上の『損切り目安』(トレイル/ATR)は利を伸ばすための防御線で、-10%は新規買いの最終防衛ライン。"),
-        }
+    # --- 5分割法 + -10%損切り（DUKE 6章の資金管理）。出口層の単一ソースに委譲 ---
+    buy_plan = build_tranche_plan(last_close, hard_stop_pct=-0.10)
 
     return {
         "ok": True,
@@ -1413,6 +1745,575 @@ def estimate_target_price_by_multiple(
         "targets": targets,
         "note": (f"現在の営業利益倍率 約{op_multiple:.1f}倍を基準に、利益成長 {g * 100:.0f}%/年で"
                  f"{years}年後営業利益を複利推定（年次YoYを営業利益成長の代理に使用）。"),
+    }
+
+
+def evaluate_historical_per(per_history: Optional[list], current_per: Optional[float]) -> dict:
+    """ヒストリカルPER（片山『勝つ投資』/kenmo）。一律のPER水準ではなく、その銘柄自身の
+    過去PERレンジの中で現在のPERが割安か割高かを「対自分株価」で評価する。
+
+    per_history: [{"year": 2021, "per": 18.2}, ...]（正のPERのみ有効）。
+    過去分布の下位なら割安・上位なら割高。3期以上の有効PERが必要。決定論的。
+    """
+    import numpy as np
+    pers = [float(h["per"]) for h in (per_history or [])
+            if h.get("per") is not None and h.get("per") > 0]
+    if current_per is None or current_per <= 0 or len(pers) < 3:
+        return {"ok": False, "reason": "有効なヒストリカルPERが3期以上必要"}
+    lo, hi, med = float(min(pers)), float(max(pers)), float(np.median(pers))
+    # 現在PERが過去分布の何%地点か（小さいほど割安）
+    pctl = round(sum(1 for p in pers if p <= current_per) / len(pers) * 100)
+    band = round((current_per - lo) / (hi - lo), 2) if hi > lo else 0.5
+    if current_per <= med * 0.9:
+        verdict, label = "cheap", "割安（自分の過去比）"
+    elif current_per >= med * 1.15:
+        verdict, label = "rich", "割高（自分の過去比）"
+    else:
+        verdict, label = "fair", "中立（過去レンジ内）"
+    return {
+        "ok": True,
+        "current_per": round(current_per, 1),
+        "min": round(lo, 1), "median": round(med, 1), "max": round(hi, 1),
+        "percentile": pctl, "band_pos": band,
+        "verdict": verdict, "verdict_label": label,
+        "samples": len(pers),
+        "note": (f"過去{len(pers)}期のPERレンジ {lo:.0f}〜{hi:.0f}倍（中央{med:.0f}倍）に対し"
+                 f"現在 約{current_per:.0f}倍＝下位{pctl}%。"
+                 + ("自分の過去比で割安圏。" if verdict == "cheap"
+                    else ("自分の過去比で割高圏（業績の伸びが伴うか要確認）。" if verdict == "rich"
+                          else "過去レンジの中ほど。"))),
+    }
+
+
+def evaluate_catalyst(holdings: Optional[dict]) -> dict:
+    """カタリスト（木原直哉/エミン『確率思考』）。EDINET 大量保有報告書のサマリーから、
+    「大株主の買い増し・物言う株主の登場・複数の大量保有・高い保有割合」を決定論的に点数化する。
+
+    holdings: services.edinet_large_holdings.get_large_holdings_for_code() の返り値。
+    軸=catalyst。バッチではなく単一銘柄 deep-dive 層で使う（EDINET 走査が重いため）。
+    """
+    if not holdings or not holdings.get("ok"):
+        return {"ok": False, "reason": (holdings or {}).get("reason") or "大量保有報告書なし"}
+    activist = bool(holdings.get("activist_present"))
+    accumulating = bool(holdings.get("accumulating"))
+    count = int(holdings.get("count") or 0)
+    ratio = holdings.get("latest_ratio")
+    signals = [
+        {"key": "activist", "label": "物言う株主が保有", "hit": activist,
+         "weight": 40},
+        {"key": "accumulating", "label": "大株主が買い増し", "hit": accumulating,
+         "weight": 30},
+        {"key": "multiple", "label": "複数の大量保有報告（注目度）", "hit": count >= 2,
+         "weight": 15},
+        {"key": "high_ratio", "label": "保有割合が高い（≥10%）", "hit": bool(ratio and ratio >= 0.10),
+         "weight": 15},
+    ]
+    score = sum(s["weight"] for s in signals if s["hit"])
+    if score >= 55:
+        verdict, label = "strong", "強いカタリスト"
+    elif score >= 25:
+        verdict, label = "mild", "カタリスト候補"
+    else:
+        verdict, label = "weak", "目立ったカタリストなし"
+    return {
+        "ok": True,
+        "catalyst_score": score,
+        "verdict": verdict, "verdict_label": label,
+        "activist_present": activist, "accumulating": accumulating,
+        "count": count, "latest_ratio": ratio,
+        "latest_holder": holdings.get("latest_holder"),
+        "holders": holdings.get("holders", []),
+        "signals": signals,
+        "note": holdings.get("note", ""),
+    }
+
+
+# =========================================================
+# 目標配分レイヤー：最高値型:待ち型=4:1／日本株:米国株=1:1（目安表示＋ドリフト警告）
+# =========================================================
+def classify_portfolio_bucket(res: Optional[dict]) -> str:
+    """銘柄を「最高値型(momentum)」か「待ち型(wait)」に分類する。決定論的・純粋関数。
+
+    高値追い（パーフェクトオーダー or 52週高値から5%以内）＝momentum、それ以外＝wait。
+    値動きの役割で分けるユーザーの区分（最高値更新に乗る／動かず待ち）に忠実。
+    """
+    tr = (res or {}).get("trend") or {}
+    if tr.get("perfect_order"):
+        return "momentum"
+    gap = tr.get("gap_to_52w_pct")
+    if gap is not None and gap >= -5.0:  # 52週高値から5%以内＝高値追い
+        return "momentum"
+    return "wait"
+
+
+def build_allocation_plan(
+    positions: Optional[list],
+    *,
+    momentum_ratio: float = 4.0, wait_ratio: float = 1.0,
+    jp_ratio: float = 1.0, us_ratio: float = 1.0,
+) -> dict:
+    """保有ポジション（共通通貨の時価）から、目標配分に対する現状・ドリフトを出す。純粋関数。
+
+    positions: [{"value": float(共通通貨), "bucket": "momentum"|"wait", "market": "JP"|"US"}]
+    目標は 最高値型:待ち型=momentum_ratio:wait_ratio、日本株:米国株=jp_ratio:us_ratio。
+    強制リバランスはせず「目安表示＋ドリフト警告」（ソフト誘導）。
+    """
+    pos = [p for p in (positions or []) if p.get("value") and p["value"] > 0]
+    total = sum(p["value"] for p in pos)
+    if total <= 0:
+        return {"ok": False, "reason": "時価評価できる保有がありません"}
+
+    def _sum(pred):
+        return sum(p["value"] for p in pos if pred(p))
+
+    mom = _sum(lambda p: p.get("bucket") == "momentum")
+    jp = _sum(lambda p: p.get("market") == "JP")
+
+    def _axis(label, a_key, a_val, a_name, b_name, a_target):
+        a_pct, b_pct = a_val / total * 100, (total - a_val) / total * 100
+        drift = round(a_pct - a_target * 100, 1)  # a が目標比 何ptオーバー(+)/不足(-)
+        over_a = drift > 0
+        return {
+            "axis": label, "a_key": a_key,
+            "a": {"name": a_name, "value": round(a_val), "pct": round(a_pct, 1),
+                  "target_pct": round(a_target * 100, 1)},
+            "b": {"name": b_name, "value": round(total - a_val), "pct": round(b_pct, 1),
+                  "target_pct": round((1 - a_target) * 100, 1)},
+            "drift_pct": drift,
+            "rebalance_value": abs(round(total * a_target - a_val)),
+            "over": a_name if over_a else b_name,
+            "under": b_name if over_a else a_name,
+            "over_key": (a_key if over_a else ("wait" if a_key == "momentum" else
+                                               ("US" if a_key == "JP" else a_key))),
+        }
+
+    bucket_axis = _axis("最高値型:待ち型", "momentum", mom, "最高値型", "待ち型",
+                        momentum_ratio / (momentum_ratio + wait_ratio))
+    market_axis = _axis("日本株:米国株", "JP", jp, "日本株", "米国株",
+                        jp_ratio / (jp_ratio + us_ratio))
+    warnings = []
+    for ax in (bucket_axis, market_axis):
+        if abs(ax["drift_pct"]) >= 10:
+            warnings.append(f"{ax['axis']}が目標から {ax['drift_pct']:+.0f}pt ズレ"
+                            f"（{ax['over']}が過多・{ax['under']}が不足）")
+    note = (f"時価合計 約{round(total):,}。"
+            + ("／".join(warnings) if warnings
+               else "目標（最高値型:待ち型=4:1・日本株:米国株=1:1）におおむね整合。"))
+    return {
+        "ok": True, "total_value": round(total),
+        "bucket_axis": bucket_axis, "market_axis": market_axis,
+        "warnings": warnings, "note": note,
+        "target": {"momentum": f"{momentum_ratio:.0f}:{wait_ratio:.0f}",
+                   "market": f"{jp_ratio:.0f}:{us_ratio:.0f}"},
+    }
+
+
+# =========================================================
+# プロセス改善：摩擦(税/手数料)・的中率→建玉・地合い・流動性・買い増し・シグナル検証
+# =========================================================
+def compute_rotation_friction(shares, last_close, avg_cost, *, account: str = "taxable",
+                              tax_rate: float = 0.20315, cost_rate: float = 0.002) -> dict:
+    """入替の摩擦（譲渡益課税＋売買コスト往復）を見積もる。決定論的・純粋関数。
+    勝ち株を売って入替えると税で目減りする——を可視化し、入替の足切りに使う。
+    avg_cost 不明なら税は0（取得単価不明）。cost_rate は売り＋買いの往復概算。
+    account: "nisa"/"非課税" は譲渡益非課税で税0。それ以外（特定/一般）は一律 tax_rate。"""
+    try:
+        sh, lc = float(shares or 0), float(last_close or 0)
+    except (TypeError, ValueError):
+        return {"ok": False}
+    if sh <= 0 or lc <= 0:
+        return {"ok": False}
+    tax_free = str(account or "").lower() in ("nisa", "非課税", "tax_free")
+    position_value = sh * lc
+    gain = (lc - float(avg_cost)) * sh if avg_cost else 0.0
+    tax = (tax_rate * gain) if (gain > 0 and not tax_free) else 0.0
+    cost = cost_rate * position_value
+    friction = tax + cost
+    return {
+        "ok": True, "account": ("nisa" if tax_free else "taxable"),
+        "position_value": round(position_value), "gain": round(gain),
+        "tax": round(tax), "cost": round(cost), "friction": round(friction),
+        "friction_pct": round(friction / position_value * 100, 2) if position_value else 0.0,
+        "net_proceeds": round(position_value - friction),
+    }
+
+
+def hit_rate_risk_multiplier(hit_rate, samples, *, min_samples: int = 10) -> float:
+    """事後検証の的中率から建玉（リスク）倍率を出す。学習ループを実際の建玉に反映する。
+    サンプル不足は中立1.0。60%以上→1.3、40%以下→0.5、間は線形。決定論的。"""
+    if hit_rate is None or samples is None or samples < min_samples:
+        return 1.0
+    if hit_rate >= 60:
+        m = 1.3
+    elif hit_rate <= 40:
+        m = 0.5
+    else:
+        m = 0.5 + (hit_rate - 40) / 20.0 * 0.8
+    return round(max(0.5, min(1.3, m)), 2)
+
+
+def assess_market_regime(index_df, *, slow: int = 200, fast: int = 50) -> dict:
+    """指数(N225/GSPC)から地合いレジームを判定。200日線の上下＋傾きで risk_on/neutral/risk_off。
+    『上昇相場でのみ攻める』ための地合いフィルタ。決定論的。"""
+    if index_df is None or len(index_df) < slow + 25 or "Close" not in index_df:
+        return {"ok": False, "regime": "neutral", "label": "中立（指数データ不足）",
+                "note": "指数データ不足で地合い不明（中立扱い）。"}
+    close = index_df["Close"]
+    last = float(close.iloc[-1])
+    ma_s_series = close.rolling(slow).mean()
+    ma_s = float(ma_s_series.iloc[-1])
+    ma_s_prev = float(ma_s_series.iloc[-21])  # 約1ヶ月前
+    above = last > ma_s
+    slope_up = ma_s > ma_s_prev
+    if above and slope_up:
+        regime, label = "risk_on", "リスクオン（上昇基調）"
+    elif (not above) and (not slope_up):
+        regime, label = "risk_off", "リスクオフ（下落基調）"
+    else:
+        regime, label = "neutral", "中立（方向感に乏しい）"
+    return {
+        "ok": True, "regime": regime, "label": label,
+        "last": round(last, 1), "ma200": round(ma_s, 1),
+        "above_200ma": above, "ma200_slope_up": slope_up,
+        "note": (f"指数 {last:.0f}／200日線 {ma_s:.0f}（{'上' if above else '下'}・傾き{'↑' if slope_up else '↓'}）＝{label}。"
+                 + ("新規買いは積極可。" if regime == "risk_on"
+                    else ("新規買い・入替は抑制し現金比率を上げる局面。" if regime == "risk_off"
+                          else "新規買いは厳選。"))),
+    }
+
+
+def assess_liquidity(df, market: str = "JP", *, days: int = 20) -> dict:
+    """直近の平均売買代金（出来高×終値）から流動性を評価。薄商いは約定困難＝入替枚数を制限する。
+    thin 目安: JP 1億円/日未満・US 100万ドル/日未満。max_buyable=日次代金の10%。決定論的。"""
+    if df is None or len(df) < 5 or "Volume" not in df or "Close" not in df:
+        return {"ok": False}
+    n = min(days, len(df))
+    vol = df["Volume"].iloc[-n:].astype(float)
+    close = df["Close"].iloc[-n:].astype(float)
+    turnover = float((vol * close).mean())
+    floor = 1e8 if market == "JP" else 1e6
+    return {
+        "ok": True, "avg_turnover": round(turnover), "thin": turnover < floor,
+        "max_buyable_value": round(turnover * 0.10),
+        "unit": "JPY" if market == "JP" else "USD",
+    }
+
+
+def build_pyramid_plan(last_close, avg_cost, atr, *, swing_high=None, add_ratio: float = 0.5) -> dict:
+    """勝ち株への買い増し（ピラミッディング）。含み益が乗りトレンド継続中の保有に、直近高値ブレイクで
+    控えめに買い増し、損切りを建値付近へ引き上げて『勝ちを伸ばし守る』。決定論的。"""
+    if not last_close or not avg_cost or last_close <= avg_cost:
+        return {"ok": False, "reason": "含み益が乗っていない（買い増し非推奨）"}
+    trigger = round(swing_high, 1) if swing_high else round(last_close, 1)
+    new_stop = round(max(float(avg_cost), last_close - 2.0 * atr) if atr else float(avg_cost), 1)
+    return {
+        "ok": True, "add_ratio_pct": round(add_ratio * 100), "trigger": trigger,
+        "raised_stop": new_stop,
+        "note": (f"含み益が乗りトレンド継続中。{trigger} の直近高値ブレイクで元玉の"
+                 f"{round(add_ratio * 100)}%を買い増し、損切りを建値 {new_stop} 付近へ引き上げ（勝ちを守る）。"),
+    }
+
+
+def backtest_entry_signal(df, *, signal: str = "new_high", lookback: int = 60,
+                          horizons=(20, 60)) -> dict:
+    """単一銘柄で『エントリーシグナル発生→その後の前向きリターン』を過去全体で集計する簡易バックテスト。
+    signal: "new_high"(lookback日高値更新) / "perfect_order"(25>75>200 かつ上向き)。
+    各シグナル日からの horizon 営業日後リターンを、同銘柄の全期間平均（buy&hold相当）と比較。
+    『高スコアへ入替が買い持ちに勝つか』を銘柄単位で検証する第一歩。決定論的。"""
+    import numpy as np
+    if df is None or len(df) < lookback + max(horizons) + 5 or "Close" not in df:
+        return {"ok": False, "reason": "バックテストに十分な履歴がありません"}
+    close = df["Close"].astype(float).reset_index(drop=True)
+    n = len(close)
+    if signal == "perfect_order":
+        sma25 = close.rolling(25).mean()
+        sma75 = close.rolling(75).mean()
+        sma200 = close.rolling(200).mean()
+        sig = (sma25 > sma75) & (sma75 > sma200) & (sma25 > sma25.shift(5))
+    else:  # new_high
+        roll_high = close.rolling(lookback).max()
+        sig = close >= roll_high
+
+    results = {}
+    base_all = {}
+    for h in horizons:
+        fwd = close.shift(-h) / close - 1.0  # 全日からの h 日後リターン（buy&hold基準）
+        base_all[h] = fwd.iloc[:n - h]
+        idx = [i for i in range(lookback, n - h) if bool(sig.iloc[i])]
+        rets = [float(close.iloc[i + h] / close.iloc[i] - 1.0) for i in idx]
+        if rets:
+            arr = np.array(rets)
+            base = float(base_all[h].mean()) if len(base_all[h]) else 0.0
+            results[f"d{h}"] = {
+                "samples": len(rets),
+                "win_rate": round(float((arr > 0).mean()) * 100, 1),
+                "avg_return_pct": round(float(arr.mean()) * 100, 1),
+                "median_return_pct": round(float(np.median(arr)) * 100, 1),
+                "baseline_avg_pct": round(base * 100, 1),       # 全日平均（buy&hold相当）
+                "edge_pct": round((float(arr.mean()) - base) * 100, 1),  # シグナルの優位性
+            }
+        else:
+            results[f"d{h}"] = {"samples": 0}
+    sig_label = "新高値更新" if signal == "new_high" else "パーフェクトオーダー"
+    return {"ok": True, "signal": signal, "signal_label": sig_label, "horizons": list(horizons),
+            "results": results}
+
+
+def backtest_portfolio_rotation(price_df, *, rebalance_days: int = 20, top_k: int = 5,
+                                lookback: int = 60, cost_rate: float = 0.002) -> dict:
+    """複数銘柄の終値パネル（price_df: index=日付, columns=銘柄コード）で、
+    『定期リバランスでモメンタム上位 top_k を等加重保有』する回転戦略を、同じ銘柄群の
+    等加重 buy&hold と比較する決定論的バックテスト。各リバランス日までのデータでのみランク
+    （先読みなし）し、回転にはコストを課す。『毎日入れ替えが買い持ちに勝つか』のポート単位の検証。"""
+    import numpy as np
+    import pandas as pd  # type: ignore
+    if price_df is None or getattr(price_df, "empty", True):
+        return {"ok": False, "reason": "価格パネルが空"}
+    df = price_df.dropna(axis=1, how="all").ffill()
+    n, m = df.shape
+    if n < lookback + rebalance_days + 5 or m < max(2, top_k):
+        return {"ok": False, "reason": "バックテストに十分な銘柄/履歴がありません"}
+    closes = df.values.astype(float)
+    reb_idx = list(range(lookback, n - 1, rebalance_days))
+    strat_eq, bh_eq = [1.0], [1.0]
+    period_rets, turnovers = [], []
+    prev_sel: set = set()
+    for i in reb_idx:
+        end = min(i + rebalance_days, n - 1)
+        base, now = closes[i - lookback], closes[i]
+        mom = [(c, now[c] / base[c] - 1.0) for c in range(m)
+               if np.isfinite(base[c]) and np.isfinite(now[c]) and base[c] > 0 and np.isfinite(closes[end][c])]
+        if not mom:
+            continue
+        mom.sort(key=lambda x: x[1], reverse=True)
+        sel = [c for c, _ in mom[:top_k]]
+        pr = [closes[end][c] / closes[i][c] - 1.0 for c in sel if closes[i][c] > 0]
+        if not pr:
+            continue
+        sel_set = set(sel)
+        turnover = (len(sel_set ^ prev_sel) / max(1, len(sel_set | prev_sel))) if (prev_sel or sel_set) else 1.0
+        strat_ret = float(np.mean(pr)) - cost_rate * turnover
+        bh = [closes[end][c] / closes[i][c] - 1.0 for c, _ in mom if closes[i][c] > 0]
+        bh_ret = float(np.mean(bh)) if bh else 0.0
+        strat_eq.append(strat_eq[-1] * (1 + strat_ret))
+        bh_eq.append(bh_eq[-1] * (1 + bh_ret))
+        period_rets.append(strat_ret)
+        turnovers.append(turnover)
+        prev_sel = sel_set
+    if len(strat_eq) < 3:
+        return {"ok": False, "reason": "リバランス回数が不足"}
+
+    def _max_dd(eq):
+        peak, dd = eq[0], 0.0
+        for v in eq:
+            peak = max(peak, v)
+            dd = min(dd, v / peak - 1.0)
+        return dd
+
+    years = max(0.1, n / 252.0)
+    strat_total, bh_total = strat_eq[-1] - 1, bh_eq[-1] - 1
+    return {
+        "ok": True,
+        "periods": len(period_rets), "rebalance_days": rebalance_days, "top_k": top_k,
+        "lookback": lookback, "n_codes": m, "span_days": n,
+        "strategy_return_pct": round(strat_total * 100, 1),
+        "buyhold_return_pct": round(bh_total * 100, 1),
+        "excess_pct": round((strat_total - bh_total) * 100, 1),
+        "strategy_cagr_pct": round((strat_eq[-1] ** (1 / years) - 1) * 100, 1),
+        "buyhold_cagr_pct": round((bh_eq[-1] ** (1 / years) - 1) * 100, 1),
+        "strategy_maxdd_pct": round(_max_dd(strat_eq) * 100, 1),
+        "buyhold_maxdd_pct": round(_max_dd(bh_eq) * 100, 1),
+        "win_rate": round(sum(1 for r in period_rets if r > 0) / len(period_rets) * 100, 1),
+        "avg_turnover_pct": round(sum(turnovers) / len(turnovers) * 100, 1),
+        "beats_buyhold": strat_total > bh_total,
+        "note": (f"{len(period_rets)}回リバランス（{rebalance_days}営業日毎・モメンタム上位{top_k}・"
+                 f"コスト{cost_rate*100:.1f}%/回転）。戦略 {strat_total*100:+.1f}% vs buy&hold {bh_total*100:+.1f}%"
+                 f"（超過 {(strat_total-bh_total)*100:+.1f}%）。回転コスト込みで買い持ちに"
+                 + ("勝っています。" if strat_total > bh_total else "負けています＝過度な回転は逆効果の可能性。")),
+    }
+
+
+# =========================================================
+# 出口・資金管理（損切り・ポジションサイズ・分割買い）— 決定論的
+# =========================================================
+# 入口（スクリーニング/診断）と分離した「出口層」。kenmo『5年で1億』の-8%損切り・
+# DUKE 6章の5分割法/-10%損切り、片山『勝つ投資』のリスク管理（1トレードの損失を資金の
+# 一定%に抑える）を、単一の真実として集約する。analyze_breakout_projection / analyze_position
+# はここを参照する。
+
+
+def build_tranche_plan(last_close: Optional[float], *, hard_stop_pct: float = -0.10) -> Optional[dict]:
+    """5分割の打診買い→買い増し計画（DUKE 6章 / kenmo の資金管理）。
+
+    資金を5分割し最初の1/5を試し玉に。含み益が出たら高値ブレイクの度に買い増し、
+    含み損なら買い増さない。1回の損切りは hard_stop_pct（平均取得単価比、既定-10%）。
+    """
+    if not (last_close and last_close > 0):
+        return None
+    return {
+        "method": "5分割法",
+        "tranches": [
+            {"no": 1, "ratio_pct": 20, "trigger": "試し玉（ピボット/現値）", "ref_price": round(last_close, 1)},
+            {"no": 2, "ratio_pct": 20, "trigger": "含み益が出たら（+3%目安）", "ref_price": round(last_close * 1.03, 1)},
+            {"no": 3, "ratio_pct": 20, "trigger": "上のボックス上抜けで（+7%目安）", "ref_price": round(last_close * 1.07, 1)},
+            {"no": 4, "ratio_pct": 20, "trigger": "押し目→再度の高値更新で", "ref_price": None},
+            {"no": 5, "ratio_pct": 20, "trigger": "新高値ブレイクの度に（任意）", "ref_price": None},
+        ],
+        "hard_stop_pct": round(hard_stop_pct * 100),
+        "hard_stop_price": round(last_close * (1 + hard_stop_pct), 1),
+        "note": ("資金を5分割し、最初の1/5を試し玉として打診買い。含み益が出たら高値ブレイクの度に"
+                 "買い増し、含み損なら買い増さない。1回の損切りは最大"
+                 f"{round(hard_stop_pct * 100)}%（平均取得単価比）。"
+                 "※上の『損切り目安』(トレイル/ATR)は利を伸ばすための防御線で、"
+                 f"{round(hard_stop_pct * 100)}%は新規買いの最終防衛ライン。"),
+    }
+
+
+def compute_position_size(
+    capital: Optional[float], entry: Optional[float], stop: Optional[float],
+    *, risk_per_trade: float = 0.01, max_position_pct: float = 0.20,
+    lot_size: int = 100,
+) -> dict:
+    """1トレードの許容損失（資金 × risk_per_trade）とストップ幅から建玉数を逆算する。
+
+    片山『勝つ投資』/kenmo のリスク管理思想を実装：「1回の損切りで失う額を資金の一定%
+    （既定1%）に抑える」。建玉が資金の max_position_pct（既定20%）を超える場合は上限で頭打ち。
+    日本株を想定し lot_size（既定100株）単位に丸める。
+    """
+    if not (capital and entry and stop and entry > 0 and stop > 0 and entry > stop):
+        return {"ok": False,
+                "reason": "建玉サイズの算出には 資金・エントリー価格・損切り価格（エントリー>損切り>0）が必要"}
+    risk_amount = capital * risk_per_trade
+    per_share_risk = entry - stop
+    raw_shares = risk_amount / per_share_risk
+    shares = int(raw_shares // lot_size) * lot_size
+    capped = False
+    cap_value = capital * max_position_pct
+    if shares * entry > cap_value:
+        shares = int((cap_value / entry) // lot_size) * lot_size
+        capped = True
+    position_value = shares * entry
+    actual_risk = shares * per_share_risk
+    return {
+        "ok": shares > 0,
+        "shares": shares,
+        "position_value": round(position_value, 0),
+        "position_pct": round(position_value / capital * 100, 1) if capital else None,
+        "risk_amount": round(actual_risk, 0),
+        "risk_pct_of_capital": round(actual_risk / capital * 100, 2) if capital else None,
+        "stop_distance_pct": round(per_share_risk / entry * 100, 1),
+        "capped_by_max_position": capped,
+        "params": {"risk_per_trade_pct": round(risk_per_trade * 100, 2),
+                   "max_position_pct": round(max_position_pct * 100), "lot_size": lot_size},
+        "note": (f"資金の{risk_per_trade * 100:.0f}%（{risk_amount:,.0f}）を1トレードの許容損失とし、"
+                 f"損切り幅{per_share_risk:,.0f}/株から{shares:,}株。"
+                 + ("建玉が上限に達したため頭打ち。" if capped else "")),
+    }
+
+
+def evaluate_exit_signals(
+    df,
+    *,
+    avg_cost: Optional[float] = None,
+    hard_stop_pct: float = -0.08,
+    trail_n: int = 22,
+    trail_atr: float = 3.0,
+    atr_n: int = 14,
+    sma_mid: int = 75,
+    sma_slow: int = 200,
+) -> dict:
+    """保有銘柄の出口（損切り・トレイリング）を統一判定する決定論的な「出口層」。
+
+    複数の損切りルールを同時に評価し、発火したものと推奨アクションを返す：
+      - ハード損切り: 平均取得単価比 hard_stop_pct（既定-8%、kenmo。-10%でDUKE）
+      - トレイリング: シャンデリア・エグジット（直近 trail_n 日高値 − trail_atr×ATR）
+      - 75日/200日MA 割れ（中期トレンド転換）
+
+    保有後の手仕舞いに特化（入口判定は analyze_position 側）。OHLCV のみ。
+    """
+    import math
+
+    if df is None or len(df) < 30:
+        return {"ok": False, "error": "出口判定に十分な履歴がありません（約1.5ヶ月以上必要）"}
+    close = df["Close"].astype(float)
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    n = len(close)
+
+    def _fin(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return None
+        return f if math.isfinite(f) else None
+
+    last_close = _fin(close.iloc[-1])
+    if last_close is None or last_close <= 0:
+        return {"ok": False, "error": "価格データが欠損しています"}
+
+    atr_series = TechnicalSignals.atr(high, low, close, n=atr_n)
+    last_atr = None
+    for k in range(1, min(6, n) + 1):
+        last_atr = _fin(atr_series.iloc[-k])
+        if last_atr:
+            break
+
+    hh = _fin(high.tail(trail_n).max())
+    trailing_stop = (hh - trail_atr * last_atr) if (hh and last_atr) else None
+    sma_m = _fin(TechnicalSignals.sma(close, sma_mid).iloc[-1]) if n >= sma_mid else None
+    sma_s = _fin(TechnicalSignals.sma(close, sma_slow).iloc[-1]) if n >= sma_slow else None
+
+    hard_stop_price = None
+    if avg_cost:
+        ac = _fin(avg_cost)
+        if ac and ac > 0:
+            hard_stop_price = ac * (1 + hard_stop_pct)
+
+    triggered = []
+    if hard_stop_price is not None and last_close <= hard_stop_price:
+        triggered.append({"rule": "hard_stop", "label": f"ハード損切り（取得単価比{round(hard_stop_pct * 100)}%）",
+                          "level": round(hard_stop_price, 1)})
+    if trailing_stop is not None and last_close < trailing_stop:
+        triggered.append({"rule": "trailing_stop", "label": f"トレイリング割れ（{trail_n}日高値−{trail_atr:g}ATR）",
+                          "level": round(trailing_stop, 1)})
+    if sma_m is not None and last_close < sma_m:
+        triggered.append({"rule": "sma_mid_break", "label": f"{sma_mid}日MA割れ", "level": round(sma_m, 1)})
+    if sma_s is not None and last_close < sma_s:
+        triggered.append({"rule": "sma_slow_break", "label": f"{sma_slow}日MA割れ", "level": round(sma_s, 1)})
+
+    # アクション: ハード/トレイリング割れは即手仕舞い。MA割れ単独は縮小（一部利確）。
+    hard_hit = any(t["rule"] in ("hard_stop", "trailing_stop") for t in triggered)
+    ma_hit = any(t["rule"] in ("sma_mid_break", "sma_slow_break") for t in triggered)
+    if hard_hit:
+        action, note = "SELL", "損切り/トレイリングのストップ割れ。ルール通り手仕舞い（迷わず実行）。"
+    elif ma_hit:
+        action, note = "TRIM", "中期トレンドの節目割れ。一部利確して様子見、戻せなければ撤退。"
+    else:
+        action, note = "HOLD", "ストップは未抵触。トレイリングストップを切り上げて利を伸ばす。"
+
+    pnl_pct = None
+    if avg_cost:
+        ac = _fin(avg_cost)
+        if ac and ac > 0:
+            pnl_pct = round((last_close - ac) / ac * 100, 1)
+
+    return {
+        "ok": True,
+        "as_of": StyleStrategy._data_as_of(df),
+        "last_close": round(last_close, 1),
+        "atr": round(last_atr, 2) if last_atr else None,
+        "stops": {
+            "hard_stop": round(hard_stop_price, 1) if hard_stop_price else None,
+            "hard_stop_pct": round(hard_stop_pct * 100),
+            "trailing_stop": round(trailing_stop, 1) if trailing_stop else None,
+            "sma_mid": round(sma_m, 1) if sma_m else None,
+            "sma_slow": round(sma_s, 1) if sma_s else None,
+        },
+        "pnl_pct": pnl_pct,
+        "triggered": triggered,
+        "action": action,
+        "action_label": _ACTION_LABELS.get(action, action),
+        "note": note,
     }
 
 

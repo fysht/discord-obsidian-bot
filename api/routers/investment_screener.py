@@ -166,6 +166,8 @@ class ScreenerAdviseRequest(BaseModel):
     holdings: Optional[List[dict]] = None    # 省略時は保有ポートフォリオを自動取得
     days: int = 300
     with_financials: bool = False            # EDINET有報の安全性/キャッシュ指標を織り込む
+    capital: Optional[float] = None          # 総資金。与えると新規買い候補の建玉サイズを逆算
+    hard_stop_pct: float = -0.08             # 保有銘柄のハード損切り（取得単価比、kenmo -8%/DUKE -10%）
 
 
 @router.post("/advise", dependencies=[Depends(verify_api_key)])
@@ -179,6 +181,8 @@ async def screener_advise(req: ScreenerAdviseRequest):
         days=req.days,
         holdings=req.holdings,
         with_financials=req.with_financials,
+        capital=req.capital,
+        hard_stop_pct=req.hard_stop_pct,
     ))
 
 
@@ -195,6 +199,42 @@ async def screener_business_model(req: ScreenerBusinessModelRequest):
     結果は自動保存され、次回はキャッシュを返す（force=True で再分析）。"""
     cog = _get_screener_cog()
     return _json_sanitize(await cog.analyze_business_model(req.code, req.name or "", force=req.force))
+
+
+class ScreenerBacktestRequest(BaseModel):
+    codes: list[str]
+    days: int = 750
+    rebalance_days: int = 20
+    top_k: int = 5
+    lookback: int = 60
+
+
+@router.post("/backtest", dependencies=[Depends(verify_api_key)])
+async def screener_backtest(req: ScreenerBacktestRequest):
+    """与えた銘柄群で『定期リバランスでモメンタム上位を保有』する回転戦略 vs 等加重 buy&hold を
+    過去データで検証する（ポート単位の本格バックテスト・回転コスト込み・決定論的）。
+    『毎日入れ替えが買い持ちに勝つか』をコスト込みで裏取りする。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.backtest_rotation(
+        req.codes, days=req.days, rebalance_days=req.rebalance_days,
+        top_k=req.top_k, lookback=req.lookback))
+
+
+class ScreenerDeepResearchRequest(BaseModel):
+    code: str
+    name: Optional[str] = ""
+    sector: Optional[str] = ""
+    force: bool = False
+
+
+@router.post("/deep_research", dependencies=[Depends(verify_api_key)])
+async def screener_deep_research(req: ScreenerDeepResearchRequest):
+    """ディープリサーチ（日次ワークフロー③）。『特に強い』1銘柄を Web検索で網羅的に深掘り
+    （事業・決算事実・中計KPI・競合・追い風逆風・カタリスト・リスク・バリュエーション文脈）。
+    点数/目標株価/値動き予測は出さない（点数は④のエンジン側で確定）。結果はキャッシュ・force で再取得。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.deep_research(
+        req.code, req.name or "", req.sector or "", force=req.force))
 
 
 class ScreenerPerformanceRequest(BaseModel):

@@ -33,6 +33,7 @@ SCHEDULE_CATALOG: list[dict] = [
     {"key": "holdings_noon_review",   "label": "保有銘柄の昼チェック",    "time": "12:00", "dow": "weekday", "category": "manager", "description": "平日12時に保有銘柄の継続/縮小/売却をテクニカル×ファンダで診断しお知らせへ。12:30の売買判断の参考に（決定論的・無料）。"},
     {"key": "decision_review_verify", "label": "売買判断の答え合わせ",    "time": "15:45", "dow": "weekday", "category": "manager", "description": "平日の市場クローズ後に、過去の売買判断を市場平均と比べて答え合わせ（20/60営業日後）。新たに判定が出たときだけ的中率をお知らせへ。"},
     {"key": "auto_breakout_advise",   "label": "高値ブレイク×一括診断",  "time": "16:00", "dow": "weekday", "category": "manager", "description": "平日の大引け後に「じわじわ高値ブレイク」(topix500)で新規候補を抽出し、保有＋候補を一括診断（継続/売却・新規買い・入替・over_trading警告）してお知らせへ。"},
+    {"key": "auto_daily_screening",   "label": "日次スクリーニング×手法ラベル", "time": "16:15", "dow": "weekday", "category": "manager", "description": "平日の大引け後に全メソッドで日本株(topix500)＋米国株(sp500/mega)を横断抽出（どの投資手法が拾ったかのラベル付き）し、保有＋候補を一括診断（地合い・目標配分ドリフト・摩擦/流動性考慮の入替数量・的中率で建玉調整・勝ち株の買い増し）。さらに最強の新規買い候補 上位2件を Gemini でディープリサーチ（出典URL付き・7日キャッシュ）してお知らせへ。日次ワークフロー①〜③の自動化。"},
     {"key": "fitbit_morning",         "label": "Fitbit 朝レポート",       "time": "08:00", "dow": "daily",  "category": "manager", "description": "前夜の睡眠データを取得し、朝のメッセージで報告。"},
     {"key": "auto_news_sentiment",    "label": "保有銘柄ニュース朝刊",    "time": "08:30", "dow": "daily",  "category": "manager", "description": "保有銘柄のニュース差分を AI が短いダイジェスト（取り上げるべき銘柄のみ／好材料・悪材料・影響）にまとめてお知らせへ。"},
     {"key": "cost_alert",             "label": "コストアラート",          "time": "09:00", "dow": "daily",  "category": "manager", "description": "Gemini API 利用コストの監視通知。"},

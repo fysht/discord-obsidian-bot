@@ -325,6 +325,7 @@ class InvestmentCog(commands.Cog):
                 self.auto_holdings_noon_review_task,
                 self.auto_decision_review_verify_task,
                 self.auto_breakout_advise_task,
+                self.auto_daily_screening_task,
             ):
                 try:
                     task.start()
@@ -339,6 +340,7 @@ class InvestmentCog(commands.Cog):
             self.auto_holdings_noon_review_task,
             self.auto_decision_review_verify_task,
             self.auto_breakout_advise_task,
+            self.auto_daily_screening_task,
         ):
             try:
                 task.cancel()
@@ -806,6 +808,188 @@ class InvestmentCog(commands.Cog):
             parts.append("")
 
         parts.append("※ 当日確定の日足による決定論的診断です。新規買いは過熱・妙味薄を除外。最終判断は自己責任で。")
+        return {"ok": True, "report": "\n".join(p for p in parts if p is not None)}
+
+    @tasks.loop(time=datetime.time(hour=16, minute=15, tzinfo=JST))
+    async def auto_daily_screening_task(self):
+        """平日 16:15 (JST) 大引け後に、全メソッドで日本株＋米国株を横断抽出（どの投資手法が拾ったかの
+        ラベル付き）し、保有＋候補を一括診断（目標配分のドリフト・入替数量つき）してお知らせへ。
+        日次ワークフロー①の自動化（日米1:1配分のため両市場から候補抽出）。"""
+        if datetime.datetime.now(JST).weekday() >= 5:
+            return
+        from services.schedule_resolver import is_enabled
+        if not await is_enabled("auto_daily_screening"):
+            return
+        try:
+            result = await self.run_daily_screening()
+        except Exception:
+            logging.exception("auto_daily_screening_task failed")
+            return
+        if not result.get("ok") or not result.get("report"):
+            return
+        await self._notify_long("daily_screening", "🔎 今日の注目銘柄×手法", result["report"])
+
+    @auto_daily_screening_task.before_loop
+    async def _before_auto_daily_screening(self):
+        await self.bot.wait_until_ready()
+
+    async def run_daily_screening(
+        self, universes: Optional[list] = None,
+        styles: Optional[list] = None, top_n: int = 3, max_per_market: int = 10,
+        deep_research_top_n: int = 2,
+    ) -> dict:
+        """全メソッドで日本株＋米国株を横断抽出（手法ラベル付き union）し、保有＋候補を一括診断する。
+        run_multi_screening(combine_mode="any") を JP/US 各ユニバースで実行 → advise_portfolio を連結。
+        日次ワークフロー①「平日チャート分析→候補を手法ラベル付きでピックアップ＋保有分析」。
+        日米1:1 配分のため候補も両市場から拾う（決定論的・無料）。"""
+        screener = self.bot.get_cog("ScreenerCog")
+        if not screener:
+            return {"ok": False, "error": "ScreenerCog 未ロード"}
+
+        if styles is None:
+            from services.screener_engine import list_strategies
+            styles = [s["name"] for s in list_strategies()]
+
+        # 1) JP/US 各ユニバースを全メソッドで union 抽出（各候補に matched_styles＝どの手法が拾ったか）
+        matched_by_code: dict[str, list] = {}
+        cand_input: list[dict] = []
+        any_ok = False
+
+        async def _screen(universe: str):
+            nonlocal any_ok
+            if not universe:
+                return
+            try:
+                scr = await screener.run_multi_screening(
+                    styles=styles, top_n=int(top_n), universe_name=universe, combine_mode="any",
+                )
+            except Exception as e:
+                logging.warning(f"run_daily_screening screening失敗({universe}): {e}")
+                return
+            if not scr.get("ok"):
+                return
+            any_ok = True
+            cands = sorted((scr.get("candidates") or []),
+                           key=lambda c: c.get("score") or 0, reverse=True)[:max_per_market]
+            for c in cands:
+                code = c.get("code")
+                if not code or code in matched_by_code:
+                    continue
+                matched_by_code[code] = c.get("matched_styles") or []
+                cand_input.append({"code": code, "name": c.get("name"), "sector": c.get("sector")})
+
+        # 日本株 topix500 ＋ 米国株 sp500/mega を横断（重複コードは先勝ちでスキップ）。
+        for u in (universes or ["topix500", "us_sp500", "us_mega"]):
+            await _screen(u)
+
+        # 2) 保有＋候補を一括診断（目標配分・入替数量込み）
+        advice = await screener.advise_portfolio(candidates=cand_input, with_financials=False)
+        if not advice.get("ok"):
+            return advice
+        holds = [h for h in (advice.get("holdings") or []) if h.get("ok")]
+        cands_out = [c for c in (advice.get("candidates") or []) if c.get("ok")]
+        if not holds and not cands_out:
+            return {"ok": True, "report": ""}
+
+        today = (datetime.datetime.now(JST).strftime("%-m/%-d")
+                 if os.name != "nt" else datetime.datetime.now(JST).strftime("%m/%d"))
+        parts = [f"🔎 今日の注目銘柄 × 手法（{today} 大引け後）", advice.get("summary", ""), ""]
+
+        # 地合い（レジーム）：上昇相場でのみ攻める。リスクオフは新規買いを抑制。
+        reg = advice.get("regime") or {}
+        reg_bits = [f"{('日本株' if mk == 'JP' else '米国株')}: {(reg.get(mk) or {}).get('label', '不明')}"
+                    for mk in ("JP", "US") if mk in reg]
+        if reg_bits:
+            parts.append("🌐 地合い: " + " ／ ".join(reg_bits))
+            parts.append("")
+
+        # 目標配分（最高値型:待ち型=4:1／日本株:米国株=1:1）のドリフト
+        alloc = advice.get("allocation")
+        if alloc and alloc.get("ok"):
+            ba, ma = alloc["bucket_axis"], alloc["market_axis"]
+            parts.append("⚖️ 目標配分（時価ベース・目安）")
+            parts.append(f"- 最高値型:待ち型 = {ba['a']['pct']:g}%:{ba['b']['pct']:g}%"
+                         f"（目標{ba['a']['target_pct']:g}:{ba['b']['target_pct']:g}・ズレ{ba['drift_pct']:+g}pt）")
+            parts.append(f"- 日本株:米国株 = {ma['a']['pct']:g}%:{ma['b']['pct']:g}%"
+                         f"（目標{ma['a']['target_pct']:g}:{ma['b']['target_pct']:g}・ズレ{ma['drift_pct']:+g}pt）")
+            for w in alloc.get("warnings", []):
+                parts.append(f"  ⚠️ {w}")
+            parts.append("")
+
+        # 今日の候補（手法ラベル付き・日本株/米国株で分けて表示）
+        def _cand_line(r):
+            v = r["verdict"]
+            ms = matched_by_code.get(r["code"], [])
+            ms_disp = "・".join(screener._style_display(s) for s in ms) or "—"
+            flag = "🔵" if v["action"] == "BUY" else "・"
+            return (f"{flag} {r['code']} {r.get('name', '')}: "
+                    f"{v.get('action_label', v['action'])}（{r.get('score')}点）／ 手法: {ms_disp}")
+
+        diagnosed = sorted(cands_out, key=lambda r: r.get("score") or 0, reverse=True)
+        for mkt, mkt_label in (("JP", "日本株"), ("US", "米国株")):
+            rows = [r for r in diagnosed if (r.get("market") or "JP") == mkt]
+            if rows:
+                parts.append(f"【今日の候補・{mkt_label}（手法ラベル付き）】")
+                parts.extend(_cand_line(r) for r in rows)
+                parts.append("")
+
+        # 保有：売却/縮小の検討
+        sells = [r for r in holds if r["verdict"]["action"] in ("SELL", "TRIM")]
+        if sells:
+            parts.append("【保有：売却/縮小の検討】")
+            for r in sells:
+                v = r["verdict"]
+                parts.append(f"- {r['code']} {r.get('name', '')}: {v.get('action_label', v['action'])}"
+                             f"（{r.get('score')}点）　{v.get('note', '')}")
+            parts.append("")
+
+        # 勝ち株の買い増し（ピラミッディング）：含み益＋トレンド継続中の保有
+        pyramids = [r for r in holds if r.get("pyramid")]
+        if pyramids:
+            parts.append("【勝ち株の買い増し（利を伸ばす）】")
+            for r in pyramids:
+                parts.append(f"📈 {r['code']} {r.get('name', '')}: {r['pyramid'].get('note', '')}")
+            parts.append("")
+
+        caution = advice.get("over_trading_caution")
+        if caution:
+            parts += [caution, ""]
+
+        # 入替（数量つき・摩擦/流動性考慮・目標に寄せる入替を先頭）
+        rotations = (advice.get("rotations") or [])[:3]
+        if rotations:
+            parts.append("【入替の検討（目標配分に寄せる）】")
+            parts.extend(f"🔁 {rot.get('reason', '')}" for rot in rotations)
+            parts.append("")
+
+        # ③ ディープリサーチの自動実行：最強の新規買い候補 上位 deep_research_top_n 件だけ
+        # Gemini で網羅的に深掘り（7日キャッシュでコスト上限固定・点数はエンジン据え置き）。
+        if deep_research_top_n and getattr(self, "gemini_client", None):
+            buys = [r for r in diagnosed if r["verdict"]["action"] == "BUY"][:int(deep_research_top_n)]
+            dr_parts = []
+            for r in buys:
+                try:
+                    dr = await screener.deep_research(r["code"], r.get("name", ""), r.get("sector", ""))
+                except Exception as e:
+                    logging.debug(f"daily deep_research エラー {r['code']}: {e}")
+                    continue
+                if dr.get("ok") and dr.get("report"):
+                    tag = "💾キャッシュ" if dr.get("cached") else "🆕新規"
+                    warn = (" ⚠️" + "・".join(dr.get("warnings") or [])) if dr.get("warnings") else ""
+                    dr_parts.append(f"### 🔬 {r['code']} {r.get('name', '')} ディープリサーチ（{tag}{warn}）\n"
+                                    f"{dr['report']}")
+            if dr_parts:
+                parts.append("──────────")
+                parts.append(f"🔬 特に強い新規買い候補のディープリサーチ（上位{len(dr_parts)}件・出典URL付き）")
+                parts.append("")
+                parts.extend(dr_parts)
+                parts.append("")
+
+        if not any_ok:
+            parts.append("※ スクリーニングは実行できませんでした（保有のみ診断）。")
+            parts.append("")
+        parts.append("※ 当日確定の日足×ファンダ（米国株は時間差あり）の決定論的診断です。"
+                     "手法ラベルは『どのメソッドが拾ったか』。日米1:1配分のため両市場から抽出。最終判断は自己責任で。")
         return {"ok": True, "report": "\n".join(p for p in parts if p is not None)}
 
     # ==========================================================
@@ -1800,6 +1984,10 @@ class InvestmentCog(commands.Cog):
         if shares <= 0 or avg_cost <= 0:
             return {"ok": False, "error": "shares と avg_cost は正の値が必要です"}
 
+        # 口座区分：NISA（非課税）なら入替の摩擦計算で譲渡益税を0にする。既定は特定/一般（課税）。
+        acc_raw = str(holding.get("account") or "").strip().lower()
+        account = "nisa" if acc_raw in ("nisa", "非課税", "tax_free") else "taxable"
+
         holdings = await self._read_json_file(
             PORTFOLIO_FOLDER, HOLDINGS_FILE, default=[]
         )
@@ -1822,6 +2010,8 @@ class InvestmentCog(commands.Cog):
             existing["shares"] = total_shares
             existing["avg_cost"] = round(new_avg, 4)
             existing["updated_at"] = now_iso
+            if holding.get("account"):
+                existing["account"] = account
             if holding.get("name"):
                 existing["name"] = holding["name"]
             if holding.get("sector"):
@@ -1838,6 +2028,7 @@ class InvestmentCog(commands.Cog):
                     "sector": holding.get("sector") or "",
                     "shares": shares,
                     "avg_cost": avg_cost,
+                    "account": account,
                     "currency": holding.get("currency") or ("JPY" if market == "JP" else "USD"),
                     "opened_at": holding.get("opened_at") or now_iso,
                     "updated_at": now_iso,
@@ -2023,6 +2214,11 @@ class InvestmentCog(commands.Cog):
         for key in ("name", "sector", "currency", "notes", "preferred_method"):
             if key in fields and fields[key] is not None:
                 existing[key] = fields[key]
+
+        # 口座区分（NISA=非課税／特定=課税）。入替の摩擦(税)計算に使う。
+        if fields.get("account") is not None:
+            acc = str(fields["account"]).strip().lower()
+            existing["account"] = "nisa" if acc in ("nisa", "非課税", "tax_free") else "taxable"
 
         # 購入日(opened_at)の補正。YYYY-MM-DD を ISO 日時に正規化して保存。
         if fields.get("opened_at"):

@@ -16,7 +16,7 @@ from discord.ext import commands
 
 from config import JST
 from services.screener_service import ScreenerService
-from services.screener_engine import list_strategies
+from services.screener_engine import list_strategies, factor_axes_catalog
 
 
 GEMINI_FLASH_MODEL = "gemini-2.5-flash"
@@ -38,7 +38,9 @@ class ScreenerCog(commands.Cog):
     # ==========================================================
 
     async def list_styles(self) -> dict:
-        return {"ok": True, "styles": list_strategies()}
+        # styles（上層メソッド）に加え、共通ファクター軸（下層ゲートの語彙）も返す。
+        # 各 style の axes で「メソッド＝軸の組み合わせ」が辿れる＝2層モデルの地図。
+        return {"ok": True, "styles": list_strategies(), "axes": factor_axes_catalog()}
 
     async def list_universes(self) -> dict:
         names = await self.service.list_universes()
@@ -122,6 +124,12 @@ class ScreenerCog(commands.Cog):
     async def analyze_projection(self, code: str, days: int = 750) -> dict:
         return await self.service.analyze_projection(code, days)
 
+    async def backtest_rotation(self, codes: list, days: int = 750, rebalance_days: int = 20,
+                                top_k: int = 5, lookback: int = 60) -> dict:
+        """与えた銘柄群でローテーション戦略 vs buy&hold をバックテスト（ポート単位）。"""
+        return await self.service.backtest_rotation(
+            codes, days=days, rebalance_days=rebalance_days, top_k=top_k, lookback=lookback)
+
     async def score_all_methods(self, code: str, days: int = 300) -> dict:
         """1銘柄を登録済み全メソッドで採点し、メソッド別の点数と得意メソッドを返す。"""
         return await self.service.score_all_methods(code, days)
@@ -132,6 +140,8 @@ class ScreenerCog(commands.Cog):
         days: int = 300,
         holdings: Optional[list[dict]] = None,
         with_financials: bool = False,
+        capital: Optional[float] = None,
+        hard_stop_pct: float = -0.08,
     ) -> dict:
         """保有銘柄（InvestmentCog のポートフォリオ）＋候補をテクニカル×ファンダで一括診断。
         holdings 未指定なら InvestmentCog から取得する。
@@ -147,7 +157,8 @@ class ScreenerCog(commands.Cog):
             else:
                 holdings = []
         return await self.service.advise_portfolio(
-            holdings, candidates=candidates, days=days, with_financials=with_financials)
+            holdings, candidates=candidates, days=days, with_financials=with_financials,
+            capital=capital, hard_stop_pct=hard_stop_pct)
 
     async def measure_performance(
         self,
@@ -198,6 +209,39 @@ class ScreenerCog(commands.Cog):
             return {"ok": False, "error": "定性分析を取得できませんでした。"}
         await _research_cache_set("bizmodel", code, {"report": text, "name": name})
         return {"ok": True, "code": code, "name": name, "report": text, "cached": False}
+
+    async def deep_research(self, code: str, name: str = "", sector: str = "", force: bool = False) -> dict:
+        """ディープリサーチ（日次ワークフロー③）。決定論エンジンで『特に強い』と絞った1銘柄を、
+        Web検索で網羅的に深掘り（事業・決算事実・中計KPI・競合・追い風逆風・カタリスト・リスク・
+        バリュエーション文脈）。点数/目標株価/値動き予測は出さない（点数は④のエンジン側で確定）。
+        結果はキャッシュ。force=True で再取得。"""
+        code = str(code or "").strip()
+        if not code:
+            return {"ok": False, "error": "コードを指定してください"}
+        from services.screener_service import _research_cache_get, _research_cache_set
+
+        if not force:
+            cached = await _research_cache_get("deepresearch", code, ttl_days=7)
+            if cached and cached.get("report"):
+                return {"ok": True, "code": code, "name": cached.get("name") or name,
+                        "report": cached["report"], "warnings": cached.get("warnings", []),
+                        "cached": True, "fetched_at": cached.get("fetched_at")}
+
+        inv = self.bot.get_cog("InvestmentCog")
+        if not inv or not getattr(inv, "gemini_client", None):
+            return {"ok": False, "error": "Gemini が未設定のためディープリサーチを実行できません。"}
+        prompt = ScreenerService.build_deep_research_prompt(code, name, sector)
+        try:
+            text = await inv._gemini_with_search(prompt, feature_key="investment_screener")
+        except Exception as e:
+            return {"ok": False, "error": f"ディープリサーチに失敗しました: {e}"}
+        if not text:
+            return {"ok": False, "error": "ディープリサーチを取得できませんでした。"}
+        # ハルシネーション禁止語（予測・確率・目標株価）の混入チェック
+        text, warnings = ScreenerService.sanitize_qualitative_output(text)
+        await _research_cache_set("deepresearch", code, {"report": text, "name": name, "warnings": warnings})
+        return {"ok": True, "code": code, "name": name, "report": text,
+                "warnings": warnings, "cached": False}
 
     async def run_multi_screening(
         self,
