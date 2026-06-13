@@ -524,6 +524,34 @@
             <div id="tab-invest" class="tab-pane">
                 <div class="scroll-container">
 
+                    <!-- 今日の進め方（常時表示の起点） -->
+                    <div class="card" style="border:1px solid rgba(126,224,160,0.4);">
+                        <div class="card-header">
+                            <span class="card-icon">🧭</span>
+                            <span class="card-title">今日の進め方</span>
+                        </div>
+                        <div class="card-body">
+                            <button class="modal-btn submit" style="width:100%;text-align:left;font-size:0.88rem;font-weight:700;padding:10px 12px;" onclick="openPortfolioAdvice(true)" title="保有＋候補を、守り(出口)→保有管理→新規候補→入替→配分/検証 の順に一括診断します">▶ 毎日ここから：保有＆候補を一括診断</button>
+                            <div style="font-size:0.72rem;color:var(--text-muted);margin:5px 0 8px;">守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示します。</div>
+                            <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:3px;">週次・月次の補助：</div>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                                <button class="chip-btn" onclick="openBreakoutAdvise()" title="新規候補を抽出して一括診断（平日16時の自動と同じ）">🚀 候補を抽出（週次）</button>
+                                <button class="chip-btn" onclick="openPortfolioPerformance()" title="保有が市場平均をアウトパフォームできているか測定">📊 市場平均と比較（月次）</button>
+                                <button class="chip-btn" onclick="openTradeReview()" title="過去の売買が正しかったか（市場比）と実現損益を振り返る">🔎 売買の振り返り（月次）</button>
+                                <button class="chip-btn" onclick="openHoldingsReview()" title="平日12時の自動「昼チェック」を今すぐ実行">🕛 昼チェック</button>
+                            </div>
+                            <details style="margin-top:10px;background:rgba(78,161,255,0.06);border:1px solid rgba(78,161,255,0.25);border-radius:8px;padding:6px 10px;">
+                                <summary style="cursor:pointer;font-weight:700;font-size:0.8rem;color:#9ec5ff;">📋 進め方ガイド（タップで開く）</summary>
+                                <div style="font-size:0.74rem;color:var(--text-secondary);margin-top:6px;line-height:1.7;">
+                                    <b>毎日（守り・5分）</b>：①地合い → ②保有の要対応(🔴売却/🚪損切り)だけ即対応 → ③それ以外は握る。新規は眺めるだけ。<br>
+                                    <b>週1〜2回（攻めの精査）</b>：強い候補(🔵BUY・手法ラベル複数)に絞り、カードの🧪検証・🔬ディープリサーチ・🧠学習を見て買う。地合いオン＋妙味あり(ウォッチでない)時だけ。<br>
+                                    <b>月1（検証・舵取り）</b>：📊バックテストで回転が買い持ちに勝つか確認し、配分(4:1/1:1)のドリフトを入替で寄せる。<br>
+                                    <b>入替は厳選</b>：🎯目標に寄せる＋税の摩擦を超える実力差がある時だけ（毎日は入れ替えない）。
+                                </div>
+                            </details>
+                        </div>
+                    </div>
+
                     <!-- 銘柄スクリーナー -->
                     <div class="card">
                         <div class="card-header">
@@ -532,7 +560,7 @@
                             <button class="mini-link" onclick="openScreenerModal()">開く</button>
                         </div>
                         <div class="card-body">
-                            <div class="loading-placeholder">スタイル別（じわじわ高値ブレイク / バリュー / グロース）に買い候補を多角的に抽出します。Python 計算で機械的に絞り込み、上位銘柄のみ Gemini で質的補強。</div>
+                            <div class="loading-placeholder">手法別（新高値ブレイク(DUKE) / 決算モメンタム(kenmo) / 中長期・小型成長(片山晃) / 資産・シクリカルバリュー(たーちゃん) / じわじわ高値ブレイク ほか）に買い候補を多角的に抽出。Python 計算で機械的に絞り込み、上位銘柄のみ Gemini で質的補強。</div>
                         </div>
                     </div>
 
