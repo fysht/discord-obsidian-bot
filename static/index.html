@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=55">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=56">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -302,16 +302,18 @@
                         </div>
                         <div id="dash-tasks" class="card-body"></div>
                     </div>
-                    <div class="card">
-                        <div class="card-header">
-                            <span class="card-icon">📧</span>
-                            <span class="card-title">メール</span>
-                            <button class="mini-link" onclick="loadGmailInbox(currentGmailState)" title="更新">🔄 更新</button>
-                            <button class="mini-link" onclick="refreshGmailServer()" title="新着取り込み">📥 取り込み</button>
-                            <button class="mini-link" onclick="toggleGmailState()" id="gmail-state-toggle" title="表示中の状態を切替">📬 未処理</button>
-                        </div>
+                    <details class="card" data-card-key="gmail">
+                        <summary>
+                            <div class="card-header">
+                                <span class="card-icon">📧</span>
+                                <span class="card-title">メール</span>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadGmailInbox(currentGmailState)" title="更新">🔄 更新</button>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); refreshGmailServer()" title="新着取り込み">📥 取り込み</button>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); toggleGmailState()" id="gmail-state-toggle" title="表示中の状態を切替">📬 未処理</button>
+                            </div>
+                        </summary>
                         <div id="dash-gmail-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
-                    </div>
+                    </details>
 
                     <!-- 食事ログ -->
                     <div class="card">
@@ -479,14 +481,6 @@
             <!-- ========== SCHEDULE TAB (CALENDAR/TASKS) ========== -->
             <div id="tab-schedule" class="tab-pane">
                 <div class="scroll-container">
-
-                    <div class="card next-actions-card">
-                        <div class="card-header">
-                            <span class="card-icon">🚀</span>
-                            <span class="card-title">次のアクション</span>
-                        </div>
-                        <div id="dash-next-actions" class="card-body list-body"></div>
-                    </div>
 
                     <div class="card calendar-card">
                         <div class="card-header">
@@ -1932,6 +1926,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=81"></script>
+    <script src="/static/js/app_v12.js?v=82"></script>
 </body>
 </html>

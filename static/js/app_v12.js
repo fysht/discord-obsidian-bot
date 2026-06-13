@@ -668,9 +668,9 @@ window.resubscribePush = async () => {
     }
 };
 
-// カード開閉状態を localStorage で記憶（情報タブの <details data-card-key> が対象）
+// カード開閉状態を localStorage で記憶（情報タブ・ログタブの <details data-card-key> が対象）
 function _restoreCardStates() {
-    document.querySelectorAll('#tab-info [data-card-key]').forEach(el => {
+    document.querySelectorAll('#tab-info [data-card-key], #tab-log [data-card-key]').forEach(el => {
         const key = el.dataset.cardKey;
         const saved = localStorage.getItem(`card_open_${key}`);
         if (saved !== null) el.open = saved === '1';
@@ -701,6 +701,7 @@ function switchTab(tab) {
     }
     // ログタブを開いたときに Fitbit データとデイリーノート（昨日）を自動ロード
     if (tab === 'log') {
+        _restoreCardStates();
         if (!_fitbitRows.length) loadFitbitAllData(false);
         if (typeof loadDailyNote === 'function') loadDailyNote();
         if (typeof loadMediaItems === 'function') loadMediaItems();
@@ -992,6 +993,7 @@ function _mealQuestionControlsHtml(q) {
         <div style="display:flex;flex-wrap:wrap;gap:6px;">
             <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="openMealFromQuestion(${q.id}, '${mt}', true)">📷 写真で記録</button>
             <button class="modal-btn cancel" style="padding:4px 12px;font-size:0.78rem;" onclick="openMealFromQuestion(${q.id}, '${mt}', false)">✍️ 手入力</button>
+            <button class="modal-btn cancel" style="padding:4px 10px;font-size:0.78rem;" onclick="deleteLogQuestion(${q.id})" title="この質問を削除">🗑</button>
         </div>`;
 }
 
@@ -1040,8 +1042,15 @@ function _afterMealQuestionRecorded(qid, text) {
 
 // [QUESTIONS:scope:YYYY-MM-DD] 付きメッセージにインライン回答UIを描画する
 async function renderInlineQuestionForm(msgDiv, scope, date) {
+    // 同じ日付・スコープの回答欄が既にチャット内にあれば取り除き、最新の1枚だけ残す。
+    // マネージャーが同じ scope を1日に複数回尋ねても、質問・回答欄が重複表示されないようにする。
+    document.querySelectorAll(
+        `.msg-inline-questions[data-q-scope="${scope}"][data-q-date="${date}"]`
+    ).forEach(el => el.remove());
     const wrap = document.createElement('div');
     wrap.className = 'msg-inline-questions';
+    wrap.dataset.qScope = scope;
+    wrap.dataset.qDate = date;
     wrap.style.cssText = 'margin-top:6px;padding:8px 10px;background:rgba(255,212,84,0.08);border:1px solid rgba(255,212,84,0.3);border-radius:8px;';
     wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">回答欄を読み込み中…</div>';
     const contentEl = msgDiv.querySelector('.msg-content') || msgDiv;
@@ -1361,7 +1370,9 @@ window.deleteLogQuestion = async (qid) => {
     try {
         await apiFetch(`/api/daily_questions/${qid}`, { method: 'DELETE' });
     } catch (e) { /* 失敗してもUIは進める */ }
-    await renderLogInbox();
+    // 「今日の記録」だけでなく、チャット内のインライン回答欄からも即座に取り除く。
+    document.querySelectorAll(`.inline-q[data-qid="${qid}"]`).forEach(el => el.remove());
+    if (typeof renderLogInbox === 'function') await renderLogInbox();
     refreshLogInboxBadge();
 };
 
@@ -2030,29 +2041,6 @@ async function loadDashboard() {
                 });
             } else {
                 journalEl.innerHTML = '<div class="loading-placeholder">今日の日記はまだ生成されていません。</div>';
-            }
-        }
-
-        // 次のアクション
-        const naEl = $('#dash-next-actions');
-        if (naEl) {
-            if (data.next_actions && data.next_actions.trim()) {
-                const lines = data.next_actions.split('\n').filter(l => l.trim());
-                naEl.innerHTML = lines.map(line => {
-                    const clean = line.replace(/^-\s*/, '').trim();
-                    const listMatch = clean.match(/^\[(.+?)\]\s*(.*)/);
-                    const list = listMatch ? listMatch[1] : '';
-                    const text = listMatch ? listMatch[2] : clean;
-                    const badge = list
-                        ? `<span class="na-list-badge">${escapeHtml(list)}</span>`
-                        : `<span class="na-list-badge na-list-badge-empty"></span>`;
-                    return `<div class="list-item na-row">
-                        ${badge}
-                        <span class="na-text">${escapeHtml(text)}</span>
-                    </div>`;
-                }).join('');
-            } else {
-                naEl.innerHTML = '<div class="loading-placeholder">次のアクションはまだ生成されていません。</div>';
             }
         }
 

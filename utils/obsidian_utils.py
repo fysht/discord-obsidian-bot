@@ -134,11 +134,18 @@ def _sort_section_by_time(section_text: str) -> str:
                 cur.append(line)
 
     time_re = re.compile(r"^[-*]\s*(\d{1,2}):(\d{2})\b")
+    # 食事ログのように時刻を持たないが食事区分ラベル【朝食】等を持つ行は、
+    # 区分の代表時刻で並べる（偽の時刻を表示しなくても区分順に整列させるため）。
+    _meal_label_minutes = {"朝食": 8 * 60 + 30, "昼食": 12 * 60 + 45, "夕食": 20 * 60, "間食": 15 * 60 + 30}
+    meal_label_re = re.compile(r"【(朝食|昼食|夕食|間食)】")
 
     def _key(block: list[str]):
         m = time_re.match(block[0])
         if m:
             return (0, int(m.group(1)) * 60 + int(m.group(2)))
+        lm = meal_label_re.search(block[0])
+        if lm:
+            return (0, _meal_label_minutes.get(lm.group(1), 12 * 60))
         return (1, 0)
 
     entries.sort(key=_key)  # list.sort は安定ソート

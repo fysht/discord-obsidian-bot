@@ -24,6 +24,19 @@ MEAL_TYPE_TIMES = {
     "間食": "15:30", "snack": "15:30",
 }
 
+# 食事区分の正規化（JP/EN どちらの入力でも内部キーを揃える）と、ノート表示用の日本語ラベル。
+_MEAL_TYPE_NORM = {
+    "朝食": "breakfast", "breakfast": "breakfast",
+    "昼食": "lunch", "lunch": "lunch",
+    "夕食": "dinner", "dinner": "dinner",
+    "間食": "snack", "snack": "snack",
+}
+_MEAL_TYPE_LABEL_JA = {"breakfast": "朝食", "lunch": "昼食", "dinner": "夕食", "snack": "間食"}
+
+
+def _norm_meal_type(s: str) -> str:
+    return _MEAL_TYPE_NORM.get((s or "").strip(), (s or "").strip())
+
 
 class MealAnalyzeRequest(BaseModel):
     image_base64: str
@@ -264,7 +277,15 @@ async def meals_save(req: MealSaveRequest):
     # 外食時は店名・注文・金額・★を併記して見返しやすくする。
     try:
         from api.routers._obsidian_helpers import append_lifelog_line
-        parts = [f"- {time} 🍽"]
+        # 先頭は食事区分ラベル（朝食/昼食/夕食/間食）を主にする。実際に入力された時刻が
+        # あるときだけ HH:MM を併記する（未入力時の代表時刻は“偽の時刻”でノイズになるため出さない）。
+        # 並び順は update_section 側が区分ラベルを代表時刻として扱うため、時刻を出さなくても区分順に整列する。
+        norm_mt = _norm_meal_type(mtype)
+        label_ja = _MEAL_TYPE_LABEL_JA.get(norm_mt, "")
+        lead = "- " + (f"{time} " if (req.time or "").strip() else "") + "🍽"
+        if label_ja:
+            lead += f"【{label_ja}】"
+        parts = [lead]
         if req.restaurant:
             parts.append(f"@{req.restaurant.strip()}")
         parts.append(name)
@@ -298,6 +319,34 @@ async def meals_save(req: MealSaveRequest):
         )
     except Exception as e:
         logging.debug(f"meals_save expense sync failed: {e}")
+
+    # この食事ログで、同日の未解決「食事」質問があれば自動的に閉じる。
+    # 質問UI以外（レシピのリンクや食事ログカードの📷/✏️）から登録しても、
+    # 「今日の記録」に食事の質問が残り続けないようにする。
+    try:
+        from api.database import get_questions_by_date, resolve_question_by_id
+        pending = [
+            q for q in (await get_questions_by_date(date, scope="meal") or [])
+            if q.get("status") != "resolved"
+        ]
+        norm_mt = _norm_meal_type(mtype)
+        targets = []
+        for q in pending:
+            try:
+                q_mt = _norm_meal_type((json.loads(q.get("context") or "{}") or {}).get("meal_type") or "")
+            except Exception:
+                q_mt = ""
+            if norm_mt and q_mt and q_mt == norm_mt:
+                targets.append(q)          # 区分が一致
+            elif not q_mt:
+                targets.append(q)          # 区分指定のない質問はどの食事でも閉じてよい
+        # 区分が判定できず該当なしでも、未解決の食事質問が1件だけなら閉じる（取りこぼし防止）。
+        if not targets and not norm_mt and len(pending) == 1:
+            targets = pending
+        for q in targets:
+            await resolve_question_by_id(q["id"])
+    except Exception as e:
+        logging.debug(f"meals_save question auto-resolve failed: {e}")
 
     return {"ok": True, "id": meal_id, "date": date, "time": time, "expense_id": expense_id}
 
