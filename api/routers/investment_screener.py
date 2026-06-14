@@ -25,17 +25,6 @@ def _get_screener_cog():
     return cog
 
 
-def _get_investment_cog():
-    from api import app
-    bot = getattr(app.state, "bot", None)
-    if not bot:
-        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
-    cog = bot.get_cog("InvestmentCog")
-    if not cog:
-        raise HTTPException(status_code=503, detail="InvestmentCogがロードされていません。")
-    return cog
-
-
 def _json_sanitize(obj):
     """dict/list を再帰的に走査し、NaN/Inf を None に置換して JSON 互換にする。"""
     if isinstance(obj, float):
@@ -193,42 +182,31 @@ async def screener_advise(req: ScreenerAdviseRequest):
     auto_screen=True なら、先に全メソッド（じわじわ高値ブレイク/新高値DUKE/決算モメンタムkenmo/片山/たーちゃん…）で
     日米ユニバースを横断スクリーニングし、その候補を新規候補として診断に組み込む。"""
     cog = _get_screener_cog()
-
-    # auto_screen: 全メソッド横断で新規候補を自動抽出し、明示候補があれば union（コード重複は先勝ち）。
-    candidates = list(req.candidates or [])
-    matched_by_code: dict = {}
-    if req.auto_screen:
-        try:
-            gathered = await _get_investment_cog().gather_daily_candidates()
-            matched_by_code = gathered.get("matched_by_code") or {}
-            seen = {str(c.get("code")) for c in candidates if c.get("code")}
-            for c in (gathered.get("candidates") or []):
-                code = str(c.get("code") or "")
-                if code and code not in seen:
-                    seen.add(code)
-                    candidates.append(c)
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # スクリーニング失敗時は明示候補（あれば）だけで診断を続行
-
-    result = await cog.advise_portfolio(
-        candidates=candidates or None,
+    result = await cog.advise_portfolio_full(
+        candidates=req.candidates,
         days=req.days,
         holdings=req.holdings,
         with_financials=req.with_financials,
         capital=req.capital,
         hard_stop_pct=req.hard_stop_pct,
+        auto_screen=req.auto_screen,
     )
-
-    # どの手法が拾った候補かをカードで示せるよう、診断結果の候補に手法の表示名を付与する。
-    if matched_by_code and isinstance(result, dict):
-        for c in (result.get("candidates") or []):
-            ms = matched_by_code.get(str(c.get("code") or ""))
-            if ms:
-                c["matched_styles"] = [cog._style_display(s) for s in ms]
-
     return _json_sanitize(result)
+
+
+@router.post("/advise_async", dependencies=[Depends(verify_api_key)])
+async def screener_advise_async(req: ScreenerAdviseRequest):
+    """一括診断をバックグラウンドで起動し job_id を返す。auto_screen の全メソッド走査や
+    EDINET 財務つき診断は1〜3分かかり HTTP がタイムアウトするため、これを使う。
+    進捗は /jobs/{job_id} でポーリングし、完了時は Push 通知が飛ぶ。"""
+    cog = _get_screener_cog()
+    return await cog.start_advise_job(
+        candidates=req.candidates,
+        with_financials=req.with_financials,
+        capital=req.capital,
+        hard_stop_pct=req.hard_stop_pct,
+        auto_screen=req.auto_screen,
+    )
 
 
 class ScreenerBusinessModelRequest(BaseModel):

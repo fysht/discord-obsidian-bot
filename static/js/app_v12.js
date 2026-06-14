@@ -5047,7 +5047,8 @@ function initMain() {
 
     // スクリーニング完了のプッシュ通知から起動: 投資タブを開き、ジョブ結果をポーリング再開
     const screenerJob = params.get('screener_job') || '';
-    const wantInvestTab = params.get('tab') === 'invest' || !!screenerJob;
+    const adviseJob = params.get('advise_job') || '';
+    const wantInvestTab = params.get('tab') === 'invest' || !!screenerJob || !!adviseJob;
     if (wantInvestTab && apiKey) {
         setTimeout(() => {
             switchTab('invest');
@@ -5055,6 +5056,8 @@ function initMain() {
                 try { localStorage.setItem(SCREENER_ACTIVE_JOB_KEY, screenerJob); } catch {}
                 if (typeof resumeScreenerJobIfAny === 'function') resumeScreenerJobIfAny();
             }
+            // 一括診断完了の通知から起動: 診断モーダルを開いて結果を表示
+            if (adviseJob && typeof resumeAdviceJobIfAny === 'function') resumeAdviceJobIfAny(adviseJob);
         }, 600);
     }
 
@@ -11658,7 +11661,10 @@ function _renderScreenerCandidates(data) {
     const adviseBar = `<div style="margin-bottom:10px;padding:8px 10px;border:1px solid rgba(126,224,160,0.3);border-radius:8px;background:rgba(126,224,160,0.06);">
         <div style="font-weight:700;font-size:0.82rem;color:#7ee0a0;margin-bottom:6px;">🧭 ここからの進め方</div>
         <button class="mini-link" style="display:block;width:100%;text-align:left;font-size:0.84rem;font-weight:700;padding:8px 12px;background:rgba(126,224,160,0.18);color:#7ee0a0;border:1px solid rgba(126,224,160,0.5);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true, false, true);" title="全メソッドで日米を自動スクリーニングして新規候補を抽出し、保有＋候補を、守り(出口)→保有管理→新規候補→入替→配分/検証 の順に一括診断します（1〜3分）">▶ 毎日ここから：保有＆候補を一括診断</button>
-        <div style="font-size:0.7rem;color:var(--text-muted);margin:4px 0 8px;">全手法で日米を自動スクリーニング → 守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示（1〜3分）。中の「📋 進め方ガイド」も参照。</div>
+        <div style="display:flex;justify-content:flex-end;margin:4px 0;">
+            <button class="mini-link" style="font-size:0.72rem;" onclick="event.preventDefault();openLastAdvice();" title="直近で完了した一括診断の結果を、再診断せずそのまま表示します">📄 前回の結果を見る</button>
+        </div>
+        <div style="font-size:0.7rem;color:var(--text-muted);margin:4px 0 8px;">全手法で日米を自動スクリーニング → 守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示（1〜3分）。閉じても「前回の結果を見る」で再表示できます。中の「📋 進め方ガイド」も参照。</div>
         <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:3px;">週次・月次の補助：</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
             <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(255,138,101,0.12);color:#ff8a65;border:1px solid rgba(255,138,101,0.35);border-radius:6px;" onclick="event.preventDefault();openBreakoutAdvise();" title="「じわじわ高値ブレイク」(topix500)で新規候補を抽出し一括診断（平日16時の自動と同じ）">🚀 候補を抽出（週次）</button>
@@ -11915,7 +11921,8 @@ window.openMethodScores = async (code, name, opts = {}) => {
 function _renderMethodScores(r, code, opts) {
     const catLabels = { technical: 'テクニカル分析', fundamental: 'ファンダメンタルズ分析', hybrid: '複合' };
     const isHolding = !!opts.isHolding;
-    const current = opts.preferred || '';
+    // 得意メソッドは複数可。カンマ区切り文字列を配列にして判定する。
+    const currentList = String(opts.preferred || '').split(',').map(s => s.trim()).filter(Boolean);
     const bar = (s) => {
         const w = Math.max(0, Math.min(100, s || 0));
         const col = (s != null && s >= 60) ? '#7ee0a0' : '#4ea1ff';
@@ -11935,11 +11942,12 @@ function _renderMethodScores(r, code, opts) {
         html += `<div style="font-weight:700;margin:8px 0 4px;">${catLabels[cat] || cat}</div>`;
         arr.forEach(m => {
             const sc = (m.score == null) ? '—' : m.score;
+            const isPref = currentList.includes(m.style);
             const setBtn = isHolding
-                ? `<button class="mini-link" style="font-size:0.7rem;padding:2px 6px;white-space:nowrap;" onclick="setPreferredMethod('${code.replace(/'/g, '&#39;')}','${m.style}')">${current === m.style ? '★得意' : '☆得意に'}</button>`
+                ? `<button class="mini-link" style="font-size:0.7rem;padding:2px 6px;white-space:nowrap;" onclick="togglePreferredMethod('${code.replace(/'/g, '&#39;')}','${m.style}')">${isPref ? '★得意' : '☆得意に'}</button>`
                 : '';
             html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed rgba(255,255,255,0.06);">
-                <div style="min-width:140px;color:${current === m.style ? '#ffd454' : 'var(--text-primary)'};">${m.passed ? '✅ ' : ''}${escapeHtml(m.display_name)}</div>
+                <div style="min-width:140px;color:${isPref ? '#ffd454' : 'var(--text-primary)'};">${m.passed ? '✅ ' : ''}${escapeHtml(m.display_name)}</div>
                 ${bar(m.score)}
                 <div style="min-width:38px;text-align:right;font-weight:700;color:${scoreColor(m.score, m.passed)};">${sc}</div>
                 ${setBtn}
@@ -11947,22 +11955,26 @@ function _renderMethodScores(r, code, opts) {
         });
     });
     html += `<div style="font-size:0.7rem;color:var(--text-muted);border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;margin-top:8px;">
-        ※ 点数は各メソッドの条件通過率（near-miss含む）。✅は全条件通過。${r.has_fundamentals ? '' : '（ファンダ未取得のためファンダ系は採点不可の場合あり）'}</div>`;
+        ※ 点数は各メソッドの条件通過率（near-miss含む）。✅は全条件通過。${isHolding ? '★得意は複数選べます（もう一度押すと解除）。' : ''}${r.has_fundamentals ? '' : '（ファンダ未取得のためファンダ系は採点不可の場合あり）'}</div>`;
     return html;
 }
 
-// 保有銘柄に「この銘柄が有利に見えるメソッド」を保存する
-window.setPreferredMethod = async (code, style) => {
+// 保有銘柄の「得意メソッド」を1つトグルする（複数選択可）。カンマ区切りで保存する。
+window.togglePreferredMethod = async (code, style) => {
+    const h = (_investHoldingsCache || []).find(x => x.code === code);
+    const cur = String((h && h.preferred_method) || '').split(',').map(s => s.trim()).filter(Boolean);
+    const next = cur.includes(style) ? cur.filter(s => s !== style) : [...cur, style];
+    const joined = next.join(',');
     try {
         const data = await apiFetch('/api/investment/portfolio/edit', {
             method: 'POST',
-            body: JSON.stringify({ code, preferred_method: style }),
+            body: JSON.stringify({ code, preferred_method: joined }),
         });
         if (data && data.ok) {
-            showToast(`得意メソッドを「${_methodLabel(style)}」に保存しました`);
-            const h = (_investHoldingsCache || []).find(x => x.code === code);
-            if (h) h.preferred_method = style;
-            window.openMethodScores(code, (h && h.name) || code, { isHolding: true, preferred: style });
+            const labels = next.map(_methodLabel).join('・');
+            showToast(next.length ? `得意メソッド: ${labels}` : '得意メソッドを解除しました');
+            if (h) h.preferred_method = joined;
+            window.openMethodScores(code, (h && h.name) || code, { isHolding: true, preferred: joined });
             if (typeof loadPortfolio === 'function') loadPortfolio();
         } else {
             showToast(data?.error || '保存に失敗しました', true);
@@ -11996,7 +12008,9 @@ let _dailyAdviceCandidates = null;
 
 // useCandidates: 直近スクリーナー結果(_screenerLastResult)の候補を使うか
 // autoScreen   : true で全メソッド（JP/US 横断）を自動スクリーニングして新規候補を補充する
-window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false, autoScreen = false) => {
+// resumeJobId  : 指定時は新規診断を起こさず、その実行中ジョブのポーリングだけ再開する（通知復帰用）
+// 一括診断モーダルの器を用意して返す（無ければ生成）。診断実行・前回結果の閲覧で共有。
+function _ensureAdviceModal() {
     let modal = document.getElementById('portfolio-advice-modal');
     if (!modal) {
         const wrap = document.createElement('div');
@@ -12016,7 +12030,19 @@ window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false
         document.body.appendChild(wrap.firstElementChild);
         modal = document.getElementById('portfolio-advice-modal');
     }
+    return modal;
+}
+
+window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false, autoScreen = false, resumeJobId = null) => {
+    const modal = _ensureAdviceModal();
     const bodyEl = $('#portfolio-advice-body');
+    // 通知/復帰：新規診断は起こさず、実行中ジョブのポーリングだけ再開する。
+    if (resumeJobId) {
+        if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">前回の一括診断の結果を取得中…</div>';
+        modal.classList.remove('hidden');
+        _startAdviceJobPolling(resumeJobId);
+        return;
+    }
     // 候補の出どころを決める：
     //  - autoScreen … 全メソッドを自動走査（サーバー側で抽出）。1〜3分かかる。
     //  - 再診断（資金設定/EDINET）… 直近の一括診断で使った候補を再利用（_dailyAdviceCandidates）。
@@ -12038,23 +12064,186 @@ window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false
     modal.classList.remove('hidden');
     const _cap = parseFloat(localStorage.getItem('screener_capital') || '');
     const capital = (_cap > 0) ? _cap : null;
+    const reqBody = JSON.stringify({ candidates, auto_screen: !!autoScreen, with_financials: !!withFinancials, ...(capital ? { capital } : {}) });
+
+    // 全メソッド走査(autoScreen)や EDINET 財務つき診断は1〜3分かかり HTTP がタイムアウトするため、
+    // バックグラウンドジョブにして /jobs/{id} をポーリングする（アプリを離れても完了時に通知）。
+    const useAsync = !!autoScreen || !!withFinancials;
+    if (useAsync) {
+        if (bodyEl) {
+            bodyEl.innerHTML = `<div class="loading-placeholder">${autoScreen
+                ? '全メソッド（じわじわ高値ブレイク/新高値DUKE/決算モメンタムkenmo/片山/たーちゃん…）で日米を走査して候補抽出 → 一括診断中…（1〜3分）'
+                : 'EDINET財務を取得して再診断中…（1〜2分）'}<br><span style="font-size:0.74rem;opacity:0.8;">このまま待っても、閉じて他の作業をしてもOK。完了したら通知でお知らせします。</span></div>`;
+        }
+        try {
+            const start = await apiFetch('/api/investment/screener/advise_async', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: reqBody,
+            });
+            if (!start || !start.ok) {
+                // 既に別ジョブが実行中なら、その実行中ジョブのポーリングに合流する。
+                let prev = null;
+                try { prev = localStorage.getItem(ADVICE_ACTIVE_JOB_KEY); } catch (e) { /* ignore */ }
+                if (prev) {
+                    bodyEl.innerHTML = '<div class="loading-placeholder">先に実行中の一括診断があります。その結果を待っています…<br><span style="font-size:0.74rem;opacity:0.8;">完了したら通知でお知らせします。</span></div>';
+                    _startAdviceJobPolling(prev);
+                } else {
+                    bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((start && (start.error || start.detail)) || '起動できませんでした')}</div>`;
+                }
+                return;
+            }
+            _startAdviceJobPolling(start.job_id);
+        } catch (e) {
+            bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで起動できませんでした</div>';
+        }
+        return;
+    }
+
+    // 高速パス（キャッシュ候補での再診断など）は同期で取得。
     try {
         const r = await apiFetch('/api/investment/screener/advise', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ candidates, auto_screen: !!autoScreen, with_financials: !!withFinancials, ...(capital ? { capital } : {}) }),
+            body: reqBody,
         });
         if (!r || !r.ok) {
             bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
             return;
         }
-        // 診断で使った候補を控えておき、資金設定/EDINET の再診断では再スクリーニングせず使い回す。
-        _dailyAdviceCandidates = (r.candidates || [])
-            .filter(c => c && c.code)
-            .map(c => ({ code: c.code, name: c.name, sector: c.sector }));
-        bodyEl.innerHTML = _renderPortfolioAdvice(r);
+        _renderAdviceResult(r);
     } catch (e) {
         bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
+    }
+};
+
+const ADVICE_LAST_RESULT_KEY = 'advice_last_result';
+
+// 診断時刻の小さな見出し（いつ時点の結果かを明示）。
+function _adviceGeneratedAtBar(at) {
+    if (!at) return '';
+    const d = new Date(at);
+    if (isNaN(d.getTime())) return '';
+    const p = n => String(n).padStart(2, '0');
+    const s = `${d.getFullYear()}/${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    return `<div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:6px;">🕒 ${s} 時点の診断結果</div>`;
+}
+
+// 診断で使った候補を控えておき（資金設定/EDINET の再診断では再スクリーニングせず使い回す）、
+// 結果カードを描画する共通処理。同期・ジョブ完了の双方から呼ぶ。
+// 結果は localStorage にも保存し、モーダルを閉じても「前回の結果」から再閲覧できるようにする。
+function _renderAdviceResult(r, generatedAt) {
+    const at = generatedAt || Date.now();
+    const bodyEl = document.getElementById('portfolio-advice-body');
+    _dailyAdviceCandidates = (r.candidates || [])
+        .filter(c => c && c.code)
+        .map(c => ({ code: c.code, name: c.name, sector: c.sector }));
+    try { localStorage.setItem(ADVICE_LAST_RESULT_KEY, JSON.stringify({ at, result: r })); } catch (e) { /* 容量超過などは無視 */ }
+    if (bodyEl) bodyEl.innerHTML = _adviceGeneratedAtBar(at) + _renderPortfolioAdvice(r);
+}
+
+// 「前回の結果」：直近で完了した一括診断の結果を、再診断せずそのまま開いて閲覧する。
+window.openLastAdvice = () => {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(ADVICE_LAST_RESULT_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || !saved.result || !saved.result.ok) {
+        showToast('保存された診断結果がまだありません。まず「毎日ここから」を実行してください。', true);
+        return;
+    }
+    const modal = _ensureAdviceModal();
+    const bodyEl = document.getElementById('portfolio-advice-body');
+    _dailyAdviceCandidates = (saved.result.candidates || [])
+        .filter(c => c && c.code)
+        .map(c => ({ code: c.code, name: c.name, sector: c.sector }));
+    if (bodyEl) bodyEl.innerHTML = _adviceGeneratedAtBar(saved.at) + _renderPortfolioAdvice(saved.result);
+    modal.classList.remove('hidden');
+};
+
+const ADVICE_ACTIVE_JOB_KEY = 'advice_active_job';
+let _adviceJobId = null;
+let _adviceJobTimer = null;
+let _adviceJobStartedAt = 0;
+
+function _stopAdviceJobPolling() {
+    if (_adviceJobTimer) { clearTimeout(_adviceJobTimer); _adviceJobTimer = null; }
+    _adviceJobId = null;
+}
+
+// 一括診断ジョブのポーリング。完了したら結果カードを描画。アプリ復帰時（通知タップ）にも使う。
+function _startAdviceJobPolling(jobId) {
+    _stopAdviceJobPolling();
+    _adviceJobId = jobId;
+    _adviceJobStartedAt = Date.now();
+    try { localStorage.setItem(ADVICE_ACTIVE_JOB_KEY, jobId); } catch (e) { /* ignore */ }
+    const bodyEl = document.getElementById('portfolio-advice-body');
+    const poll = async () => {
+        if (_adviceJobId !== jobId) return;  // 別ジョブに切り替わったら停止
+        let data;
+        try {
+            data = await apiFetch(`/api/investment/screener/jobs/${encodeURIComponent(jobId)}`);
+        } catch (e) {
+            _adviceJobTimer = setTimeout(poll, 4000);  // 一時的な通信エラーは続行
+            return;
+        }
+        if (!data || !data.ok) { _stopAdviceJobPolling(); return; }
+        if (data.status === 'queued' || data.status === 'running') {
+            const sec = Math.floor((Date.now() - _adviceJobStartedAt) / 1000);
+            const b = document.getElementById('portfolio-advice-body');
+            if (b && b.querySelector('.loading-placeholder')) {
+                const note = b.querySelector('.advice-elapsed');
+                const txt = `（経過 ${sec} 秒）`;
+                if (note) { note.textContent = txt; }
+                else { b.querySelector('.loading-placeholder').insertAdjacentHTML('beforeend', `<br><span class="advice-elapsed" style="font-size:0.72rem;opacity:0.7;">${txt}</span>`); }
+            }
+            _adviceJobTimer = setTimeout(poll, 4000);
+            return;
+        }
+        _stopAdviceJobPolling();
+        try { localStorage.removeItem(ADVICE_ACTIVE_JOB_KEY); } catch (e) { /* ignore */ }
+        if (data.status === 'error') {
+            const b = document.getElementById('portfolio-advice-body');
+            if (b) b.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml(data.error || '診断に失敗しました')}</div>`;
+            return;
+        }
+        // done
+        const r = data.result;
+        if (!r || !r.ok) {
+            const b = document.getElementById('portfolio-advice-body');
+            if (b) b.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '結果が取得できませんでした')}</div>`;
+            return;
+        }
+        // モーダルが閉じられていたら開いて結果を見せる（通知から戻ってきた場合など）。
+        const m = document.getElementById('portfolio-advice-modal');
+        if (m) m.classList.remove('hidden');
+        _renderAdviceResult(r);
+    };
+    poll();
+}
+
+// 通知タップ（/?tab=invest&advise_job=ID）やアプリ復帰時に、実行中/完了済みの一括診断ジョブを復元する。
+window.resumeAdviceJobIfAny = (jobId) => {
+    const id = jobId || (() => { try { return localStorage.getItem(ADVICE_ACTIVE_JOB_KEY); } catch (e) { return null; } })();
+    if (!id) return;
+    if (typeof switchTab === 'function') { try { switchTab('invest'); } catch (e) { /* ignore */ } }
+    openPortfolioAdvice(true, false, false, id);  // モーダルを開いてポーリングのみ再開（新規診断は起こさない）
+};
+
+// 一括診断の新規候補を注目銘柄(watchlist)に登録する。既存コードなら上書き（API側で upsert）。
+// styles: その候補を拾った手法（表示名を「・」で連結した文字列）。選定根拠として source に残す。
+window.addCandidateToWatchlist = async (code, name, sector, styles, btn) => {
+    if (!code) return;
+    if (btn) { btn.disabled = true; }
+    const source = styles ? `一括診断（${styles}）` : '一括診断の候補';
+    try {
+        await apiFetch('/api/investment/watchlist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code, name: name || '', sector: sector || '', source, memo: '' }),
+        });
+        showToast(`⭐ ${code} を注目銘柄に追加しました`);
+        if (btn) { btn.textContent = '✓ 注目に追加済み'; btn.style.opacity = '0.7'; }
+        if (typeof loadWatchlist === 'function') loadWatchlist();
+    } catch (e) {
+        if (btn) { btn.disabled = false; }
+        showToast('注目銘柄への追加に失敗しました', true);
     }
 };
 
@@ -12069,7 +12258,7 @@ function _adviceActionStyle(action) {
     }
 }
 
-function _renderAdviceCard(r) {
+function _renderAdviceCard(r, isCandidate = false) {
     const num = (v, suf = '') => (v === null || v === undefined) ? '-' : `${v}${suf}`;
     if (!r.ok) {
         return `<div style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
@@ -12164,6 +12353,19 @@ function _renderAdviceCard(r) {
     }
     const codeEsc = (r.code || '').replace(/'/g, "\\'");
     const nameEsc = (r.name || '').replace(/'/g, "\\'");
+    const sectorEsc = (r.sector || '').replace(/'/g, "\\'");
+    // 新規候補のみ「⭐ 注目に追加」を出す（保有銘柄には出さない）。注目に入れると
+    // 注目銘柄カードの 📊メソッド・🎯審査・🔬同業・📰ニュース 等で継続的に裏取りできる。
+    // 選定スタイル（どの手法が拾ったか）を注目銘柄に引き継ぐ。注目銘柄カードに「選定: …」として残す。
+    const stylesEsc = (Array.isArray(r.matched_styles) ? r.matched_styles.join('・') : '').replace(/'/g, "\\'");
+    const watchBtn = isCandidate
+        ? `<button class="mini-link" style="font-size:0.7rem;padding:1px 6px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();addCandidateToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${stylesEsc}',this)" title="この候補を注目銘柄に登録（選定スタイルも記録）。追加後は注目銘柄カードの 🔬深掘り/📄事業分析/📊メソッド/🎯審査/🔬同業/📰ニュース で精査します">⭐ 注目に追加して精査</button>`
+        : '';
+    // 候補は「⭐注目に追加」だけにし、深掘り/事業分析は注目銘柄側の精査に一本化する。
+    // 保有銘柄カードでは従来どおりカード上から深掘り/事業分析を出す。
+    const analysisBtns = isCandidate ? '' : `
+            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openBusinessModel('${codeEsc}','${nameEsc}')" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析（宝石7）">📄 事業/中計分析</button>
+            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openDeepResearch('${codeEsc}','${nameEsc}','${sectorEsc}')" title="網羅的に深掘り（決算事実・中計KPI・競合・カタリスト・リスク・出典URL付き）">🔬 ディープリサーチ</button>`;
     return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
             <strong style="word-break:break-word;">${escapeHtml(r.code)} ${escapeHtml(r.name || '')}</strong>
@@ -12185,8 +12387,8 @@ function _renderAdviceCard(r) {
         ${liqHtml}
         ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
         <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">
-            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openBusinessModel('${codeEsc}','${nameEsc}')" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析（宝石7）">📄 事業/中計分析</button>
-            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openDeepResearch('${codeEsc}','${nameEsc}','${(r.sector||'').replace(/'/g,"\\'")}')" title="特に強い銘柄を網羅的に深掘り（決算事実・中計KPI・競合・カタリスト・リスク・出典URL付き）。点数は出さず情報収集に徹する（③）">🔬 ディープリサーチ</button>
+            ${analysisBtns}
+            ${watchBtn}
         </div>
     </div>`;
 }
@@ -12245,13 +12447,13 @@ function _renderPortfolioAdvice(r) {
     const actionHolds = holds.filter(h => h.verdict && ['SELL', 'TRIM'].includes(h.verdict.action));
     const keepHolds = holds.filter(h => !(h.verdict && ['SELL', 'TRIM'].includes(h.verdict.action)));
     const actionHoldsHtml = actionHolds.length
-        ? actionHolds.map(_renderAdviceCard).join('')
+        ? actionHolds.map(h => _renderAdviceCard(h, false)).join('')
         : '<div style="font-size:0.78rem;color:#7ee0a0;">✅ 今日すぐ対応が必要な保有はありません（損切り/トレイル割れなし）。</div>';
     const keepHoldsHtml = keepHolds.length
-        ? keepHolds.map(_renderAdviceCard).join('')
+        ? keepHolds.map(h => _renderAdviceCard(h, false)).join('')
         : (holds.length ? '' : '<div style="font-size:0.78rem;color:var(--text-muted);">保有銘柄は登録されていません。</div>');
     const candsHtml = cands.length
-        ? cands.map(_renderAdviceCard).join('')
+        ? cands.map(c => _renderAdviceCard(c, true)).join('')
         : '<div style="font-size:0.78rem;color:var(--text-muted);">診断対象の新規候補はありません（全手法を走査しても地合い・条件に合う買い候補が無いか、銘柄スクリーナー未実行）。</div>';
     const finBar = r.with_financials
         ? `<div style="font-size:0.72rem;color:var(--text-muted);">🏦 EDINET有報の財務を ${r.financials_count || 0} 件分 織り込み済み。</div>`
@@ -12263,7 +12465,7 @@ function _renderPortfolioAdvice(r) {
             <summary style="cursor:pointer;font-weight:700;font-size:0.82rem;color:#9ec5ff;">📋 進め方ガイド（タップで開く）</summary>
             <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:6px;line-height:1.7;">
                 <b>毎日（守り・5分）</b>：①地合い → ②保有の「要対応」(🔴売却/🚪損切り)だけ即対応 → ③それ以外は握る。新規は眺めるだけ。<br>
-                <b>週1〜2回（攻めの精査）</b>：強い候補(🔵BUY・手法ラベル複数)に絞り、カードの🧪検証・🔬深掘り・🧠学習を見て買う。地合いオン＋妙味あり(ウォッチでない)時だけ。<br>
+                <b>週1〜2回（攻めの精査）</b>：強い候補(🔵BUY・手法ラベル複数)に絞り、⭐注目に追加 → 注目銘柄カードの 🔬深掘り・📄事業分析・📊メソッド・🎯審査・🔬同業・📰ニュース で精査してから買う。地合いオン＋妙味あり(ウォッチでない)時だけ。<br>
                 <b>月1（検証・舵取り）</b>：📊バックテストで回転が買い持ちに勝つか確認し、配分(4:1/1:1)のドリフトを入替で寄せる。<br>
                 <b>入替は厳選</b>：🎯目標に寄せる＋税の摩擦を超える実力差がある時だけ（毎日は入れ替えない）。
             </div>
@@ -12283,7 +12485,7 @@ function _renderPortfolioAdvice(r) {
         ${keepHoldsHtml || '<div style="font-size:0.78rem;color:var(--text-muted);">継続保有中の銘柄はありません。</div>'}
 
         ${head('③ 週次｜攻めの精査（新規候補）', '#4ea1ff')}
-        <div style="font-size:0.74rem;color:var(--text-muted);margin:-2px 0 4px;">🔵BUY＋手法ラベル複数を優先。カードの🧪検証・🔬ディープリサーチ・🧠学習で裏取りしてから。</div>
+        <div style="font-size:0.74rem;color:var(--text-muted);margin:-2px 0 4px;">🔵BUY＋手法ラベル複数を優先。⭐注目に追加 → 注目銘柄カードの 🔬深掘り・📄事業分析・📊メソッド・🎯審査・🔬同業・📰ニュース で精査してから。（🧠学習は建玉倍率に自動反映済みの参考指標）</div>
         ${candsHtml}
 
         ${rots.length ? head('④ 入替の検討（厳選・目標に寄せる）', '#ffd454') + rotHtml : ''}
@@ -13276,7 +13478,7 @@ window.loadWatchlist = async () => {
         }
         let items = data.items || [];
         if (!items.length) {
-            el.innerHTML = '<div class="loading-placeholder">注目銘柄はまだありません。「+追加」ボタンか、スクリーニング結果の⭐ボタンから追加できます。</div>';
+            el.innerHTML = '<div class="loading-placeholder">注目銘柄はまだありません。「+追加」ボタンか、一括診断／スクリーニング結果の⭐ボタンから追加できます。</div>';
             return;
         }
         // 保存済み並び順を適用
@@ -13321,6 +13523,8 @@ window.loadWatchlist = async () => {
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="audit">🎯 審査</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="peer">🔬 同業</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="news">📰 ニュース</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="deepresearch">🔬 深掘り</button>
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="bizmodel">📄 事業分析</button>
                         <button class="mini-link btn-danger" style="font-size:0.72rem;margin-left:auto;" data-wl-action="delete">🗑 削除</button>
                     </div>
                 </div>
@@ -13466,6 +13670,14 @@ function _bindWatchlistDelegation(container) {
             audit: () => window.runAuditForTicker(code),
             peer: () => window.runPeerComparisonForTicker(code),
             news: () => window.runNewsSentimentForTicker(code),
+            deepresearch: () => {
+                const wl = (window._watchlistByCode || {})[code.toUpperCase()] || {};
+                window.openDeepResearch(code, wl.name || code, wl.sector || '');
+            },
+            bizmodel: () => {
+                const wl = (window._watchlistByCode || {})[code.toUpperCase()] || {};
+                window.openBusinessModel(code, wl.name || code);
+            },
             delete: () => window.removeFromWatchlist(code),
         }[action];
         if (typeof handler === 'function') {
@@ -13821,8 +14033,9 @@ window.loadPortfolio = async () => {
             const memoBlock = memo
                 ? `<div style="font-size:0.78rem;color:var(--text-secondary);margin-top:4px;white-space:pre-wrap;">📝 ${escapeHtml(memo)}</div>`
                 : '';
-            const prefBadge = h.preferred_method
-                ? `<div style="font-size:0.72rem;color:#ffd454;margin-top:3px;">🎯 得意メソッド: ${escapeHtml(_methodLabel(h.preferred_method))}</div>`
+            const prefLabels = String(h.preferred_method || '').split(',').map(s => s.trim()).filter(Boolean).map(_methodLabel).join('・');
+            const prefBadge = prefLabels
+                ? `<div style="font-size:0.72rem;color:#ffd454;margin-top:3px;">🎯 得意メソッド: ${escapeHtml(prefLabels)}</div>`
                 : '';
             const acctBadge = h.account === 'nisa'
                 ? `<span style="font-size:0.66rem;color:#7ee0a0;border:1px solid rgba(126,224,160,0.4);border-radius:6px;padding:0 5px;margin-left:6px;">NISA非課税</span>`

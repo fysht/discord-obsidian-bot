@@ -19,6 +19,21 @@ from services.screener_service import ScreenerService
 from services.screener_engine import list_strategies, factor_axes_catalog
 
 
+import math as _math
+
+
+def _json_finite(obj):
+    """dict/list を再帰的に走査し、NaN/Inf を None に置換して JSON 互換にする
+    （ジョブ結果を candidates_json へ保存する前に通す。フロントの JSON.parse 失敗を防ぐ）。"""
+    if isinstance(obj, float):
+        return obj if _math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_finite(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_json_finite(v) for v in obj]
+    return obj
+
+
 GEMINI_FLASH_MODEL = "gemini-2.5-flash"
 GEMINI_PRO_MODEL = "gemini-2.5-pro"
 
@@ -169,6 +184,120 @@ class ScreenerCog(commands.Cog):
         return await self.service.advise_portfolio(
             holdings, candidates=candidates, days=days, with_financials=with_financials,
             capital=capital, hard_stop_pct=hard_stop_pct)
+
+    async def advise_portfolio_full(
+        self,
+        candidates: Optional[list[dict]] = None,
+        days: int = 300,
+        holdings: Optional[list[dict]] = None,
+        with_financials: bool = False,
+        capital: Optional[float] = None,
+        hard_stop_pct: float = -0.08,
+        auto_screen: bool = False,
+    ) -> dict:
+        """『毎日ここから一括診断』の本体。auto_screen=True なら全メソッド（JP/US 横断）で
+        新規候補を自動抽出してから advise_portfolio を実行し、候補に手法ラベル(matched_styles)を付ける。
+        同期エンドポイントとバックグラウンドジョブの双方から共有する共通処理。"""
+        cand_list = list(candidates or [])
+        matched_by_code: dict = {}
+        if auto_screen:
+            inv = self.bot.get_cog("InvestmentCog")
+            if inv:
+                try:
+                    gathered = await inv.gather_daily_candidates()
+                    matched_by_code = gathered.get("matched_by_code") or {}
+                    seen = {str(c.get("code")) for c in cand_list if c.get("code")}
+                    for c in (gathered.get("candidates") or []):
+                        code = str(c.get("code") or "")
+                        if code and code not in seen:
+                            seen.add(code)
+                            cand_list.append(c)
+                except Exception:
+                    logging.exception("advise_portfolio_full: gather_daily_candidates failed")
+        result = await self.advise_portfolio(
+            candidates=cand_list or None, days=days, holdings=holdings,
+            with_financials=with_financials, capital=capital, hard_stop_pct=hard_stop_pct)
+        # どの手法が拾った候補かをカードで示せるよう、診断結果の候補に手法の表示名を付与する。
+        if matched_by_code and isinstance(result, dict):
+            for c in (result.get("candidates") or []):
+                ms = matched_by_code.get(str(c.get("code") or ""))
+                if ms:
+                    c["matched_styles"] = [self._style_display(s) for s in ms]
+        return result
+
+    async def start_advise_job(
+        self,
+        candidates: Optional[list[dict]] = None,
+        with_financials: bool = False,
+        capital: Optional[float] = None,
+        hard_stop_pct: float = -0.08,
+        auto_screen: bool = False,
+    ) -> dict:
+        """一括診断をバックグラウンドで起動し job_id を返す。auto_screen の全メソッド走査は
+        1〜3分かかり HTTP がタイムアウトするため、ジョブ化して /jobs/{id} でポーリングする。
+        完了時に Push 通知。"""
+        from api.database import screener_job_count_active, screener_job_create
+
+        active = await screener_job_count_active()
+        if active >= MAX_CONCURRENT_JOBS:
+            return {"ok": False, "error": f"既に {active} 件のジョブが実行中です。完了をお待ちください。"}
+
+        job_id = f"adv_{datetime.datetime.now(JST).strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+        await screener_job_create(job_id, "advise", 0)
+
+        from utils.async_utils import safe_create_task
+        safe_create_task(
+            self._run_advise_job(
+                job_id, candidates=candidates, with_financials=with_financials,
+                capital=capital, hard_stop_pct=hard_stop_pct, auto_screen=auto_screen,
+            ),
+            name=f"screener_advise_{job_id}",
+        )
+        return {"ok": True, "job_id": job_id, "status": "queued"}
+
+    async def _run_advise_job(
+        self,
+        job_id: str,
+        candidates: Optional[list[dict]] = None,
+        with_financials: bool = False,
+        capital: Optional[float] = None,
+        hard_stop_pct: float = -0.08,
+        auto_screen: bool = False,
+    ) -> None:
+        from api.database import screener_job_update
+        import json as _json
+        try:
+            await screener_job_update(job_id, status="running")
+            result = await self.advise_portfolio_full(
+                candidates=candidates, with_financials=with_financials,
+                capital=capital, hard_stop_pct=hard_stop_pct, auto_screen=auto_screen,
+            )
+            payload = _json.dumps(_json_finite(result), ensure_ascii=False, default=str)
+            if not isinstance(result, dict) or not result.get("ok"):
+                await screener_job_update(
+                    job_id, status="error",
+                    error=str((result or {}).get("error") or "診断に失敗しました"),
+                    candidates_json=payload,
+                )
+                return
+            await screener_job_update(job_id, status="done", candidates_json=payload)
+            try:
+                from api import notification_service
+                nh = len([h for h in (result.get("holdings") or []) if h.get("ok")])
+                nc = len([c for c in (result.get("candidates") or []) if c.get("ok")])
+                await notification_service.send_push(
+                    title="🧭 保有＆候補 一括診断が完了しました",
+                    body=f"保有{nh}件・新規候補{nc}件を診断しました。アプリを開いて確認してください。",
+                    url=f"/?tab=invest&advise_job={job_id}",
+                )
+            except Exception as e:
+                logging.debug(f"advise job push notify error: {e}")
+        except Exception as e:
+            logging.exception("advise job failed")
+            try:
+                await screener_job_update(job_id, status="error", error=str(e))
+            except Exception:
+                pass
 
     async def measure_performance(
         self,

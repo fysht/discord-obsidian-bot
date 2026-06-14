@@ -874,7 +874,9 @@ class ScreenerService:
         from services.screener_engine import _CYCLICAL_SECTORS
 
         def _is_cyclical(r):
-            if r.get("style") == "cyclical_value" or r.get("preferred_method") == "cyclical_value":
+            # preferred_method は複数（カンマ区切り）になり得るので、含まれるかで判定する。
+            pref = [s.strip() for s in str(r.get("preferred_method") or "").split(",") if s.strip()]
+            if r.get("style") == "cyclical_value" or "cyclical_value" in pref:
                 return True
             sec = r.get("sector") or ""
             return any(k in sec for k in _CYCLICAL_SECTORS)

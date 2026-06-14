@@ -526,7 +526,10 @@
                         </div>
                         <div class="card-body">
                             <button class="modal-btn submit" style="width:100%;text-align:left;font-size:0.88rem;font-weight:700;padding:10px 12px;" onclick="openPortfolioAdvice(true, false, true)" title="全メソッドで日米を自動スクリーニングして新規候補を抽出し、保有＋候補を、守り(出口)→保有管理→新規候補→入替→配分/検証 の順に一括診断します（1〜3分）">▶ 毎日ここから：保有＆候補を一括診断</button>
-                            <div style="font-size:0.72rem;color:var(--text-muted);margin:5px 0 8px;">全手法（じわじわ高値ブレイク/新高値DUKE/決算モメンタムkenmo/片山/たーちゃん…）で日米を自動スクリーニング → 守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示します（1〜3分）。</div>
+                            <div style="display:flex;justify-content:flex-end;margin-top:5px;">
+                                <button class="mini-link" onclick="openLastAdvice()" title="直近で完了した一括診断の結果を、再診断せずそのまま表示します">📄 前回の結果を見る</button>
+                            </div>
+                            <div style="font-size:0.72rem;color:var(--text-muted);margin:5px 0 8px;">全手法（じわじわ高値ブレイク/新高値DUKE/決算モメンタムkenmo/片山/たーちゃん…）で日米を自動スクリーニング → 守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示します（1〜3分）。閉じても「前回の結果を見る」で再表示できます。</div>
                             <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:3px;">週次・月次の補助：</div>
                             <div style="display:flex;gap:6px;flex-wrap:wrap;">
                                 <button class="chip-btn" onclick="openBreakoutAdvise()" title="新規候補を抽出して一括診断（平日16時の自動と同じ）">🚀 候補を抽出（週次）</button>
@@ -538,7 +541,7 @@
                                 <summary style="cursor:pointer;font-weight:700;font-size:0.8rem;color:#9ec5ff;">📋 進め方ガイド（タップで開く）</summary>
                                 <div style="font-size:0.74rem;color:var(--text-secondary);margin-top:6px;line-height:1.7;">
                                     <b>毎日（守り・5分）</b>：①地合い → ②保有の要対応(🔴売却/🚪損切り)だけ即対応 → ③それ以外は握る。新規は眺めるだけ。<br>
-                                    <b>週1〜2回（攻めの精査）</b>：強い候補(🔵BUY・手法ラベル複数)に絞り、カードの🧪検証・🔬ディープリサーチ・🧠学習を見て買う。地合いオン＋妙味あり(ウォッチでない)時だけ。<br>
+                                    <b>週1〜2回（攻めの精査）</b>：強い候補(🔵BUY・手法ラベル複数)に絞り、⭐注目に追加 → 注目銘柄カードの 🔬深掘り・📄事業分析・📊メソッド・🎯審査・🔬同業・📰ニュース で精査してから買う。地合いオン＋妙味あり(ウォッチでない)時だけ。<br>
                                     <b>月1（検証・舵取り）</b>：📊バックテストで回転が買い持ちに勝つか確認し、配分(4:1/1:1)のドリフトを入替で寄せる。<br>
                                     <b>入替は厳選</b>：🎯目標に寄せる＋税の摩擦を超える実力差がある時だけ（毎日は入れ替えない）。
                                 </div>
@@ -1926,6 +1929,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=83"></script>
+    <script src="/static/js/app_v12.js?v=88"></script>
 </body>
 </html>
