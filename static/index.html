@@ -465,10 +465,13 @@
                         <div class="card-header">
                             <span class="card-icon">📔</span>
                             <span class="card-title">デイリーノート</span>
-                            <button class="mini-link" onclick="shiftDailyNoteDate(-1)" title="前日へ">◀ 前日</button>
-                            <span id="daily-note-date" style="font-size:0.78rem;color:var(--text-muted);">---</span>
-                            <button class="mini-link" id="daily-note-next" onclick="shiftDailyNoteDate(1)" title="翌日へ">翌日 ▶</button>
                             <button class="mini-link" id="daily-note-save-btn" onclick="saveDailyNote()" style="margin-left:auto;">保存</button>
+                        </div>
+                        <!-- 日付ナビは独立行に置き、スマホでも前日/翌日が同じ行に並ぶようにする -->
+                        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:nowrap;padding:8px 18px;border-bottom:1px solid var(--border-glass);">
+                            <button class="mini-link" onclick="shiftDailyNoteDate(-1)" title="前日へ" style="white-space:nowrap;flex:none;">◀ 前日</button>
+                            <span id="daily-note-date" style="font-size:0.8rem;color:var(--text-primary);text-align:center;flex:1;min-width:0;">---</span>
+                            <button class="mini-link" id="daily-note-next" onclick="shiftDailyNoteDate(1)" title="翌日へ" style="white-space:nowrap;flex:none;">翌日 ▶</button>
                         </div>
                         <div class="card-body">
                             <textarea id="daily-note-editor" class="modern-input" rows="18" spellcheck="false" placeholder="（この日のデイリーノートはまだありません）" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.8rem;line-height:1.5;white-space:pre;overflow-wrap:normal;overflow-x:auto;"></textarea>
@@ -1929,6 +1932,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=88"></script>
+    <script src="/static/js/app_v12.js?v=90"></script>
 </body>
 </html>

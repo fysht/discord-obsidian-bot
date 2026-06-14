@@ -904,12 +904,15 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         if (!INTERNAL_TOOL_ACTIONS.has(name)) actions.push(payload);
         return '';
     });
-    // [QUESTIONS:summary:YYYY-MM-DD] マーカーを抽出してインライン回答UIを後で描画
+    // [QUESTIONS:summary:YYYY-MM-DD] / [QUESTIONS:learning:YYYY-MM-DD:42] マーカーを抽出して
+    // インライン回答UIを後で描画。末尾に qid があれば、その質問“だけ”の回答欄を出す。
     let questionsScope = null;
     let questionsDate = null;
-    rawText = rawText.replace(/\[QUESTIONS:([a-z_]+):(\d{4}-\d{2}-\d{2})\]/g, (_, scope, date) => {
+    let questionsQid = null;
+    rawText = rawText.replace(/\[QUESTIONS:([a-z_]+):(\d{4}-\d{2}-\d{2})(?::(\d+))?\]/g, (_, scope, date, qid) => {
         questionsScope = scope;
         questionsDate = date;
+        questionsQid = qid || null;
         return '';
     });
     // 内部関数呼び出しの生文字列を除去（「ツールを呼び出す xxx(...)」「tool_call: xxx(...)」
@@ -922,7 +925,13 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
         .replace(/call_tool\s*\(\s*["'][\w.]+["']\s*,?\s*\{[\s\S]*?\}\s*\)/g, '')
         // 内部ツール名を直接コードのように書いてしまったもの: ask_log_question({...}) 等
         .replace(/^\s*(?:ask_log_question|log_life_activity|save_thought_reflection|propose_note|propose_permanent_note|search_memory)\s*\(.*\)\s*$/gim, '');
-    const visibleText = rawText.trim();
+    let visibleText = rawText.trim();
+    // マネージャー（assistant）メッセージ冒頭のアイコン（絵文字）は冗長なので表示から省く。
+    // 先頭の絵文字1つ（異体字セレクタ・ZWJ連結を含む）＋直後の空白を取り除く。
+    if (role === 'assistant') {
+        const stripped = visibleText.replace(/^\p{Extended_Pictographic}[️‍\p{Extended_Pictographic}]*[ 　]*/u, '').trim();
+        if (stripped) visibleText = stripped;  // 絵文字のみのメッセージは空にしない
+    }
     const processedContent = escapeHtml(visibleText).replace(/\n/g, '<br>');
 
     // 引用 (返信) 表示
@@ -965,7 +974,7 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
     div.innerHTML = html;
     chatMessages.appendChild(div);
     if (role === 'assistant' && questionsScope && questionsDate) {
-        renderInlineQuestionForm(div, questionsScope, questionsDate);
+        renderInlineQuestionForm(div, questionsScope, questionsDate, questionsQid);
     }
     chatMessages.scrollTop = chatMessages.scrollHeight;
     if (role === 'assistant') notifyManager(content);
@@ -1040,17 +1049,20 @@ function _afterMealQuestionRecorded(qid, text) {
     if (inbox && typeof renderLogInbox === 'function') renderLogInbox();
 }
 
-// [QUESTIONS:scope:YYYY-MM-DD] 付きメッセージにインライン回答UIを描画する
-async function renderInlineQuestionForm(msgDiv, scope, date) {
-    // 同じ日付・スコープの回答欄が既にチャット内にあれば取り除き、最新の1枚だけ残す。
-    // マネージャーが同じ scope を1日に複数回尋ねても、質問・回答欄が重複表示されないようにする。
+// [QUESTIONS:scope:YYYY-MM-DD(:qid)] 付きメッセージにインライン回答UIを描画する。
+// qid 指定時は、その1問だけを描画する（深掘り質問が過去 Q&A を巻き込まないように）。
+async function renderInlineQuestionForm(msgDiv, scope, date, qid = null) {
+    // 同じ「日付・スコープ・(qid)」の回答欄が既にチャット内にあれば取り除き、最新の1枚だけ残す。
+    // qid 付き（深掘り）は質問ごとに独立。qid なし（summary 等）はスコープ単位で1枚に集約。
+    const qidSel = `[data-q-qid="${qid || ''}"]`;
     document.querySelectorAll(
-        `.msg-inline-questions[data-q-scope="${scope}"][data-q-date="${date}"]`
+        `.msg-inline-questions[data-q-scope="${scope}"][data-q-date="${date}"]${qidSel}`
     ).forEach(el => el.remove());
     const wrap = document.createElement('div');
     wrap.className = 'msg-inline-questions';
     wrap.dataset.qScope = scope;
     wrap.dataset.qDate = date;
+    wrap.dataset.qQid = qid || '';
     wrap.style.cssText = 'margin-top:6px;padding:8px 10px;background:rgba(255,212,84,0.08);border:1px solid rgba(255,212,84,0.3);border-radius:8px;';
     wrap.innerHTML = '<div style="font-size:0.78rem;color:var(--text-muted);">回答欄を読み込み中…</div>';
     const contentEl = msgDiv.querySelector('.msg-content') || msgDiv;
@@ -1058,9 +1070,11 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
     try {
         // resolved も含めて取得（回答済みは「回答そのもの」を表示するため）。
         const data = await apiFetch(`/api/daily_questions/by_marker?date=${encodeURIComponent(date)}&scope=${encodeURIComponent(scope)}`);
-        const items = ((data && data.questions) || [])
+        let items = ((data && data.questions) || [])
             .slice()
             .sort((a, b) => (a.id || 0) - (b.id || 0));
+        // qid 指定時はその1問だけに絞る（深掘り質問が同 scope の過去 Q&A を巻き込まない）。
+        if (qid) items = items.filter(q => String(q.id) === String(qid));
         if (!items.length) {
             // 質問が無い（削除済み等）なら回答欄ごと消す。
             wrap.remove();
@@ -1111,6 +1125,7 @@ async function renderInlineQuestionForm(msgDiv, scope, date) {
                 ${chipsHtml}
                 <textarea class="modern-input inline-q-answer" rows="${rows}" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;">${escapeHtml(defaultVal)}</textarea>
                 <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
+                    <button class="modal-btn cancel" style="padding:4px 10px;font-size:0.78rem;" onclick="deleteLogQuestion(${q.id})" title="この質問を削除（答えない）">🗑</button>
                     ${answered ? '' : `<button class="modal-btn cancel" style="padding:4px 12px;font-size:0.78rem;" onclick="skipInlineQuestion(this)" title="あとで（まとめて回答できます）">あとで</button>`}
                     <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${date}', '${scope}')">${answered ? '回答を更新' : '回答'}</button>
                 </div>
@@ -1372,6 +1387,8 @@ window.deleteLogQuestion = async (qid) => {
     } catch (e) { /* 失敗してもUIは進める */ }
     // 「今日の記録」だけでなく、チャット内のインライン回答欄からも即座に取り除く。
     document.querySelectorAll(`.inline-q[data-qid="${qid}"]`).forEach(el => el.remove());
+    // 質問が消えて空になったチャットの回答欄枠（黄色い箱）も片付ける。
+    document.querySelectorAll('.msg-inline-questions').forEach(w => { if (!w.querySelector('.inline-q')) w.remove(); });
     if (typeof renderLogInbox === 'function') await renderLogInbox();
     refreshLogInboxBadge();
 };
@@ -11926,7 +11943,11 @@ function _renderMethodScores(r, code, opts) {
     const bar = (s) => {
         const w = Math.max(0, Math.min(100, s || 0));
         const col = (s != null && s >= 60) ? '#7ee0a0' : '#4ea1ff';
-        return `<div style="flex:1;min-width:60px;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;"><div style="width:${w}%;height:100%;background:${col};"></div></div>`;
+        // トラック幅を固定（flex:none）にして、銘柄や行内容に関わらず全行で同じ長さに揃える。
+        // 100点目盛りの基準線（50点）も薄く引いて、銘柄間でゲージを視覚比較しやすくする。
+        return `<div style="position:relative;width:120px;flex:none;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;">`
+            + `<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.18);"></div>`
+            + `<div style="width:${w}%;height:100%;background:${col};"></div></div>`;
     };
     const scoreColor = (s, passed) => passed ? '#7ee0a0' : (s == null ? 'var(--text-muted)' : (s >= 60 ? '#ffd454' : 'var(--text-secondary)'));
     const groups = {};
@@ -11947,9 +11968,9 @@ function _renderMethodScores(r, code, opts) {
                 ? `<button class="mini-link" style="font-size:0.7rem;padding:2px 6px;white-space:nowrap;" onclick="togglePreferredMethod('${code.replace(/'/g, '&#39;')}','${m.style}')">${isPref ? '★得意' : '☆得意に'}</button>`
                 : '';
             html += `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px dashed rgba(255,255,255,0.06);">
-                <div style="min-width:140px;color:${isPref ? '#ffd454' : 'var(--text-primary)'};">${m.passed ? '✅ ' : ''}${escapeHtml(m.display_name)}</div>
+                <div style="width:130px;flex:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:${isPref ? '#ffd454' : 'var(--text-primary)'};" title="${escapeHtml(m.display_name)}">${m.passed ? '✅ ' : ''}${escapeHtml(m.display_name)}</div>
                 ${bar(m.score)}
-                <div style="min-width:38px;text-align:right;font-weight:700;color:${scoreColor(m.score, m.passed)};">${sc}</div>
+                <div style="width:38px;flex:none;text-align:right;font-weight:700;color:${scoreColor(m.score, m.passed)};">${sc}</div>
                 ${setBtn}
             </div>`;
         });
@@ -12361,11 +12382,9 @@ function _renderAdviceCard(r, isCandidate = false) {
     const watchBtn = isCandidate
         ? `<button class="mini-link" style="font-size:0.7rem;padding:1px 6px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();addCandidateToWatchlist('${codeEsc}','${nameEsc}','${sectorEsc}','${stylesEsc}',this)" title="この候補を注目銘柄に登録（選定スタイルも記録）。追加後は注目銘柄カードの 🔬深掘り/📄事業分析/📊メソッド/🎯審査/🔬同業/📰ニュース で精査します">⭐ 注目に追加して精査</button>`
         : '';
-    // 候補は「⭐注目に追加」だけにし、深掘り/事業分析は注目銘柄側の精査に一本化する。
-    // 保有銘柄カードでは従来どおりカード上から深掘り/事業分析を出す。
-    const analysisBtns = isCandidate ? '' : `
-            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openBusinessModel('${codeEsc}','${nameEsc}')" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析（宝石7）">📄 事業/中計分析</button>
-            <button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openDeepResearch('${codeEsc}','${nameEsc}','${sectorEsc}')" title="網羅的に深掘り（決算事実・中計KPI・競合・カタリスト・リスク・出典URL付き）">🔬 ディープリサーチ</button>`;
+    // 一括診断カードは「判断＋チャート確認」に徹する。
+    // 深掘り/事業分析は銘柄の本拠地（候補→注目銘柄／保有→ポートフォリオ）の精査に一本化する。
+    const chartBtn = `<button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openStockChart('${codeEsc}','${nameEsc}')" title="日足チャートを表示">📈 チャート</button>`;
     return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
             <strong style="word-break:break-word;">${escapeHtml(r.code)} ${escapeHtml(r.name || '')}</strong>
@@ -12387,7 +12406,7 @@ function _renderAdviceCard(r, isCandidate = false) {
         ${liqHtml}
         ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
         <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">
-            ${analysisBtns}
+            ${chartBtn}
             ${watchBtn}
         </div>
     </div>`;
@@ -13516,6 +13535,7 @@ window.loadWatchlist = async () => {
                     ${it.source ? `<div class="row-meta">出典: ${escapeHtml(it.source)}</div>` : ''}
                     ${memoBlock}
                     <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px;">
+                        <button class="mini-link" style="font-size:0.72rem;" data-wl-action="chart">📈 チャート</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="hub">📒 まとめ</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="memo">📝 メモ編集</button>
                         <button class="mini-link" style="font-size:0.72rem;" data-wl-action="snapshot">📷 スナップ</button>
@@ -13629,13 +13649,17 @@ function _bindPortfolioDelegation(container) {
         const action = el.dataset.pfAction;
         if (action === 'nop') { e.stopPropagation(); return; }
         // 行全体クリックと、行内のボタンクリックを分けて扱う
+        const _pfHolding = () => (_investHoldingsCache || []).find(x => x.code === code) || {};
         const handler = {
             open: () => window.openHoldingActionModal(code),
             hub: () => window.openTickerHubModal(code),
+            chart: () => { const h = _pfHolding(); window.openStockChart(code, h.name || code); },
+            deepresearch: () => { const h = _pfHolding(); window.openDeepResearch(code, h.name || code, h.sector || ''); },
+            bizmodel: () => { const h = _pfHolding(); window.openBusinessModel(code, h.name || code); },
             score: () => {
-                const h = (_investHoldingsCache || []).find(x => x.code === code);
-                window.openMethodScores(code, (h && h.name) || code, {
-                    isHolding: true, preferred: (h && h.preferred_method) || '',
+                const h = _pfHolding();
+                window.openMethodScores(code, h.name || code, {
+                    isHolding: true, preferred: h.preferred_method || '',
                 });
             },
         }[action];
@@ -13663,6 +13687,10 @@ function _bindWatchlistDelegation(container) {
         if (!code) return;
         const action = btn.dataset.wlAction;
         const handler = {
+            chart: () => {
+                const wl = (window._watchlistByCode || {})[code.toUpperCase()] || {};
+                window.openStockChart(code, wl.name || code);
+            },
             hub: () => window.openTickerHubModal(code),
             memo: () => window.openWatchlistMemoModal(code),
             snapshot: () => window.runSnapshotForTicker(code),
@@ -14050,7 +14078,10 @@ window.loadPortfolio = async () => {
                     ${memoBlock}
                 </div>
                 <div class="row-actions" style="display:flex;gap:4px;flex-wrap:wrap;">
+                    <button class="mini-link" style="font-size:0.72rem;" data-pf-action="chart" title="日足チャートを表示">📈 チャート</button>
                     <button class="mini-link" style="font-size:0.72rem;" data-pf-action="score" title="各メソッドで採点して得意メソッドを保存">📊 メソッド</button>
+                    <button class="mini-link" style="font-size:0.72rem;" data-pf-action="deepresearch" title="網羅的に深掘り（決算事実・中計KPI・競合・カタリスト・リスク・出典URL付き）">🔬 深掘り</button>
+                    <button class="mini-link" style="font-size:0.72rem;" data-pf-action="bizmodel" title="ビジネスモデル・中計KPI・マテリアリティをGeminiで分析">📄 事業分析</button>
                     <button class="mini-link" style="font-size:0.72rem;" data-pf-action="hub" title="メモと日記をまとめて見る">📒 まとめ</button>
                     <button data-pf-action="open">▾ 操作</button>
                 </div>

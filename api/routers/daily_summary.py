@@ -436,7 +436,7 @@ async def daily_questions_answer(qid: int, req: DailyAnswerRequest):
         elif rscope == "english_quiz":
             await _reflect_english_quiz_answer(rq, req.answer)
         elif rscope in ("afternoon", "learning", "gratitude", "event"):
-            await _reflect_journal_answer(qid, req.answer, rscope)
+            await _reflect_journal_answer(rq, req.answer, rscope)
 
         # 掘り下げ：回答後に AI が価値ありと判断したら追質問を静かに積む。
         # 親質問の context.depth を引き継いで深さ上限で連鎖を止める（mood は専用の理由
@@ -561,16 +561,37 @@ async def _append_journal_line(scope: str, text: str) -> tuple[str, str]:
     return icon, label
 
 
-async def _reflect_journal_answer(qid: int, answer_text: str, scope: str):
+async def _reflect_journal_answer(rq: dict, answer_text: str, scope: str):
     """昼の振り返り / 学び / 感謝 / 出来事の回答を、入力テキストそのまま Obsidian の
-    Daily Journal に時刻付きで1行記録する（フローA・日次チェックイン）。"""
+    Daily Journal に時刻付きで1行記録する（フローA・日次チェックイン）。
+
+    掘り下げ（フォローアップ）への回答は、回答だけだと後で読み返しても文脈が分からないので、
+    元の質問を括弧で併記して保存する（例: 「疲れていたから（なぜ集中できなかった？）」）。"""
+    import json as _json
     from api.database import resolve_question_by_id
 
     text = (answer_text or "").strip()
     if not text:
         return
-    icon, label = await _append_journal_line(scope, text)
-    await resolve_question_by_id(qid)
+    qid = rq.get("id") if isinstance(rq, dict) else rq
+
+    # フォローアップ質問への回答かどうかを context.followup で判定する。
+    is_followup = False
+    try:
+        ctx = _json.loads((rq or {}).get("context") or "{}") if isinstance(rq, dict) else {}
+        is_followup = bool(isinstance(ctx, dict) and ctx.get("followup"))
+    except Exception:
+        is_followup = False
+
+    save_text = text
+    if is_followup:
+        question = (rq.get("question") or "").strip() if isinstance(rq, dict) else ""
+        if question:
+            save_text = f"{text}（{question}）"
+
+    icon, label = await _append_journal_line(scope, save_text)
+    if qid is not None:
+        await resolve_question_by_id(qid)
     await notification_service.save_message_and_notify(
         "assistant", f"{icon} {_casual_ack(label)}", title=f"{icon} {label}記録",
     )
@@ -660,11 +681,12 @@ async def _maybe_generate_followup(scope: str, answer_text: str, *, date: str | 
     from api.database import add_daily_question, save_message
     day = date or datetime.datetime.now(JST).strftime("%Y-%m-%d")
     ctx = _json.dumps({"followup": True, "depth": depth + 1}, ensure_ascii=False)
-    await add_daily_question(day, question, scope=scope, context=ctx)
+    new_qid = await add_daily_question(day, question, scope=scope, context=ctx)
     # push なしでチャットに積むだけ（インライン回答欄が後で描画される）。
+    # マーカーに qid を含め、この質問“だけ”の回答欄を出す（同 scope の過去 Q&A を混ぜない）。
     await save_message(
         "assistant",
-        f"{cfg.get('icon', '💬')} {question}\n[QUESTIONS:{scope}:{day}]",
+        f"{cfg.get('icon', '💬')} {question}\n[QUESTIONS:{scope}:{day}:{new_qid}]",
     )
 
 
