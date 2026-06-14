@@ -11684,7 +11684,6 @@ function _renderScreenerCandidates(data) {
         <div style="font-size:0.7rem;color:var(--text-muted);margin:4px 0 8px;">全手法で日米を自動スクリーニング → 守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示（1〜3分）。閉じても「前回の結果を見る」で再表示できます。中の「📋 進め方ガイド」も参照。</div>
         <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:3px;">週次・月次の補助：</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
-            <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(255,138,101,0.12);color:#ff8a65;border:1px solid rgba(255,138,101,0.35);border-radius:6px;" onclick="event.preventDefault();openBreakoutAdvise();" title="「じわじわ高値ブレイク」(topix500)で新規候補を抽出し一括診断（平日16時の自動と同じ）">🚀 候補を抽出（週次）</button>
             <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioPerformance();" title="保有が市場平均（日経平均等）をアウトパフォームできているか測定">📊 市場平均と比較（月次）</button>
             <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(196,160,255,0.12);color:#c4a0ff;border:1px solid rgba(196,160,255,0.35);border-radius:6px;" onclick="event.preventDefault();openTradeReview();" title="過去の売買が正しかったか（市場比）と実現損益を振り返る">🔎 売買の振り返り（月次）</button>
             <button class="mini-link" style="font-size:0.74rem;padding:3px 9px;background:rgba(255,212,84,0.12);color:#ffd454;border:1px solid rgba(255,212,84,0.35);border-radius:6px;" onclick="event.preventDefault();openHoldingsReview();" title="平日12時の自動「昼チェック」を今すぐ実行">🕛 昼チェック</button>
@@ -12550,39 +12549,6 @@ window.openHoldingsReview = async () => {
             return;
         }
         bodyEl.textContent = r.report || '保有銘柄が登録されていません。';
-    } catch (e) {
-        bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
-    }
-};
-
-// ===== 高値ブレイク→一括診断（平日16時の自動実行を手動トリガー） =====
-window.openBreakoutAdvise = async () => {
-    let modal = document.getElementById('breakout-advise-modal');
-    if (!modal) {
-        const wrap = document.createElement('div');
-        wrap.innerHTML = `
-            <div id="breakout-advise-modal" class="modal-overlay hidden">
-                <div class="modal-card" style="max-width:600px;width:96%;max-height:90vh;overflow-y:auto;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                        <h3 style="margin:0;font-size:1rem;">🚀 高値ブレイク → 一括診断</h3>
-                        <button class="mini-link" onclick="document.getElementById('breakout-advise-modal').classList.add('hidden')">✕</button>
-                    </div>
-                    <div id="breakout-advise-body" style="margin-top:10px;font-size:0.84rem;line-height:1.6;white-space:pre-wrap;"></div>
-                </div>
-            </div>`;
-        document.body.appendChild(wrap.firstElementChild);
-        modal = document.getElementById('breakout-advise-modal');
-    }
-    const bodyEl = $('#breakout-advise-body');
-    if (bodyEl) bodyEl.innerHTML = '<div class="loading-placeholder">topix500を走査して高値ブレイク候補を抽出 → 保有＋候補を一括診断中…（約1〜3分）</div>';
-    modal.classList.remove('hidden');
-    try {
-        const r = await apiFetch('/api/investment/portfolio/breakout_advise', { method: 'POST' });
-        if (!r || !r.ok) {
-            bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((r && r.error) || '診断できませんでした')}</div>`;
-            return;
-        }
-        bodyEl.textContent = r.report || '通知すべき診断結果はありませんでした（保有・候補なし）。';
     } catch (e) {
         bodyEl.innerHTML = '<div style="color:#ff8a8a;">通信エラーで診断できませんでした</div>';
     }
