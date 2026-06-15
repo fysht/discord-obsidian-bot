@@ -299,6 +299,26 @@ class ScreenerCog(commands.Cog):
             except Exception:
                 pass
 
+    async def save_advice_as_job(self, result: dict) -> Optional[str]:
+        """構造化された一括診断結果を done ジョブとして保存し job_id を返す。
+        自動通知（16:15 日次スクリーニング / 12:00 昼チェック）から、その結果を
+        『毎日ここから』のカード表示（チャート・注目銘柄追加）で開けるようにするため。"""
+        if not isinstance(result, dict) or not result.get("ok"):
+            return None
+        import json as _json
+        from api.database import screener_job_create, screener_job_update
+        job_id = f"adv_{datetime.datetime.now(JST).strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+        try:
+            await screener_job_create(job_id, "advise", 0)
+            await screener_job_update(
+                job_id, status="done",
+                candidates_json=_json.dumps(_json_finite(result), ensure_ascii=False, default=str),
+            )
+            return job_id
+        except Exception:
+            logging.exception("save_advice_as_job failed")
+            return None
+
     async def measure_performance(
         self,
         days: int = 500,

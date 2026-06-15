@@ -363,10 +363,11 @@ class InvestmentCog(commands.Cog):
         except Exception as e:
             logging.error(f"InvestmentCog notify error: {e}")
 
-    async def _notify_long(self, category: str, title: str, body: str):
+    async def _notify_long(self, category: str, title: str, body: str, advice_job_id: str = ""):
         """長文レポートを「マネージャーからのお知らせ」に保存し、チャットには短いリードのみ送る。
 
         category 例: market_sentiment / news_sentiment / alerts / weekend_stocks など
+        advice_job_id を渡すと、リードに「一括診断の結果を開く」ボタン（カード表示・チャート・注目追加）も付ける。
         """
         if not body:
             return
@@ -380,9 +381,11 @@ class InvestmentCog(commands.Cog):
         # 2) チャットには短いリードのみ。末尾の [ACTION:open_notices] により
         #    フロント側で「マネージャーからのお知らせを開く」ボタンが描画される。
         #    AI を通すとアクションタグが欠落するため、リードは直接送信する。
+        #    advice_job_id があれば、テキストではなく対話的なカード表示を開くボタンも添える。
+        advice_btn = f"\n[ACTION:open_advice_result:job={advice_job_id}]" if advice_job_id else ""
         lead = (
             f"📨 {title} を更新したよ。詳しくは下のボタンからお知らせを見てね。\n"
-            "[ACTION:open_notices]"
+            "[ACTION:open_notices]" + advice_btn
         )
         try:
             from api.notification_service import save_message_and_notify
@@ -577,7 +580,8 @@ class InvestmentCog(commands.Cog):
             return
         if not result.get("ok") or not result.get("report"):
             return
-        await self._notify_long("holdings_review", "🕛 保有銘柄の昼チェック", result["report"])
+        await self._notify_long("holdings_review", "🕛 保有銘柄の昼チェック", result["report"],
+                                advice_job_id=result.get("advice_job_id") or "")
 
     @auto_holdings_noon_review_task.before_loop
     async def _before_auto_holdings_noon_review(self):
@@ -647,6 +651,10 @@ class InvestmentCog(commands.Cog):
         if not holds:
             return {"ok": True, "report": ""}  # 保有なし→通知なし
 
+        # 構造化結果を done ジョブとして保存し、通知ボタンから『毎日ここから』のカード表示
+        # （保有のチャート確認など）で開けるようにする。
+        advice_job_id = await screener.save_advice_as_job(advice)
+
         labels = {"SELL": "🔴 売却・撤退", "TRIM": "🟠 一部利確・縮小",
                   "HOLD_WATCH": "🟡 保有（警戒）", "HOLD": "🟢 継続保有"}
         order = {"SELL": 0, "TRIM": 1, "HOLD_WATCH": 2, "HOLD": 3}
@@ -680,7 +688,8 @@ class InvestmentCog(commands.Cog):
             parts.append(f"🔁 {rot.get('reason', '')}")
         parts.append("")
         parts.append("※ テクニカル(トレンド)×ファンダの決定論的診断です。12:30 の売買判断の参考に。")
-        return {"ok": True, "report": "\n".join(p for p in parts if p is not None)}
+        return {"ok": True, "report": "\n".join(p for p in parts if p is not None),
+                "advice_job_id": advice_job_id}
 
     # 旧: 「じわじわ高値ブレイク×一括診断」(run_breakout_advise) と平日16:00の自動通知は、
     # 16:15 の全手法版（auto_daily_screening / 毎日ここから）に内包される部分集合だったため撤去した。
@@ -702,7 +711,8 @@ class InvestmentCog(commands.Cog):
             return
         if not result.get("ok") or not result.get("report"):
             return
-        await self._notify_long("daily_screening", "🔎 今日の注目銘柄×手法", result["report"])
+        await self._notify_long("daily_screening", "🔎 今日の注目銘柄×手法", result["report"],
+                                advice_job_id=result.get("advice_job_id") or "")
 
     @auto_daily_screening_task.before_loop
     async def _before_auto_daily_screening(self):
@@ -785,6 +795,14 @@ class InvestmentCog(commands.Cog):
         cands_out = [c for c in (advice.get("candidates") or []) if c.get("ok")]
         if not holds and not cands_out:
             return {"ok": True, "report": ""}
+
+        # 候補に手法ラベル（どの手法が拾ったか）を付け、構造化結果を done ジョブとして保存する。
+        # 通知のボタンから『毎日ここから』のカード表示（チャート・注目追加）で開けるようにするため。
+        for c in (advice.get("candidates") or []):
+            ms = matched_by_code.get(str(c.get("code") or ""))
+            if ms:
+                c["matched_styles"] = [screener._style_display(s) for s in ms]
+        advice_job_id = await screener.save_advice_as_job(advice)
 
         today = (datetime.datetime.now(JST).strftime("%-m/%-d")
                  if os.name != "nt" else datetime.datetime.now(JST).strftime("%m/%d"))
@@ -885,7 +903,8 @@ class InvestmentCog(commands.Cog):
             parts.append("")
         parts.append("※ 当日確定の日足×ファンダ（米国株は時間差あり）の決定論的診断です。"
                      "手法ラベルは『どのメソッドが拾ったか』。日米1:1配分のため両市場から抽出。最終判断は自己責任で。")
-        return {"ok": True, "report": "\n".join(p for p in parts if p is not None)}
+        return {"ok": True, "report": "\n".join(p for p in parts if p is not None),
+                "advice_job_id": advice_job_id}
 
     # ==========================================================
     # Driveフォルダ・ファイル管理ヘルパー

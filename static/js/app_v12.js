@@ -187,6 +187,10 @@ function linkifyText(text) {
     return result.replace(/\n/g, '<br>');
 }
 
+// マネージャーのアバター（インラインSVG）。画像ファイルに依存せず常にきれいに表示される。
+// （旧 avatar.png は拡張子.pngだが中身がJPEGで、アプリアイコンと同一画像だったため差し替え）
+const MGR_AVATAR_SVG = '<svg class="msg-avatar" viewBox="0 0 40 40" role="img" aria-label="Manager"><circle cx="20" cy="20" r="20" fill="#12c2a0"/><circle cx="20" cy="16" r="6.2" fill="#fff"/><path d="M8.5 32c0-6.4 5.3-9.5 11.5-9.5S31.5 25.6 31.5 32Z" fill="#fff"/></svg>';
+
 async function apiFetch(path, options = {}) {
     const isFormData = (typeof FormData !== 'undefined') && options.body instanceof FormData;
     const baseHeaders = isFormData
@@ -890,7 +894,7 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
     if (opts.starred) div.dataset.starred = '1';
 
     let html = '';
-    if (role === 'assistant') html += `<img src="/static/icons/avatar.png" class="msg-avatar">`;
+    if (role === 'assistant') html += MGR_AVATAR_SVG;
 
     // [ACTION:...] タグを抽出してボタン描画用に分離。
     // ただし内部関数ツール名（ユーザー操作対象ではないもの）は、モデルが誤って
@@ -1514,6 +1518,7 @@ function describeAction(payload) {
         case 'save_thought_reflection': return `💭 思考整理を保存: ${args.theme || ''}`;
         case 'habit_complete': return `✅ 習慣を完了: ${args.habit_name || ''}`;
         case 'open_notices': return `📨 マネージャーからのお知らせを開く`;
+        case 'open_advice_result': return `🧭 一括診断の結果を開く（チャート・注目追加）`;
         case 'open_location_log': return `📍 ロケーションログを開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
         case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
@@ -1557,6 +1562,16 @@ window.executeAction = async function(encodedPayload, btn) {
             const card = document.querySelector('.manager-notice-card');
             if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }, 300);
+        return;
+    }
+    // ナビゲーション系: 自動診断（16:15/12:00）の結果を「毎日ここから」のカード表示で開く。
+    // 注目銘柄への追加・チャート確認などができる。job が無ければ直近の保存結果を開く。
+    if (action === 'open_advice_result') {
+        if (args.job && typeof resumeAdviceJobIfAny === 'function') {
+            resumeAdviceJobIfAny(args.job);
+        } else if (typeof openLastAdvice === 'function') {
+            openLastAdvice();
+        }
         return;
     }
     // ナビゲーション系: ロケーションログのカードへ移動
@@ -5669,7 +5684,7 @@ function appendLoadingBubble(text) {
     div.className = 'message assistant';
     div.id = id;
     div.innerHTML = `
-        <img src="/static/icons/avatar.png" class="msg-avatar">
+        ${MGR_AVATAR_SVG}
         <div class="msg-content">
             <div class="msg-bubble loading-bubble">${escapeHtml(text)}</div>
         </div>`;
@@ -5704,7 +5719,7 @@ function appendNoteCard(note) {
     const div = document.createElement('div');
     div.className = 'message assistant';
     div.innerHTML = `
-        <img src="/static/icons/avatar.png" class="msg-avatar">
+        ${MGR_AVATAR_SVG}
         <div class="msg-content">
             <div class="note-card">
                 <div class="note-card-header">

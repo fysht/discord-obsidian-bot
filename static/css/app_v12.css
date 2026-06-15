@@ -45,7 +45,7 @@ body {
 .login-container { width: 100%; max-width: 400px; padding: 24px; }
 .login-card { background: var(--bg-elevated); border-radius: var(--radius-xl); padding: 40px 32px; box-shadow: var(--shadow-deep); text-align: center; border: 1px solid var(--border-glass); }
 .login-avatar { width: 80px; height: 80px; margin: 0 auto 20px; }
-.login-avatar img { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 2.5px solid var(--accent); }
+.login-avatar img, .login-avatar svg { width: 80px; height: 80px; border-radius: 50%; object-fit: cover; border: 2.5px solid var(--accent); }
 .login-title { font-size: 1.5rem; font-weight: 800; margin-bottom: 8px; }
 .login-subtitle { color: var(--text-muted); font-size: 0.9rem; margin-bottom: 32px; }
 
@@ -80,7 +80,7 @@ body {
 }
 .header-partner { display: flex; align-items: center; gap: 12px; flex-shrink: 0; min-width: 0; }
 .partner-avatar { position: relative; width: 34px; height: 34px; flex-shrink: 0; }
-.partner-avatar img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid var(--accent); display: block; }
+.partner-avatar img, .partner-avatar svg { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; border: 1.5px solid var(--accent); display: block; }
 .status-indicator { position: absolute; bottom: 2px; right: 2px; width: 10px; height: 10px; background: #00ba98; border: 2px solid var(--bg-dark); border-radius: 50%; }
 .version-tag { font-size: 0.6rem; color: var(--text-muted); opacity: 0.5; margin: 0 5px; }
 .partner-info { display: flex; flex-direction: column; }
