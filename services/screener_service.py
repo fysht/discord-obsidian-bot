@@ -624,6 +624,37 @@ class ScreenerService:
             logging.debug(f"USDJPY 取得エラー: {e}")
         return None
 
+    async def _get_fundamentals_daily(self, code: str) -> Optional[dict]:
+        """ファンダを「JST 同日スナップショット」として取得する。
+
+        yfinance の get_fundamentals は毎回ライブ取得で、PER(trailingPE) は場中の
+        現在値で変動する。そのため 12:00（場中）と 16:15（引け後）で別々に取得すると
+        同じ銘柄でもファンダ・ゲートの合否が反転し、通知の評価が食い違う。
+        当日の初回取得結果を _research_cache に保存し、その日のうちは（12:00 でも 16:15 でも
+        手動の一括診断でも）同じスナップショットを共有することで評価を一致させる。
+        日付が変われば自動的に再取得される。"""
+        today = datetime.datetime.now(JST).strftime("%Y-%m-%d")
+        try:
+            cached = await _research_cache_get("yffund", code)
+            if cached and cached.get("snapshot_date") == today and cached.get("data") is not None:
+                return cached["data"]
+        except Exception:
+            pass
+        try:
+            fundamentals = await self.provider.get_fundamentals(code)
+        except Exception as e:
+            logging.debug(f"advise ファンダ取得エラー {code}: {e}")
+            fundamentals = None
+        # 非空（＝有効に取得できた）スナップショットのみ当日キャッシュとして確定する。
+        # 空 dict は yfinance の一時失敗の可能性が高く、固定すると一日中失敗を引きずるため保存しない。
+        if fundamentals:
+            try:
+                await _research_cache_set("yffund", code,
+                                          {"snapshot_date": today, "data": fundamentals})
+            except Exception:
+                pass
+        return fundamentals
+
     async def advise_portfolio(
         self,
         holdings: list[dict],
@@ -721,11 +752,9 @@ class ScreenerService:
                 if df is None:
                     return {"ok": False, "code": code, "name": name, "sector": sector,
                             "held": held, "error": "価格データ取得失敗"}
-                try:
-                    fundamentals = await self.provider.get_fundamentals(code)
-                except Exception as e:
-                    logging.debug(f"advise ファンダ取得エラー {code}: {e}")
-                    fundamentals = None
+                # ファンダは「当日スナップショット」を使う（12:00 と 16:15 で同じ値を共有し、
+                # 場中の PER 変動でファンダ評価が食い違うのを防ぐ）。
+                fundamentals = await self._get_fundamentals_daily(code)
                 try:
                     res = analyze_position(
                         df, fundamentals,

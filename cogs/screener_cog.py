@@ -299,17 +299,20 @@ class ScreenerCog(commands.Cog):
             except Exception:
                 pass
 
-    async def save_advice_as_job(self, result: dict) -> Optional[str]:
+    async def save_advice_as_job(self, result: dict, kind: str = "advise") -> Optional[str]:
         """構造化された一括診断結果を done ジョブとして保存し job_id を返す。
         自動通知（16:15 日次スクリーニング / 12:00 昼チェック）から、その結果を
-        『毎日ここから』のカード表示（チャート・注目銘柄追加）で開けるようにするため。"""
+        『毎日ここから』のカード表示（チャート・注目銘柄追加）で開けるようにするため。
+        kind: "advise"(手動) / "daily"(16:15 日次) / "noon"(12:00 昼)。style 列に保存し、
+        『前回の結果を見る』が最新の日次スクリーニング結果を引けるようにする。"""
         if not isinstance(result, dict) or not result.get("ok"):
             return None
         import json as _json
         from api.database import screener_job_create, screener_job_update
         job_id = f"adv_{datetime.datetime.now(JST).strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+        style_key = "advise" if kind == "advise" else f"advise:{kind}"
         try:
-            await screener_job_create(job_id, "advise", 0)
+            await screener_job_create(job_id, style_key, 0)
             await screener_job_update(
                 job_id, status="done",
                 candidates_json=_json.dumps(_json_finite(result), ensure_ascii=False, default=str),
@@ -777,6 +780,25 @@ class ScreenerCog(commands.Cog):
             "error": job.get("error", ""),
             "result": result_payload,
         }
+
+    async def latest_advice_result(self, kind: str = "daily") -> dict:
+        """指定種別の最新 done 一括診断結果を復元して返す（『前回の結果を見る』用）。
+        kind="daily" で 16:15 の日次スクリーニング結果を引く。"""
+        from api.database import screener_job_latest_done
+        import json as _json
+        style = "advise" if kind == "advise" else f"advise:{kind}"
+        job = await screener_job_latest_done(style)
+        if not job:
+            return {"ok": False, "error": "保存された結果がありません"}
+        cj = (job.get("candidates_json") or "").strip()
+        try:
+            result = _json.loads(cj) if cj else None
+        except Exception:
+            result = None
+        if not isinstance(result, dict) or not result.get("ok"):
+            return {"ok": False, "error": "結果を復元できませんでした"}
+        return {"ok": True, "job_id": job.get("job_id"),
+                "created_at": job.get("created_at"), "result": result}
 
     async def _run_qualitative_job(
         self,

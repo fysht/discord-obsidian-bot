@@ -11694,7 +11694,7 @@ function _renderScreenerCandidates(data) {
         <div style="font-weight:700;font-size:0.82rem;color:#7ee0a0;margin-bottom:6px;">🧭 ここからの進め方</div>
         <button class="mini-link" style="display:block;width:100%;text-align:left;font-size:0.84rem;font-weight:700;padding:8px 12px;background:rgba(126,224,160,0.18);color:#7ee0a0;border:1px solid rgba(126,224,160,0.5);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true, false, true);" title="全メソッドで日米を自動スクリーニングして新規候補を抽出し、保有＋候補を、守り(出口)→保有管理→新規候補→入替→配分/検証 の順に一括診断します（1〜3分）">▶ 毎日ここから：保有＆候補を一括診断</button>
         <div style="display:flex;justify-content:flex-end;margin:4px 0;">
-            <button class="mini-link" style="font-size:0.72rem;" onclick="event.preventDefault();openLastAdvice();" title="直近で完了した一括診断の結果を、再診断せずそのまま表示します">📄 前回の結果を見る</button>
+            <button class="mini-link" style="font-size:0.72rem;" onclick="event.preventDefault();openLastAdvice();" title="16:15 の日次スクリーニング（確定版）や直近の一括診断の結果を、再診断せずそのまま表示します（通知をタップしていなくても閲覧可）">📄 前回の結果を見る（16:15の確定診断）</button>
         </div>
         <div style="font-size:0.7rem;color:var(--text-muted);margin:4px 0 8px;">全手法で日米を自動スクリーニング → 守り(出口チェック)→保有管理(勝ち株は買い増し)→新規候補→入替→配分/検証 を順に表示（1〜3分）。閉じても「前回の結果を見る」で再表示できます。中の「📋 進め方ガイド」も参照。</div>
         <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:3px;">週次・月次の補助：</div>
@@ -12176,19 +12176,41 @@ function _renderAdviceResult(r, generatedAt) {
 }
 
 // 「前回の結果」：直近で完了した一括診断の結果を、再診断せずそのまま開いて閲覧する。
-window.openLastAdvice = () => {
-    let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(ADVICE_LAST_RESULT_KEY) || 'null'); } catch (e) { saved = null; }
-    if (!saved || !saved.result || !saved.result.ok) {
-        showToast('保存された診断結果がまだありません。まず「毎日ここから」を実行してください。', true);
+// ローカル保存（手動実行）と、サーバ保存の最新 16:15 日次スクリーニングの新しい方を表示する。
+// これにより通知をタップしていなくても、当日の 16:15 確定診断をここから閲覧できる。
+window.openLastAdvice = async () => {
+    let local = null;
+    try { local = JSON.parse(localStorage.getItem(ADVICE_LAST_RESULT_KEY) || 'null'); } catch (e) { local = null; }
+    const localAt = (local && local.result && local.result.ok) ? (local.at || 0) : 0;
+
+    // サーバから最新の 16:15 日次スクリーニング結果を取得（失敗してもローカルにフォールバック）。
+    let server = null;
+    try {
+        const d = await apiFetch('/api/investment/screener/advise/latest?kind=daily');
+        if (d && d.ok && d.result && d.result.ok) {
+            const at = d.created_at ? new Date(d.created_at).getTime() : 0;
+            if (at) server = { at, result: d.result };
+        }
+    } catch (e) { /* オフライン等は無視してローカルへ */ }
+
+    // 新しい方を採用（同点ならサーバの 16:15 確定版を優先）。
+    let chosen = null;
+    if (server && local && localAt) chosen = (localAt > server.at) ? local : server;
+    else chosen = server || (localAt ? local : null);
+
+    if (!chosen || !chosen.result || !chosen.result.ok) {
+        showToast('保存された診断結果がまだありません。16:15 の日次スクリーニング後、または「毎日ここから」を実行してください。', true);
         return;
     }
+    // 採用した結果をローカルにも反映しておく（次回以降の整合のため）。
+    try { localStorage.setItem(ADVICE_LAST_RESULT_KEY, JSON.stringify({ at: chosen.at, result: chosen.result })); } catch (e) { /* ignore */ }
+
     const modal = _ensureAdviceModal();
     const bodyEl = document.getElementById('portfolio-advice-body');
-    _dailyAdviceCandidates = (saved.result.candidates || [])
+    _dailyAdviceCandidates = (chosen.result.candidates || [])
         .filter(c => c && c.code)
         .map(c => ({ code: c.code, name: c.name, sector: c.sector }));
-    if (bodyEl) bodyEl.innerHTML = _adviceGeneratedAtBar(saved.at) + _renderPortfolioAdvice(saved.result);
+    if (bodyEl) bodyEl.innerHTML = _adviceGeneratedAtBar(chosen.at) + _renderPortfolioAdvice(chosen.result);
     modal.classList.remove('hidden');
 };
 

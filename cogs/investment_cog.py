@@ -653,7 +653,7 @@ class InvestmentCog(commands.Cog):
 
         # 構造化結果を done ジョブとして保存し、通知ボタンから『毎日ここから』のカード表示
         # （保有のチャート確認など）で開けるようにする。
-        advice_job_id = await screener.save_advice_as_job(advice)
+        advice_job_id = await screener.save_advice_as_job(advice, kind="noon")
 
         labels = {"SELL": "🔴 売却・撤退", "TRIM": "🟠 一部利確・縮小",
                   "HOLD_WATCH": "🟡 保有（警戒）", "HOLD": "🟢 継続保有"}
@@ -687,7 +687,9 @@ class InvestmentCog(commands.Cog):
         for rot in (advice.get("rotations") or [])[:3]:
             parts.append(f"🔁 {rot.get('reason', '')}")
         parts.append("")
-        parts.append("※ テクニカル(トレンド)×ファンダの決定論的診断です。12:30 の売買判断の参考に。")
+        parts.append("※ これは場中（暫定）の保有チェックです。12:30 の売買判断の“さっと見”用。"
+                     "ファンダ評価は当日スナップショットで 16:15 の日次スクリーニングと一致させています。"
+                     "新規候補・目標配分・入替まで含めた確定版は 16:15 の通知（＝今日の答え）を見てください。")
         return {"ok": True, "report": "\n".join(p for p in parts if p is not None),
                 "advice_job_id": advice_job_id}
 
@@ -802,7 +804,7 @@ class InvestmentCog(commands.Cog):
             ms = matched_by_code.get(str(c.get("code") or ""))
             if ms:
                 c["matched_styles"] = [screener._style_display(s) for s in ms]
-        advice_job_id = await screener.save_advice_as_job(advice)
+        advice_job_id = await screener.save_advice_as_job(advice, kind="daily")
 
         today = (datetime.datetime.now(JST).strftime("%-m/%-d")
                  if os.name != "nt" else datetime.datetime.now(JST).strftime("%m/%d"))
@@ -901,7 +903,8 @@ class InvestmentCog(commands.Cog):
         if not any_ok:
             parts.append("※ スクリーニングは実行できませんでした（保有のみ診断）。")
             parts.append("")
-        parts.append("※ 当日確定の日足×ファンダ（米国株は時間差あり）の決定論的診断です。"
+        parts.append("※ 引け後・当日確定の日足×ファンダ（米国株は時間差あり）の決定論的診断＝今日の確定版です"
+                     "（12:00 の昼チェックは場中の暫定。評価が違う場合はこちらが正）。"
                      "手法ラベルは『どのメソッドが拾ったか』。日米1:1配分のため両市場から抽出。最終判断は自己責任で。")
         return {"ok": True, "report": "\n".join(p for p in parts if p is not None),
                 "advice_job_id": advice_job_id}

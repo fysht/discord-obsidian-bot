@@ -141,6 +141,14 @@ async def screener_job(job_id: str):
     return await cog.get_job_status(job_id)
 
 
+@router.get("/advise/latest", dependencies=[Depends(verify_api_key)])
+async def screener_advise_latest(kind: str = "daily"):
+    """最新の一括診断結果を返す（『前回の結果を見る』用）。kind="daily" で 16:15 の
+    日次スクリーニング結果を、通知をタップしていなくても閲覧できるようにする。"""
+    cog = _get_screener_cog()
+    return _json_sanitize(await cog.latest_advice_result(kind))
+
+
 @router.get("/ohlcv/{code}", dependencies=[Depends(verify_api_key)])
 async def screener_ohlcv(code: str, days: int = 120):
     """1 銘柄の OHLCV（分割調整済み）を返す。スクリーナー結果のチャート表示用。"""
