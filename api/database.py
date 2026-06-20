@@ -971,6 +971,24 @@ async def delete_daily_question(qid: int) -> bool:
         return cursor.rowcount > 0
 
 
+async def delete_daily_questions_by_date(date: str, scopes: list[str] | None = None) -> int:
+    """指定日の質問をまとめて削除する。scopes 指定時はその scope のみ。
+    「今日の記録」で日付ごとに未回答質問を一括破棄するために使う。削除件数を返す。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        if scopes:
+            placeholders = ",".join("?" for _ in scopes)
+            cursor = await db.execute(
+                f"DELETE FROM daily_questions WHERE date = ? AND scope IN ({placeholders})",
+                (date, *scopes),
+            )
+        else:
+            cursor = await db.execute(
+                "DELETE FROM daily_questions WHERE date = ?", (date,)
+            )
+        await db.commit()
+        return cursor.rowcount
+
+
 # --- API Usage (コストメーター) ---
 
 async def record_api_usage(model: str, in_tokens: int, out_tokens: int, source: str = "") -> None:
@@ -1846,6 +1864,16 @@ async def gmail_count_unnotified_high() -> int:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
             "SELECT COUNT(*) FROM gmail_inbox WHERE state = 'pending' AND importance = 'high'"
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
+async def gmail_count_pending() -> int:
+    """未処理（state='pending'）メールの総件数。バッジ表示・溜まり通知に使う。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM gmail_inbox WHERE state = 'pending'"
         )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
