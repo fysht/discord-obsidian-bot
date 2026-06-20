@@ -321,11 +321,15 @@
                                 <span class="card-icon">📺</span>
                                 <span class="card-title">YouTube新着</span>
                                 <span id="youtube-new-badge" style="display:none;background:#ff6b6b;color:#fff;font-size:0.7rem;font-weight:700;padding:1px 7px;border-radius:10px;margin-left:4px;" title="未視聴の新着件数"></span>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openWatchDeclareModal()" title="見る前に宣言してタイマーで回収">📣 宣言して見る</button>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadYouTubeVideos()" title="更新">🔄 更新</button>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); refreshYouTubeServer()" title="登録チャンネルを再取得して新着を取り込み">📥 取り込み</button>
                             </div>
                         </summary>
-                        <div id="dash-youtube-list" class="card-body"><div class="loading-placeholder">「📥 取り込み」で登録チャンネルの新着を取得できます。</div></div>
+                        <div class="card-body">
+                            <div id="watch-status"></div>
+                            <div id="dash-youtube-list"><div class="loading-placeholder">「📥 取り込み」で登録チャンネルの新着を取得できます。</div></div>
+                        </div>
                     </details>
 
                     <!-- 食事ログ -->
@@ -1944,6 +1948,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=97"></script>
+    <script src="/static/js/app_v12.js?v=98"></script>
 </body>
 </html>

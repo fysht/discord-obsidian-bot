@@ -265,6 +265,30 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_youtube_published ON youtube_videos(published_at)"
         )
 
+        # 視聴セッション（ダラ見対策）: 自動記録(webhook)/宣言タイマー/見る前チェックインを統合
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS watch_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                app TEXT DEFAULT 'youtube',
+                source TEXT DEFAULT 'webhook',
+                reason TEXT DEFAULT '',
+                declared_minutes INTEGER DEFAULT 0,
+                started_at TEXT NOT NULL,
+                ended_at TEXT DEFAULT '',
+                duration_sec INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'active',
+                reminded INTEGER DEFAULT 0,
+                date TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_watch_status ON watch_sessions(status)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_watch_date ON watch_sessions(date)"
+        )
+
         # 支出ログ（大きな支出メモ）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS expenses (
@@ -2033,6 +2057,132 @@ async def youtube_get_video(video_id: str) -> dict | None:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+
+# ===== 視聴セッション（ダラ見対策） =====
+
+async def watch_create_session(
+    app: str, source: str, declared_minutes: int = 0, reason: str = "",
+) -> int:
+    """視聴セッションを開始（active）。id を返す。"""
+    now = datetime.datetime.now(JST)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT INTO watch_sessions "
+            "(app, source, reason, declared_minutes, started_at, status, date, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'active', ?, ?)",
+            (
+                app or "youtube", source or "webhook", reason or "",
+                int(declared_minutes or 0), now.isoformat(),
+                now.strftime("%Y-%m-%d"), now.isoformat(),
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def watch_get(session_id: int) -> dict | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM watch_sessions WHERE id = ?", (int(session_id),)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def watch_get_active(app: str | None = None) -> dict | None:
+    """直近の active セッションを返す（app 指定でその種別のみ）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if app:
+            cursor = await db.execute(
+                "SELECT * FROM watch_sessions WHERE status = 'active' AND app = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (app,),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM watch_sessions WHERE status = 'active' "
+                "ORDER BY id DESC LIMIT 1"
+            )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+
+async def watch_list_active() -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM watch_sessions WHERE status = 'active' ORDER BY id DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def watch_finalize(session_id: int, duration_sec: int, status: str = "done") -> bool:
+    now = datetime.datetime.now(JST)
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE watch_sessions SET ended_at = ?, duration_sec = ?, status = ? "
+            "WHERE id = ? AND status = 'active'",
+            (now.isoformat(), int(duration_sec or 0), status, int(session_id)),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def watch_set_reason(session_id: int, reason: str) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE watch_sessions SET reason = ? WHERE id = ?",
+            (reason or "", int(session_id)),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def watch_mark_reminded(session_id: int) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE watch_sessions SET reminded = 1 WHERE id = ?", (int(session_id),)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def watch_extend(session_id: int, add_minutes: int) -> bool:
+    """宣言時間を延長し、回収リマインドを再予約する（reminded を戻す）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE watch_sessions SET declared_minutes = declared_minutes + ?, reminded = 0 "
+            "WHERE id = ? AND status = 'active'",
+            (int(add_minutes or 0), int(session_id)),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def watch_list_by_date(date: str) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM watch_sessions WHERE date = ? ORDER BY id DESC", (date,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def watch_today_total_minutes(date: str) -> int:
+    """その日の完了セッションの合計分（done/abandoned の duration を合算）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT COALESCE(SUM(duration_sec), 0) FROM watch_sessions "
+            "WHERE date = ? AND status != 'active'",
+            (date,),
+        )
+        row = await cursor.fetchone()
+        return int((row[0] or 0) // 60) if row else 0
 
 # ===== Error log =====
 

@@ -1573,6 +1573,7 @@ function describeAction(payload) {
         case 'open_location_log': return `📍 ロケーションログを開く`;
         case 'open_inbox':   return `📧 メール受信箱を開く`;
         case 'open_youtube': return `📺 YouTube新着を開く`;
+        case 'open_watch':   return `📵 ダラ見ガードを開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
         case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
         case 'meal_quick':   return `✓ 外食を記録: ${args.name || ''}`;
@@ -1633,6 +1634,20 @@ window.executeAction = async function(encodedPayload, btn) {
         setTimeout(() => {
             const card = document.getElementById('dash-gmail-list');
             if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        return;
+    }
+    // ナビゲーション系: ダラ見ガード（視聴セッション）= YouTubeカードへ移動して状態更新
+    if (action === 'open_watch') {
+        switchTab('log');
+        setTimeout(() => {
+            const card = document.getElementById('watch-status');
+            if (card) {
+                const det = card.closest('details');
+                if (det) det.open = true;
+                card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+            if (typeof loadWatchStatus === 'function') loadWatchStatus();
         }, 300);
         return;
     }
@@ -5140,7 +5155,9 @@ function initMain() {
     if (typeof refreshLogInboxBadge === 'function') { try { refreshLogInboxBadge(); } catch {} }
     if (typeof refreshGmailBadge === 'function') { try { refreshGmailBadge(); } catch {} }
     if (typeof refreshYouTubeBadge === 'function') { try { refreshYouTubeBadge(); } catch {} }
+    if (typeof loadWatchStatus === 'function') { try { loadWatchStatus(); } catch {} }
     if (typeof _handleLogQuestionDeepLink === 'function') { try { _handleLogQuestionDeepLink(); } catch {} }
+    if (typeof _handleWatchDeepLinks === 'function') { try { _handleWatchDeepLinks(); } catch {} }
     // PayPay 等の共有が来ていれば支出モーダル/チャットへ振り分け
     if (apiKey) { _handleExpenseShareTarget(); _handleShareTarget(); }
 
@@ -7487,6 +7504,7 @@ window.refreshYouTubeServer = async () => {
 window.loadYouTubeVideos = async (state = 'new') => {
     const listEl = document.getElementById('dash-youtube-list');
     if (!listEl) return;
+    if (typeof loadWatchStatus === 'function') loadWatchStatus();
     try {
         const data = await apiFetch(`/api/youtube/videos?state=${encodeURIComponent(state)}&limit=50`);
         _setYouTubeBadge(data.new_count);
@@ -7562,6 +7580,212 @@ function _bindYouTubeDelegation(listEl) {
         }
     });
 }
+
+// ===== 📵 ダラ見ガード（視聴セッション：宣言タイマー / 見る前チェックイン） =====
+const WATCH_APP_LABEL = { youtube: 'YouTube', net: 'ネット', other: 'その他' };
+
+// 進行中セッションのバナーと当日合計を YouTube カードの上部に描画する。
+window.loadWatchStatus = async () => {
+    const box = document.getElementById('watch-status');
+    if (!box) return;
+    let active = [], total = 0;
+    try {
+        const [a, t] = await Promise.all([
+            apiFetch('/api/watch/active'),
+            apiFetch('/api/watch/today'),
+        ]);
+        active = (a && a.items) || [];
+        total = (t && t.total_minutes) || 0;
+    } catch (e) { box.innerHTML = ''; return; }
+
+    let html = '';
+    for (const s of active) {
+        const label = s.app_label || WATCH_APP_LABEL[s.app] || 'アプリ';
+        const remain = (s.remaining_minutes != null)
+            ? `残り約${s.remaining_minutes}分`
+            : `経過${s.elapsed_minutes || 0}分`;
+        const declared = (s.declared_minutes || 0) > 0 ? `（宣言${s.declared_minutes}分）` : '';
+        html += `
+            <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;margin-bottom:6px;background:rgba(255,212,84,0.1);border:1px solid rgba(255,212,84,0.3);border-radius:8px;">
+                <span style="font-size:0.82rem;">⏳ ${label}視聴中 <b>${remain}</b>${declared}</span>
+                <button class="mini-link" style="margin-left:auto;" onclick="endWatchSession(${s.id})">今すぐ終了</button>
+            </div>`;
+    }
+    const totalLine = `<div style="font-size:0.76rem;color:var(--text-muted);margin-bottom:6px;">📵 今日のダラ見 合計 <b>${total}</b> 分</div>`;
+    box.innerHTML = totalLine + html;
+};
+
+window.endWatchSession = async (id) => {
+    try {
+        await apiFetch(`/api/watch/${id}/end`, { method: 'POST', body: JSON.stringify({ status: 'done' }) });
+        showToast('お疲れさま！記録したよ');
+    } catch (e) { showToast('終了に失敗しました', true); }
+    loadWatchStatus();
+};
+
+// 「📣 宣言して見る」モーダル：対象・分数・目的を決めて宣言→タイマー回収。
+window.openWatchDeclareModal = () => {
+    let modal = document.getElementById('watch-declare-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="watch-declare-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:420px;">
+                    <h3 style="margin-top:0;">📣 宣言して見る</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">見る前に「何分・何のため」を宣言。時間がきたらマネージャーが声かけるよ。</p>
+                    <label style="font-size:0.78rem;color:var(--text-muted);">対象</label>
+                    <select id="watch-app" class="modern-input" style="margin-bottom:8px;">
+                        <option value="youtube">YouTube</option>
+                        <option value="net">ネット</option>
+                        <option value="other">その他</option>
+                    </select>
+                    <label style="font-size:0.78rem;color:var(--text-muted);">何分見る？</label>
+                    <div id="watch-minutes-chips" style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+                        ${[15, 30, 45, 60].map(m => `<button type="button" class="board-chip" data-min="${m}" onclick="_pickWatchMinutes(this)" style="padding:4px 12px;font-size:0.82rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${m}分</button>`).join('')}
+                        <input id="watch-minutes" type="number" min="1" max="240" placeholder="分" class="modern-input" style="width:70px;padding:4px;">
+                    </div>
+                    <label style="font-size:0.78rem;color:var(--text-muted);">何のために？（任意・あると振り返りやすい）</label>
+                    <input id="watch-reason" class="modern-input" style="margin-bottom:10px;" placeholder="例: ○○のレビューを1本だけ確認">
+                    <div class="modal-actions">
+                        <button class="modal-btn cancel" onclick="document.getElementById('watch-declare-modal').classList.add('hidden')">キャンセル</button>
+                        <button class="modal-btn submit" onclick="submitWatchDeclare()">宣言する</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('watch-declare-modal');
+    }
+    const minInput = document.getElementById('watch-minutes');
+    if (minInput) minInput.value = '';
+    document.querySelectorAll('#watch-minutes-chips .board-chip').forEach(b => { b.style.background = 'rgba(255,212,84,0.12)'; b.style.fontWeight = 'normal'; });
+    // 既定で 30分 を選択状態にする。
+    const def = document.querySelector('#watch-minutes-chips .board-chip[data-min="30"]');
+    if (def) { def.style.background = 'rgba(255,212,84,0.35)'; def.style.fontWeight = 'bold'; }
+    const reason = document.getElementById('watch-reason');
+    if (reason) reason.value = '';
+    modal.classList.remove('hidden');
+};
+
+window._pickWatchMinutes = (btn) => {
+    document.querySelectorAll('#watch-minutes-chips .board-chip').forEach(b => { b.style.background = 'rgba(255,212,84,0.12)'; b.style.fontWeight = 'normal'; });
+    btn.style.background = 'rgba(255,212,84,0.35)'; btn.style.fontWeight = 'bold';
+    const minInput = document.getElementById('watch-minutes');
+    if (minInput) minInput.value = '';
+};
+
+window.submitWatchDeclare = async () => {
+    const app = document.getElementById('watch-app')?.value || 'youtube';
+    const custom = parseInt(document.getElementById('watch-minutes')?.value || '0', 10) || 0;
+    const chip = document.querySelector('#watch-minutes-chips .board-chip[style*="bold"]');
+    const minutes = custom > 0 ? custom : (chip ? parseInt(chip.dataset.min, 10) : 30);
+    const reason = (document.getElementById('watch-reason')?.value || '').trim();
+    try {
+        await apiFetch('/api/watch/declare', { method: 'POST', body: JSON.stringify({ app, minutes, reason }) });
+        document.getElementById('watch-declare-modal')?.classList.add('hidden');
+        showToast(`📣 ${WATCH_APP_LABEL[app] || ''}を${minutes}分宣言したよ。時間がきたら声かけるね`);
+        loadWatchStatus();
+    } catch (e) {
+        showToast('宣言に失敗しました', true);
+    }
+};
+
+// 見る前チェックイン（?watchReason=ID）：目的を一言入力させる。
+window.openWatchReasonModal = (id) => {
+    let modal = document.getElementById('watch-reason-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="watch-reason-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:400px;">
+                    <h3 style="margin-top:0;">📵 何のために見てる？</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">目的を一言。書けないなら…ダラ見のサインかも👀</p>
+                    <input id="watch-reason-input" class="modern-input" style="margin-bottom:10px;" placeholder="例: ○○の使い方を調べる">
+                    <div class="modal-actions">
+                        <button class="modal-btn cancel" onclick="submitWatchReason(0)">目的なし</button>
+                        <button class="modal-btn submit" onclick="submitWatchReason(1)">記録</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('watch-reason-modal');
+    }
+    modal.dataset.sessionId = String(id);
+    const input = document.getElementById('watch-reason-input');
+    if (input) input.value = '';
+    modal.classList.remove('hidden');
+};
+
+window.submitWatchReason = async (withText) => {
+    const modal = document.getElementById('watch-reason-modal');
+    if (!modal) return;
+    const id = modal.dataset.sessionId;
+    const reason = withText ? (document.getElementById('watch-reason-input')?.value || '').trim() : '';
+    try {
+        const res = await apiFetch(`/api/watch/${id}/reason`, { method: 'POST', body: JSON.stringify({ reason }) });
+        modal.classList.add('hidden');
+        if (res && res.tease) showToast(res.tease);
+        else showToast('🆗 目的を記録したよ');
+    } catch (e) { showToast('記録に失敗しました', true); }
+};
+
+// 回収（?watchEnd=ID）：記録して終了 or +10分延長。
+window.openWatchEndModal = (id) => {
+    let modal = document.getElementById('watch-end-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="watch-end-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:400px;">
+                    <h3 style="margin-top:0;">⏰ 時間だよ。どうする？</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 12px;">宣言した時間が過ぎたよ。切り上げる？もう少し見る？</p>
+                    <div class="modal-actions" style="flex-wrap:wrap;gap:8px;">
+                        <button class="modal-btn cancel" onclick="submitWatchEnd('extend')">＋10分延長</button>
+                        <button class="modal-btn submit" onclick="submitWatchEnd('done')">記録して終了</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('watch-end-modal');
+    }
+    modal.dataset.sessionId = String(id);
+    modal.classList.remove('hidden');
+};
+
+window.submitWatchEnd = async (mode) => {
+    const modal = document.getElementById('watch-end-modal');
+    if (!modal) return;
+    const id = modal.dataset.sessionId;
+    try {
+        if (mode === 'extend') {
+            await apiFetch(`/api/watch/${id}/end`, { method: 'POST', body: JSON.stringify({ extend_minutes: 10 }) });
+            showToast('⏳ +10分。最後だよ〜');
+        } else {
+            await apiFetch(`/api/watch/${id}/end`, { method: 'POST', body: JSON.stringify({ status: 'done' }) });
+            showToast('お疲れさま！記録したよ');
+        }
+        modal.classList.add('hidden');
+        loadWatchStatus();
+    } catch (e) { showToast('操作に失敗しました', true); }
+};
+
+// 通知から開かれた場合（?watchReason=ID / ?watchEnd=ID）に該当モーダルを出す。
+window._handleWatchDeepLinks = () => {
+    let reasonId, endId;
+    try {
+        const params = new URLSearchParams(window.location.search);
+        reasonId = params.get('watchReason');
+        endId = params.get('watchEnd');
+    } catch (e) { return; }
+    if (!reasonId && !endId) return;
+    try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('watchReason');
+        url.searchParams.delete('watchEnd');
+        window.history.replaceState({}, '', url.pathname + url.search);
+    } catch (e) { /* ignore */ }
+    if (reasonId) setTimeout(() => openWatchReasonModal(parseInt(reasonId, 10)), 500);
+    if (endId) setTimeout(() => openWatchEndModal(parseInt(endId, 10)), 500);
+};
 
 /**
  * F-7: Gmail インボックスのイベント委譲。
