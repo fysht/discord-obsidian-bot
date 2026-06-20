@@ -13,6 +13,7 @@ from services.google_drive_service import GoogleDriveService
 from services.google_calendar_service import GoogleCalendarService
 from services.google_tasks_service import GoogleTasksService
 from services.gmail_service import GmailService
+from services.youtube_service import YouTubeService
 from services.info_service import InfoService
 
 log_format = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
@@ -124,11 +125,13 @@ class MyBot(commands.Bot):
             )
             self.tasks_service = GoogleTasksService(self.drive_service.creds)
             self.gmail_service = GmailService(self.drive_service.creds)
+            self.youtube_service = YouTubeService(self.drive_service.creds)
         else:
             self.calendar_service = None
             self.tasks_service = None
             self.gmail_service = None
-            logging.warning("Google認証情報がありません。Calendar/Tasks/Gmailは無効です。")
+            self.youtube_service = None
+            logging.warning("Google認証情報がありません。Calendar/Tasks/Gmail/YouTubeは無効です。")
 
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
@@ -184,6 +187,7 @@ async def main():
     from api.routers.google_tasks import router as tasks_router
     from api.routers.habits import router as habits_router
     from api.routers.gmail import router as gmail_router
+    from api.routers.youtube import router as youtube_router
     from api.routers.expenses import router as expenses_router
     from api.routers.meals import router as meals_router
     from api.routers.stocked_links import router as stocked_links_router
@@ -226,6 +230,7 @@ async def main():
     fastapi_app.include_router(tasks_router, prefix="/api")
     fastapi_app.include_router(habits_router, prefix="/api")
     fastapi_app.include_router(gmail_router, prefix="/api")
+    fastapi_app.include_router(youtube_router, prefix="/api")
     fastapi_app.include_router(expenses_router, prefix="/api")
     fastapi_app.include_router(meals_router, prefix="/api")
     fastapi_app.include_router(stocked_links_router, prefix="/api")

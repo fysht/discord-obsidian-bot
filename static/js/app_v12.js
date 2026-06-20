@@ -1572,6 +1572,7 @@ function describeAction(payload) {
         case 'open_advice_result': return `🧭 一括診断の結果を開く（チャート・注目追加）`;
         case 'open_location_log': return `📍 ロケーションログを開く`;
         case 'open_inbox':   return `📧 メール受信箱を開く`;
+        case 'open_youtube': return `📺 YouTube新着を開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
         case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
         case 'meal_quick':   return `✓ 外食を記録: ${args.name || ''}`;
@@ -1632,6 +1633,20 @@ window.executeAction = async function(encodedPayload, btn) {
         setTimeout(() => {
             const card = document.getElementById('dash-gmail-list');
             if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        return;
+    }
+    // ナビゲーション系: YouTube新着カードへ移動
+    if (action === 'open_youtube') {
+        switchTab('log');
+        setTimeout(() => {
+            const card = document.getElementById('dash-youtube-list');
+            if (card) {
+                const det = card.closest('details');
+                if (det) det.open = true;
+                card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+            if (typeof loadYouTubeVideos === 'function') loadYouTubeVideos();
         }, 300);
         return;
     }
@@ -5124,6 +5139,7 @@ function initMain() {
     requestNotificationPermission();
     if (typeof refreshLogInboxBadge === 'function') { try { refreshLogInboxBadge(); } catch {} }
     if (typeof refreshGmailBadge === 'function') { try { refreshGmailBadge(); } catch {} }
+    if (typeof refreshYouTubeBadge === 'function') { try { refreshYouTubeBadge(); } catch {} }
     if (typeof _handleLogQuestionDeepLink === 'function') { try { _handleLogQuestionDeepLink(); } catch {} }
     // PayPay 等の共有が来ていれば支出モーダル/チャットへ振り分け
     if (apiKey) { _handleExpenseShareTarget(); _handleShareTarget(); }
@@ -7438,6 +7454,114 @@ window.loadGmailInbox = async (state = 'pending') => {
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
 };
+
+// ===== 📺 YouTube 登録チャンネル新着 =====
+function _setYouTubeBadge(count) {
+    const badge = document.getElementById('youtube-new-badge');
+    if (!badge) return;
+    const n = parseInt(count, 10) || 0;
+    badge.textContent = n > 0 ? `新着 ${n}` : '';
+    badge.style.display = n > 0 ? '' : 'none';
+}
+
+// カードを開かずに新着件数だけ取りに行ってバッジ更新（起動時など）。
+window.refreshYouTubeBadge = async () => {
+    try {
+        const data = await apiFetch('/api/youtube/videos?state=new&limit=1');
+        _setYouTubeBadge(data.new_count);
+    } catch (e) { /* バッジ更新失敗は無視 */ }
+};
+
+// 登録チャンネルを再取得して新着を取り込む（手動）。
+window.refreshYouTubeServer = async () => {
+    showToast('📥 登録チャンネルの新着を取得中…');
+    try {
+        const res = await apiFetch('/api/youtube/refresh', { method: 'POST', body: '{}' });
+        showToast(`✅ 登録${res.subscriptions || 0}ch / 新着${res.new_videos || 0}本`);
+    } catch (e) {
+        showToast('取得に失敗しました（認証スコープを確認してください）', true);
+    }
+    loadYouTubeVideos();
+};
+
+window.loadYouTubeVideos = async (state = 'new') => {
+    const listEl = document.getElementById('dash-youtube-list');
+    if (!listEl) return;
+    try {
+        const data = await apiFetch(`/api/youtube/videos?state=${encodeURIComponent(state)}&limit=50`);
+        _setYouTubeBadge(data.new_count);
+        const items = data.items || [];
+        if (!items.length) {
+            listEl.innerHTML = '<div class="loading-placeholder">新着はありません。<span class="muted-hint">「📥 取り込み」で登録チャンネルの新着を取得できます。</span></div>';
+            return;
+        }
+        listEl.innerHTML = items.map(v => {
+            const vid = escapeHtml(v.id);
+            const title = escapeHtml(v.title || '(無題)');
+            const ch = escapeHtml(v.channel_title || '');
+            const url = escapeHtml(v.url || `https://www.youtube.com/watch?v=${v.id}`);
+            const published = v.published_at ? escapeHtml(String(v.published_at).slice(0, 10)) : '';
+            const thumb = `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
+            return `
+                <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" style="align-items:flex-start;gap:8px;cursor:default;">
+                    <img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;flex-shrink:0;background:rgba(255,255,255,0.05);">
+                    <div class="row-main" style="flex:1;min-width:0;">
+                        <div class="row-title" style="font-size:0.86rem;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${title}</div>
+                        <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;">${ch}${published ? ' ・ ' + published : ''}</div>
+                        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;">
+                            <button class="mini-link" data-yt-action="later" title="あとで見るに退避（今は見ない）" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>
+                            <button class="mini-link" data-yt-action="open" title="YouTubeで開く">↗ 開く</button>
+                            <button class="mini-link" data-yt-action="watched" title="見た（一覧から外す）">✓ 見た</button>
+                            <button class="mini-link btn-danger" data-yt-action="hidden" title="興味なし（非表示）">🙈 非表示</button>
+                        </div>
+                    </div>
+                </div>`;
+        }).join('');
+        _bindYouTubeDelegation(listEl);
+    } catch (e) {
+        console.error('loadYouTubeVideos failed', e);
+        listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
+    }
+};
+
+// YouTube 行のイベント委譲（later/open/watched/hidden）。
+function _bindYouTubeDelegation(listEl) {
+    if (listEl._ytBound) return;
+    listEl._ytBound = true;
+    listEl.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('[data-yt-action]');
+        if (!btn) return;
+        const row = btn.closest('.youtube-row');
+        if (!row) return;
+        const id = row.dataset.id;
+        const url = row.dataset.url;
+        const action = btn.dataset.ytAction;
+        if (action === 'open') {
+            window.open(url, '_blank', 'noopener');
+            return;
+        }
+        btn.disabled = true;
+        try {
+            if (action === 'later') {
+                await apiFetch(`/api/youtube/${encodeURIComponent(id)}/later`, { method: 'POST', body: '{}' });
+                showToast('🔖 あとで見るに退避しました');
+            } else if (action === 'watched') {
+                await apiFetch(`/api/youtube/${encodeURIComponent(id)}/state`, { method: 'POST', body: JSON.stringify({ state: 'watched' }) });
+            } else if (action === 'hidden') {
+                await apiFetch(`/api/youtube/${encodeURIComponent(id)}/state`, { method: 'POST', body: JSON.stringify({ state: 'hidden' }) });
+            }
+            row.remove();
+            refreshYouTubeBadge();
+            const listEl2 = document.getElementById('dash-youtube-list');
+            if (listEl2 && !listEl2.querySelector('.youtube-row')) {
+                listEl2.innerHTML = '<div class="loading-placeholder">新着はありません。</div>';
+            }
+        } catch (e) {
+            btn.disabled = false;
+            showToast('操作に失敗しました', true);
+        }
+    });
+}
 
 /**
  * F-7: Gmail インボックスのイベント委譲。

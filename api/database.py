@@ -234,6 +234,37 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS idx_gmail_received ON gmail_inbox(received_at)"
         )
 
+        # YouTube 登録チャンネル（subscriptions.list の結果をキャッシュ）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS youtube_channels (
+                channel_id TEXT PRIMARY KEY,
+                title TEXT DEFAULT '',
+                enabled INTEGER DEFAULT 1,
+                added_at TEXT NOT NULL
+            )
+        """)
+
+        # YouTube 新着動画（RSS から取り込み・状態管理）
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS youtube_videos (
+                id TEXT PRIMARY KEY,
+                channel_id TEXT DEFAULT '',
+                channel_title TEXT DEFAULT '',
+                title TEXT DEFAULT '',
+                url TEXT DEFAULT '',
+                published_at TEXT DEFAULT '',
+                state TEXT DEFAULT 'new',
+                notified INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_youtube_state ON youtube_videos(state)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_youtube_published ON youtube_videos(published_at)"
+        )
+
         # 支出ログ（大きな支出メモ）
         await db.execute("""
             CREATE TABLE IF NOT EXISTS expenses (
@@ -1877,6 +1908,131 @@ async def gmail_count_pending() -> int:
         )
         row = await cursor.fetchone()
         return int(row[0]) if row else 0
+
+
+# ===== YouTube 登録チャンネル新着 =====
+
+async def youtube_upsert_channels(rows: list[dict]) -> int:
+    """登録チャンネル一覧を upsert する（title は最新で更新、enabled は既存値を保持）。
+    rows は [{channel_id, title}]。登録件数を返す。"""
+    if not rows:
+        return 0
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.executemany(
+            "INSERT INTO youtube_channels (channel_id, title, enabled, added_at) "
+            "VALUES (?, ?, 1, ?) "
+            "ON CONFLICT(channel_id) DO UPDATE SET title=excluded.title",
+            [(r.get("channel_id"), (r.get("title") or ""), now) for r in rows if r.get("channel_id")],
+        )
+        await db.commit()
+        return len(rows)
+
+
+async def youtube_list_channels(enabled_only: bool = False) -> list[dict]:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        q = "SELECT channel_id, title, enabled, added_at FROM youtube_channels"
+        if enabled_only:
+            q += " WHERE enabled = 1"
+        q += " ORDER BY title COLLATE NOCASE ASC"
+        cursor = await db.execute(q)
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def youtube_upsert_video(v: dict) -> bool:
+    """新着動画を 1 件登録する。既に存在すれば無視（INSERT OR IGNORE）。
+    新規に追加されたら True を返す＝「新着」判定の肝。"""
+    vid = v.get("video_id")
+    if not vid:
+        return False
+    now = datetime.datetime.now(JST).isoformat()
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "INSERT OR IGNORE INTO youtube_videos "
+            "(id, channel_id, channel_title, title, url, published_at, state, notified, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'new', 0, ?)",
+            (
+                vid, v.get("channel_id") or "", v.get("channel_title") or "",
+                v.get("title") or "", v.get("url") or "", v.get("published_at") or "", now,
+            ),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def youtube_list_videos(state: str = "new", limit: int = 50) -> list[dict]:
+    """state 指定で動画一覧を新しい順に返す（state='all' で全件）。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if state and state != "all":
+            cursor = await db.execute(
+                "SELECT * FROM youtube_videos WHERE state = ? "
+                "ORDER BY published_at DESC LIMIT ?",
+                (state, max(1, min(int(limit or 50), 200))),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM youtube_videos ORDER BY published_at DESC LIMIT ?",
+                (max(1, min(int(limit or 50), 200)),),
+            )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def youtube_update_video_state(video_id: str, state: str) -> bool:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE youtube_videos SET state = ? WHERE id = ?", (state, video_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def youtube_mark_notified(video_ids: list[str]) -> int:
+    if not video_ids:
+        return 0
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        placeholders = ",".join("?" for _ in video_ids)
+        cursor = await db.execute(
+            f"UPDATE youtube_videos SET notified = 1 WHERE id IN ({placeholders})",
+            tuple(video_ids),
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def youtube_count_new() -> int:
+    """未視聴（state='new'）の新着件数。バッジ表示に使う。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM youtube_videos WHERE state = 'new'"
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+
+async def youtube_list_unnotified_new() -> list[dict]:
+    """未通知かつ未視聴（state='new' AND notified=0）の動画一覧。ダイジェスト通知用。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM youtube_videos WHERE state = 'new' AND notified = 0 "
+            "ORDER BY published_at DESC"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def youtube_get_video(video_id: str) -> dict | None:
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM youtube_videos WHERE id = ?", (video_id,)
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
 
 # ===== Error log =====
 

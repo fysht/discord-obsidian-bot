@@ -9,12 +9,13 @@ CREDENTIALS_FILE = "credentials.json"
 TOKEN_FILE = "token.json"
 
 # --- スコープ設定 ---
-# 現在のBotに必要なDriveとCalendarとTasksの権限のみに絞っています
+# 現在のBotに必要なDrive/Calendar/Tasks/Gmail/YouTube(読み取り)の権限
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/youtube.readonly",
 ]
 # --- ここまで ---
 
