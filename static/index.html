@@ -307,6 +307,7 @@
                             <div class="card-header">
                                 <span class="card-icon">📧</span>
                                 <span class="card-title">メール</span>
+                                <span id="gmail-pending-badge" style="display:none;background:#ff6b6b;color:#fff;font-size:0.7rem;font-weight:700;padding:1px 7px;border-radius:10px;margin-left:4px;" title="未処理メール件数"></span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadGmailInbox(currentGmailState)" title="更新">🔄 更新</button>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); refreshGmailServer()" title="新着取り込み">📥 取り込み</button>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); toggleGmailState()" id="gmail-state-toggle" title="表示中の状態を切替">📬 未処理</button>
@@ -1931,6 +1932,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=95"></script>
+    <script src="/static/js/app_v12.js?v=96"></script>
 </body>
 </html>

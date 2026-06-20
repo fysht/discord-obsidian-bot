@@ -244,7 +244,18 @@ async def expenses_save(req: ExpenseSaveRequest):
         except Exception:
             pass
 
-    return {"ok": True, "id": expense_id, "is_large": is_large, "threshold": threshold}
+    # 食費の支出は外食の可能性が高いので、食事ログへの連携をフロントへ提案させる
+    # （レシートで先に支出だけ入れたケースを食事ログにも繋げる導線。二重計上は
+    #  食事ログ側が expense_id で既存支出を update することで防ぐ）。
+    suggest_meal = (req.category or "").strip() == "食費"
+    return {
+        "ok": True, "id": expense_id, "is_large": is_large, "threshold": threshold,
+        "suggest_meal": suggest_meal,
+        "expense": {
+            "id": expense_id, "vendor": req.vendor, "amount": req.amount,
+            "date": date, "memo": req.memo,
+        } if suggest_meal else None,
+    }
 
 
 @router.get("", dependencies=[Depends(verify_api_key)])

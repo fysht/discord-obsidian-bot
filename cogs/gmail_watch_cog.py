@@ -21,12 +21,19 @@ GMAIL_SUMMARY_MODEL = "gemini-2.5-flash"
 
 
 class GmailWatchCog(commands.Cog):
+    # 未処理メールが溜まっているときの 1 日 1 回リマインドの最終実行日。
+    _last_pileup_reminder_date = None
+    # この件数以上 pending（未処理）が溜まっていたら促し通知を出す。
+    PILEUP_THRESHOLD = 10
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.gmail_loop.start()
+        self.pileup_reminder_task.start()
 
     def cog_unload(self):
         self.gmail_loop.cancel()
+        self.pileup_reminder_task.cancel()
 
     @tasks.loop(minutes=7)
     async def gmail_loop(self):
@@ -143,6 +150,41 @@ class GmailWatchCog(commands.Cog):
                         logging.debug(f"GmailWatchCog push fail: {e}")
         except Exception as e:
             logging.error(f"GmailWatchCog run error: {e}", exc_info=True)
+
+    # ==========================================================
+    # 未処理メールが溜まったら 1 日 1 回（朝）に整理を促す
+    # ==========================================================
+    @tasks.loop(minutes=1)
+    async def pileup_reminder_task(self):
+        from services.schedule_resolver import is_due
+        due, today = await is_due(
+            "gmail_pileup_reminder", "09:00", "daily",
+            self._last_pileup_reminder_date,
+        )
+        if not due:
+            return
+        self._last_pileup_reminder_date = today
+        try:
+            from api.database import gmail_count_pending
+            n = await gmail_count_pending()
+        except Exception as e:
+            logging.debug(f"pileup_reminder count error: {e}")
+            return
+        if n < self.PILEUP_THRESHOLD:
+            return
+        try:
+            from api.notification_service import save_message_and_notify
+            await save_message_and_notify(
+                "assistant",
+                f"📧 未処理のメールが {n} 件たまってるよ。少しずつ整理しよ！\n[ACTION:open_inbox]",
+                proactive=True, title=f"📧 未処理メール {n} 件",
+            )
+        except Exception as e:
+            logging.error(f"pileup_reminder notify error: {e}")
+
+    @pileup_reminder_task.before_loop
+    async def before_pileup_reminder(self):
+        await self.bot.wait_until_ready()
 
     async def _summarize(self, msg: dict) -> tuple[str, str]:
         """件名 + 本文先頭からマネージャー口調の 2〜3 行要約 + 重要度を返す。"""

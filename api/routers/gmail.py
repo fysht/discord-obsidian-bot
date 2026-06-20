@@ -14,7 +14,7 @@ router = APIRouter(prefix="/gmail", tags=["gmail"])
 @router.get("/inbox", dependencies=[Depends(verify_api_key)])
 async def gmail_inbox(state: str = "pending", limit: int = 50):
     """`state` は pending / archived / trashed / all。"""
-    from api.database import gmail_list, gmail_count_unnotified_high
+    from api.database import gmail_list, gmail_count_unnotified_high, gmail_count_pending
     state = state.strip().lower() if state else "pending"
     if state not in ("pending", "archived", "trashed", "all"):
         state = "pending"
@@ -23,6 +23,7 @@ async def gmail_inbox(state: str = "pending", limit: int = 50):
         "state": state,
         "items": rows,
         "high_pending_count": await gmail_count_unnotified_high(),
+        "pending_count": await gmail_count_pending(),
     }
 
 

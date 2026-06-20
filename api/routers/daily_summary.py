@@ -15,7 +15,8 @@ from pydantic import BaseModel
 from api import notification_service
 from api.database import (
     add_daily_question, answer_daily_question, delete_daily_question,
-    get_pending_questions, get_questions_by_date, resolve_questions,
+    delete_daily_questions_by_date, get_pending_questions, get_questions_by_date,
+    resolve_questions,
 )
 from api.routes import verify_api_key
 from config import JST
@@ -933,6 +934,48 @@ async def _auto_finalize_summary(date_str: str, answers_map: dict) -> bool:
         except Exception as e:
             logging.debug(f"auto finalize notify エラー: {e}")
     return saved
+
+
+async def regenerate_summary_for_date(date_str: str) -> bool:
+    """指定日の「1日のまとめ」を後から作り直す（後日まとめ）。
+
+    その日のうちに処理できなかった分（後日の回答・遅れて届く位置ログ等）を踏まえて、
+    既に保存・resolved 済みでも強制的にサマリーを再生成して Obsidian へ上書き保存する。
+    既存の回答（answered/resolved 問わず）を answers_map に集めて反映する。"""
+    all_qs = await get_questions_by_date(date_str, scope="summary")
+    answers_map = {str(q["id"]): (q.get("answer") or "") for q in all_qs}
+    return await _auto_finalize_summary(date_str, answers_map)
+
+
+class DailySummaryRegenerateRequest(BaseModel):
+    date: str
+
+
+@router.post("/daily_summary/regenerate", dependencies=[Depends(verify_api_key)])
+async def daily_summary_regenerate(req: DailySummaryRegenerateRequest):
+    """指定日のデイリーサマリーを作り直す（手動「この日をまとめ直す」用）。"""
+    date_str = (req.date or "").strip()
+    if not date_str:
+        raise HTTPException(status_code=422, detail="date が必要です")
+    saved = await regenerate_summary_for_date(date_str)
+    return {"status": "success" if saved else "skipped", "date": date_str, "saved": saved}
+
+
+# 「今日の記録」ボードに並ぶログ質問の scope（チャットに埋もれがちなもの）。
+# 日付ごとの一括削除のデフォルト対象。front の LOG_INBOX_SCOPES と揃える。
+_LOG_INBOX_SCOPES = [
+    "meal", "expense", "mood", "condition", "reading", "english_quiz",
+    "afternoon", "learning", "gratitude", "event",
+]
+
+
+@router.delete("/daily_questions/by_date", dependencies=[Depends(verify_api_key)])
+async def daily_questions_delete_by_date(date: str, scopes: str = ""):
+    """指定日の未回答質問をまとめて削除する。「今日の記録」で日付ごとに古い質問を
+    一括破棄するために使う。scopes はカンマ区切り（未指定なら記録ボードの全 scope）。"""
+    scope_list = [s.strip() for s in scopes.split(",") if s.strip()] or list(_LOG_INBOX_SCOPES)
+    deleted = await delete_daily_questions_by_date(date, scope_list)
+    return {"status": "success", "deleted": deleted}
 
 
 @router.delete("/daily_questions/{qid}", dependencies=[Depends(verify_api_key)])

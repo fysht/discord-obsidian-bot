@@ -991,6 +991,7 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
 // 保存できたら質問を resolve して未回答に残さない。
 let _mealQuestionToResolve = null;  // 食事ログのモーダル保存後に閉じる質問ID
 let _mealQuestionMealType = '';     // 写真解析で食事区分が消えないよう保持
+let _mealLinkedExpenseId = 0;       // レシート→食事連携で紐付ける既存支出ID（二重計上防止）
 
 function _mealQuestionControlsHtml(q) {
     let mealType = '';
@@ -999,7 +1000,7 @@ function _mealQuestionControlsHtml(q) {
     const chips = Array.isArray(q.chips) ? q.chips : [];
     const chipsHtml = chips.length
         ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
-          + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="recordMealChip(this, ${q.id})" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
+          + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="recordMealChip(this, ${q.id}, '${mt}')" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
           + `</div>`
         : '';
     return `${chipsHtml}
@@ -1010,21 +1011,16 @@ function _mealQuestionControlsHtml(q) {
         </div>`;
 }
 
-// チップ1タップで食事を記録（回答エンドポイント→AIが栄養推定して保存＋resolve）。
-window.recordMealChip = async (btn, qid) => {
+// チップ1タップでも、いきなり保存せず食事ログ画面を開く（料理名をプレフィル）。
+// 時刻・区分・カロリーを確認・調整してから保存できる。保存時に質問は削除される。
+window.recordMealChip = (btn, qid, mealType = '') => {
     const val = btn.dataset.val || btn.textContent || '';
     if (!val) return;
-    btn.disabled = true;
-    try {
-        await apiFetch(`/api/daily_questions/${qid}/answer`, {
-            method: 'POST', body: JSON.stringify({ answer: val }),
-        });
-        showToast('🍽 食事を記録しました ✓');
-        _afterMealQuestionRecorded(qid, val);
-    } catch (e) {
-        btn.disabled = false;
-        showToast('記録に失敗しました', true);
-    }
+    // 質問の context の食事区分（日本語）を select の値（英語）へ変換して引き継ぐ。
+    const mealTypeEn = MEAL_TYPE_JP2EN[mealType] || mealType || '';
+    _mealQuestionToResolve = qid;
+    _mealQuestionMealType = mealTypeEn;
+    openMealManualModal(null, { name: val, meal_type: mealTypeEn });
 };
 
 // 食事区分の日本語→モーダルselectの値（英語）変換。質問の context は日本語で持つため。
@@ -1043,14 +1039,11 @@ window.openMealFromQuestion = (qid, mealType, withPhoto) => {
     }
 };
 
-// 食事の質問が記録されたあとの共通後処理：該当の回答欄を「✓ 記録済み」にして一覧/バッジを更新。
-function _afterMealQuestionRecorded(qid, text) {
-    document.querySelectorAll(`.inline-q[data-qid="${qid}"]`).forEach(el => {
-        el.innerHTML = `<div style="font-size:0.85rem;color:var(--text-secondary);">✓ ${escapeHtml(text || '記録しました')}</div>`;
-    });
-    if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
-    const inbox = document.getElementById('log-inbox-list');
-    if (inbox && typeof renderLogInbox === 'function') renderLogInbox();
+// 質問をUIから取り除く共通処理：チャットのインライン回答欄／「今日の記録」ボードの
+// 該当質問要素を消し、空になった黄色枠も片付ける（削除・記録完了の双方で使う）。
+function _removeQuestionFromUI(qid) {
+    document.querySelectorAll(`.inline-q[data-qid="${qid}"]`).forEach(el => el.remove());
+    document.querySelectorAll('.msg-inline-questions').forEach(w => { if (!w.querySelector('.inline-q')) w.remove(); });
 }
 
 // [QUESTIONS:scope:YYYY-MM-DD(:qid)] 付きメッセージにインライン回答UIを描画する。
@@ -1346,6 +1339,46 @@ window.submitBoardAppend = async (btn, scope) => {
     } finally { btn.disabled = false; btn.textContent = orig; }
 };
 
+const _LOG_INBOX_ICON = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣', afternoon: '🌤', learning: '💡', gratitude: '🙏', event: '📌' };
+
+// 1問分のカードHTML（日付グルーピングの中で使う）。
+function _logInboxQuestionHtml(q) {
+    // 食事は食事ログの入力UI（写真/手入力/よく食べるもの）へ誘導する。
+    if (q.scope === 'meal') {
+        return `
+        <div class="inline-q" data-qid="${q.id}" style="margin-bottom:10px;padding:8px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
+            <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">🍽 ${escapeHtml(q.question)}</div>
+            ${_mealQuestionControlsHtml(q)}
+        </div>`;
+    }
+    const chips = Array.isArray(q.chips) ? q.chips : [];
+    const chipsHtml = chips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
+        + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="pickInlineChip(this)" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
+        + `</div>` : '';
+    return `
+    <div class="inline-q" data-qid="${q.id}" style="margin-bottom:10px;padding:8px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
+        <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${_LOG_INBOX_ICON[q.scope] || '📝'} ${escapeHtml(q.question)}</div>
+        ${chipsHtml}
+        <textarea class="modern-input inline-q-answer" rows="2" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;"></textarea>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
+            <button class="modal-btn cancel" style="padding:4px 10px;font-size:0.78rem;" onclick="deleteLogQuestion(${q.id})" title="この質問を削除">🗑</button>
+            <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${q.date}', '${q.scope}')">回答</button>
+        </div>
+    </div>`;
+}
+
+// 質問の日付（YYYY-MM-DD）を「今日 / 昨日 / M/D（曜）」の見やすいラベルにする。
+function _questionDateLabel(date) {
+    if (!date) return '日付不明';
+    const today = _todayStr();
+    if (date === today) return '今日';
+    const d = new Date(`${date}T00:00:00`);
+    const yesterday = new Date(`${today}T00:00:00`); yesterday.setDate(yesterday.getDate() - 1);
+    if (_fmtLocalDate(yesterday) === date) return '昨日';
+    const dow = ['日', '月', '火', '水', '木', '金', '土'][d.getDay()] || '';
+    return `${d.getMonth() + 1}/${d.getDate()}（${dow}）`;
+}
+
 window.renderLogInbox = async () => {
     const listEl = document.getElementById('log-inbox-list');
     if (!listEl) return;
@@ -1358,31 +1391,51 @@ window.renderLogInbox = async () => {
         return;
     }
     if (head) head.style.display = '';
-    const icon = { meal: '🍽', expense: '💰', mood: '😀', condition: '🩺', reading: '📖', english_quiz: '🗣', afternoon: '🌤', learning: '💡', gratitude: '🙏', event: '📌' };
-    listEl.innerHTML = items.map(q => {
-        // 食事は食事ログの入力UI（写真/手入力/よく食べるもの）へ誘導する。
-        if (q.scope === 'meal') {
-            return `
-            <div class="inline-q" data-qid="${q.id}" style="margin-bottom:10px;padding:8px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
-                <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">🍽 ${escapeHtml(q.question)}</div>
-                ${_mealQuestionControlsHtml(q)}
-            </div>`;
-        }
-        const chips = Array.isArray(q.chips) ? q.chips : [];
-        const chipsHtml = chips.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">`
-            + chips.map(c => `<button type="button" class="inline-q-chip" data-val="${escapeHtml(c)}" onclick="pickInlineChip(this)" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`).join('')
-            + `</div>` : '';
+
+    // 日付ごとにグルーピング（いつの日の質問か分かるように）。新しい日付が上。
+    const byDate = {};
+    for (const q of items) {
+        const d = q.date || '';
+        (byDate[d] = byDate[d] || []).push(q);
+    }
+    const dates = Object.keys(byDate).sort().reverse();
+    listEl.innerHTML = dates.map(d => {
+        const qs = byDate[d];
+        const label = _questionDateLabel(d);
+        const isOld = d && d !== _todayStr();
+        // 古い日付には「この日をまとめて削除」ボタンを出す（溜まった質問を一括破棄）。
+        const bulkBtn = (d && isOld)
+            ? `<button class="modal-btn cancel" style="padding:2px 8px;font-size:0.72rem;" onclick="deleteLogQuestionsByDate('${d}')" title="この日の未回答質問をまとめて削除">🗑 この日をまとめて削除</button>`
+            : '';
         return `
-        <div class="inline-q" data-qid="${q.id}" style="margin-bottom:10px;padding:8px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;">
-            <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">${icon[q.scope] || '📝'} ${escapeHtml(q.question)}</div>
-            ${chipsHtml}
-            <textarea class="modern-input inline-q-answer" rows="2" placeholder="回答を入力" style="width:100%;padding:6px;font-size:0.85rem;"></textarea>
-            <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:4px;">
-                <button class="modal-btn cancel" style="padding:4px 10px;font-size:0.78rem;" onclick="deleteLogQuestion(${q.id})" title="この質問を削除">🗑</button>
-                <button class="modal-btn submit" style="padding:4px 12px;font-size:0.78rem;" onclick="submitInlineAnswer(this, ${q.id}, '${q.date}', '${q.scope}')">回答</button>
+        <div class="log-inbox-group" data-date="${d}" style="margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+                <span style="font-size:0.78rem;color:var(--text-secondary);font-weight:600;">📅 ${label}<span style="color:var(--text-muted);font-weight:normal;">（${qs.length}件）</span></span>
+                <span style="margin-left:auto;">${bulkBtn}</span>
             </div>
+            ${qs.map(_logInboxQuestionHtml).join('')}
         </div>`;
     }).join('');
+};
+
+// 指定日の未回答質問をまとめて削除する（「この日をまとめて削除」）。
+window.deleteLogQuestionsByDate = async (date) => {
+    if (!date) return;
+    const label = _questionDateLabel(date);
+    if (!await confirmDialog(`${label}の未回答質問をまとめて削除しますか？`)) return;
+    try {
+        await apiFetch(`/api/daily_questions/by_date?date=${encodeURIComponent(date)}`, { method: 'DELETE' });
+        showToast('まとめて削除しました');
+    } catch (e) {
+        showToast('削除に失敗しました', true);
+    }
+    // チャット内の同日インライン回答欄も片付けるため、グループ内の各質問をUIから除去。
+    document.querySelectorAll(`.log-inbox-group[data-date="${date}"] .inline-q`).forEach(el => {
+        const qid = el.dataset.qid;
+        if (qid) _removeQuestionFromUI(parseInt(qid, 10));
+    });
+    if (typeof renderLogInbox === 'function') await renderLogInbox();
+    refreshLogInboxBadge();
 };
 
 window.deleteLogQuestion = async (qid) => {
@@ -1390,9 +1443,7 @@ window.deleteLogQuestion = async (qid) => {
         await apiFetch(`/api/daily_questions/${qid}`, { method: 'DELETE' });
     } catch (e) { /* 失敗してもUIは進める */ }
     // 「今日の記録」だけでなく、チャット内のインライン回答欄からも即座に取り除く。
-    document.querySelectorAll(`.inline-q[data-qid="${qid}"]`).forEach(el => el.remove());
-    // 質問が消えて空になったチャットの回答欄枠（黄色い箱）も片付ける。
-    document.querySelectorAll('.msg-inline-questions').forEach(w => { if (!w.querySelector('.inline-q')) w.remove(); });
+    _removeQuestionFromUI(qid);
     if (typeof renderLogInbox === 'function') await renderLogInbox();
     refreshLogInboxBadge();
 };
@@ -1520,6 +1571,7 @@ function describeAction(payload) {
         case 'open_notices': return `📨 マネージャーからのお知らせを開く`;
         case 'open_advice_result': return `🧭 一括診断の結果を開く（チャート・注目追加）`;
         case 'open_location_log': return `📍 ロケーションログを開く`;
+        case 'open_inbox':   return `📧 メール受信箱を開く`;
         case 'open_link':    return `📂 保存した項目を開く`;
         case 'log_meal':     return `🍽 食事ログに登録: ${args.name || ''}`;
         case 'meal_quick':   return `✓ 外食を記録: ${args.name || ''}`;
@@ -1574,6 +1626,15 @@ window.executeAction = async function(encodedPayload, btn) {
         }
         return;
     }
+    // ナビゲーション系: メール受信箱（未処理メール）のカードへ移動
+    if (action === 'open_inbox') {
+        switchTab('log');
+        setTimeout(() => {
+            const card = document.getElementById('dash-gmail-list');
+            if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 300);
+        return;
+    }
     // ナビゲーション系: ロケーションログのカードへ移動
     if (action === 'open_location_log') {
         switchTab('log');
@@ -1585,23 +1646,17 @@ window.executeAction = async function(encodedPayload, btn) {
     }
     // 確認するだけログ: 外食を1タップで記録（栄養は後から追記可）
     if (action === 'meal_quick') {
-        if (btn) { btn.disabled = true; btn.textContent = '記録中...'; }
-        try {
-            await apiFetch('/api/meals', {
-                method: 'POST',
-                body: JSON.stringify({
-                    name: args.name || '外食',
-                    meal_type: args.meal_type || '',
-                    restaurant: args.name || '',
-                    source: '外食',
-                }),
-            });
-            showToast('外食を記録しました');
-            if (btn) { btn.textContent = '記録した ✓'; btn.classList.add('done'); }
-        } catch (e) {
-            if (btn) { btn.disabled = false; btn.textContent = '✓ 外食を記録'; }
-            showToast('記録に失敗しました', true);
-        }
+        // いきなり保存せず食事ログ画面を開き、時刻・区分・金額を確認してから保存できるようにする。
+        const mealTypeEn = MEAL_TYPE_JP2EN[args.meal_type] || args.meal_type || '';
+        _mealQuestionToResolve = null;
+        _mealQuestionMealType = mealTypeEn;
+        openMealManualModal(null, {
+            name: args.name || '外食',
+            restaurant: args.name || '',
+            meal_type: mealTypeEn,
+            source: '外食',
+        });
+        if (btn) { btn.textContent = '開いたよ →'; btn.classList.add('done'); }
         return;
     }
     // チャットから判別された 出来事/学び/良かったこと をワンタップで記録する。
@@ -5068,6 +5123,7 @@ function initMain() {
     loadDashboard();
     requestNotificationPermission();
     if (typeof refreshLogInboxBadge === 'function') { try { refreshLogInboxBadge(); } catch {} }
+    if (typeof refreshGmailBadge === 'function') { try { refreshGmailBadge(); } catch {} }
     if (typeof _handleLogQuestionDeepLink === 'function') { try { _handleLogQuestionDeepLink(); } catch {} }
     // PayPay 等の共有が来ていれば支出モーダル/チャットへ振り分け
     if (apiKey) { _handleExpenseShareTarget(); _handleShareTarget(); }
@@ -6979,6 +7035,8 @@ window.openMealManualModal = async (id = null, seed = null) => {
     if ($('#meal-source')) $('#meal-source').value = m.source || '';
     if ($('#meal-companions')) $('#meal-companions').value = m.companions || '';
     if ($('#meal-rating')) $('#meal-rating').value = String(m.rating ?? 0);
+    // レシート→食事連携で渡された既存支出ID（保存時に紐付け、新規支出を作らない）。
+    _mealLinkedExpenseId = (!id && seed && seed.expense_id) ? parseInt(seed.expense_id, 10) || 0 : 0;
 
     modal.classList.remove('hidden');
 };
@@ -6989,6 +7047,7 @@ window.closeMealEditModal = () => {
     // 食事の質問との紐付けを解除（保存後・キャンセル後ともにここで確実にクリア）。
     _mealQuestionToResolve = null;
     _mealQuestionMealType = '';
+    _mealLinkedExpenseId = 0;
 };
 
 // 保存済みレシピ選択 → 料理名に「追加」する（1食に複数メニュー/レシピを入力できる）。
@@ -7139,6 +7198,8 @@ window.saveMealFromModal = async () => {
         source: $('#meal-source')?.value || '',
         companions: ($('#meal-companions')?.value || '').trim(),
         rating: parseInt($('#meal-rating')?.value || '0', 10) || 0,
+        // レシート→食事連携: 既存支出があれば紐付け（サーバ側で update＝二重計上しない）
+        expense_id: id ? 0 : (_mealLinkedExpenseId || 0),
     };
     if (!payload.name) { showToast('料理名を入力してください', true); return; }
     const originalText = btn.textContent;
@@ -7149,15 +7210,21 @@ window.saveMealFromModal = async () => {
             await apiFetch(`/api/meals/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
             showToast('食事を更新しました');
         } else {
-            await apiFetch('/api/meals', { method: 'POST', body: JSON.stringify(payload) });
+            const res = await apiFetch('/api/meals', { method: 'POST', body: JSON.stringify(payload) });
             showToast('食事を記録しました');
-            // 食事の質問から開いていた場合は、その質問を resolve して未回答から外す。
-            if (linkedQid) {
-                try {
-                    await apiFetch(`/api/daily_questions/${linkedQid}/resolve`, { method: 'POST', body: '{}' });
-                } catch (e) { /* resolve 失敗は致命的でない */ }
-                if (typeof _afterMealQuestionRecorded === 'function') _afterMealQuestionRecorded(linkedQid, payload.name);
+            // 食事ログから記録したら、対応する食事質問は（✓ で残さず）削除してボードをすっきりさせる。
+            // サーバ側で同日・同区分の食事質問は削除済み（closed_question_ids）。UI からも取り除く。
+            const closed = new Set((res && res.closed_question_ids) || []);
+            if (linkedQid) closed.add(linkedQid);
+            for (const cq of closed) {
+                // この質問から開いた場合、サーバが消し損ねた分も明示的に削除する。
+                if (cq === linkedQid) {
+                    try { await apiFetch(`/api/daily_questions/${cq}`, { method: 'DELETE' }); } catch (e) { /* 致命的でない */ }
+                }
+                _removeQuestionFromUI(cq);
             }
+            if (typeof refreshLogInboxBadge === 'function') refreshLogInboxBadge();
+            if (typeof renderLogInbox === 'function' && document.getElementById('log-inbox-list')) renderLogInbox();
         }
         closeMealEditModal();
         // 編集/追加した日付に表示を合わせる（過去日付を入れた場合もその日を表示）
@@ -7281,6 +7348,23 @@ window.toggleGmailState = () => {
     loadGmailInbox(currentGmailState);
 };
 
+// 未処理メール件数バッジを更新する（メールカード見出しに常時表示）。
+function _setGmailPendingBadge(count) {
+    const badge = document.getElementById('gmail-pending-badge');
+    if (!badge) return;
+    const n = parseInt(count, 10) || 0;
+    badge.textContent = n > 0 ? `未処理 ${n}` : '';
+    badge.style.display = n > 0 ? '' : 'none';
+}
+
+// 受信箱を開かなくても件数だけ取りに行ってバッジを更新する（起動時など）。
+window.refreshGmailBadge = async () => {
+    try {
+        const data = await apiFetch('/api/gmail/inbox?state=pending&limit=1');
+        _setGmailPendingBadge(data.pending_count);
+    } catch (e) { /* バッジ更新失敗は無視 */ }
+};
+
 window.loadGmailInbox = async (state = 'pending') => {
     currentGmailState = state || 'pending';
     const btn = $('#gmail-state-toggle');
@@ -7289,6 +7373,7 @@ window.loadGmailInbox = async (state = 'pending') => {
     if (!listEl) return;
     try {
         const data = await apiFetch(`/api/gmail/inbox?state=${encodeURIComponent(currentGmailState)}&limit=50`);
+        _setGmailPendingBadge(data.pending_count);
         const items = data.items || [];
         if (!items.length) {
             const empty = currentGmailState === 'pending'
@@ -7883,6 +7968,7 @@ window.saveExpenseFromModal = async () => {
             memo: ($('#exp-memo')?.value || '').trim(),
             breakdown: ($('#exp-breakdown')?.value || '').trim(),
         };
+        let suggestMeal = null;
         if (id) {
             await apiFetch(`/api/expenses/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
             showToast('支出を更新しました');
@@ -7894,9 +7980,29 @@ window.saveExpenseFromModal = async () => {
             } else {
                 showToast('支出を記録しました');
             }
+            // 食費の支出は外食の可能性が高い → 食事ログへの連携を提案する（レシート先入力対応）。
+            if (res?.suggest_meal && res.expense) suggestMeal = res.expense;
         }
         closeExpenseEditModal();
         loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
+        // 食事ログにも追加するか確認。OKなら店名・金額・日付をプレフィルし、既存支出に紐付けて
+        // 食事ログ画面を開く（保存時に二重計上しない）。
+        if (suggestMeal) {
+            if (await confirmDialog('🍽 この食費を食事ログにも追加する？（外食など）')) {
+                const exp = suggestMeal;
+                _mealQuestionToResolve = null;
+                _mealQuestionMealType = '';
+                openMealManualModal(null, {
+                    name: exp.vendor || '外食',
+                    restaurant: exp.vendor || '',
+                    price: exp.amount || 0,
+                    source: '外食',
+                    date: exp.date || '',
+                    memo: exp.memo || '',
+                    expense_id: exp.id || 0,
+                });
+            }
+        }
     } catch {
         showToast('保存に失敗しました', true);
     } finally {
@@ -9605,6 +9711,27 @@ window.loadDailySummary = async (date = '') => {
     }
 };
 
+// 後日まとめ：表示中の日のサマリーを、後日の回答・遅れて届いた位置ログを踏まえて作り直す。
+window.regenerateDailySummary = async (date) => {
+    const d = (date || _summaryViewDate || '').trim();
+    if (!d) { showToast('対象の日付が分かりませんでした', true); return; }
+    if (!await confirmDialog(`📅 ${d} のまとめを最新のデータで作り直しますか？`)) return;
+    showToast('🔄 まとめを作り直しています…');
+    try {
+        const res = await apiFetch('/api/daily_summary/regenerate', {
+            method: 'POST', body: JSON.stringify({ date: d }),
+        });
+        if (res && res.saved) {
+            showToast('✅ まとめを更新しました');
+        } else {
+            showToast('まとめ直す材料が足りませんでした', true);
+        }
+    } catch (e) {
+        showToast('まとめ直しに失敗しました', true);
+    }
+    loadDailySummary(d);
+};
+
 // 振り返りの表示日を前後に動かす（前日に未完了の振り返りがあれば翌日でも作成・確定できる）
 window.shiftDailySummaryDate = (deltaDays) => {
     const cur = _summaryViewDate || _todayStr();
@@ -9736,7 +9863,11 @@ function renderDailySummaryCard(data, opts = {}) {
     if (text) {
         // デイリーノート・マネージャーの気づきと統一感を持たせるためシンプルに日付ラベルのみ
         const label = displayDate ? `📅 ${displayDate} の振り返り` : '';
-        const askBtn = `<div style="text-align:right;margin-top:6px;"><button class="inline-q-chip" onclick="askManagerAbout('今日の振り返りについて話したい')" style="padding:2px 10px;font-size:0.74rem;border:1px solid rgba(255,212,84,0.45);border-radius:12px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">💬 マネージャーに聞く</button></div>`;
+        // 後日まとめ：その日のうちに処理できなかった分（後日の回答・遅れて届く位置ログ）を
+        // 踏まえてまとめを作り直す。位置ログは 23:50 バッチで後追いされるため有用。
+        const regenDate = displayDate || _summaryViewDate || '';
+        const regenBtn = `<button class="inline-q-chip" onclick="regenerateDailySummary('${regenDate}')" title="後日の回答や遅れて届いた位置ログを踏まえて作り直す" style="padding:2px 10px;font-size:0.74rem;border:1px solid rgba(0,186,152,0.4);border-radius:12px;background:rgba(0,186,152,0.12);color:var(--text-primary);cursor:pointer;margin-right:6px;">🔄 この日をまとめ直す</button>`;
+        const askBtn = `<div style="text-align:right;margin-top:6px;">${regenBtn}<button class="inline-q-chip" onclick="askManagerAbout('今日の振り返りについて話したい')" style="padding:2px 10px;font-size:0.74rem;border:1px solid rgba(255,212,84,0.45);border-radius:12px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">💬 マネージャーに聞く</button></div>`;
         tEl.innerHTML = renderDailyMarkdown(text, { dateLabel: label }) + askBtn;
     } else if (!preserveOnEmpty) {
         // 質問も本文も無い日（例：前日に作りそびれた振り返り）でも、今から作成できる実行ボタンを出す。

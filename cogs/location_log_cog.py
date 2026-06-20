@@ -415,11 +415,16 @@ class LocationLogCog(commands.Cog):
                     logs_by_date = None
 
                 if logs_by_date:
+                    today_str = datetime.now(JST).strftime("%Y-%m-%d")
                     for date_str, log_text in logs_by_date.items():
                         if await self._write_to_obsidian(date_str, log_text, force=False):
                             processed_dates.append(date_str)
                             # 外食らしき滞在を検知したら meal ログ質問を投下（事後の振り返り）
                             await self._maybe_ask_meal_from_location(date_str, log_text)
+                            # 過去日の位置ログが遅れて届いた場合は、その日の「1日のまとめ」を
+                            # 後から作り直す（後日まとめ）。今日の分は 22:00 の通常生成に任せる。
+                            if date_str != today_str:
+                                await self._maybe_regenerate_summary(date_str)
 
             timestamp = datetime.now(JST).strftime("%Y%m%d_%H%M%S")
             await loop.run_in_executor(
@@ -446,6 +451,27 @@ class LocationLogCog(commands.Cog):
                         f"📍 {dates_str} の移動記録を保存したよ！\n[ACTION:open_location_log]",
                         proactive=True,
                     )
+
+    async def _maybe_regenerate_summary(self, date_str: str):
+        """過去日の位置ログが遅れて届いたとき、その日のデイリーサマリーを作り直し、
+        更新したことをユーザーへ通知する（後日まとめの自動反映）。"""
+        try:
+            from api.routers.daily_summary import regenerate_summary_for_date
+            saved = await regenerate_summary_for_date(date_str)
+        except Exception as e:
+            logging.debug(f"location late-summary regenerate skipped ({date_str}): {e}")
+            return
+        if not saved:
+            return
+        try:
+            from api.notification_service import save_message_and_notify
+            await save_message_and_notify(
+                "assistant",
+                f"📅 {date_str} の位置ログが届いたので、その日のまとめを更新したよ！\n[ACTION:open_reflection]",
+                proactive=True, title="📅 まとめ更新",
+            )
+        except Exception as e:
+            logging.debug(f"location late-summary notify skipped ({date_str}): {e}")
 
     async def _maybe_ask_meal_from_location(self, date_str: str, log_text: str):
         """その日の滞在記録から、食事時間帯の外食らしき滞在を検知して

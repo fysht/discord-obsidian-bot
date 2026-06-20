@@ -63,6 +63,7 @@ class MealSaveRequest(BaseModel):
     companions: str = ""        # 同席者（家族・友人・一人 等）
     rating: int = 0             # 満足度 1〜5（0=未評価）
     restaurant_url: str = ""    # Google Maps 等の店舗 URL
+    expense_id: int = 0         # 先に登録済みの支出と紐付ける（レシート→食事連携。二重計上を防ぐ）
 
 
 class MealPatchRequest(BaseModel):
@@ -312,19 +313,29 @@ async def meals_save(req: MealSaveRequest):
         logging.debug(f"meals_save lifelog append failed: {e}")
 
     # 外食などで金額が入っていれば支出メモにも反映する（食費カテゴリで自動登録）。
+    # レシートから先に支出を登録済みの場合（expense_id 指定）は、新規作成せず
+    # その支出を update して 1 件に紐付ける（二重計上を防ぐ）。
     expense_id = None
     try:
+        # 金額が無いのに既存支出ID（レシート連携）を渡された場合は、その独立した支出を
+        # 消さないよう連携自体をスキップする（_sync_meal_expense は price=0 で連携支出を
+        # 削除する仕様のため）。金額があるときだけ既存支出に紐付けて update する。
+        existing_eid = (int(req.expense_id or 0) or None) if int(req.price or 0) > 0 else None
         expense_id = await _sync_meal_expense(
-            meal_id, date, name, req.restaurant, req.price, None
+            meal_id, date, name, req.restaurant, req.price, existing_eid
         )
+        if existing_eid and expense_id:
+            from api.database import set_meal_expense_id
+            await set_meal_expense_id(meal_id, expense_id)
     except Exception as e:
         logging.debug(f"meals_save expense sync failed: {e}")
 
-    # この食事ログで、同日の未解決「食事」質問があれば自動的に閉じる。
-    # 質問UI以外（レシピのリンクや食事ログカードの📷/✏️）から登録しても、
-    # 「今日の記録」に食事の質問が残り続けないようにする。
+    # この食事ログで、同日の未解決「食事」質問があれば自動的に削除する。
+    # 食事ログ画面から登録したら、チャット／「今日の記録」に残る同じ食事の質問は
+    # （✓ で残さず）まるごと消してボードをすっきりさせる（ユーザー方針）。
+    closed_qids: list[int] = []
     try:
-        from api.database import get_questions_by_date, resolve_question_by_id
+        from api.database import get_questions_by_date, delete_daily_question
         pending = [
             q for q in (await get_questions_by_date(date, scope="meal") or [])
             if q.get("status") != "resolved"
@@ -344,11 +355,15 @@ async def meals_save(req: MealSaveRequest):
         if not targets and not norm_mt and len(pending) == 1:
             targets = pending
         for q in targets:
-            await resolve_question_by_id(q["id"])
+            if await delete_daily_question(q["id"]):
+                closed_qids.append(q["id"])
     except Exception as e:
-        logging.debug(f"meals_save question auto-resolve failed: {e}")
+        logging.debug(f"meals_save question auto-delete failed: {e}")
 
-    return {"ok": True, "id": meal_id, "date": date, "time": time, "expense_id": expense_id}
+    return {
+        "ok": True, "id": meal_id, "date": date, "time": time,
+        "expense_id": expense_id, "closed_question_ids": closed_qids,
+    }
 
 
 @router.get("", dependencies=[Depends(verify_api_key)])
