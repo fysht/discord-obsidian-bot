@@ -6965,7 +6965,7 @@ window.openMealManualModal = async (id = null, seed = null) => {
                             <input id="meal-date" type="date" class="modern-input">
                         </div>
                         <div style="flex:1;">
-                            <label style="font-size:0.78rem;color:var(--text-muted);">時刻</label>
+                            <label style="font-size:0.78rem;color:var(--text-muted);">時刻（任意）</label>
                             <input id="meal-time" type="time" class="modern-input">
                         </div>
                         <div style="flex:1;">
@@ -7080,9 +7080,10 @@ window.openMealManualModal = async (id = null, seed = null) => {
             m = {};
         }
     } else {
-        const now = new Date();
         m = seed ? { ...seed } : {};
-        m.time = m.time || `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        // 時刻は自動補完しない（空欄なら「偽の現在時刻」を残さず、区分の代表時刻で記録される）。
+        // 明示的に時刻を入れたときだけ Obsidian の Meals に HH:MM が併記される設計に合わせる。
+        m.time = m.time || '';
         // 既定日付は「表示中の日付」（未設定なら今日）
         m.date = m.date || _mealsViewDate || _todayStr();
         if (seed) {
@@ -7756,6 +7757,61 @@ window.switchYouTubeTab = (tab) => {
     } else {
         loadYouTubeVideos();
     }
+};
+
+// 登録チャンネルのミュート設定モーダル。enabled=OFF のチャンネルは新着取り込み対象外。
+window.openYouTubeChannelsModal = async () => {
+    let modal = document.getElementById('yt-channels-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="yt-channels-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:480px;max-height:82vh;overflow-y:auto;">
+                    <h3 style="margin-top:0;">⚙️ チャンネルのミュート設定</h3>
+                    <p style="font-size:0.76rem;color:var(--text-muted);margin:-4px 0 10px;">OFF にしたチャンネルは新着を取り込みません。一覧は「📥 取り込み」で更新されます。</p>
+                    <div id="yt-channels-list"><div class="loading-placeholder">読み込み中…</div></div>
+                    <div class="modal-actions" style="margin-top:12px;">
+                        <button class="modal-btn cancel" onclick="document.getElementById('yt-channels-modal').classList.add('hidden')">閉じる</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = document.getElementById('yt-channels-modal');
+    }
+    modal.classList.remove('hidden');
+    await renderYouTubeChannels();
+};
+
+window.renderYouTubeChannels = async () => {
+    const box = document.getElementById('yt-channels-list');
+    if (!box) return;
+    box.innerHTML = '<div class="loading-placeholder">読み込み中…</div>';
+    try {
+        const data = await apiFetch('/api/youtube/channels');
+        const chs = data.channels || [];
+        if (!chs.length) {
+            box.innerHTML = '<div class="loading-placeholder">登録チャンネルがありません。「📥 取り込み」で取得してください。</div>';
+            return;
+        }
+        box.innerHTML = chs.map(c => `
+            <label style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px dashed rgba(255,255,255,0.08);cursor:pointer;">
+                <input type="checkbox" ${c.enabled ? 'checked' : ''} onchange="toggleYouTubeChannel('${escapeHtml(c.channel_id)}', this.checked)">
+                <span style="flex:1;font-size:0.85rem;color:var(--text-primary);">${escapeHtml(c.title || c.channel_id)}</span>
+                <span class="yt-ch-state" style="font-size:0.72rem;color:${c.enabled ? 'var(--accent)' : 'var(--text-muted)'};">${c.enabled ? '取り込む' : 'ミュート'}</span>
+            </label>`).join('');
+    } catch (e) {
+        box.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
+    }
+};
+
+window.toggleYouTubeChannel = async (channelId, enabled) => {
+    try {
+        await apiFetch(`/api/youtube/channels/${encodeURIComponent(channelId)}/toggle`, {
+            method: 'POST', body: JSON.stringify({ enabled }),
+        });
+        showToast(enabled ? '取り込む設定にしました' : 'ミュートしました');
+    } catch (e) { showToast('変更に失敗しました', true); }
+    renderYouTubeChannels();
 };
 
 window.loadYouTubeVideos = async (state = 'new') => {
@@ -10398,7 +10454,17 @@ window.loadDailyNoteStatus = async (date) => {
         <span>📍 ロケーション: ${tag(st.location_done)}</span>
         <button class="mini-link" onclick="runDailyNoteLocation('${date}')" title="この日の移動記録を同期">同期</button>
         <span style="margin-left:6px;">📅 まとめ: ${tag(st.summary_done)}</span>
-        <button class="mini-link" onclick="runDailyNoteSummary('${date}')" title="この日のまとめを作成/更新">作成/更新</button>`;
+        <button class="mini-link" onclick="runDailyNoteSummary('${date}')" title="この日のまとめを作成/更新">作成/更新</button>
+        <button class="mini-link" style="margin-left:6px;" onclick="runDailyNoteDailyLog('${date}')" title="この日のDaily Log（全記録の時系列統合）を組み直す">📋 Daily Log再生成</button>`;
+};
+
+window.runDailyNoteDailyLog = async (date) => {
+    showToast('📋 Daily Log を組み直し中…');
+    try {
+        const r = await apiFetch('/api/daily_log/rebuild', { method: 'POST', body: JSON.stringify({ date }) });
+        showToast(r.ok ? '📋 Daily Log を再生成しました' : '対象データが見つかりませんでした');
+    } catch (e) { showToast('再生成に失敗しました', true); }
+    loadDailyNote(date);
 };
 
 window.runDailyNoteLocation = async (date) => {

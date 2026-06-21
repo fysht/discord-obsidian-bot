@@ -1965,6 +1965,17 @@ async def youtube_list_channels(enabled_only: bool = False) -> list[dict]:
         return [dict(r) for r in rows]
 
 
+async def youtube_set_channel_enabled(channel_id: str, enabled: bool) -> bool:
+    """チャンネルの新着取り込み ON/OFF（ミュート）を切り替える。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE youtube_channels SET enabled = ? WHERE channel_id = ?",
+            (1 if enabled else 0, channel_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
 async def youtube_upsert_video(v: dict) -> bool:
     """新着動画を 1 件登録する。既に存在すれば無視（INSERT OR IGNORE）。
     新規に追加されたら True を返す＝「新着」判定の肝。"""

@@ -278,12 +278,12 @@ async def meals_save(req: MealSaveRequest):
     # 外食時は店名・注文・金額・★を併記して見返しやすくする。
     try:
         from api.routers._obsidian_helpers import append_lifelog_line
-        # 先頭は食事区分ラベル（朝食/昼食/夕食/間食）を主にする。実際に入力された時刻が
-        # あるときだけ HH:MM を併記する（未入力時の代表時刻は“偽の時刻”でノイズになるため出さない）。
-        # 並び順は update_section 側が区分ラベルを代表時刻として扱うため、時刻を出さなくても区分順に整列する。
+        # 「Meals」は食事のみの記録で時刻は一切入れない（時系列の統合は Daily Log が担う）。
+        # 区分ラベル（朝食/昼食/夕食/間食）を主にする。並び順は update_section 側が
+        # 区分ラベルを代表時刻として扱うため、時刻を出さなくても区分順に整列する。
         norm_mt = _norm_meal_type(mtype)
         label_ja = _MEAL_TYPE_LABEL_JA.get(norm_mt, "")
-        lead = "- " + (f"{time} " if (req.time or "").strip() else "") + "🍽"
+        lead = "- 🍽"
         if label_ja:
             lead += f"【{label_ja}】"
         parts = [lead]

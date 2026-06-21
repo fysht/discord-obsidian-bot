@@ -343,6 +343,40 @@ class DailyOrganizeCog(commands.Cog):
                 break
         return bullets
 
+    async def rebuild_daily_log(self, date_str: str) -> bool:
+        """指定日の Daily Log（時系列の統合ビュー）だけを組み直して保存する（手動再生成）。
+        AI 日記や通知は行わず、`## 📋 Daily Log` セクションのみ再構築する。"""
+        service = self.drive_service.get_service()
+        if not service:
+            return False
+        daily_folder = await self.drive_service.find_file(
+            service, self.drive_folder_id, "DailyNotes"
+        )
+        if not daily_folder:
+            return False
+        f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
+        if not f_id:
+            return False
+        content = await self.drive_service.read_text_file(service, f_id) or ""
+
+        location_log_text = "（記録なし）"
+        m = re.search(r"## 📍 Location History\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+        if m and m.group(1).strip():
+            location_log_text = m.group(1).strip()
+
+        timeline_md = await self._build_integrated_timeline(date_str, location_log_text)
+        if not timeline_md:
+            return False
+
+        # 旧 Daily Log（旧名 Daily Timeline 含む）を除去してから挿入（全置換）。
+        content = re.sub(
+            r"##\s*(?:⏱\s*Daily Timeline|📋\s*Daily Log)\n.*?(?=\n## |\Z)",
+            "", content, flags=re.DOTALL,
+        )
+        content = update_section(content, timeline_md, "## 📋 Daily Log")
+        await self.drive_service.update_text(service, f_id, content)
+        return True
+
     async def _build_integrated_timeline(self, date_str: str, location_log_text: str) -> str:
         """客観データ（睡眠・天気・カレンダー・ライフログ・ロケーション）と
         ユーザー発言の時間帯要約を統合し、時系列順のmarkdownを返す。
@@ -461,6 +495,54 @@ class DailyOrganizeCog(commands.Cog):
         except Exception as e:
             logging.error(f"timeline: lifelog re-import error: {e}")
 
+        # --- 5b) 食事ログ（DB から時刻付きで取り込み）。Meals セクションは時刻なしのため DB を正とする。
+        # 「Daily Log にすべての記録を時刻付きで統合、Meals は食事のみ」の住み分けを担う。 ---
+        try:
+            from api.database import get_meals_by_date
+            _meal_label = {
+                "breakfast": "朝食", "lunch": "昼食", "dinner": "夕食", "snack": "間食",
+                "朝食": "朝食", "昼食": "昼食", "夕食": "夕食", "間食": "間食",
+            }
+            for mrow in (await get_meals_by_date(date_str) or []):
+                tmatch = re.match(r"^\s*(\d{1,2}):(\d{2})\s*$", str(mrow.get("time") or ""))
+                if not tmatch:
+                    continue
+                hhmm = f"{int(tmatch.group(1)):02d}:{int(tmatch.group(2)):02d}"
+                lab = _meal_label.get(mrow.get("meal_type") or "", "")
+                name = (mrow.get("name") or "食事").strip()
+                kcal = int(mrow.get("calories") or 0)
+                text = (f"【{lab}】" if lab else "") + name + (f"（{kcal}kcal）" if kcal else "")
+                events.append((hhmm, "🍽", text))
+        except Exception as e:
+            logging.error(f"timeline: meals import error: {e}")
+
+        # --- 5c) 日記チェックイン（気分/出来事/学び/良かったこと）・読書・勉強の時刻付き行も統合 ---
+        try:
+            service = self.drive_service.get_service()
+            note_raw = ""
+            if service:
+                daily_folder = await self.drive_service.find_file(
+                    service, self.drive_folder_id, "DailyNotes"
+                )
+                if daily_folder:
+                    f_id = await self.drive_service.find_file(service, daily_folder, f"{date_str}.md")
+                    if f_id:
+                        note_raw = await self.drive_service.read_text_file(service, f_id) or ""
+            for sec_header in ["## 📔 Daily Journal", "## 📖 Reading Log", "## 📝 Study Log"]:
+                mm = re.search(rf"{re.escape(sec_header)}\n(.*?)(?=\n## |\Z)", note_raw, re.DOTALL)
+                if not mm:
+                    continue
+                for line in mm.group(1).splitlines():
+                    lm = re.match(r"^-\s*(\d{1,2}):(\d{2})\s+(.*)$", line.strip())
+                    if not lm:
+                        continue
+                    hhmm = f"{int(lm.group(1)):02d}:{int(lm.group(2)):02d}"
+                    body = lm.group(3).strip()
+                    if body:
+                        events.append((hhmm, "", body))
+        except Exception as e:
+            logging.error(f"timeline: journal/reading import error: {e}")
+
         # --- 6) ユーザー発言の時間帯別要約（タイムラインの下に別ブロックで配置） ---
         period_bullets = []
         try:
@@ -476,7 +558,7 @@ class DailyOrganizeCog(commands.Cog):
             return ""
 
         events.sort(key=lambda x: x[0])
-        lines = [f"- {t} {icon} {text}" for t, icon, text in events]
+        lines = [f"- {t} {(icon + ' ') if icon else ''}{text}" for t, icon, text in events]
         if period_bullets:
             # タイムラインの直下に、時間帯ラベルを付けずに「だ・である」調の箇条書きを並べる
             lines.extend(f"- {b}" for b in period_bullets)

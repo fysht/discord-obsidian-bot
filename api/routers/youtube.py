@@ -64,6 +64,27 @@ async def youtube_set_state(video_id: str, req: YouTubeStateRequest):
     return {"ok": True, "state": state}
 
 
+@router.get("/channels", dependencies=[Depends(verify_api_key)])
+async def youtube_channels():
+    """登録チャンネル一覧（ミュート設定UI用）。enabled=1 が取り込み対象。"""
+    from api.database import youtube_list_channels
+    return {"channels": await youtube_list_channels()}
+
+
+class ChannelToggleRequest(BaseModel):
+    enabled: bool
+
+
+@router.post("/channels/{channel_id}/toggle", dependencies=[Depends(verify_api_key)])
+async def youtube_channel_toggle(channel_id: str, req: ChannelToggleRequest):
+    """チャンネルの新着取り込み ON/OFF（ミュート）を切り替える。"""
+    from api.database import youtube_set_channel_enabled
+    ok = await youtube_set_channel_enabled(channel_id, req.enabled)
+    if not ok:
+        raise HTTPException(status_code=404, detail="チャンネルが見つかりません")
+    return {"ok": True, "channel_id": channel_id, "enabled": req.enabled}
+
+
 @router.post("/refresh", dependencies=[Depends(verify_api_key)])
 async def youtube_refresh():
     """登録チャンネルを再取得し、全チャンネルの新着を即ポーリングする（初回・手動更新用）。"""

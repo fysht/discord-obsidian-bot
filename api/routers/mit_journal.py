@@ -248,6 +248,27 @@ async def daily_note_status(date: str | None = None):
         return out
 
 
+class DailyLogRebuildRequest(BaseModel):
+    date: str | None = None
+
+
+@router.post("/daily_log/rebuild", dependencies=[Depends(verify_api_key)])
+async def daily_log_rebuild(req: DailyLogRebuildRequest):
+    """指定日の Daily Log（時系列の統合ビュー）を手動で組み直す。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    cog = bot.get_cog("DailyOrganizeCog") if bot else None
+    if not cog:
+        raise HTTPException(status_code=503, detail="DailyOrganizeCog 未ロード")
+    date_str = _resolve_note_date(req.date)
+    try:
+        ok = await cog.rebuild_daily_log(date_str)
+    except Exception as e:
+        logging.error(f"daily_log_rebuild error: {e}")
+        raise HTTPException(status_code=500, detail="再生成に失敗しました")
+    return {"ok": ok, "date": date_str}
+
+
 @router.post("/daily_note", dependencies=[Depends(verify_api_key)])
 async def daily_note_set(req: DailyNoteUpdate):
     """指定日のデイリーノート .md を丸ごと上書き保存する（アプリ上での編集を反映）。"""
