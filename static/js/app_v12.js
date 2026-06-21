@@ -7826,7 +7826,13 @@ window.loadYouTubeVideos = async (state = 'new') => {
             listEl.innerHTML = '<div class="loading-placeholder">新着はありません。<span class="muted-hint">「📥 取り込み」で登録チャンネルの新着を取得できます。</span></div>';
             return;
         }
-        listEl.innerHTML = items.map(v => {
+        const bulkBar = `
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.78rem;color:var(--text-muted);flex-wrap:wrap;">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="yt-check-all" onclick="toggleYouTubeCheckAll(this)"> 全選択</label>
+                <button class="mini-link" style="margin-left:auto;color:var(--accent);font-weight:600;" onclick="bulkYouTube('later')" title="選択をまとめてあとで見るへ">🔖 選択をあとで見る</button>
+                <button class="mini-link btn-danger" onclick="bulkYouTube('hidden')" title="選択をまとめて非表示">🙈 選択を非表示</button>
+            </div>`;
+        listEl.innerHTML = bulkBar + items.map(v => {
             const vid = escapeHtml(v.id);
             const title = escapeHtml(v.title || '(無題)');
             const ch = escapeHtml(v.channel_title || '');
@@ -7835,6 +7841,7 @@ window.loadYouTubeVideos = async (state = 'new') => {
             const thumb = `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
             return `
                 <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" style="align-items:flex-start;gap:8px;cursor:default;">
+                    <input type="checkbox" class="yt-check" data-id="${vid}" style="margin-top:3px;flex-shrink:0;">
                     <img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;flex-shrink:0;background:rgba(255,255,255,0.05);">
                     <div class="row-main" style="flex:1;min-width:0;">
                         <div class="row-title" style="font-size:0.86rem;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${title}</div>
@@ -7893,6 +7900,27 @@ function _bindYouTubeDelegation(listEl) {
         }
     });
 }
+
+// 全選択チェックボックスで新着一覧のチェックを一括切替する。
+window.toggleYouTubeCheckAll = (master) => {
+    document.querySelectorAll('#dash-youtube-list .yt-check').forEach(cb => { cb.checked = master.checked; });
+};
+
+// チェックした動画をまとめて「あとで見る」退避 or 非表示にする。
+window.bulkYouTube = async (action) => {
+    const ids = Array.from(document.querySelectorAll('#dash-youtube-list .yt-check:checked'))
+        .map(cb => cb.dataset.id).filter(Boolean);
+    if (!ids.length) { showToast('動画を選択してください', true); return; }
+    const label = action === 'later' ? 'あとで見るに退避' : '非表示に';
+    if (action === 'hidden' && !await confirmDialog(`${ids.length}本をまとめて非表示にしますか？`)) return;
+    try {
+        const res = await apiFetch('/api/youtube/bulk', { method: 'POST', body: JSON.stringify({ ids, action }) });
+        showToast(`${action === 'later' ? '🔖' : '🙈'} ${res.count || 0}本を${label}しました`);
+    } catch (e) {
+        showToast('一括操作に失敗しました', true);
+    }
+    loadYouTubeVideos();
+};
 
 // ===== 📵 ダラ見ガード（視聴セッション：宣言タイマー / 見る前チェックイン） =====
 const WATCH_APP_LABEL = { youtube: 'YouTube', net: 'ネット', other: 'その他' };

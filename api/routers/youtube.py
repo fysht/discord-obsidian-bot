@@ -64,6 +64,46 @@ async def youtube_set_state(video_id: str, req: YouTubeStateRequest):
     return {"ok": True, "state": state}
 
 
+class YouTubeBulkRequest(BaseModel):
+    ids: list[str]
+    action: str  # later / hidden / watched
+
+
+@router.post("/bulk", dependencies=[Depends(verify_api_key)])
+async def youtube_bulk(req: YouTubeBulkRequest):
+    """選択した動画をまとめて処理する。later=あとで見る退避 / hidden=非表示 / watched=見た。
+    一度 hidden/later/watched にした動画は id（=動画ID）主キーの INSERT OR IGNORE で
+    再ポーリングしても状態が保たれるため、再び新着に出てくることはない。"""
+    from api.database import (
+        youtube_get_video, youtube_update_video_state, add_stocked_link,
+    )
+    action = (req.action or "").strip().lower()
+    if action not in ("later", "hidden", "watched"):
+        raise HTTPException(status_code=422, detail="不正な action です")
+    ids = [str(i) for i in (req.ids or []) if str(i).strip()]
+    count = 0
+    for vid in ids:
+        try:
+            if action == "later":
+                v = await youtube_get_video(vid)
+                if not v:
+                    continue
+                url = v.get("url") or f"https://www.youtube.com/watch?v={vid}"
+                title = (v.get("title") or "YouTube動画").strip()
+                try:
+                    await add_stocked_link(url, "youtube", title)
+                except Exception as e:
+                    logging.debug(f"youtube_bulk later add_stocked_link error ({vid}): {e}")
+                if await youtube_update_video_state(vid, "later"):
+                    count += 1
+            else:
+                if await youtube_update_video_state(vid, action):
+                    count += 1
+        except Exception as e:
+            logging.debug(f"youtube_bulk error ({vid}): {e}")
+    return {"ok": True, "count": count, "action": action}
+
+
 @router.get("/channels", dependencies=[Depends(verify_api_key)])
 async def youtube_channels():
     """登録チャンネル一覧（ミュート設定UI用）。enabled=1 が取り込み対象。"""
