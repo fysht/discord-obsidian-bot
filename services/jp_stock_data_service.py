@@ -311,7 +311,7 @@ class YFinanceProvider(StockDataProvider):
             if not info:
                 return {}
 
-            return {
+            result = {
                 "market_cap_jpy": info.get("marketCap"),
                 "per": info.get("trailingPE"),
                 "forward_per": info.get("forwardPE"),
@@ -334,6 +334,79 @@ class YFinanceProvider(StockDataProvider):
                 "industry": info.get("industry"),
                 "fetched_at": datetime.datetime.now(JST).isoformat(),
             }
+
+            # yfinance の .info は日本株でゲート中核指標（成長率・営業利益率・ROE）が欠損
+            # しがち。不足している場合だけ財務諸表から派生補完する（US/取得済みなら追加I/Oなし）。
+            if any(result.get(k) is None for k in
+                   ("revenue_growth", "earnings_growth", "operating_margin", "roe")):
+                try:
+                    derived = await asyncio.to_thread(self._derive_fundamentals, ticker)
+                    filled = []
+                    for k, v in (derived or {}).items():
+                        if result.get(k) is None and v is not None:
+                            result[k] = v
+                            filled.append(k)
+                    if filled:
+                        result["_derived_fields"] = filled
+                except Exception as e:
+                    logging.debug(f"get_fundamentals 派生補完エラー {ticker}: {e}")
+
+            return result
+
+    def _derive_fundamentals(self, ticker: str) -> dict:
+        """yfinance の財務諸表（年次）から、.info に欠けがちな成長率・営業利益率・ROE を
+        近似計算する。新しい期が先頭列の yfinance 仕様に従い、最新期と前期で算出。同期処理。"""
+        try:
+            import yfinance as yf  # type: ignore
+        except ImportError:
+            return {}
+        out: dict = {}
+        try:
+            t = yf.Ticker(ticker)
+            inc = None
+            for attr in ("income_stmt", "financials"):
+                try:
+                    s = getattr(t, attr, None)
+                    if s is not None and not s.empty:
+                        inc = s
+                        break
+                except Exception:
+                    continue
+
+            def _row(df, *names):
+                if df is None:
+                    return None
+                for nm in names:
+                    if nm in df.index:
+                        vals = [float(v) for v in df.loc[nm].tolist() if v == v]
+                        if vals:
+                            return vals  # index 0 = 最新期
+                return None
+
+            rev = _row(inc, "Total Revenue", "TotalRevenue", "Revenue", "Operating Revenue")
+            op = _row(inc, "Operating Income", "OperatingIncome", "Total Operating Income As Reported")
+            ni = _row(inc, "Net Income", "NetIncome", "Net Income Common Stockholders")
+            if rev and op and rev[0] > 0:
+                out["operating_margin"] = op[0] / rev[0]
+            if rev and len(rev) >= 2 and rev[1] > 0:
+                out["revenue_growth"] = rev[0] / rev[1] - 1.0
+            if ni and len(ni) >= 2 and ni[1] != 0:
+                out["earnings_growth"] = (ni[0] - ni[1]) / abs(ni[1])
+
+            bs = None
+            try:
+                b = getattr(t, "balance_sheet", None)
+                if b is not None and not b.empty:
+                    bs = b
+            except Exception:
+                bs = None
+            eq = _row(bs, "Stockholders Equity", "Total Stockholder Equity",
+                      "Common Stock Equity", "Total Equity Gross Minority Interest")
+            if ni and eq and eq[0] > 0:
+                out["roe"] = ni[0] / eq[0]
+        except Exception as e:
+            logging.debug(f"_derive_fundamentals error {ticker}: {e}")
+        return out
 
     async def get_per_history(self, code: str, years: int = 6) -> dict:
         try:

@@ -361,6 +361,10 @@ class FilterDef:
     label: str
     description: str
     default: bool = True
+    # スコアリング上の重み。「上昇する銘柄か」をより予測する中核条件（実際の高値更新・
+    # チャート型成立・出来高・トレンド）を重く、騙し抑制の補助条件（ひげ・低ボラ等）を
+    # 軽くする。全 weight=1.0 なら従来の単純通過率と一致する（後方互換）。
+    weight: float = 1.0
 
 
 @dataclass
@@ -513,12 +517,17 @@ class StyleStrategy(ABC):
         all_passed = all(s.passed for s in active_sigs)
         if not all_passed and not near_miss:
             return None
-        passed_count = sum(1 for s in active_sigs if s.passed)
-        # near miss モードでは bonus を付けず、純粋な通過率でスコア化
+        # 加重通過率：中核条件（weight 大）を重く、補助条件を軽く扱う。
+        # filters 未定義 or 全 weight=1.0 のときは従来の単純通過率と一致する。
+        weight_by_key = {f.key: float(getattr(f, "weight", 1.0) or 1.0) for f in self.filters}
+        total_w = sum(weight_by_key.get(key, 1.0) for _, key in active_pairs)
+        passed_w = sum(weight_by_key.get(key, 1.0) for s, key in active_pairs if s.passed)
+        pass_rate = (passed_w / total_w) if total_w > 0 else 0.0
+        # near miss モードでは bonus を付けず、純粋な加重通過率でスコア化
         if all_passed:
-            score = passed_count / len(active_sigs) * 100 + score_bonus
+            score = pass_rate * 100 + score_bonus
         else:
-            score = passed_count / len(active_sigs) * 100
+            score = pass_rate * 100
         score = min(100.0, max(0.0, score))
         failed = [s.name for s, _ in active_pairs if not s.passed]
         return ScreeningResult(
@@ -537,22 +546,22 @@ class CreepingBreakoutStrategy(StyleStrategy):
     description = "52週高値圏でじわじわ上昇し直近で高値を更新、急騰や下抜けがない銘柄"
     category = "technical"
     filters = [
-        # 【位置】高値圏に位置している
-        FilterDef("near_high", "52週高値乖離 ≤ 5%", "高値圏に位置している", True),
-        FilterDef("new_high", "直近5日で52週高値を更新", "実際に高値を更新した", True),
-        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
+        # 【位置】高値圏に位置している（中核：実際に高値を更新しているか・高値圏か）
+        FilterDef("near_high", "52週高値乖離 ≤ 5%", "高値圏に位置している", True, weight=1.5),
+        FilterDef("new_high", "直近5日で52週高値を更新", "実際に高値を更新した", True, weight=2.0),
+        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True, weight=1.5),
         # 【トレンド】じわじわ上昇している
-        FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", True),
-        FilterDef("bullish_streak", "連続陽線 ≥3本", "直近で陽線が続いている", True),
-        FilterDef("ret_5d", "直近5日リターン 0〜+15%", "短期上昇しているが過熱なし", True),
-        FilterDef("vol_increase", "出来高比率 5日/20日 ≥1.10x", "出来高がじわじわ増加", True),
-        # 【品質】過熱なし・低ボラ
-        FilterDef("low_volatility", "ATR/Close < 3%（低ボラ）", "値動きが激しすぎない", True),
-        FilterDef("no_big_pop", "直近10日 大陽線（+5%超）なし", "大跳ねしていない", True),
-        FilterDef("no_prev_low_break", "直近5日 前日安値割れなし", "押し目が浅い", True),
-        # 【品質】ひげが長くない（騙し抑制）
-        FilterDef("short_upper_wick", "上ひげ ≤ 35%（加重平均・突出なし）", "戻り売りに押されていない（天井サインの長い上ひげが無い）", True),
-        FilterDef("short_lower_wick", "下ひげ平均 ≤ 35%", "押し戻しが軽い", True),
+        FilterDef("up_days", "連続上昇日数 ≥3日（+0.5〜+3%）", "緩やかな連続上昇", True, weight=1.0),
+        FilterDef("bullish_streak", "連続陽線 ≥3本", "直近で陽線が続いている", True, weight=1.0),
+        FilterDef("ret_5d", "直近5日リターン 0〜+15%", "短期上昇しているが過熱なし", True, weight=1.0),
+        FilterDef("vol_increase", "出来高比率 5日/20日 ≥1.10x", "出来高がじわじわ増加", True, weight=1.3),
+        # 【品質】過熱なし・低ボラ（補助：騙し抑制。中核より軽く扱う）
+        FilterDef("low_volatility", "ATR/Close < 3%（低ボラ）", "値動きが激しすぎない", True, weight=0.7),
+        FilterDef("no_big_pop", "直近10日 大陽線（+5%超）なし", "大跳ねしていない", True, weight=0.7),
+        FilterDef("no_prev_low_break", "直近5日 前日安値割れなし", "押し目が浅い", True, weight=0.7),
+        # 【品質】ひげが長くない（騙し抑制・最も軽い補助条件）
+        FilterDef("short_upper_wick", "上ひげ ≤ 35%（加重平均・突出なし）", "戻り売りに押されていない（天井サインの長い上ひげが無い）", True, weight=0.5),
+        FilterDef("short_lower_wick", "下ひげ平均 ≤ 35%", "押し戻しが軽い", True, weight=0.5),
     ]
 
     def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
@@ -862,10 +871,10 @@ class BreakoutPatternStrategy(StyleStrategy):
     # 複合メソッドと重複するため一覧からは隠す（必要なら combine で名指し可能）。
     hidden = True
     filters = [
-        FilterDef("near_high", "52週高値乖離 ≤ 10%", "高値圏に位置", True),
-        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
-        FilterDef("chart_pattern", "カップ/VCP/ボックスのいずれか成立", "代表的なブレイク型", True),
-        FilterDef("vol_breakout", "出来高 ≥ 20日平均の1.3x", "ブレイク時の出来高増加", True),
+        FilterDef("near_high", "52週高値乖離 ≤ 10%", "高値圏に位置", True, weight=1.5),
+        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True, weight=1.2),
+        FilterDef("chart_pattern", "カップ/VCP/ボックスのいずれか成立", "代表的なブレイク型", True, weight=2.0),
+        FilterDef("vol_breakout", "出来高 ≥ 20日平均の1.3x", "ブレイク時の出来高増加", True, weight=1.3),
     ]
 
     def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
@@ -984,15 +993,15 @@ class NewHighBreakoutStrategy(StyleStrategy):
     category = "hybrid"
     filters = [
         # --- テクニカル（新高値ブレイク）---
-        FilterDef("near_high", "52週高値乖離 ≤ 10%", "高値圏に位置", True),
-        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True),
-        FilterDef("chart_pattern", "カップ/VCP/ボックスのいずれか成立", "代表的なブレイク型", True),
-        FilterDef("vol_breakout", "出来高 ≥ 20日平均の1.3x", "ブレイク時の出来高増加", True),
+        FilterDef("near_high", "52週高値乖離 ≤ 10%", "高値圏に位置", True, weight=1.5),
+        FilterDef("above_sma200", "200日MA上抜け", "中長期の上昇トレンド", True, weight=1.2),
+        FilterDef("chart_pattern", "カップ/VCP/ボックスのいずれか成立", "代表的なブレイク型", True, weight=2.0),
+        FilterDef("vol_breakout", "出来高 ≥ 20日平均の1.3x", "ブレイク時の出来高増加", True, weight=1.3),
         # --- ファンダ（強気業績・5章）---
-        FilterDef("revenue_growth", "売上成長率(YoY) ≥ 10%", "トップライン高成長", True),
-        FilterDef("earnings_growth", "利益成長率(YoY) ≥ 20%", "ボトムライン高成長", True),
-        FilterDef("operating_margin", "営業利益率 ≥ 10%", "本業の高収益性", True),
-        FilterDef("roe", "ROE ≥ 12%", "高い資本効率", True),
+        FilterDef("revenue_growth", "売上成長率(YoY) ≥ 10%", "トップライン高成長", True, weight=1.5),
+        FilterDef("earnings_growth", "利益成長率(YoY) ≥ 20%", "ボトムライン高成長", True, weight=1.5),
+        FilterDef("operating_margin", "営業利益率 ≥ 10%", "本業の高収益性", True, weight=1.0),
+        FilterDef("roe", "ROE ≥ 12%", "高い資本効率", True, weight=1.0),
     ]
 
     def evaluate(self, code, name, sector, df, fundamentals=None, enabled_filters=None, near_miss=False):
@@ -1781,6 +1790,37 @@ def evaluate_historical_per(per_history: Optional[list], current_per: Optional[f
     }
 
 
+def evaluate_earnings_proximity(fundamentals: Optional[dict], *, window_days: int = 7) -> dict:
+    """次回決算発表までの日数を判定する。決算を跨いだ新規エントリーは上下に大きく振れて
+    勝率が読めない（ギャンブル化する）ため、window_days 以内なら「決算跨ぎ注意」フラグを返す。
+
+    yfinance の earningsTimestamp(=next_earnings_ts, unix秒) を使う。取得不可なら ok=False。
+    既に発表済み（過去日）は imminent=False。決定論的。"""
+    f = fundamentals or {}
+    ts = f.get("next_earnings_ts")
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return {"ok": False}
+    try:
+        import datetime as _dt
+        from config import JST
+        when = _dt.datetime.fromtimestamp(float(ts), tz=JST)
+        now = _dt.datetime.now(JST)
+    except Exception:
+        return {"ok": False}
+    days = (when.date() - now.date()).days
+    if days < 0:
+        return {"ok": True, "imminent": False, "days_to_earnings": days,
+                "date": when.strftime("%Y-%m-%d")}
+    imminent = days <= window_days
+    return {
+        "ok": True, "imminent": imminent, "days_to_earnings": days,
+        "date": when.strftime("%Y-%m-%d"),
+        "note": (f"次回決算が約{days}日後（{when.strftime('%Y-%m-%d')}）。決算跨ぎは上下に振れやすく"
+                 "勝率が読めないため、新規買いは決算後の反応を確認してからでも遅くない。"
+                 if imminent else ""),
+    }
+
+
 def evaluate_catalyst(holdings: Optional[dict]) -> dict:
     """カタリスト（木原直哉/エミン『確率思考』）。EDINET 大量保有報告書のサマリーから、
     「大株主の買い増し・物言う株主の登場・複数の大量保有・高い保有割合」を決定論的に点数化する。
@@ -2022,6 +2062,39 @@ def _median(vals):
         return None
     mid = n // 2
     return s[mid] if n % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+def relative_strength_return(df, lookback: int = 120) -> Optional[float]:
+    """直近 lookback 立会日の素朴なトータルリターン（RSレーティングの素点）。
+    クロスセクション・モメンタム（=上昇銘柄選定で最も実証的なファクター）の入力。決定論的。"""
+    if df is None or "Close" not in df or len(df) < lookback + 1:
+        return None
+    close = df["Close"].astype(float)
+    old = float(close.iloc[-lookback - 1])
+    new = float(close.iloc[-1])
+    if old <= 0 or old != old or new != new:
+        return None
+    return new / old - 1.0
+
+
+def compute_rs_ratings(returns_by_code: dict, *, min_n: int = 5) -> dict:
+    """ユニバース内の lookback リターン分布から O'Neil 流 RS レーティング(1〜99)を付与する。
+    分布内のパーセンタイル順位を 1〜99 に写像（99＝最も強い相対モメンタム）。決定論的。
+
+    returns_by_code: {code: lookbackリターン(float)}。標本が min_n 未満なら {} を返す。"""
+    items = [(c, r) for c, r in (returns_by_code or {}).items()
+             if isinstance(r, (int, float)) and r == r]
+    n = len(items)
+    if n < min_n:
+        return {}
+    items.sort(key=lambda x: x[1])
+    if n == 1:
+        return {items[0][0]: 50}
+    ratings: dict[str, int] = {}
+    for rank, (code, _) in enumerate(items):
+        pct = rank / (n - 1)  # 0.0(最弱)〜1.0(最強)
+        ratings[code] = int(round(1 + pct * 98))
+    return ratings
 
 
 def compute_sector_medians(records, *, min_n: int = 5) -> dict:

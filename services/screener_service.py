@@ -21,6 +21,10 @@ from services.screener_engine import (
     compute_sector_medians,
     evaluate_relative_valuation,
     assess_cyclical_regime,
+    relative_strength_return,
+    compute_rs_ratings,
+    assess_liquidity,
+    assess_market_regime,
 )
 
 
@@ -60,6 +64,10 @@ async def _research_cache_set(kind: str, code: str, payload: dict) -> None:
 
 
 class ScreenerService:
+    # near-miss（部分合致）でフォールバック補充する際の最低加重スコア。これ未満＝中核条件を
+    # 大きく落としている候補なので、件数合わせのための水増しには使わない（precision 重視）。
+    _NEAR_MISS_MIN_SCORE = 60.0
+
     def __init__(self, provider: Optional[StockDataProvider] = None):
         self.provider = provider or get_provider()
 
@@ -141,6 +149,8 @@ class ScreenerService:
         near_miss_results: list[ScreeningResult] = []
         # 相対評価用：走査したユニバース全体のファンダを集める（不偏標本でセクター中央値を作る）
         fund_by_code: dict[str, dict] = {}
+        # 相対的強さ(RS)用：走査銘柄の直近リターンを集めてユニバース内の相対順位を作る
+        rs_ret_by_code: dict[str, float] = {}
 
         async def _process(item: dict):
             code = item["code"]
@@ -148,12 +158,27 @@ class ScreenerService:
             sector = item.get("sector", "")
             async with sem:
                 try:
-                    df = await self.provider.get_ohlcv(code, days=300)
+                    # 52週高値を正確に取るには 252 立会日が要る。暦日300日では約205立会日
+                    # しか取れず tail(252) が約41週高値になり「高値圏」判定が甘くなる。暦日
+                    # 420日（≒280立会日）にして本物の52週高値・200日MAを確保する。
+                    df = await self.provider.get_ohlcv(code, days=420)
                 except Exception as e:
                     logging.debug(f"OHLCV取得エラー {code}: {e}")
                     return None, None
                 if df is None:
                     return None, None
+                # 薄商い銘柄は約定困難＋偽ブレイクの温床なので、発見段階で除外する
+                # （市場別の最低売買代金フロア。真に取引困難な水準のみ落とす緩めの閾値）。
+                mkt = "JP" if str(code).isdigit() else "US"
+                liq = assess_liquidity(df, mkt)
+                turnover = liq.get("avg_turnover") if liq.get("ok") else None
+                liq_floor = 5e7 if mkt == "JP" else 5e5  # JP 5千万円/日・US 50万ドル/日
+                if turnover is not None and turnover < liq_floor:
+                    return None, None
+                # RS（相対モメンタム）の素点を集める（全走査銘柄が母集団）
+                rs_ret = relative_strength_return(df, 120)
+                if rs_ret is not None:
+                    rs_ret_by_code[code] = rs_ret
                 fundamentals = None
                 if needs_fundamentals:
                     try:
@@ -198,17 +223,31 @@ class ScreenerService:
             elif nm is not None and nm.is_near_miss:
                 near_miss_results.append(nm)
 
-        results.sort(key=lambda r: r.score, reverse=True)
+        # RS（相対的強さ）レーティングをユニバース内順位から付与し、表示＋同点時の順位付けに使う。
+        # 上昇銘柄選定で最も実証的なファクター（クロスセクション・モメンタム）を選抜に効かせる。
+        rs_ratings = compute_rs_ratings(rs_ret_by_code)
+        if rs_ratings:
+            for r in results + near_miss_results:
+                rating = rs_ratings.get(r.code)
+                if rating is not None and isinstance(r.price_snapshot, dict):
+                    r.price_snapshot["rs_rating"] = rating
+
+        # 並び順は (加重スコア → RSレーティング)。同点候補は相対モメンタムの強い方を上位へ。
+        def _sort_key(r):
+            return (r.score, (r.price_snapshot or {}).get("rs_rating") or 0)
+
+        results.sort(key=_sort_key, reverse=True)
         top = results[:top_n]
 
-        # 完全合致が指定数 (top_n) に満たない場合、near-miss（部分合致）の上位で
-        # 不足分を埋めて、できる限り常に top_n 件返す。
-        # 完全合致を上に・部分合致を下に並べる（部分合致は is_near_miss / failed_filters で区別可能）。
+        # 完全合致が指定数 (top_n) に満たない場合、near-miss（部分合致）の上位で不足分を埋める。
+        # ただし precision を守るため、必須条件を大きく落とした候補での水増しはしない
+        # （加重通過率 60% 以上＝中核条件をおおむね満たすものだけをフォールバックに使う）。
         used_near_miss = False
         if len(top) < top_n and near_miss_results:
-            near_miss_results.sort(key=lambda r: r.score, reverse=True)
+            near_miss_results.sort(key=_sort_key, reverse=True)
+            qualified_nm = [r for r in near_miss_results if r.score >= self._NEAR_MISS_MIN_SCORE]
             shortfall = top_n - len(top)
-            fillers = near_miss_results[:shortfall]
+            fillers = qualified_nm[:shortfall]
             if fillers:
                 top = top + fillers
                 used_near_miss = True
@@ -259,10 +298,22 @@ class ScreenerService:
             except Exception as e:
                 logging.debug(f"run_screening 景気フェーズ 付与エラー: {e}")
 
+        # 地合いレジーム（指数の200日線・傾き）を併記。下落相場ではブレイクの失敗率が上がるため、
+        # 「いま攻める局面か」の判断材料にする（発見自体は妨げない・参考情報）。
+        screen_regime = None
+        try:
+            mk = "US" if str(universe_name).startswith("us_") else "JP"
+            bsym = self._BENCHMARKS.get(mk, "^N225")
+            idx_df = await self.provider.get_ohlcv(bsym, days=420)
+            screen_regime = assess_market_regime(idx_df)
+        except Exception as e:
+            logging.debug(f"run_screening 地合い取得エラー: {e}")
+
         return {
             "ok": True,
             "style": style,
             "cyclical_regime": cyclical_regime,
+            "regime": screen_regime,
             "style_display": strategy.display_name,
             "universe": universe_name,
             "data_as_of": data_as_of,
@@ -308,7 +359,7 @@ class ScreenerService:
             fin = fin_by_code.get(code) or fin_by_code.get(code.upper())
             async with sem:
                 try:
-                    df = await self.provider.get_ohlcv(code, days=300)
+                    df = await self.provider.get_ohlcv(code, days=420)  # 52週高値・200日MAを確保
                     yf = await self.provider.get_fundamentals(code)
                 except Exception:
                     df, yf = None, None
@@ -394,7 +445,7 @@ class ScreenerService:
             })
         return {"ok": True, "code": code, "candles": candles}
 
-    async def score_all_methods(self, code: str, days: int = 300) -> dict:
+    async def score_all_methods(self, code: str, days: int = 420) -> dict:
         """1 銘柄を登録済みの全メソッドで採点し、メソッド別の魅力（点数）と一番有利な
         メソッドを返す。near_miss=True で部分点も含めて評価するので、完全合致しなくても
         「どのメソッドから見て魅力的か」が点数で比較できる。注目銘柄・保有銘柄の横断評価用。"""
@@ -403,7 +454,7 @@ class ScreenerService:
         if not code:
             return {"ok": False, "error": "code が空です"}
         try:
-            df = await self.provider.get_ohlcv(code, days=max(int(days or 300), 60))
+            df = await self.provider.get_ohlcv(code, days=max(int(days or 420), 420))
         except Exception as e:
             return {"ok": False, "error": f"価格取得失敗: {e}"}
         if df is None or len(df) == 0:
@@ -678,13 +729,14 @@ class ScreenerService:
             classify_portfolio_bucket, build_allocation_plan,
             assess_liquidity, assess_market_regime, build_pyramid_plan,
             compute_rotation_friction, hit_rate_risk_multiplier,
-            learning_adjustment, signal_lens,
+            learning_adjustment, signal_lens, evaluate_earnings_proximity,
         )
 
         holdings = holdings or []
         candidates = candidates or []
         held_codes = {str(h.get("code")) for h in holdings if h.get("code")}
-        days = max(120, min(int(days or 300), 1000))
+        # 52週高値・200日MAを使う診断のため、下限を暦日420日（≒280立会日）に引き上げる。
+        days = max(420, min(int(days or 420), 1000))
         sem = asyncio.Semaphore(4)
 
         # 地合いレジーム（指数の200日線・傾き）。出現市場ぶんだけ取得し、新規買いの積極度に効かせる。
@@ -802,6 +854,17 @@ class ScreenerService:
                                     lot_size=(100 if code.isdigit() else 1),
                                 )
                                 res["_entry"], res["_stop"] = entry, stop_price
+                    # 決算跨ぎ回避: 次回決算が間近の新規買いは、結果が出るまで上下に振れて
+                    # 勝率が読めないため打診的に格下げ（BUY→WATCH）。保有は対象外（継続判断は別途）。
+                    ep = evaluate_earnings_proximity(fundamentals)
+                    if ep.get("ok"):
+                        res["earnings_proximity"] = ep
+                        if ep.get("imminent") and res["verdict"]["action"] == "BUY":
+                            res["verdict"]["action"] = "WATCH"
+                            res["verdict"]["action_label"] = "ウォッチ（決算前）"
+                            res["verdict"]["note"] = (
+                                (res["verdict"].get("note", "") + " " + ep.get("note", "")).strip()
+                            )
                 # 出口層: 保有銘柄は損切り/トレイリング/MA割れを統一判定（ハード損切りは
                 # 取得単価比。kenmo -8% / DUKE -10%）。ストップ抵触なら手仕舞いを最終権限に。
                 if held and res.get("ok"):
