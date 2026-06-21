@@ -38,7 +38,8 @@ async def youtube_later(video_id: str):
     title = (v.get("title") or "YouTube動画").strip()
     url = v.get("url") or f"https://www.youtube.com/watch?v={video_id}"
     try:
-        await add_stocked_link(url, "video", title)
+        # type='youtube' で保存し、統合カードの「あとで見る」タブに表示されるようにする。
+        await add_stocked_link(url, "youtube", title)
     except Exception as e:
         logging.error(f"youtube_later add_stocked_link error: {e}")
         raise HTTPException(status_code=500, detail="退避に失敗しました")

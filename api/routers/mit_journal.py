@@ -212,6 +212,42 @@ async def daily_note_get(date: str | None = None):
         return {"date": date_str, "text": "", "exists": False}
 
 
+def _section_has_content(content: str, heading: str) -> bool:
+    """デイリーノート本文に、指定見出しが「中身付きで」存在するか。
+    見出しだけで本文が空の場合は未処理扱いにする。"""
+    m = _re.search(_re.escape(heading) + r"\n(.*?)(?=\n## |\Z)", content or "", _re.DOTALL)
+    return bool(m and m.group(1).strip())
+
+
+@router.get("/daily_note/status", dependencies=[Depends(verify_api_key)])
+async def daily_note_status(date: str | None = None):
+    """指定日のデイリーノートで、ロケーション履歴とデイリーサマリーが
+    処理済みかどうかを返す（処理状況の可視化・手動実行の判定用）。"""
+    from api import app
+    date_str = _resolve_note_date(date)
+    chat_service = getattr(app.state, "chat_service", None)
+    out = {"date": date_str, "exists": False, "location_done": False, "summary_done": False}
+    if not chat_service or not chat_service.drive_service:
+        return out
+    try:
+        drive = chat_service.drive_service
+        service = drive.get_service()
+        folder_id = await drive.find_file(service, chat_service.drive_folder_id, "DailyNotes")
+        if not folder_id:
+            return out
+        f_id = await drive.find_file(service, folder_id, f"{date_str}.md")
+        if not f_id:
+            return out
+        content = await drive.read_text_file(service, f_id)
+        out["exists"] = True
+        out["location_done"] = _section_has_content(content, "## 📍 Location History")
+        out["summary_done"] = _section_has_content(content, "## 📅 Daily Summary")
+        return out
+    except Exception as e:
+        logging.debug(f"daily_note_status error: {e}")
+        return out
+
+
 @router.post("/daily_note", dependencies=[Depends(verify_api_key)])
 async def daily_note_set(req: DailyNoteUpdate):
     """指定日のデイリーノート .md を丸ごと上書き保存する（アプリ上での編集を反映）。"""

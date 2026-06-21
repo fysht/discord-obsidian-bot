@@ -7651,28 +7651,37 @@ window.loadGmailInbox = async (state = 'pending') => {
             const checkbox = currentGmailState === 'pending'
                 ? `<input type="checkbox" class="gmail-check" data-id="${idAttr}" style="margin-top:3px;flex-shrink:0;">`
                 : '';
+            // 主要操作（保存/アーカイブ/ゴミ箱）だけ常時表示し、二次操作（ログ化/予定/支出/Gmail）は
+            // 「⋯」の中に畳んで縦の高さを抑える。アイコンのみ＋tooltip で横1段に収める。
             return `
-                <div class="invest-row gmail-row" data-id="${idAttr}" data-thread="${threadAttr}" data-saved-drive="${savedDriveId}" style="cursor:default;align-items:flex-start;gap:8px;">
-                    ${checkbox}
-                    <div class="row-main" style="flex:1;min-width:0;">
-                        <div class="row-title" style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">
-                            <span style="font-size:0.74rem;color:${importanceColor};font-weight:600;flex-shrink:0;">${importanceLabel}</span>
-                            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${subjectSafe}</span>
-                            ${savedBadge}
-                        </div>
-                        <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">
-                            ${fromShort} ・ ${received}
-                        </div>
-                        <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:3px;line-height:1.4;">
-                            ${summarySafe}
+                <div class="invest-row gmail-row" data-id="${idAttr}" data-thread="${threadAttr}" data-saved-drive="${savedDriveId}" style="cursor:default;flex-direction:column;align-items:stretch;gap:6px;">
+                    <div style="display:flex;gap:8px;align-items:flex-start;">
+                        ${checkbox}
+                        <div class="row-main" style="flex:1;min-width:0;">
+                            <div class="row-title" style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">
+                                <span style="font-size:0.74rem;color:${importanceColor};font-weight:600;flex-shrink:0;">${importanceLabel}</span>
+                                <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${subjectSafe}</span>
+                                ${savedBadge}
+                            </div>
+                            <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;">
+                                ${fromShort} ・ ${received}
+                            </div>
+                            <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:3px;line-height:1.4;">
+                                ${summarySafe}
+                            </div>
                         </div>
                     </div>
-                    <div class="row-actions" style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
+                    <div class="row-actions" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
                         ${actions}
-                        <button class="mini-link" data-gmail-action="logify" title="AIが最適なログ種別を判定して取り込む">📝 ログ化</button>
-                        <button class="mini-link" data-gmail-action="calendar" title="メール内の予定をカレンダーに登録">📅 予定</button>
-                        <button class="mini-link" data-gmail-action="expense" title="メール内容を支出として記録">💰 支出</button>
-                        <button class="mini-link" data-gmail-action="open-gmail" title="Gmail で開く">↗ Gmail</button>
+                        <details class="gmail-more" style="position:relative;margin-left:auto;">
+                            <summary class="mini-link gmail-more-summary" title="その他の操作" style="cursor:pointer;list-style:none;">⋯ その他</summary>
+                            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;width:100%;">
+                                <button class="mini-link" data-gmail-action="logify" title="AIが最適なログ種別を判定して取り込む">📝 ログ化</button>
+                                <button class="mini-link" data-gmail-action="calendar" title="メール内の予定をカレンダーに登録">📅 予定</button>
+                                <button class="mini-link" data-gmail-action="expense" title="メール内容を支出として記録">💰 支出</button>
+                                <button class="mini-link" data-gmail-action="open-gmail" title="Gmail で開く">↗ Gmail</button>
+                            </div>
+                        </details>
                     </div>
                 </div>
             `;
@@ -7732,6 +7741,21 @@ window.refreshYouTubeServer = async () => {
         showToast('取得に失敗しました（認証スコープを確認してください）', true);
     }
     loadYouTubeVideos();
+};
+
+// 統合カードのタブ切替（新着 / あとで見る）。「あとで見る」は既存のストックリンク
+// 機構（並び替え・タグ絞り込み・編集・＋追加・全既読）をそのまま使う。
+window.switchYouTubeTab = (tab) => {
+    document.querySelectorAll('.yt-tab').forEach(b => b.classList.toggle('active', b.dataset.ytTab === tab));
+    const np = document.getElementById('yt-pane-new');
+    const lp = document.getElementById('yt-pane-later');
+    if (np) np.style.display = tab === 'new' ? '' : 'none';
+    if (lp) lp.style.display = tab === 'later' ? '' : 'none';
+    if (tab === 'later') {
+        if (typeof loadStockedLinks === 'function') loadStockedLinks();
+    } else {
+        loadYouTubeVideos();
+    }
 };
 
 window.loadYouTubeVideos = async (state = 'new') => {
@@ -10355,6 +10379,44 @@ window.loadDailyNote = async (date = '') => {
     } catch (e) {
         if (status) status.textContent = '読み込みに失敗しました';
     }
+    loadDailyNoteStatus(_dailyNoteDate);
+};
+
+// この日のロケーション履歴・デイリーサマリーの処理状況（済/未）を表示し、その場で手動実行できる。
+window.loadDailyNoteStatus = async (date) => {
+    const box = document.getElementById('daily-note-process');
+    if (!box) return;
+    box.innerHTML = '処理状況を確認中…';
+    let st;
+    try {
+        st = await apiFetch(`/api/daily_note/status?date=${encodeURIComponent(date)}`);
+    } catch (e) { box.innerHTML = ''; return; }
+    const tag = (ok) => ok
+        ? '<b style="color:var(--accent);">済</b>'
+        : '<b style="color:#ff8a8a;">未</b>';
+    box.innerHTML = `
+        <span>📍 ロケーション: ${tag(st.location_done)}</span>
+        <button class="mini-link" onclick="runDailyNoteLocation('${date}')" title="この日の移動記録を同期">同期</button>
+        <span style="margin-left:6px;">📅 まとめ: ${tag(st.summary_done)}</span>
+        <button class="mini-link" onclick="runDailyNoteSummary('${date}')" title="この日のまとめを作成/更新">作成/更新</button>`;
+};
+
+window.runDailyNoteLocation = async (date) => {
+    showToast('📍 ロケーションを同期中…');
+    try {
+        const r = await apiFetch('/api/location_log/sync', { method: 'POST', body: JSON.stringify({ date }) });
+        showToast(r.message || '同期完了');
+    } catch (e) { showToast('同期に失敗しました', true); }
+    loadDailyNote(date);
+};
+
+window.runDailyNoteSummary = async (date) => {
+    showToast('📅 まとめを作成中…');
+    try {
+        const r = await apiFetch('/api/daily_summary/regenerate', { method: 'POST', body: JSON.stringify({ date }) });
+        showToast(r.saved ? '📅 まとめを更新しました' : 'まとめ対象が見つかりませんでした');
+    } catch (e) { showToast('まとめ作成に失敗しました', true); }
+    loadDailyNote(date);
 };
 window.shiftDailyNoteDate = (delta) => {
     const cur = _dailyNoteDate || _yesterdayStr();

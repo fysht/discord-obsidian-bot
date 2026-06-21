@@ -11,7 +11,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Noto+Sans+JP:wght@300;400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/css/app_v12.css?v=57">
+    <link rel="stylesheet" href="/static/css/app_v12.css?v=59">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
@@ -186,17 +186,6 @@
                         <div id="dash-stocked-web" class="card-body list-body"></div>
                     </details>
 
-                    <details class="card stocked-links-card" data-card-key="youtube">
-                        <summary>
-                            <div class="card-header">
-                                <span class="card-icon">📺</span>
-                                <span class="card-title">YouTube</span>
-                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('youtube')">全既読</button>
-                            </div>
-                        </summary>
-                        <div id="dash-stocked-youtube" class="card-body list-body"></div>
-                    </details>
-
                     <details class="card stocked-links-card" data-card-key="gmap">
                         <summary>
                             <div class="card-header">
@@ -319,16 +308,36 @@
                         <summary>
                             <div class="card-header">
                                 <span class="card-icon">📺</span>
-                                <span class="card-title">YouTube新着</span>
+                                <span class="card-title">YouTube</span>
                                 <span id="youtube-new-badge" style="display:none;background:#ff6b6b;color:#fff;font-size:0.7rem;font-weight:700;padding:1px 7px;border-radius:10px;margin-left:4px;" title="未視聴の新着件数"></span>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); openWatchDeclareModal()" title="見る前に宣言してタイマーで回収">📣 宣言して見る</button>
-                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadYouTubeVideos()" title="更新">🔄 更新</button>
+                                <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); loadYouTubeVideos()" title="新着を更新">🔄 更新</button>
                                 <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); refreshYouTubeServer()" title="登録チャンネルを再取得して新着を取り込み">📥 取り込み</button>
                             </div>
                         </summary>
                         <div class="card-body">
-                            <div id="watch-status"></div>
-                            <div id="dash-youtube-list"><div class="loading-placeholder">「📥 取り込み」で登録チャンネルの新着を取得できます。</div></div>
+                            <div class="yt-tabs" style="display:flex;gap:6px;margin-bottom:8px;">
+                                <button type="button" class="yt-tab active" data-yt-tab="new" onclick="switchYouTubeTab('new')">📡 新着</button>
+                                <button type="button" class="yt-tab" data-yt-tab="later" onclick="switchYouTubeTab('later')">🔖 あとで見る</button>
+                            </div>
+                            <div id="yt-pane-new">
+                                <div id="watch-status"></div>
+                                <div id="dash-youtube-list"><div class="loading-placeholder">「📥 取り込み」で登録チャンネルの新着を取得できます。</div></div>
+                            </div>
+                            <div id="yt-pane-later" style="display:none;">
+                                <!-- 既存のストックリンク機構にフル接続（並び替え/タグ絞り込み/編集/＋追加/全既読）。
+                                     setupHeader が closest('details') にコントロールを差し込むため details 直下に body を置く。 -->
+                                <details class="card stocked-links-card" data-card-key="youtube_stocked" open>
+                                    <summary>
+                                        <div class="card-header">
+                                            <span class="card-icon">🔖</span>
+                                            <span class="card-title">あとで見る</span>
+                                            <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('youtube')">全既読</button>
+                                        </div>
+                                    </summary>
+                                    <div id="dash-stocked-youtube" class="card-body list-body"></div>
+                                </details>
+                            </div>
                         </div>
                     </details>
 
@@ -490,6 +499,8 @@
                             <span id="daily-note-date" style="font-size:0.8rem;color:var(--text-primary);text-align:center;flex:1;min-width:0;">---</span>
                             <button class="mini-link" id="daily-note-next" onclick="shiftDailyNoteDate(1)" title="翌日へ" style="white-space:nowrap;flex:none;">翌日 ▶</button>
                         </div>
+                        <!-- この日のロケーション/まとめの処理状況。済/未を表示し、その場で手動実行できる。 -->
+                        <div id="daily-note-process" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:0.76rem;color:var(--text-muted);padding:6px 18px;border-bottom:1px solid var(--border-glass);"></div>
                         <div class="card-body">
                             <textarea id="daily-note-editor" class="modern-input" rows="18" spellcheck="false" placeholder="（この日のデイリーノートはまだありません）" style="width:100%;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:0.8rem;line-height:1.5;white-space:pre;overflow-wrap:normal;overflow-x:auto;"></textarea>
                             <div id="daily-note-status" style="font-size:0.74rem;color:var(--text-muted);margin-top:4px;min-height:1.1em;"></div>
@@ -1948,6 +1959,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=100"></script>
+    <script src="/static/js/app_v12.js?v=103"></script>
 </body>
 </html>
