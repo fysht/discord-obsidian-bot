@@ -1220,6 +1220,40 @@ function _boardAppendRow(it) {
         </div>`;
 }
 
+// 食事ログ入力欄（朝食/昼食/夕食）。各ボタンで食事区分を引き継いで食事ログ画面を開く。
+function _boardMealRow() {
+    const types = [['breakfast', '🍳 朝食'], ['lunch', '🍱 昼食'], ['dinner', '🍽 夕食']];
+    const btns = types.map(([t, l]) =>
+        `<button type="button" class="board-chip" onclick="openBoardMeal('${t}')" style="padding:4px 12px;font-size:0.82rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${l}</button>`
+    ).join('');
+    return `
+        <div style="margin-bottom:10px;">
+            <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">🍽 食事ログ</div>
+            <div class="board-meal-list" style="margin-bottom:4px;"></div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">${btns}</div>
+        </div>`;
+}
+
+// 気分・体調を「調子」1つの指標に統合（5段階・単一スケール）。記録先は scope='mood'。
+const BOARD_CONDITION_CHIPS = ['絶好調 🤩', '良い 🙂', 'ふつう 😐', 'もやもや 😕', 'しんどい 😫'];
+function _boardMoodConditionRow() {
+    const chips = BOARD_CONDITION_CHIPS.map(c =>
+        `<button type="button" class="board-chip" onclick="submitBoardChoice(this, 'mood', '${escapeHtml(c)}')" style="padding:4px 10px;font-size:0.8rem;border:1px solid rgba(255,212,84,0.45);border-radius:14px;background:rgba(255,212,84,0.12);color:var(--text-primary);cursor:pointer;">${escapeHtml(c)}</button>`
+    ).join('');
+    return `
+        <div class="board-choice" data-scope="mood" style="margin-bottom:10px;">
+            <div style="font-size:0.82rem;color:var(--text-primary);margin-bottom:4px;">😀 気分・体調 <span class="board-choice-status" style="font-size:0.72rem;color:var(--text-muted);"></span></div>
+            <div style="display:flex;flex-wrap:wrap;gap:6px;">${chips}</div>
+        </div>`;
+}
+
+// 食事ログ画面を食事区分つきで開く（「今日の記録」ボードの朝食/昼食/夕食ボタン）。
+window.openBoardMeal = (mealType) => {
+    _mealQuestionToResolve = null;
+    _mealQuestionMealType = mealType || '';
+    openMealManualModal(null, { meal_type: mealType || '' });
+};
+
 // 1ボタンで開く「今日の記録」ボード。自発記録の入力欄と、マネージャーからの未回答質問を
 // 1枚に縦に並べ、埋めたいところだけ埋められるようにする（旧 サッと記録／未回答ログ を統合）。
 window.openLogInbox = async () => {
@@ -1231,7 +1265,8 @@ window.openLogInbox = async () => {
                 ${_boardMitRow('today', '今日')}
                 ${_boardMitRow('tomorrow', '明日')}
             </div>
-            ${BOARD_CHOICE_ITEMS.map(_boardChoiceRow).join('')}
+            ${_boardMealRow()}
+            ${_boardMoodConditionRow()}
             ${BOARD_APPEND_ITEMS.map(_boardAppendRow).join('')}`;
         const wrap = document.createElement('div');
         wrap.innerHTML = `
@@ -1254,6 +1289,26 @@ window.openLogInbox = async () => {
     modal.classList.remove('hidden');
     await renderLogInbox();
     renderBoardSelfLogHistory();
+    renderBoardMeals();
+};
+
+// 「今日の記録」ボードに、今日すでに記録した食事を区分つきで一覧表示する。
+window.renderBoardMeals = async () => {
+    const box = document.querySelector('.board-meal-list');
+    if (!box) return;
+    let meals = [];
+    try {
+        const data = await apiFetch(`/api/meals?date=${encodeURIComponent(_todayStr())}`);
+        meals = (data && data.meals) || [];
+    } catch (e) { box.innerHTML = ''; return; }
+    if (!meals.length) { box.innerHTML = ''; return; }
+    const labelJa = { breakfast: '朝食', lunch: '昼食', dinner: '夕食', snack: '間食' };
+    box.innerHTML = meals.map(m => {
+        const mt = labelJa[m.meal_type] || m.meal_type || '';
+        const tag = mt ? `【${mt}】` : '';
+        const t = m.time ? ` <span style="opacity:0.6;">(${escapeHtml(m.time)})</span>` : '';
+        return `<div style="font-size:0.8rem;color:var(--text-muted);padding:3px 0;border-bottom:1px dashed rgba(255,255,255,0.08);">✓ ${escapeHtml(tag)}${escapeHtml(m.name || '')}${t}</div>`;
+    }).join('');
 };
 
 // 出来事/学び/良かったことの「今日すでに記録した分」をサーバー（Obsidian）から読み戻して
@@ -6891,6 +6946,11 @@ window.openMealManualModal = async (id = null, seed = null) => {
                         <option value="">— レシピを選んで追加 —</option>
                     </select>
 
+                    <label id="meal-target-label" style="font-size:0.78rem;color:var(--text-muted);">今日の既存の食事に追加（2品目・3品目として／任意）</label>
+                    <select id="meal-target-picker" class="modern-input" style="margin-bottom:8px;" onchange="onMealTargetPicked()">
+                        <option value="">— 新しい食事として記録 —</option>
+                    </select>
+
                     <label style="font-size:0.78rem;color:var(--text-muted);">料理名（品目ごとに入力。2品以上は「＋ 品目を追加」）</label>
                     <div id="meal-dish-list" style="margin-bottom:4px;"></div>
                     <input id="meal-name" type="hidden">
@@ -7051,6 +7111,36 @@ window.openMealManualModal = async (id = null, seed = null) => {
         // 失敗してもモーダル本体は使えるようにする
     }
 
+    // 「既存の食事に追加」セレクタ：新規記録時のみ、今日の食事一覧を流し込む。
+    // 編集モード（id 指定）では出さない。
+    try {
+        const targetPicker = $('#meal-target-picker');
+        const targetLabel = $('#meal-target-label');
+        if (targetPicker && targetLabel) {
+            if (id) {
+                targetPicker.style.display = 'none';
+                targetLabel.style.display = 'none';
+            } else {
+                targetPicker.style.display = '';
+                targetLabel.style.display = '';
+                const labelJa = { breakfast: '朝食', lunch: '昼食', dinner: '夕食', snack: '間食' };
+                const today = m.date || _todayStr();
+                const data = await apiFetch(`/api/meals?date=${encodeURIComponent(today)}`);
+                const meals = (data && data.meals) || [];
+                targetPicker.innerHTML = '<option value="">— 新しい食事として記録 —</option>'
+                    + meals.map(mm => {
+                        const tag = labelJa[mm.meal_type] ? `【${labelJa[mm.meal_type]}】` : '';
+                        const t = mm.time ? ` ${mm.time}` : '';
+                        return `<option value="${mm.id}">${escapeHtml(tag + (mm.name || '(無題)') + t)}</option>`;
+                    }).join('');
+                targetPicker.dataset.meals = JSON.stringify(meals);
+                targetPicker.value = '';
+            }
+        }
+    } catch (e) {
+        // 失敗してもモーダル本体は使える
+    }
+
     _renderMealDishRows(_splitMealName(m.name));
     $('#meal-date').value = m.date || _todayStr();
     $('#meal-time').value = m.time || '';
@@ -7087,9 +7177,30 @@ window.closeMealEditModal = () => {
 // 上書きではなく追記し、選択後はピッカーをリセットして続けて別レシピも足せるようにする。
 // ===== 料理名: 品目ごとの入力欄（2品以上は行を足す。「＋」連結はやめる）=====
 // 既存ロジック（栄養推定・保存）は隠し input #meal-name を「、」連結で同期して使う。
-function _mealDishRowHtml(value) {
+// 品目ごとの分量（何分の1食べたか）。value=カロリー等に掛ける倍率、label=表示用ラベル。
+// 2つのメニューを半分ずつ取った場合などに、品目ごとに分量を指定して合算できる。
+const MEAL_PORTIONS = [
+    ['1', '全部', ''],
+    ['0.75', '¾', '¾'],
+    ['0.6667', '⅔', '⅔'],
+    ['0.5', '半分', '½'],
+    ['0.3333', '⅓', '⅓'],
+    ['0.25', '¼', '¼'],
+];
+const MEAL_PORTION_LABEL_TO_VAL = { '¾': '0.75', '⅔': '0.6667', '½': '0.5', '⅓': '0.3333', '¼': '0.25' };
+
+function _mealPortionSelectHtml(portion) {
+    const cur = String(portion || '1');
+    const opts = MEAL_PORTIONS.map(([v, txt, lbl]) =>
+        `<option value="${v}" data-label="${lbl}"${cur === v ? ' selected' : ''}>${txt}</option>`
+    ).join('');
+    return `<select class="modern-input meal-portion" style="width:88px;flex-shrink:0;" onchange="_onMealPortionChange()" title="分量（何分の1食べたか）">${opts}</select>`;
+}
+
+function _mealDishRowHtml(value, portion = '1') {
     return `<div class="meal-dish-row" style="display:flex;gap:6px;margin-bottom:4px;">
         <input class="modern-input meal-dish" style="flex:1;" placeholder="例: カレー" value="${escapeHtml(value || '')}" oninput="_syncMealName()" onblur="_autoEstimateMealNutrition()">
+        ${_mealPortionSelectHtml(portion)}
         <button type="button" class="mini-link" onclick="removeMealDishRow(this)" title="この品目を削除" style="white-space:nowrap;">✕</button>
     </div>`;
 }
@@ -7097,20 +7208,46 @@ function _splitMealName(name) {
     // 旧データの「＋」連結や「、」「改行」区切りを品目に分解する。
     return (name || '').split(/\s*[＋+、]\s*|\n/).map(s => s.trim()).filter(Boolean);
 }
+// 品目名から末尾の分量ラベル（½ など）を分離して {name, portion} を返す。
+function _parseDishPortion(token) {
+    const m = String(token || '').match(/^(.*?)（(¾|⅔|½|⅓|¼)）\s*$/);
+    if (m) return { name: m[1].trim(), portion: MEAL_PORTION_LABEL_TO_VAL[m[2]] || '1' };
+    return { name: String(token || '').trim(), portion: '1' };
+}
 function _renderMealDishRows(names) {
     const list = document.getElementById('meal-dish-list');
     if (!list) return;
     const arr = (names && names.length) ? names : [''];
-    list.innerHTML = arr.map(n => _mealDishRowHtml(n)).join('');
+    list.innerHTML = arr.map(n => {
+        const { name, portion } = _parseDishPortion(n);
+        return _mealDishRowHtml(name, portion);
+    }).join('');
     _syncMealName();
 }
 function _getMealDishNames() {
     return Array.from(document.querySelectorAll('#meal-dish-list .meal-dish'))
         .map(el => (el.value || '').trim()).filter(Boolean);
 }
+// 各品目を {name, mult, label} で返す（カロリー合算・名前生成に使う）。
+function _getMealDishRows() {
+    return Array.from(document.querySelectorAll('#meal-dish-list .meal-dish-row')).map(row => {
+        const name = (row.querySelector('.meal-dish')?.value || '').trim();
+        const sel = row.querySelector('.meal-portion');
+        const mult = sel ? (parseFloat(sel.value) || 1) : 1;
+        const label = (sel && sel.options[sel.selectedIndex]) ? (sel.options[sel.selectedIndex].dataset.label || '') : '';
+        return { name, mult, label };
+    }).filter(r => r.name);
+}
 window._syncMealName = () => {
     const hidden = document.getElementById('meal-name');
-    if (hidden) hidden.value = _getMealDishNames().join('、');
+    if (!hidden) return;
+    // 分量が「全部」以外の品目には（½ など）を付けて記録名に残す。
+    hidden.value = _getMealDishRows().map(r => r.name + (r.label ? `（${r.label}）` : '')).join('、');
+};
+// 分量を変えたら名前を更新し、カロリーを掛け合わせて再見積もりする。
+window._onMealPortionChange = () => {
+    _syncMealName();
+    estimateMealNutrition(true, true);
 };
 window.addMealDishRow = (value = '') => {
     const list = document.getElementById('meal-dish-list');
@@ -7168,30 +7305,94 @@ window.onMealRecipePicked = () => {
     estimateMealNutrition(true, true);
 };
 
+// 「既存の食事に追加」セレクタ：選んだ今日の食事へ、いま入力中の品目（レシピ等）を
+// 2品目・3品目として足す。選ぶと編集モードに切り替わり、保存で既存の食事へ反映される。
+window.onMealTargetPicked = () => {
+    const picker = $('#meal-target-picker');
+    if (!picker) return;
+    const saveBtn = $('#meal-save-btn');
+    const titleEl = $('#meal-edit-title');
+    const val = picker.value;
+    if (!val) {
+        // 「新しい食事として記録」に戻す。
+        if (saveBtn) saveBtn.dataset.mealId = '';
+        if (titleEl) titleEl.textContent = '🍽 食事を記録';
+        return;
+    }
+    let meals = [];
+    try { meals = JSON.parse(picker.dataset.meals || '[]'); } catch { meals = []; }
+    const target = meals.find(x => String(x.id) === String(val));
+    if (!target) return;
+
+    // いま入力中の品目（レシピで足した分など）を控え、既存の品目の後ろに足す。
+    const currentDishes = _getMealDishNames();
+    const existingDishes = _splitMealName(target.name);
+    const merged = [];
+    [...existingDishes, ...currentDishes].forEach(d => { if (d && !merged.includes(d)) merged.push(d); });
+    _renderMealDishRows(merged.length ? merged : ['']);
+
+    // 編集モードへ切り替え（保存で既存の食事を PATCH 更新）。既存の値を反映して保持する。
+    if (saveBtn) saveBtn.dataset.mealId = String(target.id);
+    if (titleEl) titleEl.textContent = '🍽 既存の食事に追加';
+    if ($('#meal-date')) $('#meal-date').value = target.date || _todayStr();
+    if ($('#meal-time') && target.time) $('#meal-time').value = target.time;
+    if ($('#meal-type')) $('#meal-type').value = target.meal_type || $('#meal-type').value || '';
+    if ($('#meal-kcal')) $('#meal-kcal').value = target.calories ?? '';
+    if ($('#meal-p')) $('#meal-p').value = target.protein_g ?? '';
+    if ($('#meal-f')) $('#meal-f').value = target.fat_g ?? '';
+    if ($('#meal-c')) $('#meal-c').value = target.carbs_g ?? '';
+    if ($('#meal-memo') && target.memo) $('#meal-memo').value = target.memo;
+    if ($('#meal-restaurant')) $('#meal-restaurant').value = target.restaurant || $('#meal-restaurant').value || '';
+    if ($('#meal-price') && (target.price ?? 0)) $('#meal-price').value = target.price;
+    if ($('#meal-source')) $('#meal-source').value = target.source || $('#meal-source').value || '';
+    showToast('既存の食事に品目を追加します。カロリーは「🔢」で再見積もりできます');
+};
+
 // 料理名からカロリー/PFCをAIで推定して欄を埋める（自分でカロリーが分からなくてもOK）
 let _mealEstimating = false;
 window.estimateMealNutrition = async (force = false, quiet = false) => {
     if (typeof _syncMealName === 'function') _syncMealName();
-    const nameEl = $('#meal-name');
     const kcalEl = $('#meal-kcal');
-    const name = (nameEl?.value || '').trim();
-    if (!name) { if (force && !quiet) showToast('先に料理名を入力してね', true); return; }
+    const rows = _getMealDishRows();
+    if (!rows.length) { if (force && !quiet) showToast('先に料理名を入力してね', true); return; }
     if (!force && kcalEl && Number(kcalEl.value) > 0) return;  // 既に値があれば自動では上書きしない
     if (_mealEstimating) return;
     _mealEstimating = true;
     if (force && !quiet) showToast('🔢 カロリーを推定中…');
     try {
-        const res = await apiFetch('/api/meals/analyze_text', {
-            method: 'POST', body: JSON.stringify({ text: name }),
-        });
-        const r = (res && res.result) || {};
+        // 分量が「全部」以外の品目があるときは、品目ごとに推定して倍率を掛けて合算する
+        // （例: 2つのメニューを半分ずつ）。全部のときは結合名で1回だけ推定（従来どおり）。
+        const hasFraction = rows.some(r => Math.abs(r.mult - 1) > 0.001);
+        let kcal = 0, p = 0, f = 0, c = 0, mtype = '';
+        if (!hasFraction) {
+            const res = await apiFetch('/api/meals/analyze_text', {
+                method: 'POST', body: JSON.stringify({ text: rows.map(r => r.name).join('、') }),
+            });
+            const r = (res && res.result) || {};
+            kcal = Number(r.calories) || 0; p = Number(r.protein_g) || 0;
+            f = Number(r.fat_g) || 0; c = Number(r.carbs_g) || 0; mtype = r.meal_type || '';
+        } else {
+            for (const row of rows) {
+                const res = await apiFetch('/api/meals/analyze_text', {
+                    method: 'POST', body: JSON.stringify({ text: row.name }),
+                });
+                const x = (res && res.result) || {};
+                kcal += (Number(x.calories) || 0) * row.mult;
+                p += (Number(x.protein_g) || 0) * row.mult;
+                f += (Number(x.fat_g) || 0) * row.mult;
+                c += (Number(x.carbs_g) || 0) * row.mult;
+                if (!mtype && x.meal_type) mtype = x.meal_type;
+            }
+            kcal = Math.round(kcal); p = Math.round(p * 10) / 10;
+            f = Math.round(f * 10) / 10; c = Math.round(c * 10) / 10;
+        }
         const setIf = (el, val) => { if (el && Number(val) > 0 && (force || !(Number(el.value) > 0))) el.value = val; };
-        setIf($('#meal-kcal'), r.calories);
-        setIf($('#meal-p'), r.protein_g);
-        setIf($('#meal-f'), r.fat_g);
-        setIf($('#meal-c'), r.carbs_g);
+        setIf($('#meal-kcal'), kcal);
+        setIf($('#meal-p'), p);
+        setIf($('#meal-f'), f);
+        setIf($('#meal-c'), c);
         const typeEl = $('#meal-type');
-        if (typeEl && !typeEl.value && r.meal_type) typeEl.value = r.meal_type;
+        if (typeEl && !typeEl.value && mtype) typeEl.value = mtype;
         if (force && !quiet) showToast('カロリーを見積もりました（必要なら修正してね）');
     } catch (e) {
         if (force && !quiet) showToast('推定に失敗しました', true);
@@ -7415,7 +7616,14 @@ window.loadGmailInbox = async (state = 'pending') => {
             listEl.innerHTML = `<div class="loading-placeholder">${empty}<span class="muted-hint">「📥 取り込み」で Gmail を再ポーリングできます。</span></div>`;
             return;
         }
-        listEl.innerHTML = items.map(m => {
+        // 未処理タブのみ、まとめてゴミ箱へ捨てる選択バーを出す。
+        const bulkBar = currentGmailState === 'pending'
+            ? `<div id="gmail-bulk-bar" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.78rem;color:var(--text-muted);">
+                   <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="gmail-check-all" onclick="toggleGmailCheckAll(this)"> 全選択</label>
+                   <button class="mini-link btn-danger" style="margin-left:auto;" onclick="bulkTrashSelectedGmail()" title="選択したメールをまとめてゴミ箱へ">🗑 選択をゴミ箱へ</button>
+               </div>`
+            : '';
+        listEl.innerHTML = bulkBar + items.map(m => {
             const importanceColor = m.importance === 'high' ? '#ff6b6b'
                 : m.importance === 'low' ? 'var(--text-muted)' : 'var(--accent)';
             const importanceLabel = m.importance === 'high' ? '🔴 重要'
@@ -7440,8 +7648,12 @@ window.loadGmailInbox = async (state = 'pending') => {
                     <button class="mini-link btn-danger" data-gmail-action="trash" title="ゴミ箱へ">🗑 ゴミ箱</button>
                 `
                 : `${saveBtn}`;
+            const checkbox = currentGmailState === 'pending'
+                ? `<input type="checkbox" class="gmail-check" data-id="${idAttr}" style="margin-top:3px;flex-shrink:0;">`
+                : '';
             return `
-                <div class="invest-row gmail-row" data-id="${idAttr}" data-thread="${threadAttr}" data-saved-drive="${savedDriveId}" style="cursor:default;align-items:flex-start;">
+                <div class="invest-row gmail-row" data-id="${idAttr}" data-thread="${threadAttr}" data-saved-drive="${savedDriveId}" style="cursor:default;align-items:flex-start;gap:8px;">
+                    ${checkbox}
                     <div class="row-main" style="flex:1;min-width:0;">
                         <div class="row-title" style="display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;">
                             <span style="font-size:0.74rem;color:${importanceColor};font-weight:600;flex-shrink:0;">${importanceLabel}</span>
@@ -7470,6 +7682,27 @@ window.loadGmailInbox = async (state = 'pending') => {
         console.error('loadGmailInbox failed', e);
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
+};
+
+// 全選択チェックボックスで一覧のチェックを一括切替する。
+window.toggleGmailCheckAll = (master) => {
+    document.querySelectorAll('#dash-gmail-list .gmail-check').forEach(cb => { cb.checked = master.checked; });
+};
+
+// チェックしたメールをまとめてゴミ箱へ移動する。
+window.bulkTrashSelectedGmail = async () => {
+    const ids = Array.from(document.querySelectorAll('#dash-gmail-list .gmail-check:checked'))
+        .map(cb => cb.dataset.id).filter(Boolean);
+    if (!ids.length) { showToast('削除するメールを選択してください', true); return; }
+    if (!await confirmDialog(`${ids.length}件のメールをまとめてゴミ箱へ移動しますか？`)) return;
+    try {
+        const res = await apiFetch('/api/gmail/bulk_trash', { method: 'POST', body: JSON.stringify({ ids }) });
+        showToast(`🗑 ${res.trashed || 0}件をゴミ箱へ移動しました`);
+    } catch (e) {
+        showToast('まとめて削除に失敗しました', true);
+    }
+    loadGmailInbox(currentGmailState);
+    if (typeof refreshGmailBadge === 'function') refreshGmailBadge();
 };
 
 // ===== 📺 YouTube 登録チャンネル新着 =====

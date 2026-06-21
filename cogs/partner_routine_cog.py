@@ -39,11 +39,7 @@ class PartnerRoutineCog(commands.Cog):
             self.tomorrow_plan_task,
             self.obsidian_review_task,
             self.db_backup_task,
-            self.breakfast_meal_check_task,
-            self.lunch_meal_check_task,
             self.afternoon_check_task,
-            self.dinner_meal_check_task,
-            self.evening_mood_check_task,
             self.gratitude_check_task,
             self.learning_check_task,
             self.english_quiz_task,
@@ -60,11 +56,7 @@ class PartnerRoutineCog(commands.Cog):
             self.tomorrow_plan_task,
             self.obsidian_review_task,
             self.db_backup_task,
-            self.breakfast_meal_check_task,
-            self.lunch_meal_check_task,
             self.afternoon_check_task,
-            self.dinner_meal_check_task,
-            self.evening_mood_check_task,
             self.gratitude_check_task,
             self.learning_check_task,
             self.english_quiz_task,
@@ -187,8 +179,6 @@ class PartnerRoutineCog(commands.Cog):
 
         from api.notification_service import send_notice_batch
         await send_notice_batch(notices, "朝のお知らせ")
-        # 朝食ログの質問は別タスク（breakfast_meal_check_task / 8:30）で投下するため、
-        # 朝のお知らせ（07:00）では出さない。
 
     @staticmethod
     def _format_weather(wd: dict) -> str:
@@ -242,44 +232,6 @@ class PartnerRoutineCog(commands.Cog):
         return "\n".join(lines)
 
     # ==========================================
-    # 朝食ログの質問（8:30）— 朝ごはんを記録
-    # ==========================================
-    @tasks.loop(minutes=1)
-    async def breakfast_meal_check_task(self):
-        from services.schedule_resolver import is_due
-        due, today = await is_due("breakfast_meal", "08:30", "daily", self._last_run_dates.get("breakfast_meal"))
-        if not due:
-            return
-        self._last_run_dates["breakfast_meal"] = today
-        await asyncio.sleep(random.randint(0, 600))
-        partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog:
-            return
-        try:
-            await partner_cog.send_log_question("meal", "朝ごはんは何を食べた？", meal_type="朝食")
-        except Exception as e:
-            logging.debug(f"breakfast meal question error: {e}")
-
-    # ==========================================
-    # 昼食ログの質問（12:45）— 昼ごはんを記録
-    # ==========================================
-    @tasks.loop(minutes=1)
-    async def lunch_meal_check_task(self):
-        from services.schedule_resolver import is_due
-        due, today = await is_due("lunch_meal", "12:45", "daily", self._last_run_dates.get("lunch_meal"))
-        if not due:
-            return
-        self._last_run_dates["lunch_meal"] = today
-        await asyncio.sleep(random.randint(0, 600))
-        partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog:
-            return
-        try:
-            await partner_cog.send_log_question("meal", "昼ごはんは何を食べた？", meal_type="昼食")
-        except Exception as e:
-            logging.debug(f"lunch meal question error: {e}")
-
-    # ==========================================
     # 昼の振り返り（14:30）— 午後の調子を1タップで記録
     # ==========================================
     @tasks.loop(minutes=1)
@@ -297,44 +249,6 @@ class PartnerRoutineCog(commands.Cog):
             await partner_cog.send_log_question("afternoon", "午前はどうだった？午後の調子は？")
         except Exception as e:
             logging.debug(f"afternoon question error: {e}")
-
-    # ==========================================
-    # 夕食ログの質問（20:00）— 夕ごはんを記録
-    # ==========================================
-    @tasks.loop(minutes=1)
-    async def dinner_meal_check_task(self):
-        from services.schedule_resolver import is_due
-        due, today = await is_due("dinner_meal", "20:00", "daily", self._last_run_dates.get("dinner_meal"))
-        if not due:
-            return
-        self._last_run_dates["dinner_meal"] = today
-        await asyncio.sleep(random.randint(0, 600))
-        partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog:
-            return
-        try:
-            await partner_cog.send_log_question("meal", "晩ごはんは何を食べた？", meal_type="夕食")
-        except Exception as e:
-            logging.debug(f"dinner meal question error: {e}")
-
-    # ==========================================
-    # 夜の気分チェック（21:00）— 1タップで気分をログに残す
-    # ==========================================
-    @tasks.loop(minutes=1)
-    async def evening_mood_check_task(self):
-        from services.schedule_resolver import is_due
-        due, today = await is_due("evening_mood", "21:00", "daily", self._last_run_dates.get("evening_mood"))
-        if not due:
-            return
-        self._last_run_dates["evening_mood"] = today
-        await asyncio.sleep(random.randint(0, 600))
-        partner_cog = self.bot.get_cog("PartnerCog")
-        if not partner_cog:
-            return
-        try:
-            await partner_cog.send_log_question("mood", "今日の気分はどうだった？")
-        except Exception as e:
-            logging.debug(f"evening mood question error: {e}")
 
     # ==========================================
     # 良かったこと・感謝（20:45）— 今日のポジティブを1つ残す
@@ -641,11 +555,7 @@ class PartnerRoutineCog(commands.Cog):
     @tomorrow_plan_task.before_loop
     @obsidian_review_task.before_loop
     @db_backup_task.before_loop
-    @breakfast_meal_check_task.before_loop
-    @lunch_meal_check_task.before_loop
     @afternoon_check_task.before_loop
-    @dinner_meal_check_task.before_loop
-    @evening_mood_check_task.before_loop
     @gratitude_check_task.before_loop
     @learning_check_task.before_loop
     @english_quiz_task.before_loop

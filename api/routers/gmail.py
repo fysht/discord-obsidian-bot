@@ -4,6 +4,7 @@ import datetime
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from api.routes import verify_api_key
 from config import JST
@@ -278,6 +279,31 @@ async def gmail_trash(message_id: str):
     if ok:
         await gmail_update(message_id, state="trashed")
     return {"ok": ok}
+
+
+class GmailBulkRequest(BaseModel):
+    ids: list[str]
+
+
+@router.post("/bulk_trash", dependencies=[Depends(verify_api_key)])
+async def gmail_bulk_trash(req: GmailBulkRequest):
+    """複数メールをまとめてゴミ箱へ移動する（DB の state を 'trashed' に）。"""
+    from api import app
+    from api.database import gmail_update
+    bot = getattr(app.state, "bot", None)
+    gmail = getattr(bot, "gmail_service", None) if bot else None
+    if not gmail:
+        raise HTTPException(status_code=503, detail="Gmail未接続")
+    ids = [str(i) for i in (req.ids or []) if str(i).strip()]
+    trashed = 0
+    for mid in ids:
+        try:
+            if await gmail.trash(mid):
+                await gmail_update(mid, state="trashed")
+                trashed += 1
+        except Exception as e:
+            logging.debug(f"gmail_bulk_trash error ({mid}): {e}")
+    return {"ok": True, "trashed": trashed, "requested": len(ids)}
 
 
 @router.post("/{message_id}/save", dependencies=[Depends(verify_api_key)])

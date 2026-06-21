@@ -193,7 +193,11 @@ class PartnerCog(commands.Cog):
         folder_name: str = "DailyNotes",
         file_name: str = None,
         target_heading: str = "## 💬 Chat Log",
+        with_time: bool = True,
     ):
+        """テキストを 1 行（複数行ならサブ行付き）でデイリーノートの指定セクションへ追記する。
+        with_time=False のときは行頭に時刻 (HH:MM) を付けない（気分/体調/良かったこと/学びなど、
+        時刻が不要な記録向け）。"""
         if not text:
             return
         service = self.drive_service.get_service()
@@ -215,11 +219,12 @@ class PartnerCog(commands.Cog):
 
         f_id = await self.drive_service.find_file(service, folder_id, file_name)
 
+        prefix = f"- {time_str} " if with_time else "- "
         lines = text.split("\n")
         if len(lines) == 1:
-            append_text = f"- {time_str} {text}"
+            append_text = f"{prefix}{text}"
         else:
-            formatted_lines = [f"- {time_str} {lines[0]}"]
+            formatted_lines = [f"{prefix}{lines[0]}"]
             for line in lines[1:]:
                 formatted_lines.append(f"    {line}")
             append_text = "\n".join(formatted_lines)

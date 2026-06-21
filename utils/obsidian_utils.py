@@ -57,7 +57,7 @@ SECTION_ORDER = [
     # --- 3. Reflection (1日の振り返り)
     # 流れ: 当日データ → 主観の日記 → 客観総括 → マネージャー Q&A → メタ観察 → 派生分析 → 明日のアクション
     # アプリのログタブの並び（デイリーノート → 今日の振り返り → マネージャーの気づき）と一致
-    "## 📊 今日のデータ",  # 天気・Fitbit・食事など当日の客観データ一覧 (routes.py / DailySummaryCog)
+    "## 📊 Daily Data",  # 天気・Fitbit・食事・気分・体調など当日の客観データ一覧 (routes.py / DailySummaryCog)
     "## 📔 Daily Journal",  # 主観の日記 (DailyOrganizeCog)
     "## 📅 Daily Summary",  # 客観総括 (routes.py)
     "## 🤝 Manager Q&A",   # マネージャー質問への回答 (DailySummaryCog)
@@ -94,6 +94,7 @@ SECTION_RENAMES = {
     "## 🙏 良かったこと": "## 🙏 Gratitude",
     "## 💡 Insights & Thoughts": "## 🔎 Insights",
     "## Memo": "## 📝 Memo",
+    "## 📊 今日のデータ": "## 📊 Daily Data",
 }
 
 

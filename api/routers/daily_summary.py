@@ -542,6 +542,8 @@ _JOURNAL_SCOPE_META = {
 
 # 日次チェックインの記録先（Daily Journal に時刻付き1行で集約）
 _CHECKIN_HEADING = "## 📔 Daily Journal"
+# 気分 / 体調 は当日の客観データとして Daily Data セクションへ時刻なしで集約する。
+_DAILY_DATA_HEADING = "## 📊 Daily Data"
 
 
 async def _append_journal_line(scope: str, text: str) -> tuple[str, str]:

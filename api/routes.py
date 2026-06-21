@@ -986,7 +986,7 @@ async def _save_manager_qa_to_obsidian(date_str: str) -> bool:
 
 
 async def _save_daily_data_to_obsidian(date_str: str) -> bool:
-    """その日の客観データ（天気 / Fitbit / 食事合計）を `## 📊 今日のデータ` セクションへ書き出す。
+    """その日の客観データ（天気 / Fitbit / 食事合計）を `## 📊 Daily Data` セクションへ書き出す。
 
     後で見返したときに「どんな一日だったか」が分かるよう、AI 要約とは別に
     生データを構造化して残す。`_collect_daily_context` で集めた情報を流用する。
@@ -1018,11 +1018,6 @@ async def _save_daily_data_to_obsidian(date_str: str) -> bool:
     if total_line:
         lines.append(f"- 🍽 食事: {total_line.replace('当日合計: ', '')}")
 
-    if not lines:
-        # 載せるデータが何も無ければセクションを作らない
-        return True
-    data_text = "\n".join(lines)
-
     try:
         service = chat_service.drive_service.get_service()
         folder_id = await chat_service.drive_service.find_file(
@@ -1038,10 +1033,28 @@ async def _save_daily_data_to_obsidian(date_str: str) -> bool:
         else:
             content = f"---\ndate: {date_str}\n---\n\n# Daily Note {date_str}\n"
 
-        section_header = "## 📊 今日のデータ"
-        # 既存の同セクションは置き換える（重複・古い値の残留を防ぐ）
-        pattern = _re.compile(rf"{_re.escape(section_header)}\n?.*?(?=\n## |\Z)", _re.DOTALL)
-        content = pattern.sub("", content)
+        section_header = "## 📊 Daily Data"
+        # 気分 😀 / 体調 🩺 は 1 日の終わりにユーザーが回答して同セクションへ追記される。
+        # ここで毎回セクションを再生成すると消えてしまうため、既存の気分/体調行は退避して残す。
+        preserved = []
+        for _hdr in (section_header, "## 📊 今日のデータ"):
+            mm = _re.search(rf"{_re.escape(_hdr)}\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+            if mm:
+                for ln in mm.group(1).splitlines():
+                    s = ln.strip()
+                    if s.startswith("- 😀") or s.startswith("- 🩺"):
+                        preserved.append(s)
+        all_lines = lines + preserved
+        if not all_lines:
+            # 載せるデータが何も無ければセクションを作らない
+            return True
+        data_text = "\n".join(all_lines)
+
+        # 既存の同セクションは置き換える（重複・古い値の残留を防ぐ）。
+        # 旧日本語見出し「## 📊 今日のデータ」が残っているノートも合わせて掃除する。
+        for _hdr in (section_header, "## 📊 今日のデータ"):
+            pattern = _re.compile(rf"{_re.escape(_hdr)}\n?.*?(?=\n## |\Z)", _re.DOTALL)
+            content = pattern.sub("", content)
         new_content = update_section(content, data_text, section_header)
 
         if f_id:
