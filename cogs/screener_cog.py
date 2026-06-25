@@ -16,7 +16,18 @@ from discord.ext import commands
 
 from config import JST
 from services.screener_service import ScreenerService
-from services.screener_engine import list_strategies, factor_axes_catalog
+from services.screener_engine import (
+    list_strategies, factor_axes_catalog, select_with_sector_cap,
+)
+
+
+def _sel_score(c: dict):
+    """候補 dict の選定順位スコア。selection_score（品質×RS の合成）を優先し、
+    無ければ score にフォールバック。複数スタイルのマージ並べ替えで使う。"""
+    v = c.get("selection_score")
+    if v is None:
+        v = c.get("score")
+    return v if v is not None else 0
 
 
 import math as _math
@@ -509,6 +520,8 @@ class ScreenerCog(commands.Cog):
                 style_cands = [c for _, c in style_cands_with_key]
                 base = dict(style_cands[0])
                 base["score"] = round(sum(c.get("score", 0) for c in style_cands), 2)
+                # 並べ替え用に各スタイルの選定スコア（品質×RS）も合算しておく。
+                base["selection_score"] = round(sum(_sel_score(c) for c in style_cands), 2)
                 base["signals"] = [sig for c in style_cands for sig in (c.get("signals") or [])]
                 base["matched_styles"] = matched_styles
                 base["match_count"] = len(matched_styles)
@@ -520,11 +533,12 @@ class ScreenerCog(commands.Cog):
                 base["failed_filters"] = [f for c in style_cands for f in (c.get("failed_filters") or [])]
                 merged_and.append(base)
 
+            # マッチ数を第一キー、選定スコア（品質×RS の合算）を第二キーに並べる。
             merged_and.sort(
-                key=lambda c: (c.get("match_count", 0), c.get("score", 0)),
+                key=lambda c: (c.get("match_count", 0), _sel_score(c)),
                 reverse=True,
             )
-            all_cands = merged_and[:top_n]
+            all_cands = select_with_sector_cap(merged_and, top_n, max(3, (top_n + 2) // 3))
             combine_label = "AND"
             if all_cands and any(c.get("match_count", 0) < len(styles) for c in all_cands):
                 any_near_miss = True
@@ -539,11 +553,12 @@ class ScreenerCog(commands.Cog):
                         merged[code] = cand_copy
                     else:
                         merged[code]["matched_styles"].append(style_key)
-                        if cand_copy.get("score", 0) > merged[code].get("score", 0):
+                        if _sel_score(cand_copy) > _sel_score(merged[code]):
                             matched = merged[code]["matched_styles"]
                             cand_copy["matched_styles"] = matched
                             merged[code] = cand_copy
-            all_cands = sorted(merged.values(), key=lambda c: c.get("score", 0), reverse=True)[:top_n]
+            ranked = sorted(merged.values(), key=_sel_score, reverse=True)
+            all_cands = select_with_sector_cap(ranked, top_n, max(3, (top_n + 2) // 3))
             combine_label = "OR"
 
         data_as_of = all_cands[0].get("data_as_of") if all_cands else datetime.datetime.now(JST).strftime("%Y-%m-%d")

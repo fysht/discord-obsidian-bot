@@ -12528,6 +12528,22 @@ function _renderScreenerCandidates(data) {
         } else if (qtxt) {
             confBadge = `<div style="font-size:0.7rem;color:#ffb454;margin-bottom:4px;">${escapeHtml(qtxt.replace(' ・ ', ''))}</div>`;
         }
+        // RSレーティング（ユニバース内の相対モメンタム 1〜99・高いほど強い）
+        let rsBadge = '';
+        if (ps.rs_rating != null) {
+            const rsc = ps.rs_rating >= 80 ? '#7ee0a0' : (ps.rs_rating <= 30 ? '#ff8a8a' : 'var(--text-muted)');
+            rsBadge = `<span style="font-size:0.72rem;color:${rsc};margin-left:8px;" title="ユニバース内の相対的強さ（1〜99・高いほど市場をアウトパフォーム）">RS ${ps.rs_rating}</span>`;
+        }
+        // 決算跨ぎ注意（次回決算が間近＝結果が出るまで上下に振れやすい）
+        let earnBadge = '';
+        const ep = c.earnings_proximity;
+        if (ep && ep.ok && ep.imminent) {
+            earnBadge = `<div style="font-size:0.7rem;color:#ffb454;margin-bottom:4px;" title="${escapeHtml(ep.note || '')}">⚠️ 決算跨ぎ注意：次回決算まで約${ep.days_to_earnings}日（${escapeHtml(ep.date || '')}）。新規買いは決算後の反応を確認してからでも遅くない。</div>`;
+        }
+        // 地合い注意（リスクオフ局面でのブレイク系）
+        const regimeBadge = c.regime_caution
+            ? `<div style="font-size:0.7rem;color:#ffb454;margin-bottom:4px;" title="指数が200日線を下回り下向き＝下落基調。ブレイクの失敗率が上がる局面。">🌧️ 地合いリスクオフ：新規は厳選（押し目・再ブレイクを待つ余地）</div>`
+            : '';
         const codeEsc = c.code.replace(/'/g, "\\'");
         const nameEsc = (c.name || '').replace(/'/g, "\\'");
         const sectorEsc = (c.sector || '').replace(/'/g, "\\'");
@@ -12540,7 +12556,7 @@ function _renderScreenerCandidates(data) {
                         <strong style="word-break:break-word;line-height:1.3;">${escapeHtml(c.code)} ${escapeHtml(c.name)}</strong>
                     </div>
                     <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px;flex-wrap:wrap;">
-                        <span style="font-size:0.78rem;color:var(--text-muted);">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}</span>
+                        <span style="font-size:0.78rem;color:var(--text-muted);">スコア ${c.score} / セクター ${escapeHtml(c.sector || '-')}${rsBadge}</span>
                         <span style="display:flex;gap:4px;flex-shrink:0;">
                             <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openStockChart('${codeEsc}','${nameEsc}')">📈 チャート</button>
                             <button class="mini-link" style="font-size:0.72rem;padding:2px 6px;" onclick="event.preventDefault();event.stopPropagation();openStockProjection('${codeEsc}','${nameEsc}')" title="過去の高値ブレイク後の値動きから上昇余地・利確/損切り目安を見る">🎯 利確目安</button>
@@ -12549,6 +12565,8 @@ function _renderScreenerCandidates(data) {
                         </span>
                     </div>
                     ${styleBadges ? `<div style="margin-bottom:4px;">${styleBadges}</div>` : ''}
+                    ${regimeBadge}
+                    ${earnBadge}
                     ${relBadge}
                     ${confBadge}
                     ${failedBadge}

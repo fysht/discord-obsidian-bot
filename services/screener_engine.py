@@ -379,6 +379,13 @@ class ScreeningResult:
     data_as_of: str = ""
     is_near_miss: bool = False
     failed_filters: list[str] = field(default_factory=list)
+    # rank_score: 表示用 score（0〜100 で頭打ち）と違い、合格時の score_bonus を上限なしで
+    # 残した「設定の質」の生スコア。score が全員 100 に潰れて順位差が消えるのを防ぎ、
+    # 「52週高値への近さ・低ボラ・複数チャート型成立」等の質の差を順位に効かせるために使う。
+    rank_score: float = 0.0
+    # selection_score: rank_score（設定の質）と RS レーティング（相対モメンタム）を合成した
+    # 最終的な選定順位スコア。サービス層が RS 確定後に設定する。
+    selection_score: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -387,6 +394,8 @@ class ScreeningResult:
             "sector": self.sector,
             "style": self.style,
             "score": round(self.score, 2),
+            "rank_score": round(self.rank_score, 2),
+            "selection_score": round(self.selection_score, 2),
             "signals": [s.__dict__ for s in self.signals],
             "price_snapshot": self.price_snapshot,
             "data_as_of": self.data_as_of,
@@ -528,15 +537,20 @@ class StyleStrategy(ABC):
             score = pass_rate * 100 + score_bonus
         else:
             score = pass_rate * 100
-        score = min(100.0, max(0.0, score))
+        # 表示・合否判定用の score は 0〜100 に丸める（後方互換）。
+        display_score = min(100.0, max(0.0, score))
+        # rank_score は上限を設けず bonus を残す。合格者が全員 100 に潰れて順位差が
+        # 消えるのを防ぎ、設定の質（高値への近さ・低ボラ・複数型成立 等）を順位へ反映する。
+        rank_score = max(0.0, score)
         failed = [s.name for s, _ in active_pairs if not s.passed]
         return ScreeningResult(
             code=code, name=name, sector=sector, style=self.style_name,
-            score=score, signals=active_sigs,
+            score=display_score, signals=active_sigs,
             price_snapshot=self._build_snapshot(df),
             data_as_of=self._data_as_of(df),
             is_near_miss=not all_passed,
             failed_filters=failed,
+            rank_score=rank_score,
         )
 
 
@@ -2075,6 +2089,71 @@ def relative_strength_return(df, lookback: int = 120) -> Optional[float]:
     if old <= 0 or old != old or new != new:
         return None
     return new / old - 1.0
+
+
+def relative_strength_blended(
+    df,
+    periods=((63, 2.0), (126, 1.0), (189, 1.0), (252, 1.0)),
+) -> Optional[float]:
+    """複数期間のリターンを加重合成した相対的強さの素点（O'Neil 流 RS の近似）。
+
+    単一の 120 日リターンより頑健。直近四半期（63立会日）を 2倍に重み付けし、
+    半年・9ヶ月・1年のリターンと加重平均する（最近のモメンタムを重視）。
+    データが足りない期間はスキップし、取れた期間だけで加重平均する。決定論的。"""
+    if df is None or "Close" not in df:
+        return None
+    close = df["Close"].astype(float)
+    n = len(close)
+    num = den = 0.0
+    new = float(close.iloc[-1])
+    if new != new:
+        return None
+    for p, w in periods:
+        if n <= p:
+            continue
+        old = float(close.iloc[-p - 1])
+        if old <= 0 or old != old:
+            continue
+        num += w * (new / old - 1.0)
+        den += w
+    if den <= 0:
+        return None
+    return num / den
+
+
+def select_with_sector_cap(items, top_n: int, max_per_sector: Optional[int] = None,
+                           *, sector_of=None) -> list:
+    """スコア降順に並んだ候補から、1セクター max_per_sector 件までを優先選抜して top_n を満たす。
+
+    特定セクターへの偏りを抑える分散制約（ソフト）。上限で top_n に届かない分は、
+    あふれた候補から元の順位（スコア順）で補充するので、銘柄数が確保できる場面では
+    必ず top_n 件返る。max_per_sector が None/0 以下なら従来どおり上位 top_n を返す。
+    items は ScreeningResult でも dict でも可（sector_of で取り出し方を上書きできる）。決定論的。"""
+    items = list(items or [])
+    if not max_per_sector or max_per_sector <= 0:
+        return items[:top_n]
+
+    def _sec(x):
+        if sector_of is not None:
+            return (sector_of(x) or "").strip()
+        if isinstance(x, dict):
+            return (x.get("sector") or "").strip()
+        return (getattr(x, "sector", "") or "").strip()
+
+    picked, overflow = [], []
+    counts: dict[str, int] = {}
+    for x in items:
+        if len(picked) >= top_n:
+            break
+        sec = _sec(x)
+        if counts.get(sec, 0) < max_per_sector:
+            picked.append(x)
+            counts[sec] = counts.get(sec, 0) + 1
+        else:
+            overflow.append(x)
+    if len(picked) < top_n:
+        picked += overflow[:top_n - len(picked)]
+    return picked
 
 
 def compute_rs_ratings(returns_by_code: dict, *, min_n: int = 5) -> dict:

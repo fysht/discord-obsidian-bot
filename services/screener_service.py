@@ -21,8 +21,10 @@ from services.screener_engine import (
     compute_sector_medians,
     evaluate_relative_valuation,
     assess_cyclical_regime,
-    relative_strength_return,
+    relative_strength_blended,
     compute_rs_ratings,
+    select_with_sector_cap,
+    evaluate_earnings_proximity,
     assess_liquidity,
     assess_market_regime,
 )
@@ -103,6 +105,7 @@ class ScreenerService:
         exclude_sectors: Optional[list[str]] = None,
         enabled_filters: Optional[list[str]] = None,
         refine: bool = False,
+        max_per_sector: Optional[int] = None,
     ) -> dict:
         """機械スクリーニング (Phase A) を実行する。
 
@@ -170,13 +173,23 @@ class ScreenerService:
                 # 薄商い銘柄は約定困難＋偽ブレイクの温床なので、発見段階で除外する
                 # （市場別の最低売買代金フロア。真に取引困難な水準のみ落とす緩めの閾値）。
                 mkt = "JP" if str(code).isdigit() else "US"
+                # 低位株（株価が極端に安い）は新高値ブレイクが「見かけ倒し」になりやすく、
+                # 値動きのノイズ・約定スリッページも大きい。発見段階で軽く足切りする。
+                try:
+                    last_px = float(df["Close"].iloc[-1])
+                except (IndexError, ValueError, TypeError):
+                    last_px = 0.0
+                px_floor = 100.0 if mkt == "JP" else 1.0  # JP 100円未満・US $1未満は除外
+                if last_px and last_px < px_floor:
+                    return None, None
                 liq = assess_liquidity(df, mkt)
                 turnover = liq.get("avg_turnover") if liq.get("ok") else None
                 liq_floor = 5e7 if mkt == "JP" else 5e5  # JP 5千万円/日・US 50万ドル/日
                 if turnover is not None and turnover < liq_floor:
                     return None, None
-                # RS（相対モメンタム）の素点を集める（全走査銘柄が母集団）
-                rs_ret = relative_strength_return(df, 120)
+                # RS（相対モメンタム）の素点を集める（全走査銘柄が母集団）。
+                # 単一120日ではなく複数期間（直近四半期を重め）の加重リターンで頑健化。
+                rs_ret = relative_strength_blended(df)
                 if rs_ret is not None:
                     rs_ret_by_code[code] = rs_ret
                 fundamentals = None
@@ -223,28 +236,33 @@ class ScreenerService:
             elif nm is not None and nm.is_near_miss:
                 near_miss_results.append(nm)
 
-        # RS（相対的強さ）レーティングをユニバース内順位から付与し、表示＋同点時の順位付けに使う。
-        # 上昇銘柄選定で最も実証的なファクター（クロスセクション・モメンタム）を選抜に効かせる。
+        # RS（相対的強さ）レーティングをユニバース内順位から付与し、選定スコアに合成する。
+        # 上昇銘柄選定で最も実証的なファクター（クロスセクション・モメンタム）を、
+        # 同点時のタイブレークではなく順位そのものに効かせる。
         rs_ratings = compute_rs_ratings(rs_ret_by_code)
-        if rs_ratings:
-            for r in results + near_miss_results:
-                rating = rs_ratings.get(r.code)
-                if rating is not None and isinstance(r.price_snapshot, dict):
-                    r.price_snapshot["rs_rating"] = rating
+        for r in results + near_miss_results:
+            rating = rs_ratings.get(r.code) if rs_ratings else None
+            if rating is not None and isinstance(r.price_snapshot, dict):
+                r.price_snapshot["rs_rating"] = rating
+            # 設定の質（rank_score・上限なし）と相対モメンタム（RS 1〜99）を 75:25 で合成。
+            # RS が取れない（標本不足）ときは質スコアのみで順位付け。
+            base = r.rank_score if getattr(r, "rank_score", 0) else r.score
+            r.selection_score = round(0.75 * base + 0.25 * rating, 2) if rating is not None else round(base, 2)
 
-        # 並び順は (加重スコア → RSレーティング)。同点候補は相対モメンタムの強い方を上位へ。
-        def _sort_key(r):
-            return (r.score, (r.price_snapshot or {}).get("rs_rating") or 0)
+        # 並び順は合成した selection_score（質×相対モメンタム）の降順。
+        results.sort(key=lambda r: r.selection_score, reverse=True)
+        near_miss_results.sort(key=lambda r: r.selection_score, reverse=True)
 
-        results.sort(key=_sort_key, reverse=True)
-        top = results[:top_n]
+        # セクター分散（ソフト制約）：1セクターに偏らないよう上限を設けて選抜する。
+        # 明示指定が無ければ top_n から緩めの既定値を算出（埋まらない分はスコア順で補充）。
+        eff_cap = max_per_sector if max_per_sector is not None else max(3, (top_n + 2) // 3)
+        top = select_with_sector_cap(results, top_n, eff_cap)
 
         # 完全合致が指定数 (top_n) に満たない場合、near-miss（部分合致）の上位で不足分を埋める。
         # ただし precision を守るため、必須条件を大きく落とした候補での水増しはしない
         # （加重通過率 60% 以上＝中核条件をおおむね満たすものだけをフォールバックに使う）。
         used_near_miss = False
         if len(top) < top_n and near_miss_results:
-            near_miss_results.sort(key=_sort_key, reverse=True)
             qualified_nm = [r for r in near_miss_results if r.score >= self._NEAR_MISS_MIN_SCORE]
             shortfall = top_n - len(top)
             fillers = qualified_nm[:shortfall]
@@ -298,6 +316,26 @@ class ScreenerService:
             except Exception as e:
                 logging.debug(f"run_screening 景気フェーズ 付与エラー: {e}")
 
+        # 決算跨ぎ注意（選定段階）：上位候補の次回決算が間近だと、結果が出るまで上下に
+        # 振れて勝率が読めない。advise だけでなくスクリーナー直出しの候補にもフラグを付ける。
+        try:
+            async def _prox(code: str):
+                try:
+                    f = await self.provider.get_fundamentals(code)
+                except Exception:
+                    return code, None
+                return code, evaluate_earnings_proximity(f)
+
+            prox_codes = [d.get("code") for d in candidate_dicts if d.get("code")]
+            prox_results = await asyncio.gather(*[_prox(c) for c in prox_codes])
+            prox_map = {c: p for c, p in prox_results if p}
+            for d in candidate_dicts:
+                ep = prox_map.get(d.get("code"))
+                if ep and ep.get("ok"):
+                    d["earnings_proximity"] = ep
+        except Exception as e:
+            logging.debug(f"run_screening 決算跨ぎ判定エラー: {e}")
+
         # 地合いレジーム（指数の200日線・傾き）を併記。下落相場ではブレイクの失敗率が上がるため、
         # 「いま攻める局面か」の判断材料にする（発見自体は妨げない・参考情報）。
         screen_regime = None
@@ -308,6 +346,14 @@ class ScreenerService:
             screen_regime = assess_market_regime(idx_df)
         except Exception as e:
             logging.debug(f"run_screening 地合い取得エラー: {e}")
+
+        # 地合いがリスクオフのとき、ブレイク系（テクニカル/複合）の候補に注意フラグを付ける。
+        # 単一スタイル走査では順位を動かしても並びは変わらないため、UI が個別に
+        # 「地合い注意」を示せるようフラグだけ付与する（発見は妨げない）。
+        if screen_regime and screen_regime.get("regime") == "risk_off" \
+                and getattr(strategy, "category", "") in ("technical", "hybrid"):
+            for d in candidate_dicts:
+                d["regime_caution"] = True
 
         return {
             "ok": True,
