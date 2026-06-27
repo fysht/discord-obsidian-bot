@@ -188,7 +188,6 @@ async def main():
     from api.routers.habits import router as habits_router
     from api.routers.gmail import router as gmail_router
     from api.routers.youtube import router as youtube_router
-    from api.routers.watch import router as watch_router
     from api.routers.expenses import router as expenses_router
     from api.routers.meals import router as meals_router
     from api.routers.stocked_links import router as stocked_links_router
@@ -232,7 +231,6 @@ async def main():
     fastapi_app.include_router(habits_router, prefix="/api")
     fastapi_app.include_router(gmail_router, prefix="/api")
     fastapi_app.include_router(youtube_router, prefix="/api")
-    fastapi_app.include_router(watch_router, prefix="/api")
     fastapi_app.include_router(expenses_router, prefix="/api")
     fastapi_app.include_router(meals_router, prefix="/api")
     fastapi_app.include_router(stocked_links_router, prefix="/api")
