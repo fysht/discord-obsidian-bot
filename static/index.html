@@ -320,24 +320,17 @@
                             <div class="yt-tabs" style="display:flex;gap:6px;margin-bottom:8px;">
                                 <button type="button" class="yt-tab active" data-yt-tab="new" onclick="switchYouTubeTab('new')">📡 新着</button>
                                 <button type="button" class="yt-tab" data-yt-tab="later" onclick="switchYouTubeTab('later')">🔖 あとで見る</button>
+                                <button type="button" class="yt-tab" data-yt-tab="saved" onclick="switchYouTubeTab('saved')">💾 保存</button>
                             </div>
                             <div id="yt-pane-new">
                                 <div id="watch-status"></div>
                                 <div id="dash-youtube-list"><div class="loading-placeholder">「📥 取り込み」で登録チャンネルの新着を取得できます。</div></div>
                             </div>
                             <div id="yt-pane-later" style="display:none;">
-                                <!-- 既存のストックリンク機構にフル接続（並び替え/タグ絞り込み/編集/＋追加/全既読）。
-                                     setupHeader が closest('details') にコントロールを差し込むため details 直下に body を置く。 -->
-                                <details class="card stocked-links-card" data-card-key="youtube_stocked" open>
-                                    <summary>
-                                        <div class="card-header">
-                                            <span class="card-icon">🔖</span>
-                                            <span class="card-title">あとで見る</span>
-                                            <button class="mini-link" onclick="event.preventDefault(); event.stopPropagation(); markAllLinksRead('youtube')">全既読</button>
-                                        </div>
-                                    </summary>
-                                    <div id="dash-stocked-youtube" class="card-body list-body"></div>
-                                </details>
+                                <div id="yt-list-later"><div class="loading-placeholder">あとで見る動画はありません。</div></div>
+                            </div>
+                            <div id="yt-pane-saved" style="display:none;">
+                                <div id="yt-list-saved"><div class="loading-placeholder">保存した動画はありません。</div></div>
                             </div>
                         </div>
                     </details>
@@ -1960,6 +1953,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app_v12.js?v=108"></script>
+    <script src="/static/js/app_v12.js?v=109"></script>
 </body>
 </html>

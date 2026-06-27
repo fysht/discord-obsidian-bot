@@ -15,7 +15,7 @@ async def youtube_videos(state: str = "new", limit: int = 50):
     """登録チャンネルの新着動画一覧。state は new / later / watched / hidden / all。"""
     from api.database import youtube_list_videos, youtube_count_new
     state = (state or "new").strip().lower()
-    if state not in ("new", "later", "watched", "hidden", "all"):
+    if state not in ("new", "later", "saved", "watched", "hidden", "all"):
         state = "new"
     rows = await youtube_list_videos(state=state, limit=limit)
     return {
@@ -105,7 +105,7 @@ async def youtube_set_state(video_id: str, req: YouTubeStateRequest):
     """動画の状態を更新する（watched / hidden / new / later）。"""
     from api.database import youtube_update_video_state
     state = (req.state or "").strip().lower()
-    if state not in ("new", "later", "watched", "hidden"):
+    if state not in ("new", "later", "saved", "watched", "hidden"):
         raise HTTPException(status_code=422, detail="不正な state です")
     ok = await youtube_update_video_state(video_id, state)
     if not ok:
@@ -123,31 +123,16 @@ async def youtube_bulk(req: YouTubeBulkRequest):
     """選択した動画をまとめて処理する。later=あとで見る退避 / hidden=非表示 / watched=見た。
     一度 hidden/later/watched にした動画は id（=動画ID）主キーの INSERT OR IGNORE で
     再ポーリングしても状態が保たれるため、再び新着に出てくることはない。"""
-    from api.database import (
-        youtube_get_video, youtube_update_video_state, add_stocked_link,
-    )
+    from api.database import youtube_update_video_state
     action = (req.action or "").strip().lower()
-    if action not in ("later", "hidden", "watched"):
+    if action not in ("later", "saved", "hidden"):
         raise HTTPException(status_code=422, detail="不正な action です")
     ids = [str(i) for i in (req.ids or []) if str(i).strip()]
     count = 0
     for vid in ids:
         try:
-            if action == "later":
-                v = await youtube_get_video(vid)
-                if not v:
-                    continue
-                url = v.get("url") or f"https://www.youtube.com/watch?v={vid}"
-                title = (v.get("title") or "YouTube動画").strip()
-                try:
-                    await add_stocked_link(url, "youtube", title)
-                except Exception as e:
-                    logging.debug(f"youtube_bulk later add_stocked_link error ({vid}): {e}")
-                if await youtube_update_video_state(vid, "later"):
-                    count += 1
-            else:
-                if await youtube_update_video_state(vid, action):
-                    count += 1
+            if await youtube_update_video_state(vid, action):
+                count += 1
         except Exception as e:
             logging.debug(f"youtube_bulk error ({vid}): {e}")
     return {"ok": True, "count": count, "action": action}

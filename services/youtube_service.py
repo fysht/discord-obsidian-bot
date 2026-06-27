@@ -49,11 +49,24 @@ async def fetch_transcript_text(video_id: str) -> str:
 _SUMMARY_RULES = (
     "次のYouTube動画の内容を、見るかどうかを判断できるように日本語で要約してください。\n"
     "【ルール】\n"
-    "- 冒頭に1行で『どんな動画か』を要約\n"
+    "- 「要約します」「以下に要約します」などの前置き・あいさつ・締めの文は一切書かず、要約本文のみを出力する\n"
+    "- 冒頭に1行で『どんな動画か』を書く\n"
     "- 続けて要点を箇条書きで3〜5個\n"
     "- 専門用語は避け、やさしい言葉で。誇張や憶測はしない\n"
     "- 全体で短めに（長文にしない）\n"
 )
+
+
+def _strip_preamble(text: str) -> str:
+    """「要約します。」などの前置き行を先頭から取り除く。"""
+    import re as _re
+    s = (text or "").strip()
+    # 先頭の定型前置き（1行）を除去
+    s = _re.sub(
+        r"^(?:以下(?:に|は)?[、，]?)?\s*(?:この動画の|動画の)?要約(?:です|します|は次の通りです)?[。：:、，]?\s*\n+",
+        "", s,
+    )
+    return s.strip()
 
 
 async def _summarize_from_text(gemini_client, model, title, text, source_label) -> str:
@@ -63,7 +76,7 @@ async def _summarize_from_text(gemini_client, model, title, text, source_label) 
         f"# 内容（{source_label}）\n{text}\n"
     )
     resp = await gemini_client.aio.models.generate_content(model=model, contents=prompt)
-    return (resp.text or "").strip()
+    return _strip_preamble(resp.text or "")
 
 
 async def _summarize_from_video_url(gemini_client, model, title, url) -> str:
@@ -75,7 +88,7 @@ async def _summarize_from_video_url(gemini_client, model, title, url) -> str:
     text_part = types.Part.from_text(text=prompt)
     content = types.Content(role="user", parts=[video_part, text_part])
     resp = await gemini_client.aio.models.generate_content(model=model, contents=[content])
-    return (resp.text or "").strip()
+    return _strip_preamble(resp.text or "")
 
 
 async def summarize_video(gemini_client, model: str, video_id: str,

@@ -7830,19 +7830,17 @@ window.refreshYouTubeServer = async () => {
     loadYouTubeVideos();
 };
 
-// 統合カードのタブ切替（新着 / あとで見る）。「あとで見る」は既存のストックリンク
-// 機構（並び替え・タグ絞り込み・編集・＋追加・全既読）をそのまま使う。
+// 統合カードのタブ切替（新着 / あとで見る / 保存）。3つとも youtube_videos の状態
+// （new / later / saved）で管理し、同じ行コンポーネントで描画して見た目・操作を統一する。
 window.switchYouTubeTab = (tab) => {
     document.querySelectorAll('.yt-tab').forEach(b => b.classList.toggle('active', b.dataset.ytTab === tab));
     const np = document.getElementById('yt-pane-new');
     const lp = document.getElementById('yt-pane-later');
+    const sp = document.getElementById('yt-pane-saved');
     if (np) np.style.display = tab === 'new' ? '' : 'none';
     if (lp) lp.style.display = tab === 'later' ? '' : 'none';
-    if (tab === 'later') {
-        if (typeof loadStockedLinks === 'function') loadStockedLinks();
-    } else {
-        loadYouTubeVideos();
-    }
+    if (sp) sp.style.display = tab === 'saved' ? '' : 'none';
+    loadYouTubeVideos(tab);
 };
 
 // 登録チャンネルのミュート設定モーダル。enabled=OFF のチャンネルは新着取り込み対象外。
@@ -7900,24 +7898,50 @@ window.toggleYouTubeChannel = async (channelId, enabled) => {
     renderYouTubeChannels();
 };
 
+// 新着/あとで見る/保存 で共通のコンテナID。
+function _youtubeContainerId(state) {
+    if (state === 'later') return 'yt-list-later';
+    if (state === 'saved') return 'yt-list-saved';
+    return 'dash-youtube-list';
+}
+
+// 状態ごとの行アクション（新着/あとで見る/保存で同じ行コンポーネントを使い、ボタンだけ出し分ける）。
+function _youtubeRowActions(state) {
+    const summary = `<button class="mini-link" data-yt-action="summary" title="AIで内容を要約（見るか判断する用）" style="color:var(--accent);font-weight:600;">📝 要約</button>`;
+    const open = `<button class="mini-link" data-yt-action="open" title="YouTubeで開く">↗ 開く</button>`;
+    const later = `<button class="mini-link" data-yt-action="later" title="あとで見るへ移す" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>`;
+    const saved = `<button class="mini-link" data-yt-action="saved" title="保存へ移す（とっておく）" style="color:var(--accent);font-weight:600;">💾 保存</button>`;
+    const hide = `<button class="mini-link btn-danger" data-yt-action="hidden" title="一覧から外す（非表示）">🙈 非表示</button>`;
+    if (state === 'later') return summary + saved + open + hide;
+    if (state === 'saved') return summary + later + open + hide;
+    return summary + later + saved + open + hide;  // new
+}
+
 window.loadYouTubeVideos = async (state = 'new') => {
-    const listEl = document.getElementById('dash-youtube-list');
+    const listEl = document.getElementById(_youtubeContainerId(state));
     if (!listEl) return;
-    if (typeof loadWatchStatus === 'function') loadWatchStatus();
+    if (state === 'new' && typeof loadWatchStatus === 'function') loadWatchStatus();
     try {
         const data = await apiFetch(`/api/youtube/videos?state=${encodeURIComponent(state)}&limit=50`);
-        _setYouTubeBadge(data.new_count);
+        if (typeof data.new_count === 'number') _setYouTubeBadge(data.new_count);
         const items = data.items || [];
         if (!items.length) {
-            listEl.innerHTML = '<div class="loading-placeholder">新着はありません。<span class="muted-hint">「📥 取り込み」で登録チャンネルの新着を取得できます。</span></div>';
+            const empty = state === 'later'
+                ? 'あとで見る動画はありません。新着から「🔖 あとで見る」で移せます。'
+                : state === 'saved'
+                    ? '保存した動画はありません。新着や「あとで見る」から「💾 保存」で移せます。'
+                    : '新着はありません。<span class="muted-hint">「📥 取り込み」で登録チャンネルの新着を取得できます。</span>';
+            listEl.innerHTML = `<div class="loading-placeholder">${empty}</div>`;
             return;
         }
-        const bulkBar = `
+        // 一括操作バーは新着のみ
+        const bulkBar = state === 'new' ? `
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.78rem;color:var(--text-muted);flex-wrap:wrap;">
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="yt-check-all" onclick="toggleYouTubeCheckAll(this)"> 全選択</label>
                 <button class="mini-link" style="margin-left:auto;color:var(--accent);font-weight:600;" onclick="bulkYouTube('later')" title="選択をまとめてあとで見るへ">🔖 選択をあとで見る</button>
                 <button class="mini-link btn-danger" onclick="bulkYouTube('hidden')" title="選択をまとめて非表示">🙈 選択を非表示</button>
-            </div>`;
+            </div>` : '';
+        const actions = _youtubeRowActions(state);
         listEl.innerHTML = bulkBar + items.map(v => {
             const vid = escapeHtml(v.id);
             const title = escapeHtml(v.title || '(無題)');
@@ -7925,19 +7949,18 @@ window.loadYouTubeVideos = async (state = 'new') => {
             const url = escapeHtml(v.url || `https://www.youtube.com/watch?v=${v.id}`);
             const published = v.published_at ? escapeHtml(String(v.published_at).slice(0, 10)) : '';
             const thumb = `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
+            const check = state === 'new'
+                ? `<input type="checkbox" class="yt-check" data-id="${vid}" style="margin-top:3px;flex-shrink:0;">` : '';
+            // タイトルはどの状態でもクリックで開ける（開く操作を統一）
             return `
                 <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" style="align-items:flex-start;gap:8px;cursor:default;">
-                    <input type="checkbox" class="yt-check" data-id="${vid}" style="margin-top:3px;flex-shrink:0;">
-                    <img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;flex-shrink:0;background:rgba(255,255,255,0.05);">
+                    ${check}
+                    <a href="${url}" target="_blank" rel="noopener" style="flex-shrink:0;line-height:0;"><img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);"></a>
                     <div class="row-main" style="flex:1;min-width:0;">
-                        <div class="row-title" style="font-size:0.86rem;line-height:1.35;">${title}</div>
+                        <a class="row-title" href="${url}" target="_blank" rel="noopener" style="display:block;font-size:0.86rem;line-height:1.35;color:var(--text-primary);text-decoration:none;">${title}</a>
                         <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;">${ch}${published ? ' ・ ' + published : ''}</div>
                         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;">
-                            <button class="mini-link" data-yt-action="summary" title="字幕からAI要約（見るか判断する用）" style="color:var(--accent);font-weight:600;">📝 要約</button>
-                            <button class="mini-link" data-yt-action="later" title="あとで見るに退避（今は見ない）" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>
-                            <button class="mini-link" data-yt-action="open" title="YouTubeで開く">↗ 開く</button>
-                            <button class="mini-link" data-yt-action="watched" title="見た（一覧から外す）">✓ 見た</button>
-                            <button class="mini-link btn-danger" data-yt-action="hidden" title="興味なし（非表示）">🙈 非表示</button>
+                            ${actions}
                         </div>
                         <div class="yt-summary" style="display:${v.summary ? 'block' : 'none'};margin-top:6px;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">${v.summary ? escapeHtml(v.summary) : ''}</div>
                     </div>
@@ -7949,6 +7972,15 @@ window.loadYouTubeVideos = async (state = 'new') => {
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
     }
 };
+
+// 要約ボックスの中身（出所ラベル付き）を組み立てる。出所でだいたいのコスト感が分かる。
+function _ytSummaryHtml(res) {
+    const srcLabel = { transcript: '字幕から要約', video: '動画解析から要約', description: '概要欄から要約' }[res && res.source] || '';
+    const note = srcLabel
+        ? `<div style="font-size:0.7rem;opacity:0.6;margin-bottom:4px;">📝 ${srcLabel}${res && res.cached ? '（保存済み）' : ''}</div>`
+        : '';
+    return note + escapeHtml((res && res.summary) || '要約を取得できませんでした').replace(/\n/g, '<br>');
+}
 
 // YouTube 行のイベント委譲（later/open/watched/hidden）。
 function _bindYouTubeDelegation(listEl) {
@@ -7979,7 +8011,7 @@ function _bindYouTubeDelegation(listEl) {
             btn.textContent = '⏳ 要約中…';
             try {
                 const res = await apiFetch(`/api/youtube/${encodeURIComponent(id)}/summary`, { method: 'POST', body: '{}' });
-                box.textContent = res.summary || '要約を取得できませんでした';
+                box.innerHTML = _ytSummaryHtml(res);
                 box.style.display = 'block';
                 btn.textContent = '📝 要約';
             } catch (e) {
@@ -7993,21 +8025,21 @@ function _bindYouTubeDelegation(listEl) {
             }
             return;
         }
+        // later / saved / hidden はすべて状態の付け替え（同じ /state で統一）。
+        const stateMap = { later: 'later', saved: 'saved', hidden: 'hidden' };
+        const newState = stateMap[action];
+        if (!newState) return;
         btn.disabled = true;
         try {
-            if (action === 'later') {
-                await apiFetch(`/api/youtube/${encodeURIComponent(id)}/later`, { method: 'POST', body: '{}' });
-                showToast('🔖 あとで見るに退避しました');
-            } else if (action === 'watched') {
-                await apiFetch(`/api/youtube/${encodeURIComponent(id)}/state`, { method: 'POST', body: JSON.stringify({ state: 'watched' }) });
-            } else if (action === 'hidden') {
-                await apiFetch(`/api/youtube/${encodeURIComponent(id)}/state`, { method: 'POST', body: JSON.stringify({ state: 'hidden' }) });
-            }
+            await apiFetch(`/api/youtube/${encodeURIComponent(id)}/state`, { method: 'POST', body: JSON.stringify({ state: newState }) });
+            if (action === 'later') showToast('🔖 あとで見るへ移しました');
+            else if (action === 'saved') showToast('💾 保存しました');
+            // 現在の一覧（このコンテナ）からは外す
+            const parent = row.parentElement;
             row.remove();
             refreshYouTubeBadge();
-            const listEl2 = document.getElementById('dash-youtube-list');
-            if (listEl2 && !listEl2.querySelector('.youtube-row')) {
-                listEl2.innerHTML = '<div class="loading-placeholder">新着はありません。</div>';
+            if (parent && !parent.querySelector('.youtube-row')) {
+                parent.innerHTML = '<div class="loading-placeholder">表示する動画はありません。</div>';
             }
         } catch (e) {
             btn.disabled = false;
@@ -13371,8 +13403,33 @@ function _adviceActionStyle(action) {
     }
 }
 
+// 各銘柄の結論を平易な一言にするための見出し辞書（アクション別）。
+const _ADVICE_HEADLINE = {
+    HOLD: 'このまま持ち続けてOK',
+    HOLD_WATCH: '持ち続けるが、業績に注意',
+    TRIM: '一部を売って減らしたい',
+    SELL: '売って撤退を検討',
+    BUY: '新規の買い候補',
+    WATCH: '今は様子見（見送り）',
+};
+
+// トレンド／業績／財務を信号機（🟢🟡🔴/⚪）で一目化する。
+function _adviceSignals(r) {
+    const t = r.trend || {};
+    const trendSig = t.state === 'uptrend' ? '🟢' : (t.state === 'broken' ? '🔴' : '🟡');
+    const fundSig = r.fund_ok === true ? '🟢' : (r.fund_ok === false ? '🔴' : '⚪');
+    const safe = r.safety;
+    const safeSig = !safe ? '' : (safe.ok === true ? '🟢' : (safe.ok === false ? '🔴' : '⚪'));
+    let html = `<span title="株価の流れ：🟢上昇 🟡横ばい 🔴崩れ">${trendSig} 株価</span>`
+        + ` <span title="業績の健全さ：🟢良好 🔴注意 ⚪データ不足">${fundSig} 業績</span>`;
+    if (safeSig) html += ` <span title="会社のお金の状態（財務）：🟢良好 🔴注意 ⚪データ不足">${safeSig} 財務</span>`;
+    return html;
+}
+
 function _renderAdviceCard(r, isCandidate = false) {
     const num = (v, suf = '') => (v === null || v === undefined) ? '-' : `${v}${suf}`;
+    // カード内の小見出し（3部構成：状態→理由→次の一手）
+    const sec = (txt, tip) => `<div title="${tip || ''}" style="font-size:0.7rem;font-weight:700;color:var(--text-muted);margin:7px 0 2px;">${txt}</div>`;
     if (!r.ok) {
         return `<div style="padding:8px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;">
             <strong>${escapeHtml(r.code || '')} ${escapeHtml(r.name || '')}</strong>
@@ -13477,27 +13534,35 @@ function _renderAdviceCard(r, isCandidate = false) {
     // 一括診断カードは「判断＋チャート確認」に徹する。
     // 深掘り/事業分析は銘柄の本拠地（候補→注目銘柄／保有→ポートフォリオ）の精査に一本化する。
     const chartBtn = `<button class="mini-link" style="font-size:0.7rem;padding:1px 6px;" onclick="event.preventDefault();openStockChart('${codeEsc}','${nameEsc}')" title="日足チャートを表示">📈 チャート</button>`;
+    const headline = _ADVICE_HEADLINE[v.action] || '';
     return `<div style="padding:8px 10px;border:1px solid var(--border-glass);border-radius:6px;margin-bottom:6px;background:${st.bg};">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
             <strong style="word-break:break-word;">${escapeHtml(r.code)} ${escapeHtml(r.name || '')}</strong>
             <span style="font-weight:700;color:${st.color};white-space:nowrap;">${escapeHtml(v.action_label || v.action)} ・ ${num(r.score)}点${blended}</span>
         </div>
-        ${methodHtml}
-        <div style="font-size:0.74rem;color:var(--text-muted);margin:2px 0;">
-            終値 ${num(r.last_close)}円 / トレイル目安 ${num(t.trailing_stop)}円${pnl}
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:3px;font-size:0.74rem;">
+            <span style="letter-spacing:0.5px;">${_adviceSignals(r)}</span>
+            ${headline ? `<span style="color:${st.color};font-weight:600;">${escapeHtml(headline)}</span>` : ''}
         </div>
+        ${methodHtml}
+        ${sec('① いまの状態', '株価の流れと足元の数字')}
+        <div style="font-size:0.74rem;color:var(--text-muted);margin:2px 0;">
+            株価の流れ：${escapeHtml(t.state_label || '-')} ／ 終値 ${num(r.last_close)}円 / トレイル目安（ここを割れたら売るライン）${num(t.trailing_stop)}円${pnl}
+        </div>
+        ${sec('② なぜそう言えるか（データ）', '判断のもとになった指標')}
         <ul style="margin:4px 0 4px;padding-left:16px;font-size:0.76rem;color:var(--text-secondary);">${reasons}</ul>
         ${relHtml}
         ${safeHtml}
-        ${projHtml}
         ${exitHtml}
         ${posHtml}
-        ${pyrHtml}
         ${learnHtml}
         ${cycHtml}
         ${liqHtml}
-        ${v.note ? `<div style="font-size:0.76rem;color:${st.color};">▶ ${escapeHtml(v.note)}</div>` : ''}
-        <div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;">
+        ${sec('③ 次にどうする', '具体的な次の一手')}
+        ${v.note ? `<div style="font-size:0.78rem;color:${st.color};">👉 ${escapeHtml(v.note)}</div>` : ''}
+        ${projHtml}
+        ${pyrHtml}
+        <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap;">
             ${chartBtn}
             ${watchBtn}
         </div>
@@ -13569,6 +13634,31 @@ function _renderPortfolioAdvice(r) {
     const finBar = r.with_financials
         ? `<div style="font-size:0.72rem;color:var(--text-muted);">🏦 EDINET有報の財務を ${r.financials_count || 0} 件分 織り込み済み。</div>`
         : `<button class="mini-link" style="font-size:0.74rem;padding:3px 8px;background:rgba(78,161,255,0.12);color:#4ea1ff;border:1px solid rgba(78,161,255,0.35);border-radius:6px;" onclick="event.preventDefault();openPortfolioAdvice(true,true);" title="EDINET有報の自己資本比率・FCF・キャッシュフロー型を取得して再診断（1〜2分）">🏦 EDINET財務で精査して再診断</button>`;
+    // 全体サマリー（個別の前に「今日はどんな状況か」を一目で）
+    const _buyN = cands.filter(c => c.verdict && c.verdict.action === 'BUY').length;
+    const _sellN = actionHolds.length;
+    const _keepN = holds.length - _sellN;
+    const overviewHtml = `
+        <div style="font-size:0.8rem;line-height:1.6;padding:8px 10px;margin-bottom:8px;border-radius:8px;background:rgba(255,255,255,0.04);border:1px solid var(--border-glass);">
+            <b>📌 今日の全体像</b><br>
+            保有 ${holds.length} 件（うち <span style="color:#ff8a8a;">売り検討 ${_sellN}</span> ・ <span style="color:#7ee0a0;">継続 ${_keepN}</span>）／ <span style="color:#4ea1ff;">新規の買い候補 ${_buyN}</span> 件<br>
+            <span style="font-size:0.72rem;color:var(--text-muted);">まず「売り検討」だけ対応すればOK。買い候補は焦らず精査してから。</span>
+        </div>`;
+    // 用語のかんたん説明（無機質なデータの意味を補う・一度だけ）
+    const glossaryHtml = `
+        <details style="margin-bottom:10px;background:rgba(255,255,255,0.03);border:1px solid var(--border-glass);border-radius:8px;padding:6px 10px;">
+            <summary style="cursor:pointer;font-weight:700;font-size:0.8rem;color:var(--text-secondary);">📖 用語のかんたん説明（タップで開く）</summary>
+            <div style="font-size:0.74rem;color:var(--text-secondary);margin-top:6px;line-height:1.8;">
+                ・<b>信号機 🟢🟡🔴</b>：株価の流れ・業績・財務の良し悪しを色で表示。🟢良い／🟡ふつう／🔴注意。<br>
+                ・<b>株価の流れ（トレンド）</b>：上昇／横ばい／崩れ。移動平均より上か下かで判定。<br>
+                ・<b>業績（ファンダ）</b>：売上・利益・成長など、会社が稼ぐ力。<br>
+                ・<b>自己資本比率</b>：全資産のうち借金でない自前資金の割合。高いほど安全。<br>
+                ・<b>手元に残る現金（FCF）</b>：自由に使える現金。プラスが望ましい。<br>
+                ・<b>トレイル</b>：上昇に合わせて引き上げる「ここを割れたら売る」ライン。<br>
+                ・<b>利確目安</b>：過去の傾向から見た「どこまで上がりやすいか」の目安。<br>
+                ・<b>点数</b>：株価の流れ・業績・財務を合成した総合スコア（高いほど良い）。
+            </div>
+        </details>`;
     // セクション見出し（ワークフローの段階を示す）
     const head = (label, color) => `<div style="font-weight:700;margin:14px 0 6px;padding-bottom:3px;border-bottom:2px solid ${color};color:${color};">${label}</div>`;
     const guideHtml = `
@@ -13583,9 +13673,11 @@ function _renderPortfolioAdvice(r) {
         </details>`;
     return `
         ${guideHtml}
-        <div style="background:rgba(126,224,160,0.10);border:1px solid rgba(126,224,160,0.35);border-radius:8px;padding:8px 10px;margin-bottom:6px;color:#7ee0a0;font-weight:600;">
-            ${escapeHtml(r.summary || '')}
-        </div>
+        ${overviewHtml}
+        ${glossaryHtml}
+        ${r.summary ? `<div style="background:rgba(126,224,160,0.10);border:1px solid rgba(126,224,160,0.35);border-radius:8px;padding:8px 10px;margin-bottom:6px;color:#7ee0a0;font-weight:600;">
+            ${escapeHtml(r.summary)}
+        </div>` : ''}
 
         ${head('① 日次｜守り（まずここだけ）', '#ff8a8a')}
         ${regimeHtml}
@@ -14677,7 +14769,7 @@ async function _summarizeStockedYouTube(btn, row) {
     btn.textContent = '⏳ 要約中…';
     try {
         const res = await apiFetch(`/api/youtube/${encodeURIComponent(vid)}/summary`, { method: 'POST', body: '{}' });
-        box.textContent = res.summary || '要約を取得できませんでした';
+        box.innerHTML = _ytSummaryHtml(res);
         box.style.display = 'block';
         btn.textContent = '📝 要約';
     } catch (e) {
