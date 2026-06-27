@@ -115,6 +115,22 @@ async def youtube_summary_manual(video_id: str, req: YouTubeManualSummaryRequest
     return {"ok": True, "summary": summary, "source": "manual"}
 
 
+class YouTubeDetailSummaryRequest(BaseModel):
+    summary: str
+
+
+@router.post("/{video_id}/summary_detail", dependencies=[Depends(verify_api_key)])
+async def youtube_summary_detail(video_id: str, req: YouTubeDetailSummaryRequest):
+    """保存用（後から読み返す）の詳しい要約を保存する。視聴判断用の短い要約とは別枠。
+    空文字を渡すとクリアできる。"""
+    from api.database import youtube_get_video, youtube_set_video_detail_summary
+    v = await youtube_get_video(video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="動画が見つかりません")
+    await youtube_set_video_detail_summary(video_id, (req.summary or "").strip())
+    return {"ok": True, "detail_summary": (req.summary or "").strip()}
+
+
 class YouTubeStateRequest(BaseModel):
     state: str
 

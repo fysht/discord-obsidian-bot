@@ -7910,11 +7910,13 @@ function _youtubeRowActions(state) {
     // 動画はサムネ・タイトルのクリックで開けるので「開く」ボタンは置かない。
     const summary = `<button class="mini-link" data-yt-action="summary" title="AIで内容を要約（API。字幕ならほぼ無料）" style="color:var(--accent);font-weight:600;">📝 要約</button>`;
     const gemini = `<button class="mini-link" data-yt-action="gemini" title="無料のGeminiで要約（プロンプトをコピーしてGeminiを開く→回答を貼り付け）">🤖 無料要約</button>`;
+    const detail = `<button class="mini-link" data-yt-action="detail" title="保存用の詳しい要約を入力（後から読み返す用）">📑 保存用要約</button>`;
     const later = `<button class="mini-link" data-yt-action="later" title="あとで見るへ移す" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>`;
     const saved = `<button class="mini-link" data-yt-action="saved" title="保存へ移す（とっておく）" style="color:var(--accent);font-weight:600;">💾 保存</button>`;
     const hide = `<button class="mini-link btn-danger" data-yt-action="hidden" title="一覧から外す（非表示）">🙈 非表示</button>`;
-    if (state === 'later') return summary + gemini + saved + hide;
-    if (state === 'saved') return summary + gemini + later + hide;
+    // 保存用要約は「あとで見る／保存」だけ（新着はサッと判断するためボタンを増やさない）
+    if (state === 'later') return summary + gemini + detail + saved + hide;
+    if (state === 'saved') return summary + gemini + detail + later + hide;
     return summary + gemini + later + saved + hide;  // new
 }
 
@@ -7953,8 +7955,9 @@ window.loadYouTubeVideos = async (state = 'new') => {
             const check = state === 'new'
                 ? `<input type="checkbox" class="yt-check" data-id="${vid}" style="margin-top:3px;flex-shrink:0;">` : '';
             // タイトルはどの状態でもクリックで開ける（開く操作を統一）
+            const detail = v.detail_summary || '';
             return `
-                <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" style="align-items:flex-start;gap:8px;cursor:default;">
+                <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" data-detail="${escapeHtml(detail)}" style="align-items:flex-start;gap:8px;cursor:default;">
                     ${check}
                     <a href="${url}" target="_blank" rel="noopener" style="flex-shrink:0;line-height:0;"><img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);"></a>
                     <div class="row-main" style="flex:1;min-width:0;">
@@ -7964,6 +7967,7 @@ window.loadYouTubeVideos = async (state = 'new') => {
                             ${actions}
                         </div>
                         <div class="yt-summary" style="display:${v.summary ? 'block' : 'none'};margin-top:6px;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">${v.summary ? escapeHtml(v.summary) : ''}</div>
+                        <div class="yt-detail" style="display:${detail.trim() ? 'block' : 'none'};margin-top:6px;">${detail.trim() ? _ytDetailReadHtml(detail) : ''}</div>
                     </div>
                 </div>`;
         }).join('');
@@ -8007,6 +8011,67 @@ function _ytGeminiPasteUi(id, prompt) {
         <button class="mini-link" style="margin-top:4px;color:var(--accent);font-weight:600;" onclick="saveGeminiSummary('${safeId}', this)">💾 この要約を保存</button>
     `;
 }
+
+// ===== 保存用（後から読み返す）の詳しい要約 =====
+// 視聴判断用の短い要約（yt-summary）とは別枠で、長い要約をためておく。
+function _ytDetailReadHtml(text) {
+    return `<div style="font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;background:rgba(126,224,160,0.06);border:1px solid rgba(126,224,160,0.25);border-radius:6px;padding:8px;">`
+        + `<div style="font-size:0.7rem;opacity:0.7;margin-bottom:4px;">📑 保存用の要約</div>`
+        + escapeHtml(text).replace(/\n/g, '<br>') + `</div>`;
+}
+
+function _ytDetailPrompt(url) {
+    return `次のYouTube動画を、後から読み返して内容を思い出せるように、日本語で詳しく要約してください。\nURL: ${url}\n\n`
+        + `【ルール】\n`
+        + `- 全体の要旨を数行\n`
+        + `- 重要なポイント・主張・具体例・数値を漏れなく箇条書き\n`
+        + `- 結論や示唆も含める\n`
+        + `- 前置きや締めは書かず、要約本文のみ`;
+}
+
+function _ytDetailEditorUi(id, current, url) {
+    const safeId = String(id).replace(/'/g, "\\'");
+    const safeUrl = String(url).replace(/'/g, "\\'");
+    return `
+        <div style="font-size:0.7rem;opacity:0.7;margin-bottom:4px;">📑 保存用の詳しい要約（後から読み返す用）</div>
+        <textarea class="modern-input yt-detail-paste" rows="6" placeholder="詳しい要約を貼り付け／入力" style="width:100%;font-size:0.78rem;padding:6px;">${escapeHtml(current || '')}</textarea>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+            <button class="mini-link" onclick="copyDetailPrompt('${safeUrl}')" title="詳しい要約用のプロンプトをコピーしてGeminiを開く">🤖 Geminiで詳しく要約</button>
+            <button class="mini-link" style="color:var(--accent);font-weight:600;" onclick="saveDetailSummary('${safeId}', this)">💾 保存</button>
+        </div>`;
+}
+
+window.copyDetailPrompt = async (url) => {
+    const p = _ytDetailPrompt(url);
+    try { await navigator.clipboard.writeText(p); showToast('詳しい要約のプロンプトをコピーしました'); }
+    catch (e) { showToast('コピーできませんでした', true); }
+    window.open('https://gemini.google.com/app', '_blank', 'noopener');
+};
+
+window.saveDetailSummary = async (id, btn) => {
+    const box = btn.closest('.yt-detail');
+    const ta = box && box.querySelector('.yt-detail-paste');
+    const text = ta ? ta.value.trim() : '';
+    btn.disabled = true;
+    try {
+        await apiFetch(`/api/youtube/${encodeURIComponent(id)}/summary_detail`, {
+            method: 'POST', body: JSON.stringify({ summary: text }),
+        });
+        const row = box.closest('.youtube-row');
+        if (row) row.dataset.detail = text;
+        if (text) {
+            box.innerHTML = _ytDetailReadHtml(text);
+            box.style.display = 'block';
+        } else {
+            box.innerHTML = '';
+            box.style.display = 'none';
+        }
+        showToast('保存用要約を保存しました');
+    } catch (e) {
+        btn.disabled = false;
+        showToast('保存に失敗しました：' + (e.detail || e.message || ''), true);
+    }
+};
 
 // 手動で貼り付けた要約を保存する（API課金なし）。
 window.saveGeminiSummary = async (id, btn) => {
@@ -8055,6 +8120,14 @@ function _bindYouTubeDelegation(listEl) {
             }
             window.open('https://gemini.google.com/app', '_blank', 'noopener');
             box.innerHTML = _ytGeminiPasteUi(id, prompt);
+            box.style.display = 'block';
+            return;
+        }
+        if (action === 'detail') {
+            const box = row.querySelector('.yt-detail');
+            if (!box) return;
+            const current = row.dataset.detail || '';
+            box.innerHTML = _ytDetailEditorUi(id, current, url);
             box.style.display = 'block';
             return;
         }

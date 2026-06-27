@@ -511,6 +511,8 @@ async def init_db():
             "ALTER TABLE manager_notices ADD COLUMN is_read INTEGER DEFAULT 0",
             # YouTube新着のオンデマンド要約をキャッシュする列（押した動画だけ生成）
             "ALTER TABLE youtube_videos ADD COLUMN summary TEXT DEFAULT ''",
+            # 視聴判断用の短い要約とは別の、保存用（後から読み返す）の詳しい要約
+            "ALTER TABLE youtube_videos ADD COLUMN detail_summary TEXT DEFAULT ''",
             # 支出の内訳（何にいくら使ったか）を保持する列
             "ALTER TABLE expenses ADD COLUMN breakdown TEXT DEFAULT ''",
         ):
@@ -2151,6 +2153,17 @@ async def youtube_set_video_summary(video_id: str, summary: str) -> bool:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
             "UPDATE youtube_videos SET summary = ? WHERE id = ?", (summary, video_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def youtube_set_video_detail_summary(video_id: str, detail_summary: str) -> bool:
+    """保存用（後から読み返す）の詳しい要約を保存する。視聴判断用の短い要約とは別枠。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE youtube_videos SET detail_summary = ? WHERE id = ?",
+            (detail_summary, video_id),
         )
         await db.commit()
         return cursor.rowcount > 0
