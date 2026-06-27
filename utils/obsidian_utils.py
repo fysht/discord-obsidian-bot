@@ -268,6 +268,33 @@ def update_section(
     return "\n\n".join(output_blocks) + "\n"
 
 
+def remove_section(current_content: str, section_header: str) -> str:
+    """指定セクション（見出し＋中身）をノートから丸ごと取り除く。"""
+    current_content = migrate_legacy_sections(current_content)
+    pattern = re.compile(
+        re.escape(section_header) + r"\n.*?(?=\n## |\Z)",
+        re.DOTALL,
+    )
+    cleaned = pattern.sub("", current_content)
+    # 除去で生じた連続空白行を圧縮
+    return re.sub(r"\n{3,}", "\n\n", cleaned)
+
+
+def replace_section(
+    current_content: str,
+    text: str,
+    section_header: str,
+    sort_by_time: bool = False,
+) -> str:
+    """セクションの中身を text で『置き換える』。
+    update_section は追記仕様のため、MIT のように毎回上書きしたいセクションはこちらを使う。
+    text が空ならセクションごと削除する。"""
+    cleaned = remove_section(current_content, section_header)
+    if not (text and text.strip()):
+        return cleaned if cleaned.endswith("\n") else cleaned + "\n"
+    return update_section(cleaned, text, section_header, sort_by_time=sort_by_time)
+
+
 def update_frontmatter(content: str, updates: dict) -> str:
     """
     ObsidianのYAMLフロントマター(Properties)を更新または新規作成する関数。

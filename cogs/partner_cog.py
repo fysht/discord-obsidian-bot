@@ -7,7 +7,7 @@ from discord.ext import commands
 from google.genai import types
 
 from config import JST
-from utils.obsidian_utils import update_section
+from utils.obsidian_utils import remove_section, replace_section, update_section
 from utils.async_utils import safe_create_task
 from prompts import get_system_prompt, PROMPT_INTERIM_SUMMARY, PROMPT_CONTEXTUAL_LOG
 
@@ -749,7 +749,8 @@ class PartnerCog(commands.Cog):
             note_content = f"# Daily Note {today_str}\n"
 
         section_text = "\n".join(f"- [ ] {t}" for t in items)
-        new_content = update_section(note_content, section_text, "## 🎯 MIT")
+        # MIT は毎回「上書き」する（update_section は追記仕様で重複の原因になるため）
+        new_content = replace_section(note_content, section_text, "## 🎯 MIT")
         await self._save_todays_obsidian_note(new_content)
         return f"今日のMIT3つを設定したよ！: {' / '.join(items)}"
 
@@ -772,12 +773,44 @@ class PartnerCog(commands.Cog):
             content = f"# Daily Note {date_str}\n"
 
         section_text = "\n".join(f"- [ ] {t}" for t in items)
-        new_content = update_section(content, section_text, "## 🎯 MIT")
+        # MIT は毎回「上書き」する（追記すると重複するため）
+        new_content = replace_section(content, section_text, "## 🎯 MIT")
         if f_id:
             await self.drive_service.update_text(service, f_id, new_content)
         else:
             await self.drive_service.upload_text(service, folder_id, f"{date_str}.md", new_content)
         return f"{date_str} のMITを設定したよ！: {' / '.join(items)}"
+
+    async def _clear_mit_in_obsidian(self, index: int | None = None) -> dict:
+        """今日のMITを削除する。index 指定でその1件、未指定でMITセクションごと全削除。"""
+        import re as _re
+
+        note_content = await self._get_todays_obsidian_note()
+        if not note_content:
+            return {"status": "error", "message": "今日のデイリーノートが見つかりません。"}
+        m = _re.search(r"## 🎯 MIT\n(.*?)(?=\n## |\Z)", note_content, _re.DOTALL)
+        if not m:
+            return {"status": "success", "message": "MIT はもう無いよ。"}
+
+        item_lines = [ln for ln in m.group(1).splitlines()
+                      if _re.match(r"^\s*-\s*\[[ xX]\]\s*", ln)]
+
+        if index is None:
+            # セクションごと全削除
+            new_content = replace_section(note_content, "", "## 🎯 MIT")
+            await self._save_todays_obsidian_note(new_content)
+            return {"status": "success", "message": "今日のMITを全部消したよ。"}
+
+        if index < 0 or index >= len(item_lines):
+            return {"status": "error", "message": "その番号のMITは無いよ。"}
+        del item_lines[index]
+        section_text = "\n".join(item_lines)
+        if section_text.strip():
+            new_content = replace_section(note_content, section_text, "## 🎯 MIT")
+        else:
+            new_content = remove_section(note_content, "## 🎯 MIT")
+        await self._save_todays_obsidian_note(new_content)
+        return {"status": "success", "message": "MITを1つ消したよ。"}
 
     async def _toggle_mit_in_obsidian(self, index: int) -> dict:
         """今日のMITの `index` 番目（0始まり）の `[ ]`/`[x]` をトグルする。"""
@@ -839,8 +872,23 @@ class PartnerCog(commands.Cog):
         else:
             content = f"# Daily Note {tomorrow_str}\n"
 
-        section_text = "\n".join(f"- [ ] {t}" for t in unfinished)
-        new_content = update_section(content, section_text, "## 🎯 MIT")
+        # 翌日ノートに既にあるMITと重複しないようマージしてから「上書き」する
+        # （update_section の追記をそのまま使うと、繰越のたびに同じ項目が増殖する）
+        existing_texts = []
+        msec = _re.search(r"## 🎯 MIT\n(.*?)(?=\n## |\Z)", content, _re.DOTALL)
+        if msec:
+            for line in msec.group(1).splitlines():
+                mm = _re.match(r"^-\s*\[[ xX]\]\s*(.+)$", line.strip())
+                if mm:
+                    existing_texts.append(mm.group(1).strip())
+        merged = list(existing_texts)
+        seen = {t.lower() for t in existing_texts}
+        for t in unfinished:
+            if t.lower() not in seen:
+                merged.append(t)
+                seen.add(t.lower())
+        section_text = "\n".join(f"- [ ] {t}" for t in merged)
+        new_content = replace_section(content, section_text, "## 🎯 MIT")
         if f_id:
             await self.drive_service.update_text(service, f_id, new_content)
         else:

@@ -46,44 +46,82 @@ async def fetch_transcript_text(video_id: str) -> str:
         return ""
 
 
-async def summarize_video(gemini_client, model: str, video_id: str,
-                          title: str = "", description: str = "") -> dict:
-    """字幕（なければ概要欄）を Gemini Flash で要約する。
-    返り値: {ok, summary, source}。source は 'transcript' / 'description' / ''。"""
-    transcript = await fetch_transcript_text(video_id)
-    source = "transcript"
-    base_text = transcript
-    if not base_text:
-        # 字幕が無い動画は概要欄テキストで代用（精度は落ちるがコストは同等）
-        base_text = (description or "").strip()
-        source = "description" if base_text else ""
-    if not base_text:
-        return {"ok": False, "summary": "", "source": "",
-                "error": "字幕も概要も取得できませんでした"}
+_SUMMARY_RULES = (
+    "次のYouTube動画の内容を、見るかどうかを判断できるように日本語で要約してください。\n"
+    "【ルール】\n"
+    "- 冒頭に1行で『どんな動画か』を要約\n"
+    "- 続けて要点を箇条書きで3〜5個\n"
+    "- 専門用語は避け、やさしい言葉で。誇張や憶測はしない\n"
+    "- 全体で短めに（長文にしない）\n"
+)
 
-    base_text = base_text[:_TRANSCRIPT_MAX_CHARS]
+
+async def _summarize_from_text(gemini_client, model, title, text, source_label) -> str:
     prompt = (
-        "次のYouTube動画の内容を、見るかどうかを判断できるように日本語で要約してください。\n"
-        "【ルール】\n"
-        "- 冒頭に1行で『どんな動画か』を要約\n"
-        "- 続けて要点を箇条書きで3〜5個\n"
-        "- 専門用語は避け、やさしい言葉で。誇張や憶測はしない\n"
-        "- 全体で短めに（長文にしない）\n\n"
+        f"{_SUMMARY_RULES}\n"
         f"# タイトル\n{title}\n\n"
-        f"# 内容（{'字幕' if source == 'transcript' else '概要欄'}）\n{base_text}\n"
+        f"# 内容（{source_label}）\n{text}\n"
     )
+    resp = await gemini_client.aio.models.generate_content(model=model, contents=prompt)
+    return (resp.text or "").strip()
+
+
+async def _summarize_from_video_url(gemini_client, model, title, url) -> str:
+    """GeminiにYouTube URLを直接渡して動画から要約する（字幕が取れない時のフォールバック）。
+    字幕取得がサーバーIPブロック等で全滅する環境でも動くが、動画トークン分コストは高め。"""
+    from google.genai import types
+    prompt = f"{_SUMMARY_RULES}\n# タイトル\n{title}\n"
+    video_part = types.Part(file_data=types.FileData(file_uri=url, mime_type="video/*"))
+    text_part = types.Part.from_text(text=prompt)
+    content = types.Content(role="user", parts=[video_part, text_part])
+    resp = await gemini_client.aio.models.generate_content(model=model, contents=[content])
+    return (resp.text or "").strip()
+
+
+async def summarize_video(gemini_client, model: str, video_id: str,
+                          title: str = "", url: str = "", description: str = "") -> dict:
+    """動画を要約する。字幕→（ダメなら）動画解析→概要欄の順で試す。
+    返り値: {ok, summary, source}。source は 'transcript' / 'video' / 'description' / ''。"""
+    video_url = url or f"https://www.youtube.com/watch?v={video_id}"
+    errors: list[str] = []
+
+    # 1) 字幕（最も安い。クォータ消費なし）
+    transcript = await fetch_transcript_text(video_id)
+    if transcript:
+        try:
+            summary = await _summarize_from_text(
+                gemini_client, model, title, transcript[:_TRANSCRIPT_MAX_CHARS], "字幕")
+            if summary:
+                return {"ok": True, "summary": summary, "source": "transcript"}
+        except Exception as e:
+            logging.error(f"summarize_video(transcript) error ({video_id}): {e}")
+            errors.append(f"字幕要約失敗: {e}")
+    else:
+        errors.append("字幕を取得できませんでした（サーバーがブロックされている可能性）")
+
+    # 2) 字幕が取れない/失敗 → GeminiにYouTube URLを直接渡して動画から要約（堅牢・コスト高め）
     try:
-        resp = await gemini_client.aio.models.generate_content(
-            model=model, contents=prompt,
-        )
-        summary = (resp.text or "").strip()
-        if not summary:
-            return {"ok": False, "summary": "", "source": source,
-                    "error": "要約生成に失敗しました"}
-        return {"ok": True, "summary": summary, "source": source}
+        summary = await _summarize_from_video_url(gemini_client, model, title, video_url)
+        if summary:
+            return {"ok": True, "summary": summary, "source": "video"}
+        errors.append("動画解析の応答が空でした")
     except Exception as e:
-        logging.error(f"summarize_video error ({video_id}): {e}")
-        return {"ok": False, "summary": "", "source": source, "error": str(e)}
+        logging.error(f"summarize_video(video) error ({video_id}): {e}")
+        errors.append(f"動画解析失敗: {e}")
+
+    # 3) 最後の手段：概要欄テキスト
+    desc = (description or "").strip()
+    if desc:
+        try:
+            summary = await _summarize_from_text(gemini_client, model, title, desc[:_TRANSCRIPT_MAX_CHARS], "概要欄")
+            if summary:
+                return {"ok": True, "summary": summary, "source": "description"}
+        except Exception as e:
+            logging.error(f"summarize_video(description) error ({video_id}): {e}")
+            errors.append(f"概要欄要約失敗: {e}")
+
+    return {"ok": False, "summary": "", "source": "",
+            "error": " / ".join(errors) or "要約を生成できませんでした"}
 
 
 class YouTubeService:

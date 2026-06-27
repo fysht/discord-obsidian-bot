@@ -1706,6 +1706,17 @@ async def screener_job_count_active() -> int:
         return int(row[0]) if row else 0
 
 
+async def screener_jobs_list_active() -> list[dict]:
+    """実行中（queued/running）ジョブの一覧。キャンセル対象の特定に使う。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM screener_jobs WHERE status IN ('queued', 'running') ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+
 async def screener_job_latest_done(style: str) -> dict | None:
     """指定 style の done ジョブのうち最新の1件を返す（『前回の結果を見る』で
     16:15 日次スクリーニング結果を引くため）。created_at の降順で先頭。"""

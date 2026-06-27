@@ -212,7 +212,13 @@ async function apiFetch(path, options = {}) {
         let bodyText = '';
         try { bodyText = await res.clone().text(); } catch {}
         console.error(`[apiFetch] ${options.method || 'GET'} ${path} → ${res.status}`, bodyText);
-        throw new Error(`API Error: ${res.status}`);
+        // FastAPI の {"detail": "..."} を取り出して、呼び出し側で表示できるようにする
+        let detail = '';
+        try { detail = (JSON.parse(bodyText) || {}).detail || ''; } catch {}
+        const err = new Error(`API Error: ${res.status}`);
+        err.status = res.status;
+        err.detail = typeof detail === 'string' ? detail : JSON.stringify(detail);
+        throw err;
     }
     return res.json();
 }
@@ -2256,9 +2262,10 @@ async function loadDashboard() {
                 mitScheduleEl.innerHTML = data.mit.map((item, idx) => {
                     const done = item.startsWith('[x]') || item.startsWith('[X]');
                     const text = item.replace(/^\[[ xX]\]\s*/, '').trim();
-                    return `<div class="list-item mit-schedule-row" data-mit-index="${idx}" style="gap:8px;cursor:pointer;" onclick="toggleMit(${idx}, this)">
-                        <div class="checkbox-custom" style="${done ? 'background:var(--accent);border-color:var(--accent);color:#fff;font-size:0.7rem;display:flex;align-items:center;justify-content:center;' : ''}">${done ? '✓' : ''}</div>
-                        <span style="${done ? 'text-decoration:line-through;color:var(--text-muted);' : ''}">${escapeHtml(text)}</span>
+                    return `<div class="list-item mit-schedule-row" data-mit-index="${idx}" style="gap:8px;">
+                        <div class="checkbox-custom" style="cursor:pointer;${done ? 'background:var(--accent);border-color:var(--accent);color:#fff;font-size:0.7rem;display:flex;align-items:center;justify-content:center;' : ''}" onclick="toggleMit(${idx}, this)">${done ? '✓' : ''}</div>
+                        <span style="flex:1;cursor:pointer;${done ? 'text-decoration:line-through;color:var(--text-muted);' : ''}" onclick="toggleMit(${idx}, this)">${escapeHtml(text)}</span>
+                        <button class="mini-link btn-danger" style="flex-shrink:0;" onclick="deleteMit(${idx})" title="このMITを削除">🗑</button>
                     </div>`;
                 }).join('');
             }
@@ -4617,13 +4624,15 @@ window.loadStockedLinks = async () => {
             container.innerHTML = items.map(lk => {
                 const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                 const titleText = (lk.title && lk.title !== 'Untitled') ? lk.title : (lk.url || '(無題)');
-                // YouTube の「あとで見る」は新着と同じサムネイルを表示する
+                // YouTube の「あとで見る」は新着と見た目を統一する：
+                // サムネは新着サイズ（96x54）、タイトルは全表示、要約ボタンも用意する。
                 let thumbEl = '';
+                let ytVid = '';
                 if (lk.type === 'youtube') {
-                    const vid = _youtubeIdFromUrl(lk.url);
-                    if (vid) {
-                        const t = `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
-                        thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="display:block;margin-bottom:6px;"><img src="${t}" alt="" loading="lazy" style="width:120px;height:68px;object-fit:cover;border-radius:8px;background:rgba(255,255,255,0.05);"></a>`;
+                    ytVid = _youtubeIdFromUrl(lk.url);
+                    if (ytVid) {
+                        const t = `https://i.ytimg.com/vi/${ytVid}/mqdefault.jpg`;
+                        thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);"></a>`;
                     }
                 }
                 const rawTitleEl = lk.url
@@ -4652,13 +4661,25 @@ window.loadStockedLinks = async () => {
                 const memoBlock = (lk.type === 'study' && lk.notes)
                     ? `<div class="study-memo-block">${renderStudyMemo(lk.notes)}</div>`
                     : '';
+                // YouTube はサムネを左、タイトルを右に置いた横並びヘッダーで新着と統一する。
+                const headerEl = (lk.type === 'youtube' && thumbEl)
+                    ? `<div style="display:flex;gap:8px;align-items:flex-start;">${thumbEl}<div style="flex:1;min-width:0;">${titleEl}</div></div>`
+                    : `${thumbEl}${titleEl}`;
+                // YouTube は要約ボタン＋表示欄を追加（新着と同じオンデマンド要約）。
+                const ytSummaryBtn = (lk.type === 'youtube' && ytVid)
+                    ? `<button class="stocked-link-btn" data-link-action="yt-summary" data-vid="${escapeHtml(ytVid)}" title="字幕からAI要約（見るか判断する用）">📝 要約</button>`
+                    : '';
+                const ytSummaryBox = (lk.type === 'youtube' && ytVid)
+                    ? `<div class="yt-summary" style="display:none;margin-top:6px;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;"></div>`
+                    : '';
                 return `
                     <div class="stocked-link" data-link-id="${lk.id}" id="stocked-link-${lk.id}">
-                        ${thumbEl}
-                        ${titleEl}
+                        ${headerEl}
                         <div class="stocked-link-meta">${chips.join('')}</div>
                         ${memoBlock}
+                        ${ytSummaryBox}
                         <div class="stocked-link-actions">
+                            ${ytSummaryBtn}
                             <button class="stocked-link-btn edit" data-link-action="edit">編集</button>
                             <button class="stocked-link-btn danger" data-link-action="delete">🗑 削除</button>
                         </div>
@@ -6583,6 +6604,21 @@ window.toggleMit = async (index, el) => {
     }
 };
 
+// MIT を1件削除する。index 番目を消して再描画。
+window.deleteMit = async (index) => {
+    if (!await confirmDialog('このMITを削除しますか？')) return;
+    try {
+        await apiFetch('/api/mit_clear', {
+            method: 'POST',
+            body: JSON.stringify({ index }),
+        });
+        showToast('MITを削除しました');
+        if (typeof loadDashboard === 'function') loadDashboard();
+    } catch (e) {
+        showToast('MIT の削除に失敗しました', true);
+    }
+};
+
 window.openMitModal = async () => {
     const modal = $('#mit-modal');
     if (!modal) return;
@@ -7894,7 +7930,7 @@ window.loadYouTubeVideos = async (state = 'new') => {
                     <input type="checkbox" class="yt-check" data-id="${vid}" style="margin-top:3px;flex-shrink:0;">
                     <img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;flex-shrink:0;background:rgba(255,255,255,0.05);">
                     <div class="row-main" style="flex:1;min-width:0;">
-                        <div class="row-title" style="font-size:0.86rem;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${title}</div>
+                        <div class="row-title" style="font-size:0.86rem;line-height:1.35;">${title}</div>
                         <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;">${ch}${published ? ' ・ ' + published : ''}</div>
                         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;">
                             <button class="mini-link" data-yt-action="summary" title="字幕からAI要約（見るか判断する用）" style="color:var(--accent);font-weight:600;">📝 要約</button>
@@ -7947,7 +7983,10 @@ function _bindYouTubeDelegation(listEl) {
                 box.style.display = 'block';
                 btn.textContent = '📝 要約';
             } catch (e) {
-                showToast('要約できませんでした（字幕の無い動画かもしれません）', true);
+                // サーバーが返した失敗理由をその場に表示して原因を切り分けられるようにする
+                box.textContent = '⚠️ 要約できませんでした：' + (e.detail || e.message || '不明なエラー');
+                box.style.display = 'block';
+                showToast('要約できませんでした', true);
                 btn.textContent = orig;
             } finally {
                 btn.disabled = false;
@@ -13105,7 +13144,9 @@ window.openPortfolioAdvice = async (useCandidates = true, withFinancials = false
                     bodyEl.innerHTML = '<div class="loading-placeholder">先に実行中の一括診断があります。その結果を待っています…<br><span style="font-size:0.74rem;opacity:0.8;">完了したら通知でお知らせします。</span></div>';
                     _startAdviceJobPolling(prev);
                 } else {
-                    bodyEl.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml((start && (start.error || start.detail)) || '起動できませんでした')}</div>`;
+                    // 実行中ジョブの job_id が手元に無い（別端末・再起動後など）。
+                    // 実行中ジョブを止めて作り直せるよう「中止」導線を出す。
+                    bodyEl.innerHTML = `<div class="loading-placeholder">${escapeHtml((start && (start.error || start.detail)) || '先に実行中の一括診断があります。')}<div style="margin-top:12px;"><button class="modal-btn cancel advice-cancel-btn" onclick="cancelAdviceJob()">⨯ 実行中の診断を中止する</button></div></div>`;
                 }
                 return;
             }
@@ -13229,15 +13270,27 @@ function _startAdviceJobPolling(jobId) {
             const b = document.getElementById('portfolio-advice-body');
             if (b && b.querySelector('.loading-placeholder')) {
                 const note = b.querySelector('.advice-elapsed');
-                const txt = `（経過 ${sec} 秒）`;
+                // 進捗（取得できる場合は ◯/◯ 銘柄）と経過秒を表示
+                const prog = (data.progress && data.progress.total)
+                    ? `${data.progress.current}/${data.progress.total} 銘柄・` : '';
+                const txt = `（${prog}経過 ${sec} 秒）`;
                 if (note) { note.textContent = txt; }
                 else { b.querySelector('.loading-placeholder').insertAdjacentHTML('beforeend', `<br><span class="advice-elapsed" style="font-size:0.72rem;opacity:0.7;">${txt}</span>`); }
+                // キャンセルボタンを一度だけ用意する
+                if (!b.querySelector('.advice-cancel-btn')) {
+                    b.insertAdjacentHTML('beforeend', `<div style="margin-top:12px;"><button class="modal-btn cancel advice-cancel-btn" onclick="cancelAdviceJob('${jobId}')">⨯ 診断を中止する</button></div>`);
+                }
             }
             _adviceJobTimer = setTimeout(poll, 4000);
             return;
         }
         _stopAdviceJobPolling();
         try { localStorage.removeItem(ADVICE_ACTIVE_JOB_KEY); } catch (e) { /* ignore */ }
+        if (data.status === 'cancelled') {
+            const b = document.getElementById('portfolio-advice-body');
+            if (b) b.innerHTML = '<div class="loading-placeholder">一括診断を中止しました。</div>';
+            return;
+        }
         if (data.status === 'error') {
             const b = document.getElementById('portfolio-advice-body');
             if (b) b.innerHTML = `<div style="color:#ff8a8a;">${escapeHtml(data.error || '診断に失敗しました')}</div>`;
@@ -13264,6 +13317,26 @@ window.resumeAdviceJobIfAny = (jobId) => {
     if (!id) return;
     if (typeof switchTab === 'function') { try { switchTab('invest'); } catch (e) { /* ignore */ } }
     openPortfolioAdvice(true, false, false, id);  // モーダルを開いてポーリングのみ再開（新規診断は起こさない）
+};
+
+// 実行中の一括診断をキャンセルする。jobId 未指定なら実行中の全ジョブを止める（固まり復旧用）。
+window.cancelAdviceJob = async (jobId) => {
+    if (!await confirmDialog('実行中の一括診断を中止しますか？')) return;
+    _stopAdviceJobPolling();
+    try { localStorage.removeItem(ADVICE_ACTIVE_JOB_KEY); } catch (e) { /* ignore */ }
+    const b = document.getElementById('portfolio-advice-body');
+    if (b) b.innerHTML = '<div class="loading-placeholder">中止しています…</div>';
+    try {
+        const path = jobId
+            ? `/api/investment/screener/jobs/${encodeURIComponent(jobId)}/cancel`
+            : '/api/investment/screener/jobs/cancel_active';
+        await apiFetch(path, { method: 'POST', body: '{}' });
+        if (b) b.innerHTML = '<div class="loading-placeholder">一括診断を中止しました。</div>';
+        showToast('一括診断を中止しました');
+    } catch (e) {
+        showToast('中止に失敗しました', true);
+        if (b) b.innerHTML = `<div style="color:#ff8a8a;">中止に失敗しました：${escapeHtml(e.detail || e.message || '')}</div>`;
+    }
 };
 
 // 一括診断の新規候補を注目銘柄(watchlist)に登録する。既存コードなら上書き（API側で upsert）。
@@ -14583,8 +14656,38 @@ function _bindStockedLinkDelegation(container) {
             if (lk) window.openLinkDetailsModal(lk);
         } else if (action === 'delete') {
             window.deleteStockedLink(lid);
+        } else if (action === 'yt-summary') {
+            _summarizeStockedYouTube(el, row);
         }
     });
+}
+
+// 「あとで見る」の YouTube リンクをオンデマンド要約して表示する（新着と同じ仕組み）。
+async function _summarizeStockedYouTube(btn, row) {
+    const vid = btn.dataset.vid;
+    const box = row.querySelector('.yt-summary');
+    if (!vid || !box) return;
+    // 既に要約済みなら表示/非表示をトグル（再生成しない＝コストをかけない）
+    if (box.textContent.trim()) {
+        box.style.display = box.style.display === 'none' ? 'block' : 'none';
+        return;
+    }
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ 要約中…';
+    try {
+        const res = await apiFetch(`/api/youtube/${encodeURIComponent(vid)}/summary`, { method: 'POST', body: '{}' });
+        box.textContent = res.summary || '要約を取得できませんでした';
+        box.style.display = 'block';
+        btn.textContent = '📝 要約';
+    } catch (e) {
+        box.textContent = '⚠️ 要約できませんでした：' + (e.detail || e.message || '不明なエラー');
+        box.style.display = 'block';
+        showToast('要約できませんでした', true);
+        btn.textContent = orig;
+    } finally {
+        btn.disabled = false;
+    }
 }
 
 /**

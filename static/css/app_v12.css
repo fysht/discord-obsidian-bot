@@ -538,7 +538,10 @@ details.card > summary > .card-header { border-bottom: none; }
 /* ========== LIST ITEMS (EDITABLE) ========== */
 .list-item {
     display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-bottom: 1px solid var(--border-glass);
-    transition: 0.2s;
+    /* transition: all だと、並び替え時に SortableJS が付与する transform にも
+       CSSトランジションが二重にかかり動作が重くなる。背景のみに限定して習慣トラッカー
+       と同じ軽さにする。 */
+    transition: background-color 0.2s, color 0.2s;
 }
 .list-item:last-child { border-bottom: none; }
 .li-time { font-size: 0.8rem; color: var(--text-muted); min-width: 45px; text-align: right; }

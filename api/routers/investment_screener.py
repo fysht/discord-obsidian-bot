@@ -141,6 +141,20 @@ async def screener_job(job_id: str):
     return await cog.get_job_status(job_id)
 
 
+@router.post("/jobs/{job_id}/cancel", dependencies=[Depends(verify_api_key)])
+async def screener_job_cancel(job_id: str):
+    """実行中の一括診断ジョブをキャンセルする。"""
+    cog = _get_screener_cog()
+    return await cog.cancel_advise_job(job_id)
+
+
+@router.post("/jobs/cancel_active", dependencies=[Depends(verify_api_key)])
+async def screener_job_cancel_active():
+    """実行中の一括診断ジョブを全てキャンセルする（『先に実行中』のまま固まったときの復旧用）。"""
+    cog = _get_screener_cog()
+    return await cog.cancel_advise_job(None)
+
+
 @router.get("/advise/latest", dependencies=[Depends(verify_api_key)])
 async def screener_advise_latest(kind: str = "daily"):
     """最新の一括診断結果を返す（『前回の結果を見る』用）。kind="daily" で 16:15 の

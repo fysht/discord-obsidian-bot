@@ -22,6 +22,10 @@ class MitToggleRequest(BaseModel):
     index: int
 
 
+class MitClearRequest(BaseModel):
+    index: int | None = None  # None なら今日のMITを全削除
+
+
 class DailyJournalUpdate(BaseModel):
     text: str
 
@@ -98,6 +102,22 @@ async def mit_rollover():
         raise HTTPException(status_code=503, detail="PartnerCog 不在")
     msg = await partner_cog._rollover_mit()
     return {"status": "success", "message": msg}
+
+
+@router.post("/mit_clear", dependencies=[Depends(verify_api_key)])
+async def mit_clear(req: MitClearRequest):
+    """今日のMITを削除する。index 指定でその1件、未指定で全削除。"""
+    from api import app
+    bot = getattr(app.state, "bot", None)
+    if not bot:
+        raise HTTPException(status_code=503, detail="Botエンジンが初期化されていません。")
+    partner_cog = bot.get_cog("PartnerCog")
+    if not partner_cog:
+        raise HTTPException(status_code=503, detail="PartnerCog 不在")
+    result = await partner_cog._clear_mit_in_obsidian(req.index)
+    if result.get("status") != "success":
+        raise HTTPException(status_code=400, detail=result.get("message", "MIT 削除失敗"))
+    return result
 
 
 @router.post("/mit_toggle", dependencies=[Depends(verify_api_key)])

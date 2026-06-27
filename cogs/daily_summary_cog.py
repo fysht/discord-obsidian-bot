@@ -139,13 +139,14 @@ class DailySummaryCog(commands.Cog):
 
 
     async def _send_tomorrow_cards(self):
-        """明日の天気・予定を、本文に束ねず個別の通知カード（既読チェック可能）として送る。
-        プッシュはまとめて1発。取得失敗した項目はスキップする。"""
+        """明日の天気・予定を、お知らせカードではなくチャットメッセージで直接届ける。
+        取得失敗した項目はスキップする。"""
         try:
             partner_cog = self.bot.get_cog("PartnerCog")
             info_service = getattr(partner_cog, "info_service", None) if partner_cog else None
             calendar_service = getattr(partner_cog, "calendar_service", None) if partner_cog else None
-            notices = []
+            weather_line = ""
+            schedule_text = ""
             if info_service:
                 try:
                     wd = await info_service.get_weather()
@@ -153,12 +154,11 @@ class DailySummaryCog(commands.Cog):
                         (d for d in (wd.get("daily") or []) if d.get("day") == "明日"), None
                     )
                     if tomorrow_daily:
-                        body = (
-                            f"{tomorrow_daily.get('weather', '')}\n"
+                        weather_line = (
+                            f"{tomorrow_daily.get('weather', '')} "
                             f"最高 {tomorrow_daily.get('max_temp','?')}℃ / "
                             f"最低 {tomorrow_daily.get('min_temp','?')}℃"
                         )
-                        notices.append({"category": "weather", "title": "☀️ 明日の天気", "body": body})
                 except Exception as e:
                     logging.debug(f"tomorrow weather fetch error: {e}")
             if calendar_service:
@@ -168,15 +168,21 @@ class DailySummaryCog(commands.Cog):
                     ).strftime("%Y-%m-%d")
                     sched = await calendar_service.list_events_for_date(tomorrow_str)
                     if sched and sched.strip():
-                        notices.append(
-                            {"category": "schedule", "title": "📅 明日の予定", "body": sched.strip()}
-                        )
+                        schedule_text = sched.strip()
                 except Exception as e:
                     logging.debug(f"tomorrow calendar fetch error: {e}")
 
-            if notices:
-                from api.notification_service import send_notice_batch
-                await send_notice_batch(notices, "明日のお知らせ")
+            parts = []
+            if weather_line:
+                parts.append(f"☀️ 明日の天気\n{weather_line}")
+            if schedule_text:
+                parts.append(f"📅 明日の予定\n{schedule_text}")
+            if parts:
+                msg = "明日の予定と天気だよ🌙\n\n" + "\n\n".join(parts)
+                from api.notification_service import save_message_and_notify
+                await save_message_and_notify(
+                    "assistant", msg, proactive=True, title="🌙 明日の天気と予定",
+                )
         except Exception as e:
             logging.debug(f"_send_tomorrow_cards error: {e}")
 

@@ -163,19 +163,25 @@ class PartnerRoutineCog(commands.Cog):
         except Exception as e:
             logging.debug(f"past journals fetch error: {e}")
 
-        # 「複数項目を1メッセージに束ねる」のをやめ、項目ごとに個別の通知カード
-        # （既読チェック可能）として送り、プッシュはまとめて1発だけ。
+        # 天気・予定は「お知らせカード」ではなくチャットメッセージで直接届ける。
+        from api.notification_service import save_message_and_notify, send_notice_batch
+        chat_msg = (
+            "おはよう！今日のお届けだよ🌅\n\n"
+            f"☀️ 今日の天気\n{weather_body}\n\n"
+            f"📅 今日の予定\n{schedule_text}"
+        )
+        await save_message_and_notify(
+            "assistant", chat_msg, proactive=True, title="☀️ 今日の天気と予定",
+        )
+
+        # タスク・過去の今日は引き続き個別の通知カード（既読チェック可能）として送る。
         notices = [
-            {"category": "weather", "title": "☀️ 今日の天気", "body": weather_body},
-            {"category": "schedule", "title": "📅 今日の予定", "body": schedule_text},
             {"category": "tasks", "title": "✅ 未完了タスク", "body": tasks_text},
         ]
         if past_journals and past_journals.strip():
             notices.append(
                 {"category": "past", "title": "🕰 過去の今日", "body": past_journals}
             )
-
-        from api.notification_service import send_notice_batch
         await send_notice_batch(notices, "朝のお知らせ")
 
     @staticmethod

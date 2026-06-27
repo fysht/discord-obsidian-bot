@@ -60,9 +60,9 @@ async def youtube_summary(video_id: str, req: YouTubeSummaryRequest = YouTubeSum
     from api.database import youtube_get_video, youtube_set_video_summary
     from services.youtube_service import summarize_video
 
-    v = await youtube_get_video(video_id)
-    if not v:
-        raise HTTPException(status_code=404, detail="動画が見つかりません")
+    # youtube_videos に登録された動画（新着・あとで見る）はキャッシュ＆メタを使う。
+    # 手動追加のYouTubeリンクなど未登録でも、video_id から要約だけは生成する。
+    v = await youtube_get_video(video_id) or {}
 
     cached = (v.get("summary") or "").strip()
     if cached and not req.refresh:
@@ -81,13 +81,18 @@ async def youtube_summary(video_id: str, req: YouTubeSummaryRequest = YouTubeSum
 
     res = await summarize_video(
         bot.gemini_client, model, video_id,
-        title=v.get("title") or "", description=v.get("description") or "",
+        title=v.get("title") or "",
+        url=v.get("url") or f"https://www.youtube.com/watch?v={video_id}",
+        description=v.get("description") or "",
     )
     if not res.get("ok"):
+        # 失敗理由をそのまま返して原因を切り分けられるようにする
         raise HTTPException(status_code=502, detail=res.get("error") or "要約に失敗しました")
 
     summary = res["summary"]
-    await youtube_set_video_summary(video_id, summary)
+    # 登録済み動画のみキャッシュ（未登録リンクは行が無いのでスキップ）
+    if v:
+        await youtube_set_video_summary(video_id, summary)
     return {"ok": True, "summary": summary, "cached": False, "source": res.get("source")}
 
 

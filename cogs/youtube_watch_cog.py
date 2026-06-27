@@ -131,23 +131,11 @@ class YouTubeWatchCog(commands.Cog):
         if not videos:
             return
         n = len(videos)
-        # チャンネル名を数件だけ添えて「何の新着か」を一目で分かるようにする。
-        sample = []
-        seen = set()
-        for v in videos:
-            ct = (v.get("channel_title") or "").strip()
-            if ct and ct not in seen:
-                seen.add(ct)
-                sample.append(ct)
-            if len(sample) >= 3:
-                break
-        tail = "ほか" if len(seen) > len(sample) else ""
-        chs = ("（" + " / ".join(sample) + tail + "）") if sample else ""
         try:
             from api.notification_service import save_message_and_notify
             await save_message_and_notify(
                 "assistant",
-                f"📺 登録チャンネルの新着が {n} 本あるよ{chs}。ダラ見せず「あとで見る」に退避しよ！\n[ACTION:open_youtube]",
+                f"📺 登録チャンネルの新着が {n} 本あるよ。ダラ見せず「あとで見る」に退避しよ！\n[ACTION:open_youtube]",
                 proactive=True, title=f"📺 YouTube新着 {n} 本",
             )
             await youtube_mark_notified([v["id"] for v in videos])

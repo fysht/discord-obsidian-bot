@@ -58,6 +58,8 @@ class ScreenerCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.service = ScreenerService()
+        # 実行中の一括診断ジョブの asyncio タスクを job_id で保持し、キャンセルできるようにする。
+        self._advise_tasks: dict[str, asyncio.Task] = {}
 
     # ==========================================================
     # 同期 API (Phase A: 機械スクリーニング)
@@ -257,14 +259,50 @@ class ScreenerCog(commands.Cog):
         await screener_job_create(job_id, "advise", 0)
 
         from utils.async_utils import safe_create_task
-        safe_create_task(
+        task = safe_create_task(
             self._run_advise_job(
                 job_id, candidates=candidates, with_financials=with_financials,
                 capital=capital, hard_stop_pct=hard_stop_pct, auto_screen=auto_screen,
             ),
             name=f"screener_advise_{job_id}",
         )
+        if task is not None:
+            self._advise_tasks[job_id] = task
         return {"ok": True, "job_id": job_id, "status": "queued"}
+
+    async def cancel_advise_job(self, job_id: Optional[str] = None) -> dict:
+        """実行中の一括診断ジョブをキャンセルする。job_id 未指定なら実行中の全ジョブを止める
+        （サーバー再起動でタスク参照が失われ『先に実行中』のまま固まったときの復旧用）。"""
+        from api.database import (
+            screener_job_get, screener_job_update, screener_jobs_list_active,
+        )
+        targets: list[str] = []
+        if job_id:
+            targets = [job_id]
+        else:
+            try:
+                targets = [j["job_id"] for j in await screener_jobs_list_active()]
+            except Exception:
+                targets = []
+        if not targets:
+            return {"ok": True, "cancelled": 0}
+
+        cancelled = 0
+        for jid in targets:
+            task = self._advise_tasks.pop(jid, None)
+            if task is not None and not task.done():
+                task.cancel()
+            # タスク参照が無い（再起動後など）場合も DB を cancelled にして実行中ロックを解除する
+            try:
+                row = await screener_job_get(jid)
+                if row and row.get("status") in ("queued", "running"):
+                    await screener_job_update(jid, status="cancelled", error="ユーザーがキャンセルしました")
+                    cancelled += 1
+                elif task is not None:
+                    cancelled += 1
+            except Exception as e:
+                logging.debug(f"cancel_advise_job update error ({jid}): {e}")
+        return {"ok": True, "cancelled": cancelled}
 
     async def _run_advise_job(
         self,
@@ -303,12 +341,22 @@ class ScreenerCog(commands.Cog):
                 )
             except Exception as e:
                 logging.debug(f"advise job push notify error: {e}")
+        except asyncio.CancelledError:
+            # ユーザーによるキャンセル。実行中ロックを解除して静かに終了する。
+            try:
+                await screener_job_update(job_id, status="cancelled", error="ユーザーがキャンセルしました")
+            except Exception:
+                pass
+            return
         except Exception as e:
             logging.exception("advise job failed")
             try:
                 await screener_job_update(job_id, status="error", error=str(e))
             except Exception:
                 pass
+        finally:
+            # 成否・キャンセルいずれでもタスク参照を片付ける
+            self._advise_tasks.pop(job_id, None)
 
     async def save_advice_as_job(self, result: dict, kind: str = "advise") -> Optional[str]:
         """構造化された一括診断結果を done ジョブとして保存し job_id を返す。
