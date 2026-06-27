@@ -143,7 +143,7 @@ class InfoService:
                     "day": day_label,
                     "date": (today_date + datetime.timedelta(days=i)).strftime("%Y-%m-%d"),
                     "weather": self._shorten_weather(weather_text),
-                    "icon": self._get_weather_icon_by_text(weather_text),
+                    "icon": self._get_weather_icon_by_text(weather_text, pop),
                     "max_temp": max_t,
                     "min_temp": min_t,
                     "pop": pop,
@@ -186,7 +186,7 @@ class InfoService:
                         "day": f"{d.month}/{d.day}",
                         "date": d.strftime("%Y-%m-%d"),
                         "weather": self._shorten_weather(weather),
-                        "icon": self._get_weather_icon_by_text(weather),
+                        "icon": self._get_weather_icon_by_text(weather, pop),
                         "max_temp": max_t,
                         "min_temp": min_t,
                         "pop": pop,
@@ -297,7 +297,7 @@ class InfoService:
             hourly.append({
                 "time": f"{hour}時",
                 "day": day_label,
-                "icon": self._get_weather_icon_by_text(weather_text),
+                "icon": self._get_weather_icon_by_text(weather_text, pop),
                 "pop": pop,
                 "temp": temp,
                 "weather": self._shorten_weather(weather_text),
@@ -489,7 +489,7 @@ class InfoService:
                 hourly.append({
                     "time": dt.strftime("%H時"),
                     "day": day_label,
-                    "icon": self._get_weather_icon_by_text(weather_text),
+                    "icon": self._get_weather_icon_by_text(weather_text, pops[i]),
                     "pop": f"{pops[i]}%",
                     "temp": temps_raw[temp_idx] if temp_idx < len(temps_raw) and temps_raw[temp_idx] else "--",
                     "weather": self._shorten_weather(weather_text),
@@ -510,15 +510,31 @@ class InfoService:
             logging.error(f"JMA Weather Error: {e}")
             return {"summary": "取得失敗 (JSON Error)"}
 
-    def _get_weather_icon_by_text(self, text):
+    def _parse_pop(self, pop):
+        """降水確率（"20%" / 20 / "--" 等）を 0〜100 の int に。取れなければ None。"""
+        if pop is None:
+            return None
+        try:
+            import re as _re
+            m = _re.search(r"\d+", str(pop))
+            return int(m.group()) if m else None
+        except Exception:
+            return None
+
+    def _get_weather_icon_by_text(self, text, pop=None):
         if not text:
             return "🌤️"
-        if "雨" in text or "あめ" in text:
-            return "🌧️"
         if "雪" in text or "ゆき" in text:
             return "❄️"
         if "雷" in text or "かみなり" in text:
             return "⛈️"
+        if "雨" in text or "あめ" in text:
+            # 降水確率が低い（=時々/一時の小雨）のに本降りアイコン🌧️だと
+            # 雨の可能性が高く見えて紛らわしいので、確率で出し分ける。
+            pop_val = self._parse_pop(pop)
+            if pop_val is not None and pop_val < 50:
+                return "🌦️"  # 一時的・低確率の雨（晴れ/曇りベースに小雨）
+            return "🌧️"      # 確率が高い、または不明なら本降り表現
         if "晴" in text or "はれ" in text:
             if "くもり" in text or "曇" in text:
                 return "⛅"

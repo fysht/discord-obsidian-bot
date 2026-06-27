@@ -131,6 +131,52 @@ async def youtube_summary_detail(video_id: str, req: YouTubeDetailSummaryRequest
     return {"ok": True, "detail_summary": (req.summary or "").strip()}
 
 
+class YouTubeTagsRequest(BaseModel):
+    tags: str = ""
+
+
+@router.post("/{video_id}/tags", dependencies=[Depends(verify_api_key)])
+async def youtube_set_tags(video_id: str, req: YouTubeTagsRequest):
+    """動画にタグ（カンマ区切り）を設定する。新着カードの絞り込み用。空文字でクリア。"""
+    from api.database import youtube_get_video, youtube_set_video_tags
+    v = await youtube_get_video(video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="動画が見つかりません")
+    # 表記を整える（前後空白除去・重複除去・最大8個）
+    parts, seen = [], set()
+    for p in (req.tags or "").replace("、", ",").split(","):
+        t = p.strip()
+        if t and t not in seen:
+            seen.add(t)
+            parts.append(t)
+    tags = ",".join(parts[:8])
+    await youtube_set_video_tags(video_id, tags)
+    return {"ok": True, "tags": tags}
+
+
+class YouTubeAutoTagRequest(BaseModel):
+    overwrite: bool = False
+
+
+@router.post("/{video_id}/auto_tag", dependencies=[Depends(verify_api_key)])
+async def youtube_auto_tag(video_id: str, req: YouTubeAutoTagRequest = YouTubeAutoTagRequest()):
+    """動画タイトル（＋要約）からAIでタグを自動付与する（ストックリンクと同じ生成器を流用）。"""
+    from api.database import youtube_get_video, youtube_set_video_tags
+    from api.routers.stocked_links import _generate_tags
+    v = await youtube_get_video(video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="動画が見つかりません")
+    if (v.get("tags") or "").strip() and not req.overwrite:
+        return {"ok": True, "tags": v.get("tags") or ""}
+    tags = await _generate_tags(
+        v.get("title") or "", "youtube",
+        (v.get("summary") or v.get("detail_summary") or ""),
+    )
+    if tags:
+        await youtube_set_video_tags(video_id, tags)
+    return {"ok": True, "tags": tags}
+
+
 class YouTubeStateRequest(BaseModel):
     state: str
 

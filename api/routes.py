@@ -171,32 +171,65 @@ async def authenticate(req: AuthRequest):
     return {"api_key": API_KEY}
 
 async def fetch_og_image(url: str) -> str:
-    """ページから og:image（なければ twitter:image）を取り出し、絶対URLで返す。失敗時は空。"""
+    """ページから og:image（なければ twitter:image など）を取り出し、絶対URLで返す。失敗時は空。
+
+    Amazon（書籍）や Google Maps（場所）は og:image だけだと取れないことがあるため、
+    サイト別のフォールバックも持つ。Amazon は商品画像、Maps は場所写真を拾う。
+    """
     import aiohttp
     import re as _re
     from urllib.parse import urljoin
 
     if not url:
         return ""
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; LinkPreview/1.0)"}
+    # 簡易UAだと Amazon / Google にブロックされ画像が取れないため、実ブラウザ相当のUAを使う。
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ja,en-US;q=0.7,en;q=0.3",
+    }
+    is_amazon = ("amazon.co.jp" in url or "amazon.com" in url or "amzn." in url)
     try:
-        timeout = aiohttp.ClientTimeout(total=TIMEOUT_HTTP_SHORT)
+        timeout = aiohttp.ClientTimeout(total=TIMEOUT_HTTP_DEFAULT)
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url) as resp:
+            async with session.get(url, allow_redirects=True) as resp:
                 if resp.status != 200:
                     return ""
-                # <head> に OGP がある想定で先頭のみ読む（最大200KB）
-                raw = await resp.content.read(200_000)
+                final_url = str(resp.url)
+                # Amazon は商品画像が <head> より後ろにあることがあるので多めに読む。
+                raw = await resp.content.read(600_000 if is_amazon else 250_000)
         html = raw.decode("utf-8", "ignore")
+
+        # Amazon 商品画像（og:image が無い/汎用画像のことがあるので商品画像を優先で拾う）
+        if is_amazon:
+            for p in (
+                r'"hiRes"\s*:\s*"(https://[^"]+?\.jpg)"',
+                r'"large"\s*:\s*"(https://[^"]+?\.jpg)"',
+                r'id=["\']landingImage["\'][^>]+data-old-hires=["\']([^"\']+)["\']',
+                r'id=["\']landingImage["\'][^>]+src=["\']([^"\']+)["\']',
+                r'data-a-dynamic-image=["\'][^"\']*?(https://[^"\\\s]+?\.jpg)',
+            ):
+                m = _re.search(p, html, _re.IGNORECASE)
+                if m and m.group(1).strip():
+                    return m.group(1).strip().replace("\\/", "/")
+
         patterns = [
             r'<meta[^>]+(?:property|name)=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
             r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']',
-            r'<meta[^>]+(?:property|name)=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+(?:property|name)=["\']twitter:image(?::src)?["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<link[^>]+rel=["\']image_src["\'][^>]+href=["\']([^"\']+)["\']',
         ]
         for p in patterns:
             m = _re.search(p, html, _re.IGNORECASE)
             if m and m.group(1).strip():
-                return urljoin(url, m.group(1).strip())
+                return urljoin(final_url, m.group(1).strip())
+
+        # Google Maps は og:image が無いことがあるため、場所写真（googleusercontent）を拾う。
+        if "google." in final_url and "/maps" in final_url:
+            m = _re.search(r'https://lh\d\.googleusercontent\.com/[^"\'\\]+', html)
+            if m:
+                return m.group(0).replace("\\u003d", "=").replace("\\/", "/")
     except Exception as e:
         logging.debug(f"og:image取得失敗 {url}: {e}")
     return ""

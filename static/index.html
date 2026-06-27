@@ -338,7 +338,8 @@
                         <div class="card-header">
                             <span class="card-icon">🍽</span>
                             <span class="card-title">食事ログ</span>
-                            <button class="mini-link" onclick="openMealCaptureModal()" title="写真から記録">📷 写真</button>
+                            <button class="mini-link" onclick="openMealCaptureModal('camera')" title="カメラで料理を撮影">📷 撮影</button>
+                            <button class="mini-link" onclick="openMealCaptureModal('album')" title="アルバム/スクショから選択">🖼 アルバム</button>
                             <button class="mini-link" onclick="openMealManualModal()" title="手動で記録">✏️ 手動</button>
                             <button class="mini-link" onclick="requestMealAdvice()" title="マネージャーの栄養アドバイス">💬 助言</button>
                             <button class="mini-link" onclick="openMealSuggestModal()" title="過去のメニューと空白期間から献立を提案">🍳 献立提案</button>
@@ -354,6 +355,7 @@
                         <div id="dash-meals-summary" class="card-body" style="border-bottom:1px solid var(--border-glass);padding:8px 18px;font-size:0.78rem;color:var(--text-muted);"></div>
                         <div id="dash-meals-list" class="card-body"><div class="loading-placeholder">読み込み中…</div></div>
                         <input type="file" id="meal-image-input" accept="image/*" capture="environment" style="display:none;">
+                        <input type="file" id="meal-image-input-album" accept="image/*" style="display:none;">
                     </div>
 
                     <!-- 大きな支出メモ -->

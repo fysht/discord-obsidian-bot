@@ -494,6 +494,8 @@ async def init_db():
             "ALTER TABLE youtube_videos ADD COLUMN summary TEXT DEFAULT ''",
             # 視聴判断用の短い要約とは別の、保存用（後から読み返す）の詳しい要約
             "ALTER TABLE youtube_videos ADD COLUMN detail_summary TEXT DEFAULT ''",
+            # 新着カードの動画にタグを付けて後から探しやすくする（ストックリンクと同じ仕組み）
+            "ALTER TABLE youtube_videos ADD COLUMN tags TEXT DEFAULT ''",
             # 支出の内訳（何にいくら使ったか）を保持する列
             "ALTER TABLE expenses ADD COLUMN breakdown TEXT DEFAULT ''",
         ):
@@ -2165,6 +2167,16 @@ async def youtube_set_video_detail_summary(video_id: str, detail_summary: str) -
         cursor = await db.execute(
             "UPDATE youtube_videos SET detail_summary = ? WHERE id = ?",
             (detail_summary, video_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def youtube_set_video_tags(video_id: str, tags: str) -> bool:
+    """動画にタグ（カンマ区切り文字列）を設定する。新着カードの絞り込み用。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE youtube_videos SET tags = ? WHERE id = ?", (tags, video_id)
         )
         await db.commit()
         return cursor.rowcount > 0

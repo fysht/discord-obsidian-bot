@@ -2196,6 +2196,10 @@ async function loadDashboard() {
         loadExpenses();
         _installExpenseImageListener();
         loadGmailInbox(currentGmailState);
+        // YouTubeカードは <details> 内で遅延ロードされず、初回は新着ペインが空のままになる
+        // （タブを切り替えて戻ると switchYouTubeTab 経由で読み込まれて表示される）。
+        // ダッシュボード読み込み時に、表示中のYouTubeタブを最初から読み込んでおく。
+        if (typeof loadActiveYouTubeTab === 'function') loadActiveYouTubeTab();
 
         const sleepEl = $('#dash-sleep');
         if (sleepEl) {
@@ -4406,15 +4410,18 @@ async function _loadStockedThumbnails(container, items) {
         try {
             const res = await apiFetch(`/api/links/${lk.id}/thumbnail`, { method: 'POST', body: '{}' });
             const img = container.querySelector(`[data-thumb-img="${lk.id}"]`);
-            const wrap = container.querySelector(`[data-thumb-wrap="${lk.id}"]`);
+            const noimg = container.querySelector(`[data-thumb-noimg="${lk.id}"]`);
             if (window._stockedLinksById && window._stockedLinksById[lk.id]) {
                 window._stockedLinksById[lk.id].thumbnail = res.thumbnail || '__none__';
             }
-            if (res.thumbnail && img && wrap) {
+            if (res.thumbnail && img) {
+                // 取得成功 → 画像を表示し「No Image」枠を隠す
                 img.src = res.thumbnail;
-                wrap.style.display = '';
+                img.style.display = '';
+                if (noimg) noimg.style.display = 'none';
             }
-        } catch (e) { /* 取得失敗はサムネ無しのまま */ }
+            // 取得できなかった場合は「No Image」枠を表示したままにする（何かは表示される）
+        } catch (e) { /* 取得失敗は No Image のまま */ }
     }
 }
 
@@ -4672,8 +4679,12 @@ window.loadStockedLinks = async () => {
                     thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
                 } else if (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book' || lk.type === 'map') {
                     const th = (lk.thumbnail && lk.thumbnail !== '__none__') ? lk.thumbnail : '';
-                    // 取得済み画像があれば表示、無ければ枠を隠しておき遅延取得で表示する
-                    thumbEl = `<a class="stocked-link-thumb" data-thumb-wrap="${lk.id}" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;${th ? '' : 'display:none;'}"><img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
+                    // 取得済み画像があれば画像、無ければ「No Image」枠を表示（遅延取得で差し替え）。
+                    // 取得を試みても画像が無いページ（__none__）はそのまま「No Image」を出す。
+                    thumbEl = `<a class="stocked-link-thumb" data-thumb-wrap="${lk.id}" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;">`
+                        + `<img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${_imgStyle}${th ? '' : 'display:none;'}">`
+                        + `<span class="stocked-link-noimg" data-thumb-noimg="${lk.id}" style="${th ? 'display:none;' : ''}">No Image</span>`
+                        + `</a>`;
                 }
                 const rawTitleEl = lk.url
                     ? `<a class="stocked-link-title" href="${lk.url}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
@@ -4684,7 +4695,7 @@ window.loadStockedLinks = async () => {
                 const noteBtn = ((lk.type === 'book' || lk.type === 'study') && lk.linked_note_url)
                     ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(lk.linked_note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く" onclick="event.stopPropagation();">📓 NotebookLM</a>`
                     : '';
-                const titleEl = `<div class="stocked-link-title-row">${dragHandle}${rawTitleEl}${noteBtn}</div>`;
+                const titleEl = `<div class="stocked-link-title-row">${rawTitleEl}${noteBtn}</div>`;
 
                 const chips = [];
                 if (lk.tags) {
@@ -4712,17 +4723,21 @@ window.loadStockedLinks = async () => {
                 const ytSummaryBox = (lk.type === 'youtube' && ytVid)
                     ? `<div class="yt-summary" style="display:none;margin-top:6px;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;"></div>`
                     : '';
+                // ドラッグハンドルは行の左端に置く（サムネイルの有無に関わらず左揃え）。
                 return `
                     <div class="stocked-link" data-link-id="${lk.id}" id="stocked-link-${lk.id}">
-                        ${headerEl}
-                        <div class="stocked-link-meta">${chips.join('')}</div>
-                        ${memoBlock}
-                        ${ytSummaryBox}
-                        <div class="stocked-link-actions">
-                            ${ytSummaryBtn}
-                            <button class="stocked-link-btn" data-link-action="auto-tag" title="AIでタグを自動付与">🏷 自動タグ</button>
-                            <button class="stocked-link-btn edit" data-link-action="edit">編集</button>
-                            <button class="stocked-link-btn danger" data-link-action="delete">🗑 削除</button>
+                        ${dragHandle}
+                        <div class="stocked-link-body">
+                            ${headerEl}
+                            <div class="stocked-link-meta">${chips.join('')}</div>
+                            ${memoBlock}
+                            ${ytSummaryBox}
+                            <div class="stocked-link-actions">
+                                ${ytSummaryBtn}
+                                <button class="stocked-link-btn" data-link-action="auto-tag" title="AIでタグを自動付与">🏷 自動タグ</button>
+                                <button class="stocked-link-btn edit" data-link-action="edit">編集</button>
+                                <button class="stocked-link-btn danger" data-link-action="delete">🗑 削除</button>
+                            </div>
                         </div>
                     </div>
                 `;
@@ -6838,10 +6853,15 @@ window.loadMeals = async () => {
                         items.map(it => `・${escapeHtml(it)}`).join('<br>') + '</div>';
                 }
             }
+            // 品目（「、」連結で保存）を1品目・2品目…と行を分けて表示する。
+            const dishes = _splitMealName(m.name);
+            const dishesHtml = dishes.length > 1
+                ? dishes.map(d => `<div class="meal-dish-line">${escapeHtml(d)}</div>`).join('')
+                : `<span>${escapeHtml(m.name || '')}</span>`;
             return `
                 <div class="invest-row meal-row" data-meal-id="${m.id}" style="cursor:default;">
                     <div class="row-main" style="flex:1;">
-                        <div class="row-title">${escapeHtml(m.time)} ${escapeHtml(m.name)}</div>
+                        <div class="row-title"><span class="meal-time">${escapeHtml(m.time)}</span><span class="meal-dishes">${dishesHtml}</span></div>
                         <div class="row-sub" style="font-size:0.78rem;color:var(--text-secondary);">
                             ${m.calories || 0}kcal ・ P${m.protein_g || 0} / F${m.fat_g || 0} / C${m.carbs_g || 0}
                         </div>
@@ -7016,41 +7036,47 @@ function _bindExpenseDelegation(container) {
     });
 }
 
-// 写真撮影 → Vision で解析 → 編集モーダル
-window.openMealCaptureModal = () => {
-    const input = $('#meal-image-input');
+// 写真撮影/アルバム選択 → Vision で解析 → 編集モーダル
+// mode='album' なら撮影済み画像（アルバム/スクショ）から選ぶ。既定はカメラ撮影。
+window.openMealCaptureModal = (mode) => {
+    const id = mode === 'album' ? '#meal-image-input-album' : '#meal-image-input';
+    const input = $(id);
     if (!input) return;
     input.value = '';
     input.click();
 };
 
+async function _handleMealImageInput(input) {
+    const file = (input.files || [])[0];
+    if (!file) return;
+    showToast('📷 食事を解析中…（数秒）');
+    try {
+        const base64 = await _fileToBase64(file);
+        const res = await apiFetch('/api/meals/analyze', {
+            method: 'POST',
+            body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
+        });
+        if (!res || !res.ok) {
+            showToast('解析に失敗しました', true);
+            return;
+        }
+        _pendingMealAnalysis = res.result || {};
+        openMealManualModal(null, _pendingMealAnalysis);
+    } catch (e) {
+        showToast('解析に失敗しました', true);
+    } finally {
+        input.value = '';
+    }
+}
+
 // 食事画像 input の change ハンドラ（モーダル初回オープン時に登録）
+// カメラ用・アルバム用の両 input に同じ解析ハンドラを bind する（支出メモと同じ作り）。
 let _mealImageListenerInstalled = false;
 function _installMealImageListener() {
     if (_mealImageListenerInstalled) return;
-    const input = $('#meal-image-input');
-    if (!input) return;
-    input.addEventListener('change', async () => {
-        const file = (input.files || [])[0];
-        if (!file) return;
-        showToast('📷 食事を解析中…（数秒）');
-        try {
-            const base64 = await _fileToBase64(file);
-            const res = await apiFetch('/api/meals/analyze', {
-                method: 'POST',
-                body: JSON.stringify({ image_base64: base64, mime_type: file.type || 'image/jpeg' }),
-            });
-            if (!res || !res.ok) {
-                showToast('解析に失敗しました', true);
-                return;
-            }
-            _pendingMealAnalysis = res.result || {};
-            openMealManualModal(null, _pendingMealAnalysis);
-        } catch (e) {
-            showToast('解析に失敗しました', true);
-        } finally {
-            input.value = '';
-        }
+    ['#meal-image-input', '#meal-image-input-album'].forEach(sel => {
+        const input = $(sel);
+        if (input) input.addEventListener('change', () => _handleMealImageInput(input));
     });
     _mealImageListenerInstalled = true;
 }
@@ -7972,11 +7998,74 @@ function _youtubeRowActions(state, v) {
     const later = `<button class="mini-link" data-yt-action="later" title="あとで見るへ移す" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>`;
     const saved = `<button class="mini-link" data-yt-action="saved" title="保存へ移す（とっておく）" style="color:var(--accent);font-weight:600;">💾 保存</button>`;
     const hide = `<button class="mini-link btn-danger" data-yt-action="hidden" title="一覧から外す（非表示）">🙈 非表示</button>`;
+    const hasTag = !!(v && v.tags && String(v.tags).trim());
+    const tag = `<button class="mini-link" data-yt-action="tag" title="${hasTag ? 'タグを編集（タップで開閉）' : 'タグを付けて後から探しやすくする'}">🏷 タグ${hasTag ? dot : ''}</button>`;
     // 保存用要約は「あとで見る／保存」だけ（新着はサッと判断するためボタンを増やさない）
-    if (state === 'later') return summary + detail + recipe + saved + hide;
-    if (state === 'saved') return summary + detail + recipe + later + hide;
-    return summary + recipe + later + saved + hide;  // new
+    if (state === 'later') return summary + detail + recipe + tag + saved + hide;
+    if (state === 'saved') return summary + detail + recipe + tag + later + hide;
+    return summary + recipe + tag + later + saved + hide;  // new
 }
+
+// 現在アクティブなYouTubeタブ（新着/あとで見る/保存）の中身を読み込む。
+// ダッシュボード初期表示でカードが開いていても新着が空のままになるのを防ぐ。
+window.loadActiveYouTubeTab = () => {
+    const tab = _ytActiveState();
+    loadYouTubeVideos(tab);
+};
+function _ytActiveState() {
+    const activeBtn = document.querySelector('.yt-tab.active');
+    return (activeBtn && activeBtn.dataset.ytTab) || 'new';
+}
+
+// ===== 新着カードのタグ絞り込み / 並び替え（ウェブクリップ・マップと同じ操作感に統一）=====
+// ソート・タグ絞り込み状態（状態=new/later/saved ごとに保持）
+const _ytSorts = { new: 'newest', later: 'newest', saved: 'newest' };
+const _ytTagFilters = { new: '', later: '', saved: '' };
+// カスタム並び順は localStorage に保存（ストックリンクと同じ方式・サーバー不要）
+const YT_ORDER_KEY = (state) => `yt_order_${state}`;
+function _loadYtCustomOrder(state) {
+    try { const a = JSON.parse(localStorage.getItem(YT_ORDER_KEY(state)) || '[]'); return Array.isArray(a) ? a : []; }
+    catch { return []; }
+}
+function _saveYtCustomOrder(state, ids) { localStorage.setItem(YT_ORDER_KEY(state), JSON.stringify(ids)); }
+
+function _ytSortFn(state) {
+    const sort = _ytSorts[state];
+    return (a, b) => {
+        if (sort === 'custom') {
+            const order = _loadYtCustomOrder(state);
+            const ia = order.indexOf(a.id), ib = order.indexOf(b.id);
+            const x = ia === -1 ? Infinity : ia, y = ib === -1 ? Infinity : ib;
+            if (x !== y) return x - y;
+            return new Date(b.published_at || 0) - new Date(a.published_at || 0);
+        }
+        if (sort === 'oldest') return new Date(a.published_at || 0) - new Date(b.published_at || 0);
+        if (sort === 'title') return (a.title || '').localeCompare(b.title || '');
+        return new Date(b.published_at || 0) - new Date(a.published_at || 0); // newest（既定）
+    };
+}
+
+function _ytBuildTagOptions(state, items) {
+    const counts = new Map();
+    let none = 0;
+    for (const v of items) {
+        const t = (v.tags || '').trim();
+        if (!t) { none++; continue; }
+        for (const tag of t.split(',').map(s => s.trim()).filter(Boolean)) counts.set(tag, (counts.get(tag) || 0) + 1);
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const cur = _ytTagFilters[state];
+    const opts = [`<option value="" ${cur === '' ? 'selected' : ''}>🏷️ すべてのタグ (${items.length})</option>`];
+    for (const [tag, cnt] of sorted) {
+        const s = escapeHtml(tag);
+        opts.push(`<option value="${s}" ${cur === tag ? 'selected' : ''}>${s} (${cnt})</option>`);
+    }
+    if (none > 0) opts.push(`<option value="__none__" ${cur === '__none__' ? 'selected' : ''}>(タグなし) (${none})</option>`);
+    return opts.join('');
+}
+
+window.changeYtTagFilter = (state, val) => { _ytTagFilters[state] = val; loadYouTubeVideos(state); };
+window.changeYtSort = (state, val) => { _ytSorts[state] = val; loadYouTubeVideos(state); };
 
 window.loadYouTubeVideos = async (state = 'new') => {
     const listEl = document.getElementById(_youtubeContainerId(state));
@@ -7984,8 +8073,8 @@ window.loadYouTubeVideos = async (state = 'new') => {
     try {
         const data = await apiFetch(`/api/youtube/videos?state=${encodeURIComponent(state)}&limit=50`);
         if (typeof data.new_count === 'number') _setYouTubeBadge(data.new_count);
-        const items = data.items || [];
-        if (!items.length) {
+        const allItems = data.items || [];
+        if (!allItems.length) {
             const empty = state === 'later'
                 ? 'あとで見る動画はありません。新着から「🔖 あとで見る」で移せます。'
                 : state === 'saved'
@@ -7994,14 +8083,32 @@ window.loadYouTubeVideos = async (state = 'new') => {
             listEl.innerHTML = `<div class="loading-placeholder">${empty}</div>`;
             return;
         }
-        // 一括操作バーは新着のみ
+        // タグ絞り込み → 並び替え（タグ候補は絞り込み前の全件から作る）
+        const tagFilter = _ytTagFilters[state];
+        let items = allItems.slice();
+        if (tagFilter === '__none__') items = items.filter(v => !(v.tags || '').trim());
+        else if (tagFilter) items = items.filter(v => (v.tags || '').split(',').map(t => t.trim()).includes(tagFilter));
+        items.sort(_ytSortFn(state));
+
+        // 操作バー：タグ絞り込み＋並び順（ウェブクリップ等と同じ操作感）。新着は一括操作も。
+        const sel = _ytSorts[state];
+        const controlsBar = `
+            <div class="yt-controls" style="display:flex;align-items:center;gap:6px;margin-bottom:8px;flex-wrap:wrap;">
+                <select class="yt-ctrl-select" title="タグで絞り込み" onchange="changeYtTagFilter('${state}', this.value)">${_ytBuildTagOptions(state, allItems)}</select>
+                <select class="yt-ctrl-select" title="並び順" onchange="changeYtSort('${state}', this.value)">
+                    <option value="newest" ${sel === 'newest' ? 'selected' : ''}>新しい順</option>
+                    <option value="oldest" ${sel === 'oldest' ? 'selected' : ''}>古い順</option>
+                    <option value="title" ${sel === 'title' ? 'selected' : ''}>タイトル順</option>
+                    <option value="custom" ${sel === 'custom' ? 'selected' : ''}>カスタム順</option>
+                </select>
+            </div>`;
         const bulkBar = state === 'new' ? `
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.78rem;color:var(--text-muted);flex-wrap:wrap;">
                 <label style="display:flex;align-items:center;gap:4px;cursor:pointer;"><input type="checkbox" id="yt-check-all" onclick="toggleYouTubeCheckAll(this)"> 全選択</label>
                 <button class="mini-link" style="margin-left:auto;color:var(--accent);font-weight:600;" onclick="bulkYouTube('later')" title="選択をまとめてあとで見るへ">🔖 選択をあとで見る</button>
                 <button class="mini-link btn-danger" onclick="bulkYouTube('hidden')" title="選択をまとめて非表示">🙈 選択を非表示</button>
             </div>` : '';
-        listEl.innerHTML = bulkBar + items.map(v => {
+        const rowsHtml = items.map(v => {
             const actions = _youtubeRowActions(state, v);
             const vid = escapeHtml(v.id);
             const title = escapeHtml(v.title || '(無題)');
@@ -8011,30 +8118,126 @@ window.loadYouTubeVideos = async (state = 'new') => {
             const thumb = `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
             const check = state === 'new'
                 ? `<input type="checkbox" class="yt-check" data-id="${vid}" style="margin-top:3px;flex-shrink:0;">` : '';
+            const tagsStr = (v.tags || '').trim();
+            // タグはチップ表示（ストックリンクと同じ見た目）
+            const tagChips = tagsStr
+                ? `<div class="yt-tag-chips" style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px;">`
+                    + tagsStr.split(',').map(t => t.trim()).filter(Boolean)
+                        .map(t => `<span class="stocked-link-chip purpose">🏷️ ${escapeHtml(t)}</span>`).join('')
+                    + `</div>`
+                : '';
+            // 並び替え用ハンドルは行の左端に置く（他の一覧と統一）
+            const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault();event.stopPropagation();">⠿</span>`;
             // タイトルはどの状態でもクリックで開ける（開く操作を統一）
-            // 要約・保存用要約は行の「下に全幅」で表示する（モバイルで細長くならないように）。
             const detail = v.detail_summary || '';
             return `
-                <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" data-detail="${escapeHtml(detail)}" data-summary="${escapeHtml(v.summary || '')}" style="flex-direction:column;align-items:stretch;gap:6px;cursor:default;">
+                <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" data-detail="${escapeHtml(detail)}" data-summary="${escapeHtml(v.summary || '')}" data-tags="${escapeHtml(tagsStr)}" style="flex-direction:column;align-items:stretch;gap:6px;cursor:default;">
                     <div style="display:flex;align-items:flex-start;gap:8px;">
+                        ${dragHandle}
                         ${check}
                         <a href="${url}" target="_blank" rel="noopener" style="flex-shrink:0;line-height:0;"><img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);"></a>
                         <div class="row-main" style="flex:1;min-width:0;">
                             <a class="row-title" href="${url}" target="_blank" rel="noopener" style="display:block;font-size:0.86rem;line-height:1.35;color:var(--text-primary);text-decoration:none;">${title}</a>
                             <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;">${ch}${published ? ' ・ ' + published : ''}</div>
+                            ${tagChips}
                             <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;">
                                 ${actions}
                             </div>
                         </div>
                     </div>
+                    <div class="yt-tags-box" style="display:none;"></div>
                     <div class="yt-summary" style="display:none;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;"></div>
                     <div class="yt-detail" style="display:none;">${detail.trim() ? _ytDetailReadHtml(detail) : ''}</div>
                 </div>`;
         }).join('');
+        listEl.innerHTML = controlsBar + bulkBar + `<div class="yt-rows">${rowsHtml}</div>`;
         _bindYouTubeDelegation(listEl);
+        _setupYouTubeSortable(listEl.querySelector('.yt-rows'), state);
     } catch (e) {
         console.error('loadYouTubeVideos failed', e);
         listEl.innerHTML = '<div class="loading-placeholder">読み込みに失敗しました。</div>';
+    }
+};
+
+// 新着カードのドラッグ並び替え（SortableJS）。カスタム順は localStorage に保存。
+function _setupYouTubeSortable(wrap, state) {
+    if (!wrap) return;
+    try { if (wrap._sortable) { wrap._sortable.destroy(); wrap._sortable = null; } } catch {}
+    if (typeof window.Sortable === 'undefined') {
+        setTimeout(() => _setupYouTubeSortable(wrap, state), 200);
+        return;
+    }
+    wrap._sortable = window.Sortable.create(wrap, {
+        handle: '.list-item-drag-handle',
+        animation: 150,
+        delay: 200,
+        delayOnTouchOnly: true,
+        touchStartThreshold: 5,
+        ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        dragClass: 'sortable-drag',
+        onEnd: () => {
+            const ids = Array.from(wrap.querySelectorAll('.youtube-row')).map(el => el.dataset.id).filter(Boolean);
+            _saveYtCustomOrder(state, ids);
+            // ドラッグした時点で「カスタム順」に自動切替
+            if (_ytSorts[state] !== 'custom') {
+                _ytSorts[state] = 'custom';
+                const selEl = wrap.parentElement?.querySelector('.yt-controls select[title="並び順"]');
+                if (selEl) selEl.value = 'custom';
+            }
+            showToast('並び替えました');
+        },
+    });
+}
+
+// 動画のタグ編集ボックスを開閉する（行の下に全幅で表示）。
+window.ytToggleTagEditor = (row) => {
+    const box = row.querySelector('.yt-tags-box');
+    if (!box) return;
+    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+    const id = row.dataset.id;
+    const current = row.dataset.tags || '';
+    box.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:6px;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">
+            <input class="modern-input yt-tag-input" value="${escapeAttr(current)}" placeholder="タグをカンマ区切りで（例: 料理,筋トレ,作り置き）" style="font-size:0.82rem;">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                <button class="mini-link" onclick="ytAutoTag('${id}', this)" title="タイトルからAIでタグ案を作る">🏷 AIで自動タグ</button>
+                <button class="mini-link" style="color:var(--accent);font-weight:600;" onclick="ytSaveTags('${id}', this)">💾 保存</button>
+            </div>
+        </div>`;
+    box.style.display = 'block';
+};
+
+window.ytSaveTags = async (id, btn) => {
+    const box = btn.closest('.yt-tags-box');
+    const input = box && box.querySelector('.yt-tag-input');
+    const tags = (input && input.value || '').trim();
+    btn.disabled = true;
+    try {
+        await apiFetch(`/api/youtube/${encodeURIComponent(id)}/tags`, { method: 'POST', body: JSON.stringify({ tags }) });
+        showToast('タグを保存しました');
+        loadYouTubeVideos(_ytActiveState());  // チップ・絞り込み候補を更新
+    } catch (e) {
+        btn.disabled = false;
+        showToast('タグの保存に失敗しました', true);
+    }
+};
+
+window.ytAutoTag = async (id, btn) => {
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = '⏳ 生成中…';
+    try {
+        const res = await apiFetch(`/api/youtube/${encodeURIComponent(id)}/auto_tag`, { method: 'POST', body: JSON.stringify({ overwrite: true }) });
+        const box = btn.closest('.yt-tags-box');
+        const input = box && box.querySelector('.yt-tag-input');
+        if (input) input.value = res.tags || '';
+        showToast(res.tags ? `タグ案: ${res.tags}（必要なら直して保存）` : 'タグを生成できませんでした');
+    } catch (e) {
+        showToast('自動タグに失敗しました', true);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
     }
 };
 
@@ -8206,6 +8409,10 @@ function _bindYouTubeDelegation(listEl) {
             const current = row.dataset.detail || '';
             box.innerHTML = _ytDetailEditorUi(id, current, url);
             box.style.display = 'block';
+            return;
+        }
+        if (action === 'tag') {
+            ytToggleTagEditor(row);
             return;
         }
         if (action === 'summary') {
@@ -8628,12 +8835,24 @@ async function _handleExpenseImageInput(input) {
             return;
         }
         _pendingReceiptAnalysis = res.result || {};
-        openExpenseManualModal(null, _pendingReceiptAnalysis);
+        // 複数品目が読み取れたら「1枚にまとめる / 品目ごとに別カード」を選べるようにする。
+        const items = _expenseAnalysisItems(_pendingReceiptAnalysis);
+        if (items.length >= 2) {
+            openExpenseRecordModeModal(_pendingReceiptAnalysis);
+        } else {
+            openExpenseManualModal(null, _pendingReceiptAnalysis);
+        }
     } catch (e) {
         showToast('解析に失敗しました', true);
     } finally {
         input.value = '';
     }
+}
+
+// 解析結果から有効な品目（名前か金額がある）だけを取り出す。
+function _expenseAnalysisItems(result) {
+    const arr = (result && Array.isArray(result.items)) ? result.items : [];
+    return arr.filter(it => it && ((it.name || '').trim() || Number(it.amount) > 0));
 }
 
 let _expenseImageListenerInstalled = false;
@@ -8781,6 +9000,226 @@ window.closeExpenseEditModal = () => {
     _pendingReceiptBase64 = null;
     _pendingReceiptMime = '';
     _pendingReceiptDriveId = '';
+};
+
+// ===== 複数品目の記録方法を選ぶ（1枚にまとめる / 品目ごとに別カード）=====
+window.openExpenseRecordModeModal = (result) => {
+    const items = _expenseAnalysisItems(result);
+    let modal = $('#expense-mode-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="expense-mode-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:460px;">
+                    <h3 style="margin-top:0;">💴 記録方法を選択</h3>
+                    <p id="exp-mode-count" style="font-size:0.82rem;color:var(--text-secondary);margin:-2px 0 12px;"></p>
+                    <div style="display:flex;flex-direction:column;gap:10px;">
+                        <button class="modal-btn submit" style="text-align:left;padding:12px 14px;line-height:1.5;" onclick="chooseExpenseRecordMode('single')">
+                            🧾 1枚のカードにまとめる<br>
+                            <span style="font-size:0.74rem;opacity:0.85;font-weight:400;">合計1件として記録し、各品目は「内訳」に詳細を記載（例：まとめてパン）</span>
+                        </button>
+                        <button class="modal-btn submit" style="text-align:left;padding:12px 14px;line-height:1.5;background:rgba(0,186,152,0.18);" onclick="chooseExpenseRecordMode('split')">
+                            🗂 品目ごとに別カードを作成<br>
+                            <span style="font-size:0.74rem;opacity:0.85;font-weight:400;">読み取った品目を1件ずつ別の支出として記録（例：Amazonで複数商品）</span>
+                        </button>
+                    </div>
+                    <div class="modal-actions" style="margin-top:14px;">
+                        <button class="modal-btn cancel" onclick="document.getElementById('expense-mode-modal').classList.add('hidden')">キャンセル</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#expense-mode-modal');
+    }
+    const countEl = $('#exp-mode-count');
+    if (countEl) countEl.textContent = `${items.length}件の品目が読み取れました。どちらで記録しますか？`;
+    modal.classList.remove('hidden');
+};
+
+window.chooseExpenseRecordMode = (mode) => {
+    $('#expense-mode-modal')?.classList.add('hidden');
+    const result = _pendingReceiptAnalysis || {};
+    if (mode === 'split') openExpenseSplitModal(result);
+    else openExpenseManualModal(null, result);
+};
+
+// ===== 品目ごとに別カードを作成する確認・編集モーダル =====
+function _expenseSplitRowHtml(name = '', amount = '') {
+    return `<div class="exp-split-row" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
+        <input class="modern-input exp-split-name" style="flex:1;min-width:0;" placeholder="品名（例: 食パン）" value="${escapeAttr(name)}">
+        <input class="modern-input exp-split-amount" type="number" min="0" style="width:96px;flex-shrink:0;" placeholder="金額" value="${amount !== '' && amount != null ? escapeAttr(String(amount)) : ''}">
+        <button type="button" class="mini-link" onclick="removeExpenseSplitRow(this)" title="この品目を削除" style="white-space:nowrap;">✕</button>
+    </div>`;
+}
+
+window.addExpenseSplitRow = (name = '', amount = '') => {
+    const list = $('#exp-split-rows');
+    if (!list) return;
+    list.insertAdjacentHTML('beforeend', _expenseSplitRowHtml(typeof name === 'string' ? name : '', amount));
+};
+
+window.removeExpenseSplitRow = (btn) => {
+    const row = btn.closest('.exp-split-row');
+    if (row) row.remove();
+    const list = $('#exp-split-rows');
+    if (list && !list.querySelector('.exp-split-row')) addExpenseSplitRow();
+};
+
+window.openExpenseSplitModal = (seed = {}) => {
+    let modal = $('#expense-split-modal');
+    if (!modal) {
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `
+            <div id="expense-split-modal" class="modal-overlay hidden">
+                <div class="modal-card" style="max-width:560px;max-height:90vh;overflow-y:auto;">
+                    <h3 style="margin-top:0;">🗂 品目ごとに記録</h3>
+                    <p style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 10px;">下の各品目が1件ずつ別の支出カードになります。共通の設定（日付・カテゴリ・支払方法・店名/サイト）はまとめて適用されます。</p>
+
+                    <div style="display:flex;gap:8px;margin-bottom:8px;">
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">日付</label>
+                            <input id="exp-split-date" type="date" class="modern-input">
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">カテゴリ</label>
+                            <select id="exp-split-category" class="modern-input"></select>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-bottom:8px;">
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">支払方法</label>
+                            <select id="exp-split-payment" class="modern-input">
+                                <option value="">未指定</option>
+                                <option value="現金">現金</option>
+                                <option value="クレジット">クレジット</option>
+                                <option value="電子マネー">電子マネー</option>
+                                <option value="QR">QR</option>
+                                <option value="銀行振込">銀行振込</option>
+                                <option value="不明">不明</option>
+                            </select>
+                        </div>
+                        <div style="flex:1;">
+                            <label style="font-size:0.78rem;color:var(--text-muted);">店名/サイト（任意）</label>
+                            <input id="exp-split-site" class="modern-input" placeholder="例: Amazon">
+                        </div>
+                    </div>
+
+                    <label style="font-size:0.78rem;color:var(--text-muted);">品目（1行＝1カード）</label>
+                    <div id="exp-split-rows" style="margin-bottom:4px;"></div>
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                        <button type="button" class="mini-link" onclick="addExpenseSplitRow()">＋ 品目を追加</button>
+                        <span id="exp-split-total" style="font-size:0.78rem;color:var(--text-secondary);"></span>
+                    </div>
+
+                    <div class="modal-actions" style="margin-top:8px;">
+                        <button class="modal-btn cancel" onclick="document.getElementById('expense-split-modal').classList.add('hidden')">キャンセル</button>
+                        <button class="modal-btn submit" id="exp-split-save-btn" onclick="saveExpenseSplit()">すべて保存</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(wrap.firstElementChild);
+        modal = $('#expense-split-modal');
+        // 金額入力で合計を更新
+        modal.addEventListener('input', (ev) => {
+            if (ev.target.classList && ev.target.classList.contains('exp-split-amount')) _updateExpenseSplitTotal();
+        });
+    }
+
+    const catEl = $('#exp-split-category');
+    if (catEl && !catEl.options.length) {
+        EXPENSE_CATEGORIES_FALLBACK.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c; opt.textContent = c;
+            catEl.appendChild(opt);
+        });
+    }
+
+    const now = new Date();
+    $('#exp-split-date').value = seed.date || now.toISOString().slice(0, 10);
+    $('#exp-split-category').value = seed.category || 'その他';
+    $('#exp-split-payment').value = seed.payment_method || '';
+    $('#exp-split-site').value = seed.vendor || '';
+
+    const items = _expenseAnalysisItems(seed);
+    const list = $('#exp-split-rows');
+    list.innerHTML = (items.length ? items : [{ name: '', amount: '' }])
+        .map(it => _expenseSplitRowHtml((it.name || '').trim(), Number(it.amount) > 0 ? Number(it.amount) : '')).join('');
+    _updateExpenseSplitTotal();
+
+    modal.classList.remove('hidden');
+};
+
+function _getExpenseSplitRows() {
+    return Array.from(document.querySelectorAll('#exp-split-rows .exp-split-row')).map(row => ({
+        name: (row.querySelector('.exp-split-name')?.value || '').trim(),
+        amount: parseInt(row.querySelector('.exp-split-amount')?.value || '0', 10) || 0,
+    })).filter(r => r.name || r.amount > 0);
+}
+
+function _updateExpenseSplitTotal() {
+    const rows = _getExpenseSplitRows();
+    const total = rows.reduce((s, r) => s + (r.amount || 0), 0);
+    const el = $('#exp-split-total');
+    if (el) el.textContent = rows.length ? `${rows.length}件 ・ 合計 ¥${total.toLocaleString()}` : '';
+}
+
+window.saveExpenseSplit = async () => {
+    const rows = _getExpenseSplitRows().filter(r => r.amount > 0);
+    if (!rows.length) { showToast('金額のある品目を入力してください', true); return; }
+
+    const btn = $('#exp-split-save-btn');
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    const date = $('#exp-split-date')?.value || '';
+    const category = $('#exp-split-category')?.value || 'その他';
+    const payment = $('#exp-split-payment')?.value || '';
+    const site = ($('#exp-split-site')?.value || '').trim();
+
+    try {
+        // レシート画像は1回だけ Drive にアップロードし、全カードに同じものを紐付ける。
+        let receiptDriveId = _pendingReceiptDriveId;
+        if (_pendingReceiptBase64 && !receiptDriveId) {
+            try {
+                const up = await apiFetch('/api/expenses/receipt_upload', {
+                    method: 'POST',
+                    body: JSON.stringify({ image_base64: _pendingReceiptBase64, mime_type: _pendingReceiptMime || 'image/jpeg', date }),
+                });
+                if (up && up.ok) receiptDriveId = up.drive_id || '';
+            } catch {}
+        }
+
+        let saved = 0;
+        for (const r of rows) {
+            try {
+                await apiFetch('/api/expenses', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        amount: r.amount,
+                        date,
+                        vendor: r.name || site || category,
+                        category,
+                        payment_method: payment,
+                        memo: site,
+                        receipt_drive_id: receiptDriveId || '',
+                    }),
+                });
+                saved++;
+            } catch (e) { /* 1件失敗しても続行 */ }
+        }
+        showToast(`💴 ${saved}件の支出を記録しました`);
+        $('#expense-split-modal')?.classList.add('hidden');
+        // 後片付け（編集モーダルと同じ pending をクリア）
+        _pendingReceiptAnalysis = null;
+        _pendingReceiptBase64 = null;
+        _pendingReceiptMime = '';
+        _pendingReceiptDriveId = '';
+        loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
+    } catch (e) {
+        showToast('保存に失敗しました', true);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'すべて保存';
+    }
 };
 
 window.saveExpenseFromModal = async () => {
@@ -9028,7 +9467,11 @@ async function _requestMedWakeLock() {
     try {
         if ('wakeLock' in navigator) {
             _medState.wakeLock = await navigator.wakeLock.request('screen');
-            // タブ復帰時に再取得
+            // OS がタブを隠す等で自動解放されたら参照を null に戻す。
+            // これをしないと wakeLock が「解放済みオブジェクト」のまま残り、
+            // 画面復帰時の再取得条件(!wakeLock)が成立せず再取得できない（=スリープしてしまう）。
+            _medState.wakeLock.addEventListener('release', () => { _medState.wakeLock = null; });
+            // タブ復帰時に再取得（重複登録は同一関数参照なので無視される）
             document.addEventListener('visibilitychange', _reacquireMedWakeLock);
         }
     } catch (e) {
@@ -9108,7 +9551,9 @@ window.startMeditation = () => {
     $('#med-step-timer').style.display = '';
     _updateMedDisplay();
     _medState.interval = setInterval(() => {
-        _medState.remaining--;
+        // 経過実時間から残りを計算（バックグラウンドで setInterval が間引かれてもズレない）
+        const elapsed = Math.floor((Date.now() - _medState.startAt.getTime()) / 1000);
+        _medState.remaining = Math.max(0, _medState.total - elapsed);
         _updateMedDisplay();
         if (_medState.remaining <= 0) _finishMeditation(min);
     }, 1000);
@@ -9172,6 +9617,8 @@ async function _requestDrumWakeLock() {
     try {
         if ('wakeLock' in navigator) {
             _drumState.wakeLock = await navigator.wakeLock.request('screen');
+            // 自動解放されたら参照を null に戻し、画面復帰時に再取得できるようにする。
+            _drumState.wakeLock.addEventListener('release', () => { _drumState.wakeLock = null; });
             document.addEventListener('visibilitychange', _reacquireDrumWakeLock);
         }
     } catch (e) {

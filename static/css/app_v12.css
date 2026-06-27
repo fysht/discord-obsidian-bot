@@ -261,12 +261,20 @@ details.card > summary > .card-header { border-bottom: none; }
 .stocked-list { padding: 0; }
 .stocked-link {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: 6px;
     padding: 14px 16px;
     border-bottom: 1px solid var(--border-glass);
     background: transparent;
     transition: background 0.2s;
+}
+.stocked-link-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 .stocked-link:last-child { border-bottom: none; }
 .stocked-link:active { background: rgba(255,255,255,0.03); }
@@ -443,6 +451,20 @@ details.card > summary > .card-header { border-bottom: none; }
 .sortable-ghost { opacity: 0.4; }
 .sortable-chosen { background-color: rgba(127,127,127,0.1) !important; }
 
+.stocked-link-noimg {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 96px;
+    height: 54px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.05);
+    border: 1px dashed var(--border-glass);
+    color: var(--text-muted);
+    font-size: 0.66rem;
+    letter-spacing: 0.5px;
+    line-height: 1;
+}
 .stocked-link-meta {
     display: flex;
     flex-wrap: wrap;
@@ -527,6 +549,21 @@ details.card > summary > .card-header { border-bottom: none; }
     flex: 0 0 auto;
 }
 .stocked-list-controls .add-mini:active { background: rgba(0,186,152,0.3); }
+
+/* YouTube新着カードのタグ絞り込み/並び順セレクト（ストックリンクと同じ見た目に統一） */
+.yt-controls .yt-ctrl-select {
+    background: var(--bg-elevated);
+    color: var(--text);
+    border: 1px solid var(--border-glass);
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    flex: 1 1 auto;
+    min-width: 110px;
+    max-width: 100%;
+    min-height: 32px;
+}
 
 .stocked-empty {
     padding: 20px 16px;
@@ -1838,6 +1875,37 @@ button.is-busy {
     font-size: 0.72rem;
     color: var(--text-muted);
     margin-top: 2px;
+}
+/* YouTube行：タイトルは省略せず全文を折り返して表示する */
+.youtube-row .row-title {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+}
+/* 食事ログ：時刻＋品目を行ごとに表示（コンマ連結をやめる） */
+.meal-row .row-title {
+    white-space: normal;
+    overflow: visible;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+.meal-row .row-title .meal-time {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+}
+.meal-row .row-title .meal-dishes {
+    flex: 1;
+    min-width: 0;
+}
+.meal-row .row-title .meal-dish-line {
+    line-height: 1.45;
+    word-break: break-word;
+}
+.meal-row .row-title .meal-dish-line::before {
+    content: "・";
+    color: var(--text-muted);
+    margin-right: 2px;
 }
 .invest-row .row-actions {
     display: flex;
