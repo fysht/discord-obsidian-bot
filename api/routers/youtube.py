@@ -96,6 +96,25 @@ async def youtube_summary(video_id: str, req: YouTubeSummaryRequest = YouTubeSum
     return {"ok": True, "summary": summary, "cached": False, "source": res.get("source")}
 
 
+class YouTubeManualSummaryRequest(BaseModel):
+    summary: str
+
+
+@router.post("/{video_id}/summary_manual", dependencies=[Depends(verify_api_key)])
+async def youtube_summary_manual(video_id: str, req: YouTubeManualSummaryRequest):
+    """手動で作成した要約（無料の Gemini Web 等に貼り付けて得たもの）を保存する。
+    API を呼ばないのでコストは0。何本でも要約をためられる。"""
+    from api.database import youtube_get_video, youtube_set_video_summary
+    summary = (req.summary or "").strip()
+    if not summary:
+        raise HTTPException(status_code=400, detail="要約が空です")
+    v = await youtube_get_video(video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="動画が見つかりません")
+    await youtube_set_video_summary(video_id, summary)
+    return {"ok": True, "summary": summary, "source": "manual"}
+
+
 class YouTubeStateRequest(BaseModel):
     state: str
 

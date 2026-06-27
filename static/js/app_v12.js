@@ -7907,14 +7907,15 @@ function _youtubeContainerId(state) {
 
 // 状態ごとの行アクション（新着/あとで見る/保存で同じ行コンポーネントを使い、ボタンだけ出し分ける）。
 function _youtubeRowActions(state) {
-    const summary = `<button class="mini-link" data-yt-action="summary" title="AIで内容を要約（見るか判断する用）" style="color:var(--accent);font-weight:600;">📝 要約</button>`;
-    const open = `<button class="mini-link" data-yt-action="open" title="YouTubeで開く">↗ 開く</button>`;
+    // 動画はサムネ・タイトルのクリックで開けるので「開く」ボタンは置かない。
+    const summary = `<button class="mini-link" data-yt-action="summary" title="AIで内容を要約（API。字幕ならほぼ無料）" style="color:var(--accent);font-weight:600;">📝 要約</button>`;
+    const gemini = `<button class="mini-link" data-yt-action="gemini" title="無料のGeminiで要約（プロンプトをコピーしてGeminiを開く→回答を貼り付け）">🤖 無料要約</button>`;
     const later = `<button class="mini-link" data-yt-action="later" title="あとで見るへ移す" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>`;
     const saved = `<button class="mini-link" data-yt-action="saved" title="保存へ移す（とっておく）" style="color:var(--accent);font-weight:600;">💾 保存</button>`;
     const hide = `<button class="mini-link btn-danger" data-yt-action="hidden" title="一覧から外す（非表示）">🙈 非表示</button>`;
-    if (state === 'later') return summary + saved + open + hide;
-    if (state === 'saved') return summary + later + open + hide;
-    return summary + later + saved + open + hide;  // new
+    if (state === 'later') return summary + gemini + saved + hide;
+    if (state === 'saved') return summary + gemini + later + hide;
+    return summary + gemini + later + saved + hide;  // new
 }
 
 window.loadYouTubeVideos = async (state = 'new') => {
@@ -7975,12 +7976,56 @@ window.loadYouTubeVideos = async (state = 'new') => {
 
 // 要約ボックスの中身（出所ラベル付き）を組み立てる。出所でだいたいのコスト感が分かる。
 function _ytSummaryHtml(res) {
-    const srcLabel = { transcript: '字幕から要約', video: '動画解析から要約', description: '概要欄から要約' }[res && res.source] || '';
+    const srcLabel = { transcript: '字幕から要約', video: '動画解析から要約', description: '概要欄から要約', manual: '手動で貼り付け（無料）' }[res && res.source] || '';
     const note = srcLabel
         ? `<div style="font-size:0.7rem;opacity:0.6;margin-bottom:4px;">📝 ${srcLabel}${res && res.cached ? '（保存済み）' : ''}</div>`
         : '';
     return note + escapeHtml((res && res.summary) || '要約を取得できませんでした').replace(/\n/g, '<br>');
 }
+
+// 無料の Gemini Web に貼り付けるためのプロンプト（動画URL入り）。
+function _ytGeminiPrompt(url) {
+    return `次のYouTube動画を見て、日本語で要約してください。\nURL: ${url}\n\n`
+        + `【ルール】\n`
+        + `- 「要約します」などの前置きや締めは書かず、要約本文のみ\n`
+        + `- 冒頭に1行でどんな動画か\n`
+        + `- 続けて要点を箇条書きで3〜5個\n`
+        + `- 専門用語は避け、やさしい言葉で`;
+}
+
+// 無料要約フロー: プロンプト表示＋Geminiの回答を貼り付けて保存するUI。
+function _ytGeminiPasteUi(id, prompt) {
+    const safeId = String(id).replace(/'/g, "\\'");
+    return `
+        <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:4px;line-height:1.6;">
+            プロンプトはコピー済みです。① 開いた Gemini に貼り付け → ② 回答をコピー → ③ 下の欄に貼り付けて保存。
+        </div>
+        <details style="margin-bottom:6px;"><summary style="cursor:pointer;font-size:0.72rem;">コピーしたプロンプトを表示</summary>
+            <pre style="white-space:pre-wrap;font-size:0.7rem;background:rgba(255,255,255,0.04);padding:6px;border-radius:4px;margin:4px 0 0;">${escapeHtml(prompt)}</pre>
+        </details>
+        <textarea class="modern-input yt-gemini-paste" rows="4" placeholder="Geminiの回答をここに貼り付け" style="width:100%;font-size:0.78rem;padding:6px;"></textarea>
+        <button class="mini-link" style="margin-top:4px;color:var(--accent);font-weight:600;" onclick="saveGeminiSummary('${safeId}', this)">💾 この要約を保存</button>
+    `;
+}
+
+// 手動で貼り付けた要約を保存する（API課金なし）。
+window.saveGeminiSummary = async (id, btn) => {
+    const box = btn.closest('.yt-summary');
+    const ta = box && box.querySelector('.yt-gemini-paste');
+    const text = ta ? ta.value.trim() : '';
+    if (!text) { showToast('要約を貼り付けてください', true); return; }
+    btn.disabled = true;
+    try {
+        await apiFetch(`/api/youtube/${encodeURIComponent(id)}/summary_manual`, {
+            method: 'POST', body: JSON.stringify({ summary: text }),
+        });
+        if (box) box.innerHTML = _ytSummaryHtml({ summary: text, source: 'manual' });
+        showToast('要約を保存しました');
+    } catch (e) {
+        btn.disabled = false;
+        showToast('保存に失敗しました：' + (e.detail || e.message || ''), true);
+    }
+};
 
 // YouTube 行のイベント委譲（later/open/watched/hidden）。
 function _bindYouTubeDelegation(listEl) {
@@ -7996,6 +8041,21 @@ function _bindYouTubeDelegation(listEl) {
         const action = btn.dataset.ytAction;
         if (action === 'open') {
             window.open(url, '_blank', 'noopener');
+            return;
+        }
+        if (action === 'gemini') {
+            const box = row.querySelector('.yt-summary');
+            if (!box) return;
+            const prompt = _ytGeminiPrompt(url);
+            try {
+                await navigator.clipboard.writeText(prompt);
+                showToast('プロンプトをコピーしました。Geminiに貼り付けてください');
+            } catch (e) {
+                showToast('自動コピーできませんでした。下の「プロンプトを表示」からコピーしてください', true);
+            }
+            window.open('https://gemini.google.com/app', '_blank', 'noopener');
+            box.innerHTML = _ytGeminiPasteUi(id, prompt);
+            box.style.display = 'block';
             return;
         }
         if (action === 'summary') {
