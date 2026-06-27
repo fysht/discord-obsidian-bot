@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from api.database import (
     add_stocked_link, get_all_links, get_link_by_id,
     update_link_details, mark_link_as_saved, delete_stocked_link,
-    backup_db_to_drive, set_link_thumbnail,
+    backup_db_to_drive, set_link_thumbnail, set_link_tags,
 )
 from api.routes import verify_api_key, sync_link_to_obsidian, fetch_og_image
 from utils.async_utils import safe_create_task
@@ -55,6 +55,80 @@ def _schedule_db_backup(name: str):
             backup_db_to_drive(bot.drive_service, folder_id),
             name=name,
         )
+
+
+async def _generate_tags(title: str, link_type: str, summary: str = "") -> str:
+    """タイトル（＋概要）から分類用タグを 1〜3 個、AI（Flash）で生成する。失敗時は空。"""
+    from api import app
+    import re as _re
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None) or not (title or "").strip():
+        return ""
+    type_hint = {"recipe": "料理レシピ", "web": "ウェブ記事", "book": "書籍",
+                 "map": "場所・店", "youtube": "動画"}.get(link_type, "リンク")
+    prompt = (
+        f"次の{type_hint}を後から探しやすく分類するための短いタグを1〜3個付けてください。\n"
+        "・出力はタグのみ。カンマ区切り。前置き・記号・絵文字・番号は付けない\n"
+        "・各タグは2〜6文字程度の名詞\n"
+        "・レシピなら『和食/洋食/中華/麺類/作り置き/お菓子/鶏肉』等のジャンルや主材料\n\n"
+        f"タイトル: {title}\n" + (f"概要: {summary[:300]}\n" if summary else "")
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        model = await _rgm("link_auto_tag", default_pro=False)
+        resp = await bot.gemini_client.aio.models.generate_content(model=model, contents=prompt)
+        raw = (resp.text or "").strip()
+        parts = [p.strip(" 　#・-・") for p in _re.split(r"[,、\n]", raw) if p.strip()]
+        parts = [p for p in parts if p and len(p) <= 12][:3]
+        return ",".join(parts)
+    except Exception as e:
+        logging.debug(f"auto tag generate error: {e}")
+        return ""
+
+
+async def auto_tag_link(link_id: int, overwrite: bool = False) -> str:
+    """リンク1件にAIでタグを自動付与する（既存タグがあれば overwrite=False で温存）。
+    付与したタグ文字列を返す。背景タスクからもエンドポイントからも使う。"""
+    lk = await get_link_by_id(link_id)
+    if not lk:
+        return ""
+    if (lk.get("tags") or "").strip() and not overwrite:
+        return lk.get("tags") or ""
+    tags = await _generate_tags(lk.get("title") or "", lk.get("type") or "", lk.get("summary") or "")
+    if tags:
+        await set_link_tags(link_id, tags)
+    return tags
+
+
+class AutoTagRequest(BaseModel):
+    overwrite: bool = False
+
+
+@router.post("/{link_id}/auto_tag", dependencies=[Depends(verify_api_key)])
+async def link_auto_tag(link_id: int, req: AutoTagRequest = AutoTagRequest()):
+    """リンクにAIでタグを自動付与する（『後から自動でタグを付ける』ボタン用）。"""
+    lk = await get_link_by_id(link_id)
+    if not lk:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません")
+    tags = await auto_tag_link(link_id, overwrite=req.overwrite)
+    return {"ok": True, "tags": tags}
+
+
+@router.post("/auto_tag_all", dependencies=[Depends(verify_api_key)])
+async def link_auto_tag_all():
+    """タグが付いていないリンク全件にAIでタグを自動付与する（一括）。"""
+    links = await get_all_links()
+    targets = [lk for lk in links if not (lk.get("tags") or "").strip()]
+    count = 0
+    for lk in targets:
+        try:
+            tags = await auto_tag_link(lk["id"], overwrite=False)
+            if tags:
+                count += 1
+        except Exception as e:
+            logging.debug(f"auto_tag_all error ({lk.get('id')}): {e}")
+    return {"ok": True, "tagged": count, "total": len(targets)}
 
 
 @router.get("", dependencies=[Depends(verify_api_key)])
@@ -108,6 +182,7 @@ async def save_as_recipe(req: RecipeSaveRequest):
         raise HTTPException(status_code=400, detail="video_id か link_id が必要です")
 
     new_id = await add_stocked_link(url, "recipe", title)
+    safe_create_task(auto_tag_link(new_id), name="auto-tag-recipe")
     chat_service = getattr(app.state, "chat_service", None)
     if chat_service:
         await sync_link_to_obsidian(chat_service, title, "recipe", url)
@@ -120,18 +195,14 @@ async def save_as_recipe(req: RecipeSaveRequest):
 async def create_link(req: LinkCreateRequest):
     """手動でのリンク（レシピ等）追加。"""
     from api import app
-    await add_stocked_link(req.url, req.type, req.title)
-
-    links = await get_all_links()
-    if not links:
-        raise HTTPException(status_code=500)
-    new_link = links[0]
+    new_id = await add_stocked_link(req.url, req.type, req.title)
+    safe_create_task(auto_tag_link(new_id), name="auto-tag-link")
 
     chat_service = getattr(app.state, "chat_service", None)
     await sync_link_to_obsidian(chat_service, req.title, req.type, req.url)
 
     _schedule_db_backup("db-backup-link-create")
-    return {"status": "success", "link_id": new_link["id"]}
+    return {"status": "success", "link_id": new_id}
 
 
 @router.put("/{link_id}", dependencies=[Depends(verify_api_key)])

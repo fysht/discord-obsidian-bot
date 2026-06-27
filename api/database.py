@@ -779,6 +779,16 @@ async def set_link_thumbnail(link_id: int, thumbnail: str) -> bool:
         await db.commit()
         return cursor.rowcount > 0
 
+
+async def set_link_tags(link_id: int, tags: str) -> bool:
+    """ストックリンクのタグ（カンマ区切り）を設定する。自動タグ付け用。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE stocked_links SET tags = ? WHERE id = ?", (tags, int(link_id))
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
 async def update_link_details(link_id: int, title: str, purpose: str, summary: str, memo: str, target_date: str, linked_note_url: str, link_type: str, tags: str = "", calendar_event_id: str = ""):
     """リンクの詳細情報を更新する"""
     async with aiosqlite.connect(str(DB_PATH)) as db:

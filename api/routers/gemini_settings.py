@@ -36,6 +36,7 @@ GEMINI_FEATURE_CATALOG = [
     ("meal_advice", "食事アドバイス", "1日の食事から栄養バランス助言", "flash"),
     ("english_translate", "英訳", "ENモード・フレーズ帳の日本語→英語変換", "flash"),
     ("youtube_summary", "YouTube要約", "新着動画の字幕を要約（オンデマンド）", "flash"),
+    ("link_auto_tag", "リンク自動タグ", "保存リンクにAIでタグを自動付与", "flash"),
 ]
 
 

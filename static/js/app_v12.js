@@ -4383,12 +4383,24 @@ window.changeLinkSort = (type, val) => {
     loadStockedLinks();
 };
 
+// ストックリンク一覧をタイトルで絞り込む（再描画せずDOMの表示/非表示だけ切り替える）。
+function _filterStockedList(containerId, q) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const query = (q || '').trim().toLowerCase();
+    container.querySelectorAll('.stocked-link').forEach(el => {
+        const t = (el.querySelector('.stocked-link-title')?.textContent || '').toLowerCase();
+        el.style.display = (!query || t.includes(query)) ? '' : 'none';
+    });
+}
+
 // ウェブ/レシピ/書籍リンクのサムネ（OGP画像）を、未取得のものだけ遅延取得して埋める。
 // サーバー側で取得結果をキャッシュするので、二度目以降は即座に返る。
 async function _loadStockedThumbnails(container, items) {
     if (!container) return;
     const targets = (items || []).filter(lk =>
-        (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book')
+        (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book' || lk.type === 'map')
+        && !_youtubeIdFromUrl(lk.url)  // YouTube URL は動画サムネを使うのでOGP取得は不要
         && !(lk.thumbnail && String(lk.thumbnail).trim()));
     for (const lk of targets) {
         try {
@@ -4603,6 +4615,16 @@ window.loadStockedLinks = async () => {
                 addBtn.title = '手動で追加';
                 addBtn.onclick = () => openManualAddModal(type);
 
+                // タイトル検索（再描画せずDOMを絞り込む＝入力フォーカスを保つ）
+                const searchInput = document.createElement('input');
+                searchInput.type = 'search';
+                searchInput.placeholder = '🔍 検索';
+                searchInput.dataset.role = 'search';
+                searchInput.className = 'modern-input';
+                searchInput.style.cssText = 'flex:1;min-width:90px;padding:4px 8px;font-size:0.8rem;';
+                searchInput.oninput = (e) => _filterStockedList(id, e.target.value);
+
+                ctrl.appendChild(searchInput);
                 ctrl.appendChild(purposeSelect);
                 ctrl.appendChild(sortSelect);
                 ctrl.appendChild(addBtn);
@@ -4640,18 +4662,15 @@ window.loadStockedLinks = async () => {
             container.innerHTML = items.map(lk => {
                 const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                 const titleText = (lk.title && lk.title !== 'Untitled') ? lk.title : (lk.url || '(無題)');
-                // サムネイル。YouTube は動画ID、ウェブ/レシピ/書籍は OGP画像（lk.thumbnail）。
-                // 未取得（thumbnail 空）の web/recipe/book は枠だけ用意し、描画後に遅延取得して埋める。
+                // サムネイル。YouTube URL は動画サムネ（種別がレシピでも）。
+                // ウェブ/レシピ/書籍/マップは OGP画像（lk.thumbnail）。未取得は枠を用意し遅延取得で埋める。
                 let thumbEl = '';
-                let ytVid = '';
+                let ytVid = _youtubeIdFromUrl(lk.url);
                 const _imgStyle = 'width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);';
-                if (lk.type === 'youtube') {
-                    ytVid = _youtubeIdFromUrl(lk.url);
-                    if (ytVid) {
-                        const t = `https://i.ytimg.com/vi/${ytVid}/mqdefault.jpg`;
-                        thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
-                    }
-                } else if (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book') {
+                if (ytVid) {
+                    const t = `https://i.ytimg.com/vi/${ytVid}/mqdefault.jpg`;
+                    thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
+                } else if (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book' || lk.type === 'map') {
                     const th = (lk.thumbnail && lk.thumbnail !== '__none__') ? lk.thumbnail : '';
                     // 取得済み画像があれば表示、無ければ枠を隠しておき遅延取得で表示する
                     thumbEl = `<a class="stocked-link-thumb" data-thumb-wrap="${lk.id}" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;${th ? '' : 'display:none;'}"><img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
@@ -4660,7 +4679,7 @@ window.loadStockedLinks = async () => {
                     ? `<a class="stocked-link-title" href="${lk.url}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
                     : `<span class="stocked-link-title">${escapeHtml(titleText)}</span>`;
                 // 並び替え用のドラッグハンドル（タイトル行先頭）
-                const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⋮⋮</span>`;
+                const dragHandle = `<span class="list-item-drag-handle" title="長押しして並び替え" onclick="event.preventDefault(); event.stopPropagation();">⠿</span>`;
                 // 書籍・勉強で NotebookLM 等のノート URL が登録されている場合、タイトル行にワンタッチ起動ボタンを表示
                 const noteBtn = ((lk.type === 'book' || lk.type === 'study') && lk.linked_note_url)
                     ? `<a class="stocked-link-notebook-btn" href="${escapeHtml(lk.linked_note_url)}" target="_blank" rel="noopener" title="NotebookLM を開く" onclick="event.stopPropagation();">📓 NotebookLM</a>`
@@ -4701,6 +4720,7 @@ window.loadStockedLinks = async () => {
                         ${ytSummaryBox}
                         <div class="stocked-link-actions">
                             ${ytSummaryBtn}
+                            <button class="stocked-link-btn" data-link-action="auto-tag" title="AIでタグを自動付与">🏷 自動タグ</button>
                             <button class="stocked-link-btn edit" data-link-action="edit">編集</button>
                             <button class="stocked-link-btn danger" data-link-action="delete">🗑 削除</button>
                         </div>
@@ -7048,6 +7068,7 @@ window.openMealManualModal = async (id = null, seed = null) => {
                     <p id="meal-edit-confidence" style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 8px;"></p>
 
                     <label style="font-size:0.78rem;color:var(--text-muted);">保存済みレシピから追加（複数可・任意）</label>
+                    <input id="meal-recipe-search" class="modern-input" placeholder="🔍 レシピ名で検索" style="margin-bottom:4px;" oninput="filterMealRecipeOptions()">
                     <select id="meal-recipe-picker" class="modern-input" style="margin-bottom:8px;" onchange="onMealRecipePicked()">
                         <option value="">— レシピを選んで追加 —</option>
                     </select>
@@ -7374,6 +7395,18 @@ window.removeMealDishRow = (btn) => {
     // 最低1行は残す。
     if (list && !list.querySelector('.meal-dish-row')) _renderMealDishRows(['']);
     _syncMealName();
+};
+
+// レシピ選択プルダウンを検索語で絞り込む（レシピが多いと探しにくいため）。
+window.filterMealRecipeOptions = () => {
+    const picker = $('#meal-recipe-picker');
+    if (!picker) return;
+    const q = ($('#meal-recipe-search')?.value || '').trim().toLowerCase();
+    let recipes = [];
+    try { recipes = JSON.parse(picker.dataset.recipes || '[]'); } catch { recipes = []; }
+    const filtered = q ? recipes.filter(r => (r.title || '').toLowerCase().includes(q)) : recipes;
+    picker.innerHTML = '<option value="">— レシピを選んで追加 —</option>'
+        + filtered.map(r => `<option value="${r.id}">${escapeHtml(r.title || '(無題)')}</option>`).join('');
 };
 
 window.onMealRecipePicked = () => {
@@ -7935,13 +7968,14 @@ function _youtubeRowActions(state, v) {
     // 「要約」は無料のGemini Web経由のみ（APIで意図せず課金しないように一本化）。
     const summary = `<button class="mini-link" data-yt-action="summary" title="${hasSum ? '要約あり（タップで開閉）' : '無料のGeminiで要約（プロンプトをコピーしてGeminiを開く→回答を貼り付け）'}" style="color:var(--accent);font-weight:600;">📝 要約${hasSum ? dot : ''}</button>`;
     const detail = `<button class="mini-link" data-yt-action="detail" title="${hasDet ? '保存用要約あり（タップで開閉）' : '保存用の詳しい要約を入力（後から読み返す用）'}">📑 保存用要約${hasDet ? dot : ''}</button>`;
+    const recipe = `<button class="mini-link" data-yt-action="recipe" title="レシピとして保存（レシピ一覧に追加・食事ログにも記録できる）">🍳 レシピ</button>`;
     const later = `<button class="mini-link" data-yt-action="later" title="あとで見るへ移す" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>`;
     const saved = `<button class="mini-link" data-yt-action="saved" title="保存へ移す（とっておく）" style="color:var(--accent);font-weight:600;">💾 保存</button>`;
     const hide = `<button class="mini-link btn-danger" data-yt-action="hidden" title="一覧から外す（非表示）">🙈 非表示</button>`;
     // 保存用要約は「あとで見る／保存」だけ（新着はサッと判断するためボタンを増やさない）
-    if (state === 'later') return summary + detail + saved + hide;
-    if (state === 'saved') return summary + detail + later + hide;
-    return summary + later + saved + hide;  // new
+    if (state === 'later') return summary + detail + recipe + saved + hide;
+    if (state === 'saved') return summary + detail + recipe + later + hide;
+    return summary + recipe + later + saved + hide;  // new
 }
 
 window.loadYouTubeVideos = async (state = 'new') => {
@@ -8139,6 +8173,29 @@ function _bindYouTubeDelegation(listEl) {
         const action = btn.dataset.ytAction;
         if (action === 'open') {
             window.open(url, '_blank', 'noopener');
+            return;
+        }
+        if (action === 'recipe') {
+            // この動画をレシピとして保存（レシピ一覧に追加）。続けて食事ログ登録も提案。
+            btn.disabled = true;
+            const orig = btn.textContent;
+            btn.textContent = '⏳ 保存中…';
+            try {
+                const res = await apiFetch('/api/links/save_as_recipe', { method: 'POST', body: JSON.stringify({ video_id: id }) });
+                showToast('🍳 レシピに保存しました');
+                btn.textContent = '🍳 レシピ済 ✓';
+                // 食事ログに記録するか提案（「作って食べた」場合）
+                const name = (res && res.meal_name) || '';
+                if (name && typeof openMealManualModal === 'function') {
+                    if (await confirmDialog(`「${name}」を食事ログにも記録しますか？`)) {
+                        openMealManualModal(null, { name });
+                    }
+                }
+            } catch (e) {
+                btn.disabled = false;
+                btn.textContent = orig;
+                showToast('レシピ保存に失敗しました：' + (e.detail || e.message || ''), true);
+            }
             return;
         }
         if (action === 'detail') {
@@ -14706,8 +14763,32 @@ function _bindStockedLinkDelegation(container) {
             window.deleteStockedLink(lid);
         } else if (action === 'yt-summary') {
             _summarizeStockedYouTube(el, row);
+        } else if (action === 'auto-tag') {
+            _autoTagStockedLink(lid, el);
         }
     });
+}
+
+// リンクにAIでタグを自動付与し、付いたら一覧を更新してタグチップを反映する。
+async function _autoTagStockedLink(linkId, btn) {
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ タグ生成中…';
+    try {
+        const res = await apiFetch(`/api/links/${linkId}/auto_tag`, { method: 'POST', body: JSON.stringify({ overwrite: true }) });
+        if (res && res.tags) {
+            showToast('🏷 タグを付けました：' + res.tags);
+            if (typeof loadStockedLinks === 'function') loadStockedLinks();
+        } else {
+            showToast('タグを生成できませんでした', true);
+            btn.disabled = false;
+            btn.textContent = orig;
+        }
+    } catch (e) {
+        showToast('タグ付けに失敗しました：' + (e.detail || e.message || ''), true);
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
 }
 
 // 「あとで見る」の YouTube リンクをオンデマンド要約して表示する（新着と同じ仕組み）。

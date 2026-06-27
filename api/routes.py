@@ -463,6 +463,13 @@ async def chat(req: ChatRequest):
 
             link_id = await add_stocked_link(url, meta["type"], meta["title"])
 
+            # AIでタグを自動付与（背景・低コスト）
+            try:
+                from api.routers.stocked_links import auto_tag_link
+                safe_create_task(auto_tag_link(link_id), name="auto-tag-share")
+            except Exception as e:
+                logging.debug(f"auto tag schedule failed: {e}")
+
             # Obsidianへの即時作成
             chat_service = getattr(app.state, "chat_service", None)
             if chat_service:
