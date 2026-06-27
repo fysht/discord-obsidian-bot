@@ -2682,11 +2682,11 @@ def evaluate_exit_signals(
     hard_hit = any(t["rule"] in ("hard_stop", "trailing_stop") for t in triggered)
     ma_hit = any(t["rule"] in ("sma_mid_break", "sma_slow_break") for t in triggered)
     if hard_hit:
-        action, note = "SELL", "損切り/トレイリングのストップ割れ。ルール通り手仕舞い（迷わず実行）。"
+        action, note = "SELL", "あらかじめ決めた『売る目安のライン』を割り込みました。ルール通り、迷わず売って損失を最小限にしましょう。"
     elif ma_hit:
-        action, note = "TRIM", "中期トレンドの節目割れ。一部利確して様子見、戻せなければ撤退。"
+        action, note = "TRIM", "中期の支えライン（移動平均）を下回りました。まず一部を売って様子見し、株価が戻らなければ撤退しましょう。"
     else:
-        action, note = "HOLD", "ストップは未抵触。トレイリングストップを切り上げて利を伸ばす。"
+        action, note = "HOLD", "売る目安のラインにはまだ達していません。利益を守るラインを少しずつ上げながら、利益を伸ばしていきましょう。"
 
     pnl_pct = None
     if avg_cost:
@@ -2843,79 +2843,79 @@ def analyze_position(
 
     # --- 判定 ---
     reasons = []
-    reasons.append(f"トレンド: {_STATE_LABELS[state]}（"
-                   f"{'25MA上' if above_fast else '25MA下'}/"
-                   f"{'75MA上' if above_mid else '75MA下'}"
-                   f"{'・パーフェクトオーダー' if perfect_order else ''}）")
+    reasons.append(f"株価の流れ: {_STATE_LABELS[state]}（"
+                   f"{'短期は上向き' if above_fast else '短期は下向き'}/"
+                   f"{'中期も上向き' if above_mid else '中期は下向き'}"
+                   f"{'・短中長期がきれいな上昇配列' if perfect_order else ''}）")
     if has_fund:
-        reasons.append(f"ファンダ: {gate['passed']}/{gate['total']}通過（{gate['score']}点）"
-                       f"・{'健全' if fund_ok else ('要警戒' if fund_ok is False else '判定不能')}")
+        reasons.append(f"業績の健全さ: {gate['total']}項目中{gate['passed']}項目クリア（{gate['score']}点）"
+                       f"・{'良好' if fund_ok else ('注意' if fund_ok is False else 'データ不足で判定できず')}")
     else:
-        reasons.append("ファンダ: データ未取得")
+        reasons.append("業績の健全さ: データ未取得")
     if safety:
         eqv = safety.get("equity_ratio")
         parts = []
-        parts.append(f"自己資本比率{eqv * 100:.0f}%" if eqv is not None else "自己資本比率N/A")
+        parts.append(f"自己資本比率（自前の資金の割合）{eqv * 100:.0f}%" if eqv is not None else "自己資本比率N/A")
         if safety.get("cs_pattern"):
             parts.append(safety["cs_pattern"])
         if safety.get("fcf") is not None:
-            parts.append("FCF＋" if safety["fcf"] > 0 else "FCF−")
-        reasons.append("財務(EDINET): " + "・".join(parts))
+            parts.append("手元に残る現金プラス" if safety["fcf"] > 0 else "手元に残る現金マイナス")
+        reasons.append("会社のお金の状態: " + "・".join(parts))
     if pnl:
-        reasons.append(f"含み{'益' if pnl['pnl_pct'] >= 0 else '損'} {pnl['pnl_pct']:+.1f}%")
+        reasons.append(f"今の損益: {'プラス' if pnl['pnl_pct'] >= 0 else 'マイナス'} {pnl['pnl_pct']:+.1f}%")
 
     note = ""
     if held:
         if state == "uptrend":
             if fund_ok is False:
                 action = "HOLD_WATCH"
-                note = "トレンドは継続中だがファンダに陰り。トレンドが崩れたら速やかに手仕舞い。"
+                note = "株価は上向きですが、会社の業績に少し陰りが見えます。今は持ったままでOK。ただし上昇の勢いが止まったら早めに売りましょう。"
             else:
                 action = "HOLD"
-                note = "高値追随かつファンダ健全。利を伸ばす局面。トレイリングストップを切り上げて防御。"
+                note = "株価は上向きで、業績も良好。利益を伸ばしていける場面です。売る目安のライン（直近の安値あたり）を少しずつ上げて、利益を守りながら持ち続けましょう。"
         elif state == "neutral":
             if fund_ok is False:
                 action = "TRIM"
-                note = "横ばい＋ファンダ悪化。資金効率の観点から縮小し、強い銘柄へ。"
+                note = "株価は横ばいで、業績も悪化ぎみ。もっと伸びそうな銘柄にお金を回すため、この株は一部だけ売って減らすのがおすすめです。"
             else:
                 action = "HOLD"
-                note = "横ばい・調整。トレイリングストップを意識しつつ様子見。"
+                note = "株価は横ばいで一服中。売る目安のラインだけ決めておいて、しばらく様子見でOKです。"
         else:  # broken
             if fund_ok is False:
                 action = "SELL"
-                note = "トレンド崩れ＋ファンダ悪化の両方ダメ。撤退を優先。"
+                note = "株価の上昇が崩れ、業績も悪化。両方とも良くない状態なので、いったん売って撤退するのが安全です。"
             elif below_stop:
                 action = "SELL"
-                note = "トレイリングストップ割れ。ファンダは健全なので、押し目を作れば再エントリー候補。"
+                note = "あらかじめ決めた『売る目安のライン』を株価が下回りました。業績は良いので、いったん売っておき、株価が落ち着いたらまた買い直す候補にしましょう。"
             else:
                 action = "TRIM"
-                note = "トレンドが崩れ気味。一部利確で防御。ファンダ健全のため全売りは急がない。"
+                note = "上昇の勢いが崩れぎみ。まず一部を売って守りを固めましょう。業績は良いので、あわてて全部売る必要はありません。"
     else:  # 新規候補
         if state == "uptrend" and fund_ok is True:
             action = "BUY"
-            note = "テクニカル（上昇トレンド）とファンダ（健全）の両方で買い。R/R・ストップは利確目安(projection)を参照。"
+            note = "株価（上昇中）と業績（良好）の両方がそろった買い候補です。どこまで上がりそうか・どこで損切りするかは、下の『利確目安』を参考にしてください。"
         elif state == "uptrend" and fund_ok is None:
             action = "WATCH"
-            note = "トレンドは良好だがファンダ未取得/判定不能。ファンダ確認後に判断。"
+            note = "株価は上向きですが、会社の業績データがまだ取れていません。業績を確認してから買うか決めましょう。"
         elif state == "uptrend":
             action = "WATCH"
-            note = "トレンドは良好だがファンダが基準未達。テクニカル単独では見送り。"
+            note = "株価は上向きですが、業績が買いの基準に届いていません。値動きだけで飛びつかず、今回は見送りが無難です。"
         else:
             action = "WATCH"
-            note = "トレンド未確立。高値ブレイクの確認待ち。"
+            note = "まだ上昇の流れがはっきりしていません。株価が高値を勢いよく抜けるのを確認してからでも遅くありません。"
 
     # --- 安全性（EDINET財務）による上書き ---
     if safety is not None:
         if not held and action == "BUY" and (ocf_negative or safety_ok is False):
             action = "WATCH"
-            note = ("テクニカル・ファンダは良好だが、財務（EDINET）に懸念"
-                    f"（{'本業CFがマイナス' if ocf_negative else '自己資本比率/FCFが基準未達'}）。"
-                    "本業でキャッシュを稼げているか確認してから。")
+            note = ("株価も業績も良いのですが、会社のお金の状態（財務）に不安があります"
+                    f"（{'本業で現金を稼げていない' if ocf_negative else '自己資本比率や手元に残る現金が基準に届いていない'}）。"
+                    "本業できちんと現金を稼げているか確認してからにしましょう。")
         elif held and action == "HOLD" and safety_ok is False:
             action = "HOLD_WATCH"
-            note = "トレンドは良好だが財務（EDINET）に懸念。自己資本比率・営業CFの推移を注視。"
+            note = "株価は良いですが、会社のお金の状態（財務）に不安があります。自己資本比率と本業の現金の動きに注意して見守りましょう。"
         elif held and action in ("SELL", "TRIM") and ocf_negative:
-            note += "（財務面でも営業CFがマイナスで撤退を支持）"
+            note += "（お金の面でも本業の現金がマイナスで、売り・撤退を後押しします）"
 
     if has_fund and fund_score is not None and safety_score is not None:
         score = round(0.45 * trend_score + 0.4 * fund_score + 0.15 * safety_score, 1)

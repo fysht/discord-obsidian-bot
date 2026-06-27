@@ -47,6 +47,50 @@ async def youtube_later(video_id: str):
     return {"ok": True, "state": "later"}
 
 
+class YouTubeSummaryRequest(BaseModel):
+    refresh: bool = False  # True なら既存キャッシュを無視して再生成
+
+
+@router.post("/{video_id}/summary", dependencies=[Depends(verify_api_key)])
+async def youtube_summary(video_id: str, req: YouTubeSummaryRequest = YouTubeSummaryRequest()):
+    """新着動画の要約をオンデマンド生成する（押した動画だけ・結果はキャッシュ）。
+    字幕→Gemini Flash で要約。字幕が無ければ概要欄で代用。コスト最小化のため、
+    一度生成した要約はDBに保存し、次回以降は再生成しない。"""
+    from api import app
+    from api.database import youtube_get_video, youtube_set_video_summary
+    from services.youtube_service import summarize_video
+
+    v = await youtube_get_video(video_id)
+    if not v:
+        raise HTTPException(status_code=404, detail="動画が見つかりません")
+
+    cached = (v.get("summary") or "").strip()
+    if cached and not req.refresh:
+        return {"ok": True, "summary": cached, "cached": True}
+
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        raise HTTPException(status_code=503, detail="Gemini未接続")
+
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        # 低コストモデル（Flash系）を既定にする。大量要約でもコストを抑える狙い。
+        model = await _rgm("youtube_summary", default_pro=False)
+    except Exception:
+        model = "gemini-2.5-flash"
+
+    res = await summarize_video(
+        bot.gemini_client, model, video_id,
+        title=v.get("title") or "", description=v.get("description") or "",
+    )
+    if not res.get("ok"):
+        raise HTTPException(status_code=502, detail=res.get("error") or "要約に失敗しました")
+
+    summary = res["summary"]
+    await youtube_set_video_summary(video_id, summary)
+    return {"ok": True, "summary": summary, "cached": False, "source": res.get("source")}
+
+
 class YouTubeStateRequest(BaseModel):
     state: str
 

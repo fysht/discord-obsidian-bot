@@ -2,6 +2,7 @@ import aiosqlite
 import datetime
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 from config import JST
@@ -499,6 +500,8 @@ async def init_db():
             "ALTER TABLE messages ADD COLUMN starred INTEGER DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN reply_to INTEGER DEFAULT NULL",
             "ALTER TABLE messages ADD COLUMN label TEXT DEFAULT ''",
+            # 実行済み/キャンセル済みの提案ボタン（ACTIONペイロード）を保持し、再描画時に復活させない
+            "ALTER TABLE messages ADD COLUMN consumed_actions TEXT DEFAULT ''",
             "ALTER TABLE english_phrases ADD COLUMN attempt_count INTEGER DEFAULT 0",
             "ALTER TABLE english_phrases ADD COLUMN correct_count INTEGER DEFAULT 0",
             "ALTER TABLE english_phrases ADD COLUMN last_attempted_at TEXT DEFAULT NULL",
@@ -506,6 +509,8 @@ async def init_db():
             "ALTER TABLE gmail_inbox ADD COLUMN saved_drive_id TEXT DEFAULT ''",
             "ALTER TABLE gmail_inbox ADD COLUMN saved_at TEXT DEFAULT ''",
             "ALTER TABLE manager_notices ADD COLUMN is_read INTEGER DEFAULT 0",
+            # YouTube新着のオンデマンド要約をキャッシュする列（押した動画だけ生成）
+            "ALTER TABLE youtube_videos ADD COLUMN summary TEXT DEFAULT ''",
             # 支出の内訳（何にいくら使ったか）を保持する列
             "ALTER TABLE expenses ADD COLUMN breakdown TEXT DEFAULT ''",
         ):
@@ -645,11 +650,22 @@ async def get_history(limit: int = 100):
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, role, content, timestamp, starred, reply_to "
+            "SELECT id, role, content, timestamp, starred, reply_to, consumed_actions "
             "FROM messages ORDER BY id DESC LIMIT ?",
             (limit,),
         )
         rows = await cursor.fetchall()
+
+        def _consumed(row):
+            raw = row["consumed_actions"] if "consumed_actions" in row.keys() else ""
+            if not raw:
+                return []
+            try:
+                val = json.loads(raw)
+                return val if isinstance(val, list) else []
+            except (ValueError, TypeError):
+                return []
+
         # 古い順に並び替えて返す
         return [
             {
@@ -659,9 +675,37 @@ async def get_history(limit: int = 100):
                 "timestamp": row["timestamp"],
                 "starred": bool(row["starred"]) if row["starred"] is not None else False,
                 "reply_to": row["reply_to"],
+                "consumed_actions": _consumed(row),
             }
             for row in reversed(rows)
         ]
+
+
+async def mark_message_action_consumed(message_id: int, action_payload: str) -> bool:
+    """提案ボタン（ACTIONペイロード）を実行/キャンセル済みとして記録する。
+    再描画時にそのボタンを復活させないために使う。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT consumed_actions FROM messages WHERE id = ?", (message_id,)
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+        try:
+            current = json.loads(row["consumed_actions"]) if row["consumed_actions"] else []
+            if not isinstance(current, list):
+                current = []
+        except (ValueError, TypeError):
+            current = []
+        if action_payload not in current:
+            current.append(action_payload)
+        await db.execute(
+            "UPDATE messages SET consumed_actions = ? WHERE id = ?",
+            (json.dumps(current, ensure_ascii=False), message_id),
+        )
+        await db.commit()
+        return True
 
 
 async def get_todays_log():
@@ -679,6 +723,27 @@ async def get_todays_log():
             prefix = "[私]" if row["role"] == "user" else "[マネージャー]"
             lines.append(f"{prefix} {row['content']}")
         return "\n".join(lines)
+
+async def get_todays_user_messages(date_str: str | None = None) -> list[str]:
+    """指定日（既定は今日）に『ユーザー自身が送った』メッセージ本文を時系列で返す。
+    一日の終わりの振り返り（メッセージのモチベーション維持）用。"""
+    day = date_str or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT content FROM messages WHERE role = 'user' AND timestamp LIKE ? ORDER BY id",
+            (f"{day}%",),
+        )
+        rows = await cursor.fetchall()
+        out = []
+        for row in rows:
+            text = (row["content"] or "").strip()
+            # ACTION/QUESTIONS マーカーや内部タグを除いた素の本文だけを対象にする
+            text = re.sub(r"\[(?:ACTION|QUESTIONS):[^\]]+\]", "", text).strip()
+            if text:
+                out.append(text)
+        return out
+
 
 async def clear_history():
     """全会話履歴をリセット（削除）"""
@@ -2068,6 +2133,16 @@ async def youtube_get_video(video_id: str) -> dict | None:
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+
+async def youtube_set_video_summary(video_id: str, summary: str) -> bool:
+    """オンデマンド生成した動画要約をキャッシュする。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE youtube_videos SET summary = ? WHERE id = ?", (summary, video_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
 
 # ===== 視聴セッション（ダラ見対策） =====

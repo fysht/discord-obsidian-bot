@@ -522,7 +522,13 @@ class PartnerCog(commands.Cog):
                     ),
                     types.FunctionDeclaration(
                         name="check_schedule",
-                        description="指定された日付の予定一覧を取得する。",
+                        description=(
+                            "ユーザーが『今日（特定の日）の予定を教えて』『スケジュール確認したい』のように、"
+                            "カレンダーの予定一覧を**明示的に尋ねたときだけ**使う。"
+                            "仕事の相談・進捗報告・愚痴・雑談・タスクや段取りの話など、"
+                            "予定の確認を求めていないメッセージでは絶対に呼び出さないこと。"
+                            "判断に迷う場合は呼び出さず、まず会話で応答する。"
+                        ),
                         parameters=types.Schema(
                             type=types.Type.OBJECT,
                             properties={

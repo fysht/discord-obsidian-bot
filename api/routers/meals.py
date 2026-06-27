@@ -516,12 +516,52 @@ async def meals_suggest():
         for days, name, cnt in items[:40]
     )
 
+    # 保存済みレシピ（ストックリンクの type='recipe'）を提案の候補に織り込む。
+    # まだ作っていない／久しく作っていないレシピを優先して挙げられるようにする。
+    recipe_lines = ""
+    try:
+        from api.database import get_all_links
+        all_links = await get_all_links()
+        recipe_items = []
+        for lk in all_links:
+            if (lk.get("type") or "") != "recipe":
+                continue
+            title = (lk.get("title") or "").strip()
+            if not title or title == "Untitled":
+                continue
+            # 食事ログに同名がある＝過去に作ったことがある可能性。最終調理日を併記する。
+            last = history.get(title, {}).get("last", "")
+            recipe_items.append((title, lk.get("url") or "", last))
+        if recipe_items:
+            def _fmt_recipe(t, url, last):
+                if last:
+                    try:
+                        d = datetime.datetime.strptime(last, "%Y-%m-%d").date()
+                        return f"- {t}（最後に作ったのは{(today - d).days}日前）"
+                    except Exception:
+                        return f"- {t}"
+                return f"- {t}（まだ作っていない）"
+            recipe_lines = "\n".join(_fmt_recipe(*r) for r in recipe_items[:30])
+    except Exception as e:
+        logging.debug(f"meals_suggest recipe fetch failed: {e}")
+
+    recipe_block = (
+        f"## 保存済みレシピ（作ってみたい・ストックした料理）\n{recipe_lines}\n\n"
+        if recipe_lines else ""
+    )
+    recipe_rule = (
+        "- 保存済みレシピがある場合、まだ作っていない／久しく作っていないレシピを1〜2品優先的に提案に含める\n"
+        if recipe_lines else ""
+    )
+
     prompt = (
         "あなたはユーザー専属のマネージャーです。ユーザーが「今日のごはん何にしよう」と迷っています。\n"
-        "下の『過去の食事履歴』を見て、次の食事の献立を提案してください。\n\n"
+        "下の『過去の食事履歴』と『保存済みレシピ』を見て、次の食事の献立を提案してください。\n\n"
         f"## 過去の食事履歴（最後に食べてからの日数つき）\n{hist_lines}\n\n"
+        f"{recipe_block}"
         "【ルール】\n"
         "- 提案は3〜4品。最近食べていない（空白期間が長い）メニューを優先的に挙げる\n"
+        f"{recipe_rule}"
         "- 各提案に「最後に食べたのは○日前だからそろそろどう？」のように空白期間に触れた一言の理由を書く\n"
         "- 履歴にある定番だけでなく、履歴の傾向から外れた新しいメニュー案を1つ混ぜてもよい\n"
         "- 文体はマネージャーらしいタメ口で、全体で短めに\n"

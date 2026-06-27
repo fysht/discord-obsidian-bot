@@ -791,6 +791,61 @@ async def _reflect_mood_answer(rq: dict, answer_text: str, scope: str):
     )
 
 
+async def _generate_message_reflection(date_str: str | None = None) -> str:
+    """一日の終わりに、ユーザーがその日に送ったメッセージを振り返る温かいコメントを生成する。
+    「メッセージを送り続けるモチベーション維持」が目的。送信メッセージが無ければ空文字を返す。"""
+    from api import app
+    from api.database import get_todays_user_messages
+    from google.genai import types as _gt
+
+    day = date_str or datetime.datetime.now(JST).strftime("%Y-%m-%d")
+    bot = getattr(app.state, "bot", None)
+    if not bot or not getattr(bot, "gemini_client", None):
+        return ""
+    msgs = await get_todays_user_messages(day)
+    if not msgs:
+        # 振り返る素材が無い日は無理に送らない
+        return ""
+
+    joined = "\n".join(f"- {m}" for m in msgs[:60])
+
+    from prompts import get_system_prompt
+    partner_cog = bot.get_cog("PartnerCog")
+    user_name = getattr(partner_cog, "user_name", "ゆうすけ") if partner_cog else "ゆうすけ"
+    now_str = datetime.datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+    user_manual = ""
+    if partner_cog:
+        try:
+            user_manual = await partner_cog._get_user_manual()
+        except Exception:
+            user_manual = ""
+    system_prompt = get_system_prompt(user_name, now_str, user_manual)
+
+    task = (
+        f"今日（{day}）ゆうすけが君に送ってくれたメッセージはこれだよ:\n{joined}\n\n"
+        "これを読んで、一日の終わりに『今日のメッセージの振り返り』を短くまとめて。\n"
+        "【ねらい】ゆうすけがこれからも気軽にメッセージを送り続けたくなるように、温かく前向きに。\n"
+        "【書き方】\n"
+        "- いつもの君（マネージャー）のキャラ・タメ口そのままで\n"
+        "- 今日の発言から、印象的だったこと・がんばっていたこと・気づきや成長を2〜3個ひろって具体的に触れる\n"
+        "- 最後に『また明日も気軽に話しかけてね』という気持ちが伝わる一言で締める\n"
+        "- 全体で4〜6行程度。説教や採点はしない。励まし基調で\n"
+        "- 箇条書きの羅列ではなく、自然な語りかけの文章で\n"
+    )
+    try:
+        from services.gemini_model_resolver import resolve_gemini_model as _rgm
+        _m = await _rgm("daily_review", default_pro=False)
+        resp = await bot.gemini_client.aio.models.generate_content(
+            model=_m,
+            contents=_gt.Content(role="user", parts=[_gt.Part.from_text(text=task)]),
+            config=_gt.GenerateContentConfig(system_instruction=system_prompt),
+        )
+        return (resp.text or "").strip()
+    except Exception as e:
+        logging.error(f"_generate_message_reflection error: {e}")
+        return ""
+
+
 async def _extract_reading(text: str) -> dict:
     """読書メモのテキストから書名と学び・メモを抽出する（フローB）。"""
     from api import app

@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from api.database import (
     delete_message_by_id, toggle_message_star, get_starred_messages,
     search_messages, set_message_label, get_all_labels, get_labeled_messages,
-    backup_db_to_drive,
+    backup_db_to_drive, mark_message_action_consumed,
 )
 from api.routes import verify_api_key
 from utils.async_utils import safe_create_task
@@ -21,6 +21,10 @@ router = APIRouter(prefix="/messages", tags=["messages"])
 
 class LabelRequest(BaseModel):
     label: str
+
+
+class ConsumeActionRequest(BaseModel):
+    action: str
 
 
 def _schedule_db_backup(name: str):
@@ -73,6 +77,18 @@ async def set_label(message_id: int, req: LabelRequest):
     if not ok:
         raise HTTPException(status_code=404, detail="メッセージが見つかりません")
     return {"ok": True, "label": req.label.strip()}
+
+
+@router.post("/{message_id}/consume_action", dependencies=[Depends(verify_api_key)])
+async def consume_action(message_id: int, req: ConsumeActionRequest):
+    """提案ボタンを実行/キャンセル済みとして記録し、再描画時に復活させない。"""
+    payload = (req.action or "").strip()
+    if not payload:
+        raise HTTPException(status_code=400, detail="actionを指定してください")
+    ok = await mark_message_action_consumed(message_id, payload)
+    if not ok:
+        raise HTTPException(status_code=404, detail="メッセージが見つかりません")
+    return {"ok": True}
 
 
 @router.get("/collections", dependencies=[Depends(verify_api_key)])

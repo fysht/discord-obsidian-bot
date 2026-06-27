@@ -83,6 +83,20 @@ class DailySummaryCog(commands.Cog):
 
         partner_cog = self.bot.get_cog("PartnerCog")
 
+        # 一日の終わりに、今日ゆうすけが送ってくれたメッセージを振り返る温かいコメントを送る。
+        # （メッセージを送り続けるモチベーション維持が目的。送信が無い日はスキップ）
+        try:
+            from api.routers.daily_summary import _generate_message_reflection
+            reflection = await _generate_message_reflection(today_str)
+            if reflection:
+                from api.notification_service import save_message_and_notify
+                await save_message_and_notify(
+                    "assistant", reflection,
+                    title="🌙 今日のメッセージ振り返り", proactive=True,
+                )
+        except Exception as e:
+            logging.debug(f"message reflection send error: {e}")
+
         # 既存の未確定質問を含めた現在の pending を取得
         pending = await get_questions_by_date(today_str, scope='summary')
         unresolved = [q for q in pending if q["status"] != 'resolved']

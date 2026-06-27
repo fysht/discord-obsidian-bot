@@ -945,13 +945,16 @@ function appendMsg(role, content, isoTimestamp = null, opts = {}) {
     }
 
     let actionHtml = '';
-    if (actions.length > 0 && role === 'assistant') {
-        actionHtml = '<div class="msg-actions">' + actions.map((p, i) => {
+    // 実行/キャンセル済みのアクションは再描画時に復活させない（サーバーに記録した消費済みリスト）
+    const consumedSet = new Set(opts.consumedActions || []);
+    const visibleActions = actions.filter(p => !consumedSet.has(p));
+    if (visibleActions.length > 0 && role === 'assistant') {
+        actionHtml = '<div class="msg-actions">' + visibleActions.map((p, i) => {
             const label = describeAction(p);
             const safe = encodeURIComponent(p);
-            return `<div class="msg-action-row">`
+            return `<div class="msg-action-row" data-action-payload="${safe}">`
                 + `<button class="msg-action-btn" onclick="executeAction('${safe}', this)">${escapeHtml(label)}</button>`
-                + `<button class="msg-action-cancel" onclick="cancelAction(this)" title="キャンセル" aria-label="キャンセル">✕</button>`
+                + `<button class="msg-action-cancel" onclick="cancelAction(this, '${safe}')" title="キャンセル" aria-label="キャンセル">✕</button>`
                 + `</div>`;
         }).join('') + '</div>';
     }
@@ -1645,9 +1648,29 @@ function describeAction(payload) {
     }
 }
 
-window.cancelAction = function(btn) {
+// 提案ボタンを実行/キャンセル済みとしてサーバーに記録する。
+// これにより loadHistory による再描画でボタンが復活しなくなる。
+function _persistConsumedAction(btn, payload) {
+    try {
+        const msgEl = btn && btn.closest && btn.closest('.message');
+        const msgId = msgEl && msgEl.dataset && msgEl.dataset.msgId;
+        if (msgId && payload) {
+            apiFetch(`/api/messages/${msgId}/consume_action`, {
+                method: 'POST',
+                body: JSON.stringify({ action: payload })
+            }).catch(() => {});
+        }
+    } catch {}
+}
+
+window.cancelAction = function(btn, encodedPayload) {
     const row = btn && btn.closest && btn.closest('.msg-action-row');
     if (!row) return;
+    // キャンセルをサーバーに記録（画面更新で復活させないため）
+    const enc = encodedPayload || row.dataset.actionPayload;
+    if (enc) {
+        try { _persistConsumedAction(btn, decodeURIComponent(enc)); } catch {}
+    }
     row.style.transition = 'opacity 0.15s ease, transform 0.15s ease';
     row.style.opacity = '0';
     row.style.transform = 'translateX(8px)';
@@ -1923,6 +1946,8 @@ window.executeAction = async function(encodedPayload, btn) {
             showToast('未対応のアクションです', true);
         }
         if (btn) { btn.textContent = '完了 ✓'; btn.classList.add('done'); }
+        // 実行済みとしてサーバーに記録（画面更新でボタンが復活しないように）
+        _persistConsumedAction(btn, payload);
     } catch (e) {
         console.error(e);
         showToast('実行に失敗しました', true);
@@ -4358,6 +4383,15 @@ window.changeLinkSort = (type, val) => {
     loadStockedLinks();
 };
 
+// YouTube の URL から動画ID（11桁）を抽出する。watch?v= / youtu.be / shorts / embed / live に対応。
+function _youtubeIdFromUrl(url) {
+    if (!url) return '';
+    try {
+        const m = String(url).match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+        return m ? m[1] : '';
+    } catch { return ''; }
+}
+
 window.changeLinkPurposeFilter = (type, val) => {
     linkPurposeFilters[type] = val;
     loadStockedLinks();
@@ -4583,6 +4617,15 @@ window.loadStockedLinks = async () => {
             container.innerHTML = items.map(lk => {
                 const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                 const titleText = (lk.title && lk.title !== 'Untitled') ? lk.title : (lk.url || '(無題)');
+                // YouTube の「あとで見る」は新着と同じサムネイルを表示する
+                let thumbEl = '';
+                if (lk.type === 'youtube') {
+                    const vid = _youtubeIdFromUrl(lk.url);
+                    if (vid) {
+                        const t = `https://i.ytimg.com/vi/${vid}/mqdefault.jpg`;
+                        thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="display:block;margin-bottom:6px;"><img src="${t}" alt="" loading="lazy" style="width:120px;height:68px;object-fit:cover;border-radius:8px;background:rgba(255,255,255,0.05);"></a>`;
+                    }
+                }
                 const rawTitleEl = lk.url
                     ? `<a class="stocked-link-title" href="${lk.url}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
                     : `<span class="stocked-link-title">${escapeHtml(titleText)}</span>`;
@@ -4611,6 +4654,7 @@ window.loadStockedLinks = async () => {
                     : '';
                 return `
                     <div class="stocked-link" data-link-id="${lk.id}" id="stocked-link-${lk.id}">
+                        ${thumbEl}
                         ${titleEl}
                         <div class="stocked-link-meta">${chips.join('')}</div>
                         ${memoBlock}
@@ -4643,8 +4687,13 @@ window.loadStockedLinks = async () => {
             container._sortable = window.Sortable.create(container, {
                 handle: '.list-item-drag-handle',
                 animation: 150,
+                // 習慣トラッカーと同じ長押し設定: 触れただけで並び替えが始まらないようにする
+                delay: 200,
+                delayOnTouchOnly: true,
+                touchStartThreshold: 5,
                 ghostClass: 'sortable-ghost',
                 chosenClass: 'sortable-chosen',
+                dragClass: 'sortable-drag',
                 onEnd: () => {
                     const ids = Array.from(container.querySelectorAll('.stocked-link'))
                         .map(el => parseInt((el.id || '').replace('stocked-link-', ''), 10))
@@ -5303,6 +5352,7 @@ async function loadHistory(silent = false) {
                 id: m.id,
                 starred: !!m.starred,
                 replyContent,
+                consumedActions: m.consumed_actions || [],
             });
         });
         if (silent && !wasAtBottom) {
@@ -7847,11 +7897,13 @@ window.loadYouTubeVideos = async (state = 'new') => {
                         <div class="row-title" style="font-size:0.86rem;line-height:1.35;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">${title}</div>
                         <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;">${ch}${published ? ' ・ ' + published : ''}</div>
                         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;">
+                            <button class="mini-link" data-yt-action="summary" title="字幕からAI要約（見るか判断する用）" style="color:var(--accent);font-weight:600;">📝 要約</button>
                             <button class="mini-link" data-yt-action="later" title="あとで見るに退避（今は見ない）" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>
                             <button class="mini-link" data-yt-action="open" title="YouTubeで開く">↗ 開く</button>
                             <button class="mini-link" data-yt-action="watched" title="見た（一覧から外す）">✓ 見た</button>
                             <button class="mini-link btn-danger" data-yt-action="hidden" title="興味なし（非表示）">🙈 非表示</button>
                         </div>
+                        <div class="yt-summary" style="display:${v.summary ? 'block' : 'none'};margin-top:6px;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">${v.summary ? escapeHtml(v.summary) : ''}</div>
                     </div>
                 </div>`;
         }).join('');
@@ -7876,6 +7928,30 @@ function _bindYouTubeDelegation(listEl) {
         const action = btn.dataset.ytAction;
         if (action === 'open') {
             window.open(url, '_blank', 'noopener');
+            return;
+        }
+        if (action === 'summary') {
+            const box = row.querySelector('.yt-summary');
+            if (!box) return;
+            // 既に要約済みなら表示/非表示をトグル（再生成しない＝コストをかけない）
+            if (box.textContent.trim()) {
+                box.style.display = box.style.display === 'none' ? 'block' : 'none';
+                return;
+            }
+            const orig = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '⏳ 要約中…';
+            try {
+                const res = await apiFetch(`/api/youtube/${encodeURIComponent(id)}/summary`, { method: 'POST', body: '{}' });
+                box.textContent = res.summary || '要約を取得できませんでした';
+                box.style.display = 'block';
+                btn.textContent = '📝 要約';
+            } catch (e) {
+                showToast('要約できませんでした（字幕の無い動画かもしれません）', true);
+                btn.textContent = orig;
+            } finally {
+                btn.disabled = false;
+            }
             return;
         }
         btn.disabled = true;
@@ -8903,6 +8979,23 @@ function _vibrateMedDone() {
     } catch {}
 }
 
+// 瞑想完了時に、習慣トラッカーに「瞑想」習慣があればそれも完了として記録する。
+// 瞑想習慣が未登録のユーザーに勝手な習慣を作らないよう、存在を確認してから完了する。
+async function _completeMeditationHabit() {
+    try {
+        const data = await apiFetch('/api/habits');
+        const habits = (data && data.habits) || [];
+        const match = habits.find(h => (h.name || '').includes('瞑想'));
+        if (!match) return; // 瞑想習慣が未登録なら何もしない
+        const doneIds = (data.today_done || []).map(String);
+        if (doneIds.includes(String(match.id))) return; // すでに今日完了済み
+        await apiFetch('/api/habits/complete', { method: 'POST', body: JSON.stringify({ habit_name: match.name }) });
+        if (typeof loadHabits === 'function') loadHabits().catch(() => {});
+    } catch (e) {
+        console.warn('瞑想習慣の自動完了に失敗:', e);
+    }
+}
+
 window.openMeditationModal = () => {
     const modal = $('#meditation-modal');
     if (!modal) return;
@@ -8962,6 +9055,8 @@ function _finishMeditation(min) {
     // 開始ログを終了レンジ形式に更新（- HH:MM ▶ X → - HH:MM - HH:MM X）
     const activityName = _medState.activityName || `瞑想（${min}分）`;
     apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: activityName, status: 'end' }) }).catch(() => {});
+    // 習慣トラッカーの「瞑想」習慣も完了として記録する
+    _completeMeditationHabit();
     _releaseMedWakeLock();
     showToast(`🧘 ${msg}`);
 }
@@ -8973,6 +9068,8 @@ window.stopMeditation = () => {
     if (min > 0 && _medState.activityName) {
         // 中断時もレンジ形式で終了記録（開始ログが残っている）
         apiFetch('/api/lifelog_activity', { method: 'POST', body: JSON.stringify({ activity_name: _medState.activityName, status: 'end' }) }).catch(() => {});
+        // 実際に瞑想した場合は習慣トラッカーの「瞑想」も完了として記録する
+        _completeMeditationHabit();
     }
     _releaseMedWakeLock();
     $('#meditation-modal')?.classList.add('hidden');
@@ -11306,7 +11403,7 @@ const TUTORIAL_SLIDES = [
             <li>◀ ▶ で日付を移動。📅 「履歴」で月単位カレンダーから過去日を表示</li>
             <li>🥗 1 日の合計カロリー・PFC をカード上部に表示</li>
             <li>💬「アドバイス」ボタンで栄養バランスのフィードバック</li>
-            <li>🍳「献立提案」で過去の食事履歴と空白期間から次のごはん候補を提案</li>
+            <li>🍳「献立提案」で過去の食事履歴・空白期間に加え、保存済みレシピも踏まえて次のごはん候補を提案</li>
         </ul>`
     },
     {
@@ -14825,7 +14922,10 @@ function initWatchlistSortable(container) {
         animation: 150,
         delay: 200,
         delayOnTouchOnly: true,
+        touchStartThreshold: 5,
         ghostClass: 'sortable-ghost',
+        chosenClass: 'sortable-chosen',
+        dragClass: 'sortable-drag',
         onEnd: () => {
             const codes = Array.from(container.querySelectorAll('.watchlist-item'))
                 .map(el => el.dataset.code).filter(Boolean);

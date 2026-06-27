@@ -18,6 +18,73 @@ from config import TIMEOUT_HTTP_DEFAULT
 
 RSS_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
 
+# 字幕取得で優先する言語（日本語→英語の順で探す）
+_TRANSCRIPT_LANGS = ["ja", "ja-JP", "en", "en-US", "en-GB"]
+# 要約に渡す字幕の最大文字数。コスト暴発を防ぐため上限を設ける（約8000字≒数千トークン）。
+_TRANSCRIPT_MAX_CHARS = 8000
+
+
+async def fetch_transcript_text(video_id: str) -> str:
+    """動画の字幕を1本のテキストにして返す。取得できなければ空文字。
+    youtube-transcript-api を使い、API クォータは消費しない。"""
+    def _fetch() -> str:
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            api = YouTubeTranscriptApi()
+            fetched = api.fetch(video_id, languages=_TRANSCRIPT_LANGS)
+            parts = [seg.get("text", "") for seg in fetched.to_raw_data()]
+            text = " ".join(p.strip() for p in parts if p and p.strip())
+            return text
+        except Exception as e:
+            logging.debug(f"transcript fetch failed ({video_id}): {e}")
+            return ""
+
+    try:
+        return await asyncio.to_thread(_fetch)
+    except Exception as e:
+        logging.debug(f"transcript thread failed ({video_id}): {e}")
+        return ""
+
+
+async def summarize_video(gemini_client, model: str, video_id: str,
+                          title: str = "", description: str = "") -> dict:
+    """字幕（なければ概要欄）を Gemini Flash で要約する。
+    返り値: {ok, summary, source}。source は 'transcript' / 'description' / ''。"""
+    transcript = await fetch_transcript_text(video_id)
+    source = "transcript"
+    base_text = transcript
+    if not base_text:
+        # 字幕が無い動画は概要欄テキストで代用（精度は落ちるがコストは同等）
+        base_text = (description or "").strip()
+        source = "description" if base_text else ""
+    if not base_text:
+        return {"ok": False, "summary": "", "source": "",
+                "error": "字幕も概要も取得できませんでした"}
+
+    base_text = base_text[:_TRANSCRIPT_MAX_CHARS]
+    prompt = (
+        "次のYouTube動画の内容を、見るかどうかを判断できるように日本語で要約してください。\n"
+        "【ルール】\n"
+        "- 冒頭に1行で『どんな動画か』を要約\n"
+        "- 続けて要点を箇条書きで3〜5個\n"
+        "- 専門用語は避け、やさしい言葉で。誇張や憶測はしない\n"
+        "- 全体で短めに（長文にしない）\n\n"
+        f"# タイトル\n{title}\n\n"
+        f"# 内容（{'字幕' if source == 'transcript' else '概要欄'}）\n{base_text}\n"
+    )
+    try:
+        resp = await gemini_client.aio.models.generate_content(
+            model=model, contents=prompt,
+        )
+        summary = (resp.text or "").strip()
+        if not summary:
+            return {"ok": False, "summary": "", "source": source,
+                    "error": "要約生成に失敗しました"}
+        return {"ok": True, "summary": summary, "source": source}
+    except Exception as e:
+        logging.error(f"summarize_video error ({video_id}): {e}")
+        return {"ok": False, "summary": "", "source": source, "error": str(e)}
+
 
 class YouTubeService:
     def __init__(self, creds):
