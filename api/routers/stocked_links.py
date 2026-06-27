@@ -14,9 +14,9 @@ from pydantic import BaseModel
 from api.database import (
     add_stocked_link, get_all_links, get_link_by_id,
     update_link_details, mark_link_as_saved, delete_stocked_link,
-    backup_db_to_drive,
+    backup_db_to_drive, set_link_thumbnail,
 )
-from api.routes import verify_api_key, sync_link_to_obsidian
+from api.routes import verify_api_key, sync_link_to_obsidian, fetch_og_image
 from utils.async_utils import safe_create_task
 
 router = APIRouter(prefix="/links", tags=["links"])
@@ -60,6 +60,21 @@ def _schedule_db_backup(name: str):
 @router.get("", dependencies=[Depends(verify_api_key)])
 async def get_links():
     return {"links": await get_all_links()}
+
+
+@router.post("/{link_id}/thumbnail", dependencies=[Depends(verify_api_key)])
+async def link_thumbnail(link_id: int):
+    """リンクのサムネイル（OGP画像）をオンデマンドで取得してキャッシュする。
+    一度取得すれば次回からは即返す。画像が無いページは再取得しないよう印を付ける。"""
+    lk = await get_link_by_id(link_id)
+    if not lk:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません")
+    cached = (lk.get("thumbnail") or "").strip()
+    if cached:
+        return {"ok": True, "thumbnail": "" if cached == "__none__" else cached}
+    img = await fetch_og_image(lk.get("url") or "")
+    await set_link_thumbnail(link_id, img or "__none__")
+    return {"ok": True, "thumbnail": img}
 
 
 class RecipeSaveRequest(BaseModel):

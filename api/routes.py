@@ -170,6 +170,38 @@ async def authenticate(req: AuthRequest):
         raise HTTPException(status_code=401, detail="パスワードが正しくありません。")
     return {"api_key": API_KEY}
 
+async def fetch_og_image(url: str) -> str:
+    """ページから og:image（なければ twitter:image）を取り出し、絶対URLで返す。失敗時は空。"""
+    import aiohttp
+    import re as _re
+    from urllib.parse import urljoin
+
+    if not url:
+        return ""
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; LinkPreview/1.0)"}
+    try:
+        timeout = aiohttp.ClientTimeout(total=TIMEOUT_HTTP_SHORT)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return ""
+                # <head> に OGP がある想定で先頭のみ読む（最大200KB）
+                raw = await resp.content.read(200_000)
+        html = raw.decode("utf-8", "ignore")
+        patterns = [
+            r'<meta[^>]+(?:property|name)=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)["\']',
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']',
+            r'<meta[^>]+(?:property|name)=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']',
+        ]
+        for p in patterns:
+            m = _re.search(p, html, _re.IGNORECASE)
+            if m and m.group(1).strip():
+                return urljoin(url, m.group(1).strip())
+    except Exception as e:
+        logging.debug(f"og:image取得失敗 {url}: {e}")
+    return ""
+
+
 def _extract_youtube_id(url: str) -> str:
     """YouTube の URL から動画ID（11桁）を抽出する。取れなければ空文字。"""
     import re as _re

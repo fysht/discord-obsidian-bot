@@ -476,6 +476,8 @@ async def init_db():
             "ALTER TABLE stocked_links ADD COLUMN linked_note_url TEXT DEFAULT ''",
             "ALTER TABLE stocked_links ADD COLUMN tags TEXT DEFAULT ''",
             "ALTER TABLE stocked_links ADD COLUMN calendar_event_id TEXT DEFAULT ''",
+            # ウェブ/レシピ/書籍のサムネイル（OGP画像URL）をキャッシュする列
+            "ALTER TABLE stocked_links ADD COLUMN thumbnail TEXT DEFAULT ''",
             "ALTER TABLE messages ADD COLUMN starred INTEGER DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN reply_to INTEGER DEFAULT NULL",
             "ALTER TABLE messages ADD COLUMN label TEXT DEFAULT ''",
@@ -751,7 +753,7 @@ async def get_all_links():
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags FROM stocked_links ORDER BY id ASC"
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, thumbnail FROM stocked_links ORDER BY id ASC"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -761,11 +763,21 @@ async def get_link_by_id(link_id: int):
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, calendar_event_id FROM stocked_links WHERE id = ?",
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, calendar_event_id, thumbnail FROM stocked_links WHERE id = ?",
             (link_id,)
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
+
+
+async def set_link_thumbnail(link_id: int, thumbnail: str) -> bool:
+    """ストックリンクのサムネイル（OGP画像URL）をキャッシュする。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE stocked_links SET thumbnail = ? WHERE id = ?", (thumbnail, int(link_id))
+        )
+        await db.commit()
+        return cursor.rowcount > 0
 
 async def update_link_details(link_id: int, title: str, purpose: str, summary: str, memo: str, target_date: str, linked_note_url: str, link_type: str, tags: str = "", calendar_event_id: str = ""):
     """リンクの詳細情報を更新する"""

@@ -4383,6 +4383,29 @@ window.changeLinkSort = (type, val) => {
     loadStockedLinks();
 };
 
+// ウェブ/レシピ/書籍リンクのサムネ（OGP画像）を、未取得のものだけ遅延取得して埋める。
+// サーバー側で取得結果をキャッシュするので、二度目以降は即座に返る。
+async function _loadStockedThumbnails(container, items) {
+    if (!container) return;
+    const targets = (items || []).filter(lk =>
+        (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book')
+        && !(lk.thumbnail && String(lk.thumbnail).trim()));
+    for (const lk of targets) {
+        try {
+            const res = await apiFetch(`/api/links/${lk.id}/thumbnail`, { method: 'POST', body: '{}' });
+            const img = container.querySelector(`[data-thumb-img="${lk.id}"]`);
+            const wrap = container.querySelector(`[data-thumb-wrap="${lk.id}"]`);
+            if (window._stockedLinksById && window._stockedLinksById[lk.id]) {
+                window._stockedLinksById[lk.id].thumbnail = res.thumbnail || '__none__';
+            }
+            if (res.thumbnail && img && wrap) {
+                img.src = res.thumbnail;
+                wrap.style.display = '';
+            }
+        } catch (e) { /* 取得失敗はサムネ無しのまま */ }
+    }
+}
+
 // YouTube の URL から動画ID（11桁）を抽出する。watch?v= / youtu.be / shorts / embed / live に対応。
 function _youtubeIdFromUrl(url) {
     if (!url) return '';
@@ -4617,16 +4640,21 @@ window.loadStockedLinks = async () => {
             container.innerHTML = items.map(lk => {
                 const dateStr = new Date(lk.added_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
                 const titleText = (lk.title && lk.title !== 'Untitled') ? lk.title : (lk.url || '(無題)');
-                // YouTube の「あとで見る」は新着と見た目を統一する：
-                // サムネは新着サイズ（96x54）、タイトルは全表示、要約ボタンも用意する。
+                // サムネイル。YouTube は動画ID、ウェブ/レシピ/書籍は OGP画像（lk.thumbnail）。
+                // 未取得（thumbnail 空）の web/recipe/book は枠だけ用意し、描画後に遅延取得して埋める。
                 let thumbEl = '';
                 let ytVid = '';
+                const _imgStyle = 'width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);';
                 if (lk.type === 'youtube') {
                     ytVid = _youtubeIdFromUrl(lk.url);
                     if (ytVid) {
                         const t = `https://i.ytimg.com/vi/${ytVid}/mqdefault.jpg`;
-                        thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);"></a>`;
+                        thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
                     }
+                } else if (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book') {
+                    const th = (lk.thumbnail && lk.thumbnail !== '__none__') ? lk.thumbnail : '';
+                    // 取得済み画像があれば表示、無ければ枠を隠しておき遅延取得で表示する
+                    thumbEl = `<a class="stocked-link-thumb" data-thumb-wrap="${lk.id}" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;${th ? '' : 'display:none;'}"><img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
                 }
                 const rawTitleEl = lk.url
                     ? `<a class="stocked-link-title" href="${lk.url}" target="_blank" rel="noopener">${escapeHtml(titleText)}</a>`
@@ -4654,10 +4682,10 @@ window.loadStockedLinks = async () => {
                 const memoBlock = (lk.type === 'study' && lk.notes)
                     ? `<div class="study-memo-block">${renderStudyMemo(lk.notes)}</div>`
                     : '';
-                // YouTube はサムネを左、タイトルを右に置いた横並びヘッダーで新着と統一する。
-                const headerEl = (lk.type === 'youtube' && thumbEl)
+                // サムネがある場合はサムネ左・タイトル右の横並びヘッダーにする。
+                const headerEl = thumbEl
                     ? `<div style="display:flex;gap:8px;align-items:flex-start;">${thumbEl}<div style="flex:1;min-width:0;">${titleEl}</div></div>`
-                    : `${thumbEl}${titleEl}`;
+                    : `${titleEl}`;
                 // YouTube は要約ボタン＋表示欄を追加（新着と同じオンデマンド要約）。
                 const ytSummaryBtn = (lk.type === 'youtube' && ytVid)
                     ? `<button class="stocked-link-btn" data-link-action="yt-summary" data-vid="${escapeHtml(ytVid)}" title="字幕からAI要約（見るか判断する用）">📝 要約</button>`
@@ -4680,6 +4708,7 @@ window.loadStockedLinks = async () => {
                 `;
             }).join('');
             _bindStockedLinkDelegation(container);
+            _loadStockedThumbnails(container, items);
         };
 
         renderGroup(webEl, webLinks);

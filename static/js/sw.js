@@ -1,4 +1,4 @@
-const CACHE_NAME = 'secretary-ai-v76';
+const CACHE_NAME = 'secretary-ai-v77';
 const SHARE_CACHE = 'share-target-cache';
 const ASSETS = [
   '/',
