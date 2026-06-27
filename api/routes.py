@@ -170,6 +170,16 @@ async def authenticate(req: AuthRequest):
         raise HTTPException(status_code=401, detail="パスワードが正しくありません。")
     return {"api_key": API_KEY}
 
+def _extract_youtube_id(url: str) -> str:
+    """YouTube の URL から動画ID（11桁）を抽出する。取れなければ空文字。"""
+    import re as _re
+    m = _re.search(
+        r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|embed/|shorts/|live/)|youtu\.be/)([A-Za-z0-9_-]{11})",
+        url or "",
+    )
+    return m.group(1) if m else ""
+
+
 async def _fetch_link_meta(url: str) -> dict:
     import aiohttp
     import re as _re
@@ -181,6 +191,7 @@ async def _fetch_link_meta(url: str) -> dict:
     # YouTube判定とタイトル取得強化
     if "youtube.com" in url or "youtu.be" in url:
         link_type = "youtube"
+        author = ""
         try:
             safe_url = urllib.parse.quote(url, safe='')
             oembed = f"https://www.youtube.com/oembed?url={safe_url}&format=json"
@@ -189,12 +200,13 @@ async def _fetch_link_meta(url: str) -> dict:
                     if resp.status == 200:
                         data = await resp.json()
                         title = data.get("title", "YouTube Video")
+                        author = data.get("author_name", "") or ""
                         recipe_kw = ["レシピ", "作り方", "材料", "献立", "recipe", "cooking"]
                         if any(k in title.lower() for k in recipe_kw):
                             link_type = "recipe"
         except Exception as e:
             logging.debug(f"YouTube oEmbed失敗: {e}")
-        return {"title": title, "type": link_type}
+        return {"title": title, "type": link_type, "author": author}
 
     if "maps.google.com" in url or "maps.app.goo.gl" in url or "goo.gl/maps" in url or "/maps/" in url:
         link_type = "map"
@@ -389,6 +401,34 @@ async def chat(req: ChatRequest):
         url = url_match.group(0)
         try:
             meta = await _fetch_link_meta(url)
+
+            # YouTube リンクは（レシピ判定の有無に関わらず）「あとで見る」に入れる。
+            # レシピにするかはユーザーがボタンで選べるようにする（recipe_save）。
+            # Obsidian ノートはここでは作らず、「保存」に移したときに作成する。
+            yt_id = _extract_youtube_id(url)
+            if yt_id:
+                from api.database import youtube_upsert_video, youtube_update_video_state
+                await youtube_upsert_video({
+                    "video_id": yt_id, "title": meta["title"], "url": url,
+                    "channel_title": meta.get("author") or "",
+                })
+                await youtube_update_video_state(yt_id, "later")
+                reply = (
+                    f"「{meta['title']}」を📺 YouTubeの「あとで見る」に入れたよ。\n"
+                    f"[ACTION:open_youtube]\n"
+                    f"[ACTION:recipe_save:video_id={yt_id}]"
+                )
+                user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
+                asst_id = await notification_service.save_message_and_notify("assistant", reply)
+                try:
+                    await notification_service.mark_user_responded()
+                except Exception as e:
+                    logging.debug(f"mark_user_responded failed: {e}")
+                _resp = ChatResponse(reply=reply, user_message_id=user_id, assistant_message_id=asst_id)
+                if req.client_msg_id:
+                    _CHAT_IDEMPOTENCY_CACHE[req.client_msg_id] = (_time_mod.time(), _resp)
+                return _resp
+
             link_id = await add_stocked_link(url, meta["type"], meta["title"])
 
             # Obsidianへの即時作成
@@ -405,6 +445,9 @@ async def chat(req: ChatRequest):
                 _meal_name = re.sub(r"[\[\]|\n]", "", meta["title"]).strip()[:40]
                 if _meal_name:
                     reply += f"\n[ACTION:log_meal:name={_meal_name}]"
+            # ウェブリンクは「レシピに保存」を選べるようにボタンを出す
+            elif meta["type"] == "web" and link_id:
+                reply += f"\n[ACTION:recipe_save:link_id={link_id}]"
             user_id = await save_message("user", req.message, reply_to=req.reply_to_id)
             asst_id = await notification_service.save_message_and_notify("assistant", reply)
             try:

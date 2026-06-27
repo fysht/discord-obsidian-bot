@@ -135,9 +135,34 @@ class YouTubeStateRequest(BaseModel):
     state: str
 
 
+async def _create_saved_obsidian_note(video_id: str) -> None:
+    """動画を「保存」にしたタイミングで Obsidian ノートを作成する。
+    保存用要約（なければ短い要約）を本文に添える。"""
+    from api import app
+    from api.database import youtube_get_video
+    v = await youtube_get_video(video_id)
+    if not v:
+        return
+    chat_service = getattr(app.state, "chat_service", None)
+    if not chat_service:
+        return
+    try:
+        from api.routes import sync_link_to_obsidian
+        await sync_link_to_obsidian(
+            chat_service,
+            v.get("title") or "YouTube動画",
+            "youtube",
+            v.get("url") or f"https://www.youtube.com/watch?v={video_id}",
+            summary=(v.get("detail_summary") or v.get("summary") or ""),
+        )
+    except Exception as e:
+        logging.debug(f"saved obsidian note error ({video_id}): {e}")
+
+
 @router.post("/{video_id}/state", dependencies=[Depends(verify_api_key)])
 async def youtube_set_state(video_id: str, req: YouTubeStateRequest):
-    """動画の状態を更新する（watched / hidden / new / later）。"""
+    """動画の状態を更新する（later / saved / hidden / new）。
+    saved に移したときは Obsidian ノートを作成する。"""
     from api.database import youtube_update_video_state
     state = (req.state or "").strip().lower()
     if state not in ("new", "later", "saved", "watched", "hidden"):
@@ -145,6 +170,8 @@ async def youtube_set_state(video_id: str, req: YouTubeStateRequest):
     ok = await youtube_update_video_state(video_id, state)
     if not ok:
         raise HTTPException(status_code=404, detail="動画が見つかりません")
+    if state == "saved":
+        await _create_saved_obsidian_note(video_id)
     return {"ok": True, "state": state}
 
 
@@ -168,6 +195,8 @@ async def youtube_bulk(req: YouTubeBulkRequest):
         try:
             if await youtube_update_video_state(vid, action):
                 count += 1
+                if action == "saved":
+                    await _create_saved_obsidian_note(vid)
         except Exception as e:
             logging.debug(f"youtube_bulk error ({vid}): {e}")
     return {"ok": True, "count": count, "action": action}

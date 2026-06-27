@@ -1626,6 +1626,7 @@ function describeAction(payload) {
         case 'mit_set':      return `🎯 今日のMITを登録 (${(args.items || '').split(',').filter(Boolean).length}件)`;
         case 'mit_rollover': return `📤 未達MITを翌日へ繰越`;
         case 'note_create':  return `📝 ノートに保存: ${args.title || ''}`;
+        case 'recipe_save':  return `🍳 レシピに保存`;
         case 'propose_perm_note': return `📌 永久ノートにする: ${args.title || ''}`;
         case 'log_life_activity': {
             const s = args.status === 'end' ? '終了' : '開始';
@@ -1879,6 +1880,12 @@ window.executeAction = async function(encodedPayload, btn) {
                 body: JSON.stringify({ action: 'add', title: args.title, list_name: args.list_name || null })
             });
             showToast('タスクに追加しました');
+        } else if (action === 'recipe_save') {
+            const body = {};
+            if (args.video_id) body.video_id = args.video_id;
+            if (args.link_id) body.link_id = parseInt(args.link_id, 10);
+            await apiFetch('/api/links/save_as_recipe', { method: 'POST', body: JSON.stringify(body) });
+            showToast('🍳 レシピに保存しました');
         } else if (action === 'task_delete') {
             // keyword ベースの削除はサーバ側が未実装。ガイダンス表示。
             showToast('削除はタスク一覧から行ってください', true);
@@ -7896,16 +7903,16 @@ function _youtubeRowActions(state, v) {
     const dot = ' <span style="color:#7ee0a0;">●</span>';
     const hasSum = !!(v && v.summary && String(v.summary).trim());
     const hasDet = !!(v && v.detail_summary && String(v.detail_summary).trim());
-    const summary = `<button class="mini-link" data-yt-action="summary" title="${hasSum ? '要約あり（タップで開閉）' : 'AIで内容を要約（API。字幕ならほぼ無料）'}" style="color:var(--accent);font-weight:600;">📝 要約${hasSum ? dot : ''}</button>`;
-    const gemini = `<button class="mini-link" data-yt-action="gemini" title="無料のGeminiで要約（プロンプトをコピーしてGeminiを開く→回答を貼り付け）">🤖 無料要約</button>`;
+    // 「要約」は無料のGemini Web経由のみ（APIで意図せず課金しないように一本化）。
+    const summary = `<button class="mini-link" data-yt-action="summary" title="${hasSum ? '要約あり（タップで開閉）' : '無料のGeminiで要約（プロンプトをコピーしてGeminiを開く→回答を貼り付け）'}" style="color:var(--accent);font-weight:600;">📝 要約${hasSum ? dot : ''}</button>`;
     const detail = `<button class="mini-link" data-yt-action="detail" title="${hasDet ? '保存用要約あり（タップで開閉）' : '保存用の詳しい要約を入力（後から読み返す用）'}">📑 保存用要約${hasDet ? dot : ''}</button>`;
     const later = `<button class="mini-link" data-yt-action="later" title="あとで見るへ移す" style="color:var(--accent);font-weight:600;">🔖 あとで見る</button>`;
     const saved = `<button class="mini-link" data-yt-action="saved" title="保存へ移す（とっておく）" style="color:var(--accent);font-weight:600;">💾 保存</button>`;
     const hide = `<button class="mini-link btn-danger" data-yt-action="hidden" title="一覧から外す（非表示）">🙈 非表示</button>`;
     // 保存用要約は「あとで見る／保存」だけ（新着はサッと判断するためボタンを増やさない）
-    if (state === 'later') return summary + gemini + detail + saved + hide;
-    if (state === 'saved') return summary + gemini + detail + later + hide;
-    return summary + gemini + later + saved + hide;  // new
+    if (state === 'later') return summary + detail + saved + hide;
+    if (state === 'saved') return summary + detail + later + hide;
+    return summary + later + saved + hide;  // new
 }
 
 window.loadYouTubeVideos = async (state = 'new') => {
@@ -7942,20 +7949,23 @@ window.loadYouTubeVideos = async (state = 'new') => {
             const check = state === 'new'
                 ? `<input type="checkbox" class="yt-check" data-id="${vid}" style="margin-top:3px;flex-shrink:0;">` : '';
             // タイトルはどの状態でもクリックで開ける（開く操作を統一）
+            // 要約・保存用要約は行の「下に全幅」で表示する（モバイルで細長くならないように）。
             const detail = v.detail_summary || '';
             return `
-                <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" data-detail="${escapeHtml(detail)}" style="align-items:flex-start;gap:8px;cursor:default;">
-                    ${check}
-                    <a href="${url}" target="_blank" rel="noopener" style="flex-shrink:0;line-height:0;"><img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);"></a>
-                    <div class="row-main" style="flex:1;min-width:0;">
-                        <a class="row-title" href="${url}" target="_blank" rel="noopener" style="display:block;font-size:0.86rem;line-height:1.35;color:var(--text-primary);text-decoration:none;">${title}</a>
-                        <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;">${ch}${published ? ' ・ ' + published : ''}</div>
-                        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;">
-                            ${actions}
+                <div class="invest-row youtube-row" data-id="${vid}" data-url="${url}" data-detail="${escapeHtml(detail)}" data-summary="${escapeHtml(v.summary || '')}" style="flex-direction:column;align-items:stretch;gap:6px;cursor:default;">
+                    <div style="display:flex;align-items:flex-start;gap:8px;">
+                        ${check}
+                        <a href="${url}" target="_blank" rel="noopener" style="flex-shrink:0;line-height:0;"><img src="${thumb}" alt="" loading="lazy" style="width:96px;height:54px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);"></a>
+                        <div class="row-main" style="flex:1;min-width:0;">
+                            <a class="row-title" href="${url}" target="_blank" rel="noopener" style="display:block;font-size:0.86rem;line-height:1.35;color:var(--text-primary);text-decoration:none;">${title}</a>
+                            <div class="row-sub" style="font-size:0.74rem;color:var(--text-muted);margin-top:3px;">${ch}${published ? ' ・ ' + published : ''}</div>
+                            <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:5px;">
+                                ${actions}
+                            </div>
                         </div>
-                        <div class="yt-summary" style="display:none;margin-top:6px;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;">${v.summary ? escapeHtml(v.summary) : ''}</div>
-                        <div class="yt-detail" style="display:none;margin-top:6px;">${detail.trim() ? _ytDetailReadHtml(detail) : ''}</div>
                     </div>
+                    <div class="yt-summary" style="display:none;font-size:0.78rem;line-height:1.6;color:var(--text-secondary);white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,0.04);border-radius:6px;padding:8px;"></div>
+                    <div class="yt-detail" style="display:none;">${detail.trim() ? _ytDetailReadHtml(detail) : ''}</div>
                 </div>`;
         }).join('');
         _bindYouTubeDelegation(listEl);
@@ -8076,6 +8086,7 @@ window.saveGeminiSummary = async (id, btn) => {
         });
         if (box) box.innerHTML = _ytSummaryHtml({ summary: text, source: 'manual' });
         const row = box && box.closest('.youtube-row');
+        if (row) row.dataset.summary = text;
         const sumBtn = row && row.querySelector('[data-yt-action="summary"]');
         if (sumBtn) { sumBtn.innerHTML = '📝 要約 <span style="color:#7ee0a0;">●</span>'; sumBtn.title = '要約あり（タップで開閉）'; }
         showToast('要約を保存しました');
@@ -8101,21 +8112,6 @@ function _bindYouTubeDelegation(listEl) {
             window.open(url, '_blank', 'noopener');
             return;
         }
-        if (action === 'gemini') {
-            const box = row.querySelector('.yt-summary');
-            if (!box) return;
-            const prompt = _ytGeminiPrompt(url);
-            try {
-                await navigator.clipboard.writeText(prompt);
-                showToast('プロンプトをコピーしました。Geminiに貼り付けてください');
-            } catch (e) {
-                showToast('自動コピーできませんでした。下の「プロンプトを表示」からコピーしてください', true);
-            }
-            window.open('https://gemini.google.com/app', '_blank', 'noopener');
-            box.innerHTML = _ytGeminiPasteUi(id, prompt);
-            box.style.display = 'block';
-            return;
-        }
         if (action === 'detail') {
             const box = row.querySelector('.yt-detail');
             if (!box) return;
@@ -8127,32 +8123,38 @@ function _bindYouTubeDelegation(listEl) {
             return;
         }
         if (action === 'summary') {
+            // 要約は「無料のGemini Web」経由のみ（APIで意図せず課金しないため）。
             const box = row.querySelector('.yt-summary');
             if (!box) return;
-            // 既に要約済みなら表示/非表示をトグル（再生成しない＝コストをかけない）
-            if (box.textContent.trim()) {
-                box.style.display = box.style.display === 'none' ? 'block' : 'none';
+            const saved = row.dataset.summary || '';
+            const pasteOpen = !!box.querySelector('.yt-gemini-paste');
+            if (pasteOpen) {
+                // 貼り付けUIを閉じる（保存済み要約があれば読み取り表示に戻す）
+                if (saved) { box.innerHTML = _ytSummaryHtml({ summary: saved, source: 'manual' }); box.style.display = 'block'; }
+                else { box.innerHTML = ''; box.style.display = 'none'; }
                 return;
             }
-            const orig = btn.textContent;
-            btn.disabled = true;
-            btn.textContent = '⏳ 要約中…';
-            try {
-                const res = await apiFetch(`/api/youtube/${encodeURIComponent(id)}/summary`, { method: 'POST', body: '{}' });
-                box.innerHTML = _ytSummaryHtml(res);
-                box.style.display = 'block';
-                // 要約あり印（●）を付け、以降はタップで開閉
-                btn.innerHTML = '📝 要約 <span style="color:#7ee0a0;">●</span>';
-                btn.title = '要約あり（タップで開閉）';
-            } catch (e) {
-                // サーバーが返した失敗理由をその場に表示して原因を切り分けられるようにする
-                box.textContent = '⚠️ 要約できませんでした：' + (e.detail || e.message || '不明なエラー');
-                box.style.display = 'block';
-                showToast('要約できませんでした', true);
-                btn.textContent = orig;
-            } finally {
-                btn.disabled = false;
+            if (saved) {
+                // 保存済み要約の表示/非表示トグル
+                if (box.style.display === 'none') {
+                    box.innerHTML = _ytSummaryHtml({ summary: saved, source: 'manual' });
+                    box.style.display = 'block';
+                } else {
+                    box.style.display = 'none';
+                }
+                return;
             }
+            // まだ要約が無い → 無料Geminiフロー（プロンプトをコピー＋Geminiを開く＋貼り付け欄）
+            const prompt = _ytGeminiPrompt(url);
+            try {
+                await navigator.clipboard.writeText(prompt);
+                showToast('プロンプトをコピーしました。Geminiに貼り付けてください');
+            } catch (e) {
+                showToast('自動コピーできませんでした。下の「プロンプトを表示」からコピーしてください', true);
+            }
+            window.open('https://gemini.google.com/app', '_blank', 'noopener');
+            box.innerHTML = _ytGeminiPasteUi(id, prompt);
+            box.style.display = 'block';
             return;
         }
         // later / saved / hidden はすべて状態の付け替え（同じ /state で統一）。

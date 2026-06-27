@@ -62,6 +62,45 @@ async def get_links():
     return {"links": await get_all_links()}
 
 
+class RecipeSaveRequest(BaseModel):
+    video_id: str = ""
+    link_id: int | None = None
+
+
+@router.post("/save_as_recipe", dependencies=[Depends(verify_api_key)])
+async def save_as_recipe(req: RecipeSaveRequest):
+    """共有した YouTube / ウェブのリンクを「レシピ」として保存する
+    （レシピのストックリンク＋Recipes ノートを作成）。"""
+    from api import app
+    import re as _re
+
+    url = ""
+    title = ""
+    if req.video_id:
+        from api.database import youtube_get_video
+        v = await youtube_get_video(req.video_id)
+        if not v:
+            raise HTTPException(status_code=404, detail="動画が見つかりません")
+        url = v.get("url") or f"https://www.youtube.com/watch?v={req.video_id}"
+        title = v.get("title") or "レシピ動画"
+    elif req.link_id:
+        lk = await get_link_by_id(req.link_id)
+        if not lk:
+            raise HTTPException(status_code=404, detail="リンクが見つかりません")
+        url = lk.get("url") or ""
+        title = lk.get("title") or "レシピ"
+    else:
+        raise HTTPException(status_code=400, detail="video_id か link_id が必要です")
+
+    new_id = await add_stocked_link(url, "recipe", title)
+    chat_service = getattr(app.state, "chat_service", None)
+    if chat_service:
+        await sync_link_to_obsidian(chat_service, title, "recipe", url)
+    _schedule_db_backup("db-backup-recipe-save")
+    meal_name = _re.sub(r"[\[\]|\n]", "", title).strip()[:40]
+    return {"ok": True, "link_id": new_id, "title": title, "meal_name": meal_name}
+
+
 @router.post("", dependencies=[Depends(verify_api_key)])
 async def create_link(req: LinkCreateRequest):
     """手動でのリンク（レシピ等）追加。"""
