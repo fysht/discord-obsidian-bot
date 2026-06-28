@@ -4679,10 +4679,14 @@ window.loadStockedLinks = async () => {
                     thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
                 } else if (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book' || lk.type === 'map') {
                     const th = (lk.thumbnail && lk.thumbnail !== '__none__') ? lk.thumbnail : '';
+                    // 書籍の表紙は縦長なので cover だと中央しか映らない。contain で全体を表示する。
+                    const imgStyle = lk.type === 'book'
+                        ? 'width:96px;height:54px;object-fit:contain;border-radius:6px;background:rgba(255,255,255,0.05);'
+                        : _imgStyle;
                     // 取得済み画像があれば画像、無ければ「No Image」枠を表示（遅延取得で差し替え）。
                     // 取得を試みても画像が無いページ（__none__）はそのまま「No Image」を出す。
                     thumbEl = `<a class="stocked-link-thumb" data-thumb-wrap="${lk.id}" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;">`
-                        + `<img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${_imgStyle}${th ? '' : 'display:none;'}">`
+                        + `<img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${imgStyle}${th ? '' : 'display:none;'}">`
                         + `<span class="stocked-link-noimg" data-thumb-noimg="${lk.id}" style="${th ? 'display:none;' : ''}">No Image</span>`
                         + `</a>`;
                 }
@@ -4976,7 +4980,9 @@ function _renderLinkThumbPreview(lk) {
     let src = '';
     if (yt) src = `https://i.ytimg.com/vi/${yt}/mqdefault.jpg`;
     else if (lk && lk.thumbnail && lk.thumbnail !== '__none__') src = lk.thumbnail;
-    const imgStyle = 'width:120px;height:68px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);';
+    // 書籍の表紙は縦長なので contain で全体を表示（cover だと中央だけになる）。
+    const fit = (lk && lk.type === 'book') ? 'contain' : 'cover';
+    const imgStyle = `width:120px;height:68px;object-fit:${fit};border-radius:6px;background:rgba(255,255,255,0.05);`;
     box.innerHTML = src
         ? `<img src="${escapeAttr(src)}" alt="" style="${imgStyle}">`
         : `<span class="stocked-link-noimg" style="width:120px;height:68px;">No Image</span>`;
