@@ -529,12 +529,14 @@ class InfoService:
         if "雷" in text or "かみなり" in text:
             return "⛈️"
         if "雨" in text or "あめ" in text:
-            # 降水確率が低い（=時々/一時の小雨）のに本降りアイコン🌧️だと
-            # 雨の可能性が高く見えて紛らわしいので、確率で出し分ける。
+            # 降水確率が低いのに雨アイコンを出すと「雨が降る」ように見えて紛らわしい。
+            # 確率が低い（<50%）ときは雨マークを出さず、晴れ/曇りベースで表現する。
             pop_val = self._parse_pop(pop)
             if pop_val is not None and pop_val < 50:
-                return "🌦️"  # 一時的・低確率の雨（晴れ/曇りベースに小雨）
-            return "🌧️"      # 確率が高い、または不明なら本降り表現
+                if "晴" in text or "はれ" in text:
+                    return "⛅"  # 晴れ時々雨など → 晴れ間のある曇り（雨は見せない）
+                return "☁️"      # 曇り一時雨など → 曇り（雨は見せない）
+            return "🌧️"          # 確率が高い／不明なら雨
         if "晴" in text or "はれ" in text:
             if "くもり" in text or "曇" in text:
                 return "⛅"

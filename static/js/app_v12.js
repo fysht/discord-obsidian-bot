@@ -9347,26 +9347,39 @@ window.chooseExpenseRecordMode = (mode) => {
 };
 
 // ===== 品目ごとに別カードを作成する確認・編集モーダル =====
-function _expenseSplitRowHtml(name = '', amount = '') {
-    return `<div class="exp-split-row" style="display:flex;gap:6px;margin-bottom:6px;align-items:center;">
-        <input class="modern-input exp-split-name" style="flex:1;min-width:0;" placeholder="品名（例: 食パン）" value="${escapeAttr(name)}">
-        <input class="modern-input exp-split-amount" type="number" min="0" style="width:96px;flex-shrink:0;" placeholder="金額" value="${amount !== '' && amount != null ? escapeAttr(String(amount)) : ''}">
-        <button type="button" class="mini-link" onclick="removeExpenseSplitRow(this)" title="この品目を削除" style="white-space:nowrap;">✕</button>
-    </div>`;
+// 支出のカテゴリ/支払方法の option HTML（カードごとのプルダウン用）。
+function _expCatOptions(selected) {
+    return EXPENSE_CATEGORIES_FALLBACK.map(c =>
+        `<option value="${escapeAttr(c)}"${c === selected ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+}
+function _expPayOptions(selected) {
+    const pays = ['', '現金', 'クレジット', '電子マネー', 'QR', '銀行振込', '不明'];
+    return pays.map(p =>
+        `<option value="${escapeAttr(p)}"${p === (selected || '') ? ' selected' : ''}>${p ? escapeHtml(p) : '未指定'}</option>`).join('');
 }
 
-window.addExpenseSplitRow = (name = '', amount = '') => {
-    const list = $('#exp-split-rows');
-    if (!list) return;
-    list.insertAdjacentHTML('beforeend', _expenseSplitRowHtml(typeof name === 'string' ? name : '', amount));
-};
-
-window.removeExpenseSplitRow = (btn) => {
-    const row = btn.closest('.exp-split-row');
-    if (row) row.remove();
-    const list = $('#exp-split-rows');
-    if (list && !list.querySelector('.exp-split-row')) addExpenseSplitRow();
-};
+// 品目1件＝1カード（保存前の支出詳細）。共通項目は最初から埋めておき、個別に編集・保存できる。
+function _expenseSplitCardHtml(item, common) {
+    const amount = Number(item.amount) > 0 ? Number(item.amount) : '';
+    return `<div class="exp-split-card" style="border:1px solid var(--border-glass);border-radius:8px;padding:10px;margin-bottom:10px;background:rgba(255,255,255,0.02);">
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+            <input class="modern-input card-name" style="flex:1;min-width:0;" placeholder="品名 / 内容" value="${escapeAttr((item.name || '').trim())}">
+            <input class="modern-input card-amount" type="number" min="0" style="width:104px;flex-shrink:0;" placeholder="金額" value="${amount !== '' ? escapeAttr(String(amount)) : ''}">
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+            <input class="modern-input card-date" type="date" style="flex:1;" value="${escapeAttr(common.date)}">
+            <select class="modern-input card-category" style="flex:1;">${_expCatOptions(common.category)}</select>
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+            <select class="modern-input card-payment" style="flex:1;">${_expPayOptions(common.payment)}</select>
+            <input class="modern-input card-memo" style="flex:1;" placeholder="メモ（店名/サイト等）" value="${escapeAttr(common.site || '')}">
+        </div>
+        <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;">
+            <span class="card-status" style="font-size:0.74rem;color:var(--text-muted);"></span>
+            <button class="modal-btn submit card-save-btn" style="padding:6px 18px;" onclick="saveExpenseSplitCard(this)">保存</button>
+        </div>
+    </div>`;
+}
 
 window.openExpenseSplitModal = (seed = {}) => {
     let modal = $('#expense-split-modal');
@@ -9376,152 +9389,118 @@ window.openExpenseSplitModal = (seed = {}) => {
             <div id="expense-split-modal" class="modal-overlay hidden">
                 <div class="modal-card" style="max-width:560px;max-height:90vh;overflow-y:auto;">
                     <h3 style="margin-top:0;">🗂 品目ごとに記録</h3>
-                    <p style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 10px;">下の各品目が1件ずつ別の支出カードになります。共通の設定（日付・カテゴリ・支払方法・店名/サイト）はまとめて適用されます。</p>
+                    <p style="font-size:0.74rem;color:var(--text-muted);margin:-4px 0 10px;">各品目が1件ずつの支出になります。共通項目は反映済みです。内容を確認して<b>カードごとに「保存」</b>を押してください（画像は保存しません）。</p>
 
-                    <div style="display:flex;gap:8px;margin-bottom:8px;">
-                        <div style="flex:1;">
-                            <label style="font-size:0.78rem;color:var(--text-muted);">日付</label>
-                            <input id="exp-split-date" type="date" class="modern-input">
+                    <div style="border:1px dashed var(--border-glass);border-radius:8px;padding:8px 10px;margin-bottom:12px;">
+                        <div style="font-size:0.74rem;color:var(--text-muted);margin-bottom:6px;">共通設定（変更したら「全カードに反映」）</div>
+                        <div style="display:flex;gap:6px;margin-bottom:6px;">
+                            <input id="exp-split-c-date" type="date" class="modern-input" style="flex:1;">
+                            <select id="exp-split-c-category" class="modern-input" style="flex:1;"></select>
                         </div>
-                        <div style="flex:1;">
-                            <label style="font-size:0.78rem;color:var(--text-muted);">カテゴリ</label>
-                            <select id="exp-split-category" class="modern-input"></select>
+                        <div style="display:flex;gap:6px;margin-bottom:6px;">
+                            <select id="exp-split-c-payment" class="modern-input" style="flex:1;"></select>
+                            <input id="exp-split-c-site" class="modern-input" style="flex:1;" placeholder="店名/サイト（例: Amazon）">
                         </div>
-                    </div>
-                    <div style="display:flex;gap:8px;margin-bottom:8px;">
-                        <div style="flex:1;">
-                            <label style="font-size:0.78rem;color:var(--text-muted);">支払方法</label>
-                            <select id="exp-split-payment" class="modern-input">
-                                <option value="">未指定</option>
-                                <option value="現金">現金</option>
-                                <option value="クレジット">クレジット</option>
-                                <option value="電子マネー">電子マネー</option>
-                                <option value="QR">QR</option>
-                                <option value="銀行振込">銀行振込</option>
-                                <option value="不明">不明</option>
-                            </select>
-                        </div>
-                        <div style="flex:1;">
-                            <label style="font-size:0.78rem;color:var(--text-muted);">店名/サイト（任意）</label>
-                            <input id="exp-split-site" class="modern-input" placeholder="例: Amazon">
-                        </div>
+                        <button type="button" class="mini-link" onclick="applyExpenseSplitCommon()" title="未保存のカードに共通項目を反映">↻ 共通項目を全カードに反映</button>
                     </div>
 
-                    <label style="font-size:0.78rem;color:var(--text-muted);">品目（1行＝1カード）</label>
-                    <div id="exp-split-rows" style="margin-bottom:4px;"></div>
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-                        <button type="button" class="mini-link" onclick="addExpenseSplitRow()">＋ 品目を追加</button>
-                        <span id="exp-split-total" style="font-size:0.78rem;color:var(--text-secondary);"></span>
-                    </div>
+                    <div id="exp-split-cards"></div>
 
                     <div class="modal-actions" style="margin-top:8px;">
-                        <button class="modal-btn cancel" onclick="document.getElementById('expense-split-modal').classList.add('hidden')">キャンセル</button>
-                        <button class="modal-btn submit" id="exp-split-save-btn" onclick="saveExpenseSplit()">すべて保存</button>
+                        <button class="modal-btn cancel" onclick="closeExpenseSplitModal()">閉じる</button>
                     </div>
                 </div>
             </div>`;
         document.body.appendChild(wrap.firstElementChild);
         modal = $('#expense-split-modal');
-        // 金額入力で合計を更新
-        modal.addEventListener('input', (ev) => {
-            if (ev.target.classList && ev.target.classList.contains('exp-split-amount')) _updateExpenseSplitTotal();
-        });
     }
 
-    const catEl = $('#exp-split-category');
-    if (catEl && !catEl.options.length) {
-        EXPENSE_CATEGORIES_FALLBACK.forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c; opt.textContent = c;
-            catEl.appendChild(opt);
-        });
-    }
+    // 共通設定プルダウンの中身
+    const cCat = $('#exp-split-c-category');
+    if (cCat) cCat.innerHTML = _expCatOptions(seed.category || 'その他');
+    const cPay = $('#exp-split-c-payment');
+    if (cPay) cPay.innerHTML = _expPayOptions(seed.payment_method || '');
 
-    const now = new Date();
-    $('#exp-split-date').value = seed.date || now.toISOString().slice(0, 10);
-    $('#exp-split-category').value = seed.category || 'その他';
-    $('#exp-split-payment').value = seed.payment_method || '';
-    $('#exp-split-site').value = seed.vendor || '';
+    const common = {
+        date: seed.date || _todayStr(),
+        category: seed.category || 'その他',
+        payment: seed.payment_method || '',
+        site: seed.vendor || '',
+    };
+    $('#exp-split-c-date').value = common.date;
+    $('#exp-split-c-category').value = common.category;
+    $('#exp-split-c-payment').value = common.payment;
+    $('#exp-split-c-site').value = common.site;
 
     const items = _expenseAnalysisItems(seed);
-    const list = $('#exp-split-rows');
-    list.innerHTML = (items.length ? items : [{ name: '', amount: '' }])
-        .map(it => _expenseSplitRowHtml((it.name || '').trim(), Number(it.amount) > 0 ? Number(it.amount) : '')).join('');
-    _updateExpenseSplitTotal();
+    const cards = $('#exp-split-cards');
+    cards.innerHTML = (items.length ? items : [{ name: '', amount: '' }])
+        .map(it => _expenseSplitCardHtml(it, common)).join('');
 
     modal.classList.remove('hidden');
 };
 
-function _getExpenseSplitRows() {
-    return Array.from(document.querySelectorAll('#exp-split-rows .exp-split-row')).map(row => ({
-        name: (row.querySelector('.exp-split-name')?.value || '').trim(),
-        amount: parseInt(row.querySelector('.exp-split-amount')?.value || '0', 10) || 0,
-    })).filter(r => r.name || r.amount > 0);
-}
+window.closeExpenseSplitModal = () => {
+    $('#expense-split-modal')?.classList.add('hidden');
+    // この画面は画像を保存しないので pending もクリアしておく
+    _pendingReceiptAnalysis = null;
+    _pendingReceiptBase64 = null;
+    _pendingReceiptMime = '';
+    _pendingReceiptDriveId = '';
+};
 
-function _updateExpenseSplitTotal() {
-    const rows = _getExpenseSplitRows();
-    const total = rows.reduce((s, r) => s + (r.amount || 0), 0);
-    const el = $('#exp-split-total');
-    if (el) el.textContent = rows.length ? `${rows.length}件 ・ 合計 ¥${total.toLocaleString()}` : '';
-}
+// 共通設定を、まだ保存していないカードへまとめて反映する。
+window.applyExpenseSplitCommon = () => {
+    const date = $('#exp-split-c-date')?.value || '';
+    const category = $('#exp-split-c-category')?.value || 'その他';
+    const payment = $('#exp-split-c-payment')?.value || '';
+    const site = ($('#exp-split-c-site')?.value || '').trim();
+    document.querySelectorAll('#exp-split-cards .exp-split-card').forEach(card => {
+        if (card.dataset.saved === '1') return;
+        if (card.querySelector('.card-date')) card.querySelector('.card-date').value = date;
+        if (card.querySelector('.card-category')) card.querySelector('.card-category').value = category;
+        if (card.querySelector('.card-payment')) card.querySelector('.card-payment').value = payment;
+        if (card.querySelector('.card-memo')) card.querySelector('.card-memo').value = site;
+    });
+    showToast('共通項目を反映しました');
+};
 
-window.saveExpenseSplit = async () => {
-    const rows = _getExpenseSplitRows().filter(r => r.amount > 0);
-    if (!rows.length) { showToast('金額のある品目を入力してください', true); return; }
+// カード1枚（=1品目）を支出として保存する。画像は保存しない。
+window.saveExpenseSplitCard = async (btn) => {
+    const card = btn.closest('.exp-split-card');
+    if (!card) return;
+    const name = (card.querySelector('.card-name')?.value || '').trim();
+    const amount = parseInt(card.querySelector('.card-amount')?.value || '0', 10) || 0;
+    if (amount <= 0) { showToast('金額を入力してください', true); return; }
+    const date = card.querySelector('.card-date')?.value || '';
+    const category = card.querySelector('.card-category')?.value || 'その他';
+    const payment = card.querySelector('.card-payment')?.value || '';
+    const memo = (card.querySelector('.card-memo')?.value || '').trim();
 
-    const btn = $('#exp-split-save-btn');
     btn.disabled = true;
     btn.textContent = '保存中…';
-    const date = $('#exp-split-date')?.value || '';
-    const category = $('#exp-split-category')?.value || 'その他';
-    const payment = $('#exp-split-payment')?.value || '';
-    const site = ($('#exp-split-site')?.value || '').trim();
-
     try {
-        // レシート画像は1回だけ Drive にアップロードし、全カードに同じものを紐付ける。
-        let receiptDriveId = _pendingReceiptDriveId;
-        if (_pendingReceiptBase64 && !receiptDriveId) {
-            try {
-                const up = await apiFetch('/api/expenses/receipt_upload', {
-                    method: 'POST',
-                    body: JSON.stringify({ image_base64: _pendingReceiptBase64, mime_type: _pendingReceiptMime || 'image/jpeg', date }),
-                });
-                if (up && up.ok) receiptDriveId = up.drive_id || '';
-            } catch {}
-        }
-
-        let saved = 0;
-        for (const r of rows) {
-            try {
-                await apiFetch('/api/expenses', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        amount: r.amount,
-                        date,
-                        vendor: r.name || site || category,
-                        category,
-                        payment_method: payment,
-                        memo: site,
-                        receipt_drive_id: receiptDriveId || '',
-                    }),
-                });
-                saved++;
-            } catch (e) { /* 1件失敗しても続行 */ }
-        }
-        showToast(`💴 ${saved}件の支出を記録しました`);
-        $('#expense-split-modal')?.classList.add('hidden');
-        // 後片付け（編集モーダルと同じ pending をクリア）
-        _pendingReceiptAnalysis = null;
-        _pendingReceiptBase64 = null;
-        _pendingReceiptMime = '';
-        _pendingReceiptDriveId = '';
+        await apiFetch('/api/expenses', {
+            method: 'POST',
+            body: JSON.stringify({
+                amount, date,
+                vendor: name || memo || category,
+                category, payment_method: payment, memo,
+                receipt_drive_id: '',  // この画面では画像を保存しない
+            }),
+        });
+        // 保存済みにして編集不可にする（残りのカードを続けて保存できる）
+        card.dataset.saved = '1';
+        card.style.opacity = '0.6';
+        card.querySelectorAll('input, select').forEach(el => { el.disabled = true; });
+        const status = card.querySelector('.card-status');
+        if (status) { status.textContent = '✓ 保存済み'; status.style.color = 'var(--accent)'; }
+        btn.textContent = '保存済み';
         loadExpenses(_expenseCurrentYear, _expenseCurrentMonth);
     } catch (e) {
-        showToast('保存に失敗しました', true);
-    } finally {
         btn.disabled = false;
-        btn.textContent = 'すべて保存';
+        btn.textContent = '保存';
+        showToast('保存に失敗しました', true);
     }
 };
 
