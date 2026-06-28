@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from api.database import (
     add_stocked_link, get_all_links, get_link_by_id,
     update_link_details, mark_link_as_saved, delete_stocked_link,
-    backup_db_to_drive, set_link_thumbnail, set_link_tags,
+    backup_db_to_drive, set_link_thumbnail, set_link_tags, set_link_cook_dates,
 )
 from api.routes import verify_api_key, sync_link_to_obsidian, fetch_og_image
 from utils.async_utils import safe_create_task
@@ -247,6 +247,59 @@ async def save_as_recipe(req: RecipeSaveRequest):
     _schedule_db_backup("db-backup-recipe-save")
     meal_name = _re.sub(r"[\[\]|\n]", "", title).strip()[:40]
     return {"ok": True, "link_id": new_id, "title": title, "meal_name": meal_name}
+
+
+def _normalize_cook_dates(raw: str) -> list[str]:
+    """カンマ区切りの予定日文字列を、重複なし・昇順の YYYY-MM-DD リストにする。"""
+    import re as _re
+    seen, out = set(), []
+    for p in (raw or "").replace("、", ",").split(","):
+        d = p.strip()
+        if _re.match(r"^\d{4}-\d{2}-\d{2}$", d) and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return sorted(out)
+
+
+class CookDateRequest(BaseModel):
+    date: str
+    add: bool = True  # True=予定日に追加 / False=削除
+
+
+@router.post("/{link_id}/cook_date", dependencies=[Depends(verify_api_key)])
+async def link_cook_date(link_id: int, req: CookDateRequest):
+    """レシピの「作る予定の日」を1件追加/削除する（複数日対応）。食事ログの日と相互連携。"""
+    import re as _re
+    lk = await get_link_by_id(link_id)
+    if not lk:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません")
+    date = (req.date or "").strip()
+    if not _re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(status_code=400, detail="日付は YYYY-MM-DD で指定してください")
+    dates = _normalize_cook_dates(lk.get("cook_dates") or "")
+    if req.add:
+        if date not in dates:
+            dates.append(date)
+    else:
+        dates = [d for d in dates if d != date]
+    dates = sorted(set(dates))
+    await set_link_cook_dates(link_id, ",".join(dates))
+    return {"ok": True, "cook_dates": dates}
+
+
+class CookDatesSetRequest(BaseModel):
+    cook_dates: str = ""  # カンマ区切りでまとめて設定
+
+
+@router.post("/{link_id}/cook_dates", dependencies=[Depends(verify_api_key)])
+async def link_cook_dates_set(link_id: int, req: CookDatesSetRequest):
+    """レシピの予定日リストをまとめて設定する（編集モーダルからの一括保存用）。"""
+    lk = await get_link_by_id(link_id)
+    if not lk:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません")
+    dates = _normalize_cook_dates(req.cook_dates or "")
+    await set_link_cook_dates(link_id, ",".join(dates))
+    return {"ok": True, "cook_dates": dates}
 
 
 @router.post("", dependencies=[Depends(verify_api_key)])

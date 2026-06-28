@@ -4419,10 +4419,24 @@ async function _loadStockedThumbnails(container, items) {
                 img.src = res.thumbnail;
                 img.style.display = '';
                 if (noimg) noimg.style.display = 'none';
+                // 書籍は背景のぼかし表紙も差し替える
+                const bg = container.querySelector(`[data-thumb-bg="${lk.id}"]`);
+                if (bg) bg.style.backgroundImage = `url("${res.thumbnail}")`;
             }
             // 取得できなかった場合は「No Image」枠を表示したままにする（何かは表示される）
         } catch (e) { /* 取得失敗は No Image のまま */ }
     }
+}
+
+// 書籍サムネの「ぼかし背景」に、表示中の表紙画像を反映する（既に src がある分だけ）。
+function _applyBookThumbBackgrounds(container) {
+    if (!container) return;
+    container.querySelectorAll('.book-thumb-bg[data-thumb-bg]').forEach(bg => {
+        const id = bg.dataset.thumbBg;
+        const img = container.querySelector(`img[data-thumb-img="${id}"]`);
+        const src = img && img.getAttribute('src');
+        if (src) bg.style.backgroundImage = `url("${src}")`;
+    });
 }
 
 // YouTube の URL から動画ID（11桁）を抽出する。watch?v= / youtu.be / shorts / embed / live に対応。
@@ -4677,20 +4691,23 @@ window.loadStockedLinks = async () => {
                 if (ytVid) {
                     const t = `https://i.ytimg.com/vi/${ytVid}/mqdefault.jpg`;
                     thumbEl = `<a class="stocked-link-thumb" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;"><img src="${t}" alt="" loading="lazy" style="${_imgStyle}"></a>`;
-                } else if (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'book' || lk.type === 'map') {
+                } else if (lk.type === 'book') {
+                    // 書籍の表紙は縦長。枠の幅は他（96px）に揃えつつ、表紙はその中に実寸で収める。
+                    // 左右の余白はぼかした表紙を背景に敷いて自然に見せる（背景の余白が目立たない）。
                     const th = (lk.thumbnail && lk.thumbnail !== '__none__') ? lk.thumbnail : '';
-                    // 書籍の表紙は縦長。横長枠に contain で入れると左右に背景が出て不格好なので、
-                    // 書籍だけ縦長の枠に cover で収める（余白なし＝背景が見えない）。
-                    const isBook = lk.type === 'book';
-                    const imgStyle = isBook
-                        ? 'width:38px;height:54px;object-fit:cover;border-radius:4px;background:rgba(255,255,255,0.05);'
-                        : _imgStyle;
-                    const noImgStyle = isBook ? 'width:38px;height:54px;' : '';
+                    thumbEl = `<a class="stocked-link-thumb" data-thumb-wrap="${lk.id}" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;">`
+                        + `<span class="book-thumb-frame">`
+                        + `<span class="book-thumb-bg" data-thumb-bg="${lk.id}"></span>`
+                        + `<img class="book-thumb-img" data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${th ? '' : 'display:none;'}">`
+                        + `<span class="stocked-link-noimg book-thumb-noimg" data-thumb-noimg="${lk.id}" style="${th ? 'display:none;' : ''}">No Image</span>`
+                        + `</span></a>`;
+                } else if (lk.type === 'web' || lk.type === 'recipe' || lk.type === 'map') {
+                    const th = (lk.thumbnail && lk.thumbnail !== '__none__') ? lk.thumbnail : '';
                     // 取得済み画像があれば画像、無ければ「No Image」枠を表示（遅延取得で差し替え）。
                     // 取得を試みても画像が無いページ（__none__）はそのまま「No Image」を出す。
                     thumbEl = `<a class="stocked-link-thumb" data-thumb-wrap="${lk.id}" href="${escapeHtml(lk.url || '')}" target="_blank" rel="noopener" onclick="event.stopPropagation();" style="flex-shrink:0;line-height:0;">`
-                        + `<img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${imgStyle}${th ? '' : 'display:none;'}">`
-                        + `<span class="stocked-link-noimg" data-thumb-noimg="${lk.id}" style="${noImgStyle}${th ? 'display:none;' : ''}">No Image</span>`
+                        + `<img data-thumb-img="${lk.id}" src="${th ? escapeHtml(th) : ''}" alt="" loading="lazy" style="${_imgStyle}${th ? '' : 'display:none;'}">`
+                        + `<span class="stocked-link-noimg" data-thumb-noimg="${lk.id}" style="${th ? 'display:none;' : ''}">No Image</span>`
                         + `</a>`;
                 }
                 const rawTitleEl = lk.url
@@ -4711,6 +4728,12 @@ window.loadStockedLinks = async () => {
                     });
                 }
                 if (lk.target_date) chips.push(`<span class="stocked-link-chip date">📅 ${escapeHtml(lk.target_date)}</span>`);
+                // レシピの「作る予定の日」（複数可）。食事ログの日と相互連携。
+                if (lk.type === 'recipe' && lk.cook_dates) {
+                    lk.cook_dates.split(',').map(s => s.trim()).filter(Boolean).forEach(d => {
+                        chips.push(`<span class="stocked-link-chip date">🍳 ${escapeHtml(d)}</span>`);
+                    });
+                }
                 chips.push(`<span class="stocked-link-chip added">${dateStr}</span>`);
 
                 // ID で引けるよう一覧をグローバルに保持（onclick 内で JSON を埋め込む方式は壊れやすいため）
@@ -4750,6 +4773,7 @@ window.loadStockedLinks = async () => {
                 `;
             }).join('');
             _bindStockedLinkDelegation(container);
+            _applyBookThumbBackgrounds(container);
             _loadStockedThumbnails(container, items);
         };
 
@@ -4889,6 +4913,8 @@ window.openLinkDetailsModal = (lk) => {
     _updateSummaryVisibility();
     requestAnimationFrame(() => {
         $('#link-type-select')?.addEventListener('change', _updateSummaryVisibility);
+        // 種別を変えるとタグ候補（マップの行きたい/行った等）も切り替える
+        $('#link-type-select')?.addEventListener('change', () => { if (typeof _renderLinkTagSuggest === 'function') _renderLinkTagSuggest(); });
     });
 
     // サムネイル画像セクション：プレビュー表示＋手動URL欄の初期化。
@@ -4899,19 +4925,16 @@ window.openLinkDetailsModal = (lk) => {
     const thumbSection = $('#link-thumb-section');
     if (thumbSection) thumbSection.style.display = _youtubeIdFromUrl(lk.url) ? 'none' : '';
 
-    // タグ入力欄を設定（既存 purpose は後方互換フォールバック）
+    // タグ入力欄を設定（既存 purpose は後方互換フォールバック）。
+    // 既存タグやマップ用の「行きたい/行った」をワンタップで付け外しできるようにする。
     const tagsInput = $('#link-tags-input');
-    const tagsPreview = $('#link-tags-preview');
     if (tagsInput) {
         tagsInput.value = lk.tags || lk.purpose || '';
-        const updatePreview = () => {
-            if (!tagsPreview) return;
-            const tags = tagsInput.value.split(',').map(t => t.trim()).filter(Boolean);
-            tagsPreview.innerHTML = tags.map(t => `<span style="background:rgba(0,186,152,0.15); color:var(--accent); border-radius:12px; padding:2px 10px; font-size:0.75rem;">🏷️ ${escapeHtml(t)}</span>`).join('');
-        };
-        updatePreview();
-        tagsInput.oninput = updatePreview;
+        tagsInput.oninput = () => { _renderLinkTagPreview(); _renderLinkTagSuggest(); };
     }
+    _bindLinkTagEditor();
+    _renderLinkTagPreview();
+    _renderLinkTagSuggest();
 
     $('#link-date-input').value = lk.target_date || '';
     $('#link-note-url-input').value = lk.linked_note_url || '';
@@ -4925,8 +4948,14 @@ window.openLinkDetailsModal = (lk) => {
         const isRecipe = ($('#link-type-select')?.value || lk.type) === 'recipe';
         const extra = $('#link-extra-actions');
         if (extra) extra.style.display = isRecipe ? '' : 'none';
+        // レシピのときだけ「作る予定の日（複数可）」セクションを表示する
+        const cookSec = $('#link-cookdates-section');
+        if (cookSec) cookSec.style.display = isRecipe ? 'flex' : 'none';
     };
     _syncRecipeAction();
+    _renderLinkCookDateChips();
+    const cookInput = $('#link-cookdate-input');
+    if (cookInput) cookInput.value = '';
     requestAnimationFrame(() => {
         $('#link-type-select')?.addEventListener('change', _syncRecipeAction);
     });
@@ -5053,6 +5082,126 @@ function _updateLinkThumbCache(linkId, thumbnail) {
     }
     _renderLinkThumbPreview(lk);
 }
+
+// ===== タグのスムーズ入力（ワンタップ追加/削除・候補表示）=====
+// マップ用の定番タグ（行きたい/行った）。種別ごとの定番をここに足せる。
+const _LINK_TAG_QUICK = {
+    map: ['行きたい', '行った'],
+    book: ['読みたい', '読んだ'],
+    recipe: ['作りたい', '作った'],
+};
+
+function _getLinkTagList() {
+    const inp = $('#link-tags-input');
+    return (inp && inp.value || '').split(',').map(t => t.trim()).filter(Boolean);
+}
+function _setLinkTagList(arr) {
+    const uniq = [];
+    arr.forEach(t => { t = (t || '').trim(); if (t && !uniq.includes(t)) uniq.push(t); });
+    const inp = $('#link-tags-input');
+    if (inp) inp.value = uniq.join(', ');
+    _renderLinkTagPreview();
+    _renderLinkTagSuggest();
+}
+// チップ/候補のタップでタグを付け外しする。
+window.toggleLinkTag = (tag) => {
+    const list = _getLinkTagList();
+    const i = list.indexOf(tag);
+    if (i >= 0) list.splice(i, 1);
+    else list.push(tag);
+    _setLinkTagList(list);
+};
+function _renderLinkTagPreview() {
+    const box = $('#link-tags-preview');
+    if (!box) return;
+    const tags = _getLinkTagList();
+    box.innerHTML = tags.map(t =>
+        `<span class="tag-chip-active" data-tag="${escapeAttr(t)}" title="タップで削除">🏷️ ${escapeHtml(t)} ×</span>`
+    ).join('');
+}
+// 同じ種別の既存リンクから、よく使うタグを集めて候補にする。
+function _frequentTagsForType(type) {
+    const counts = new Map();
+    Object.values(window._stockedLinksById || {}).forEach(l => {
+        if (!l || l.type !== type) return;
+        (l.tags || '').split(',').map(s => s.trim()).filter(Boolean)
+            .forEach(t => counts.set(t, (counts.get(t) || 0) + 1));
+    });
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(e => e[0]);
+}
+function _renderLinkTagSuggest() {
+    const box = $('#link-tags-suggest');
+    if (!box) return;
+    const type = $('#link-type-select')?.value || (window._currentEditLink && window._currentEditLink.type) || 'web';
+    const current = _getLinkTagList();
+    const suggestions = [];
+    (_LINK_TAG_QUICK[type] || []).forEach(t => { if (!suggestions.includes(t)) suggestions.push(t); });
+    _frequentTagsForType(type).forEach(t => { if (!suggestions.includes(t)) suggestions.push(t); });
+    const list = suggestions.slice(0, 12);
+    box.innerHTML = list.length
+        ? '<span style="font-size:0.7rem;color:var(--text-muted);margin-right:2px;">候補:</span>'
+            + list.map(t => {
+                const on = current.includes(t);
+                return `<span class="tag-chip-suggest${on ? ' on' : ''}" data-tag="${escapeAttr(t)}">${on ? '✓ ' : '＋ '}${escapeHtml(t)}</span>`;
+            }).join('')
+        : '';
+}
+// プレビュー/候補のクリックを1回だけ委譲バインドする。
+function _bindLinkTagEditor() {
+    ['#link-tags-preview', '#link-tags-suggest'].forEach(sel => {
+        const box = $(sel);
+        if (!box || box._tagBound) return;
+        box._tagBound = true;
+        box.addEventListener('click', (e) => {
+            const el = e.target.closest('[data-tag]');
+            if (!el) return;
+            window.toggleLinkTag(el.dataset.tag);
+        });
+    });
+}
+
+// ===== レシピの「作る予定の日」（複数可）編集 =====
+function _renderLinkCookDateChips() {
+    const box = $('#link-cookdates-chips');
+    if (!box) return;
+    const lk = window._currentEditLink || {};
+    const dates = (lk.cook_dates || '').split(',').map(s => s.trim()).filter(Boolean).sort();
+    box.innerHTML = dates.length
+        ? dates.map(d => `<span class="stocked-link-chip date" style="display:inline-flex;align-items:center;gap:4px;">🍳 ${escapeHtml(d)} <button onclick="removeLinkCookDate('${d}')" title="削除" style="background:none;border:none;color:inherit;cursor:pointer;padding:0 2px;font-size:0.95rem;line-height:1;">×</button></span>`).join('')
+        : '<span style="font-size:0.74rem;color:var(--text-muted);">作った日はまだありません</span>';
+}
+
+function _setLinkCookDatesLocal(linkId, datesArr) {
+    const csv = (datesArr || []).join(',');
+    if (window._currentEditLink && window._currentEditLink.id === linkId) window._currentEditLink.cook_dates = csv;
+    if (window._stockedLinksById && window._stockedLinksById[linkId]) window._stockedLinksById[linkId].cook_dates = csv;
+}
+
+window.addLinkCookDate = async () => {
+    if (!currentEditLinkId) return;
+    const inp = $('#link-cookdate-input');
+    const d = (inp && inp.value || '').trim();
+    if (!d) { showToast('日付を選んでください', true); return; }
+    try {
+        const res = await apiFetch(`/api/links/${currentEditLinkId}/cook_date`, { method: 'POST', body: JSON.stringify({ date: d, add: true }) });
+        _setLinkCookDatesLocal(currentEditLinkId, res.cook_dates || []);
+        if (inp) inp.value = '';
+        _renderLinkCookDateChips();
+        showToast('作った日を追加しました');
+        if (typeof loadMeals === 'function') loadMeals();  // 表示中の食事ログ日に該当すれば即反映
+    } catch (e) { showToast('追加に失敗しました', true); }
+};
+
+window.removeLinkCookDate = async (d) => {
+    if (!currentEditLinkId) return;
+    try {
+        const res = await apiFetch(`/api/links/${currentEditLinkId}/cook_date`, { method: 'POST', body: JSON.stringify({ date: d, add: false }) });
+        _setLinkCookDatesLocal(currentEditLinkId, res.cook_dates || []);
+        _renderLinkCookDateChips();
+        showToast('作った日を外しました');
+        if (typeof loadMeals === 'function') loadMeals();
+    } catch (e) { showToast('変更に失敗しました', true); }
+};
 
 $('#link-save-btn')?.addEventListener('click', async () => {
     if(!currentEditLinkId) return;
@@ -6875,6 +7024,57 @@ window.navMealsToToday = () => {
     loadMeals();
 };
 
+// 指定日に「作った」レシピ（cook_dates に該当日を含む recipe リンク）の HTML を返す。
+// 食事ログの日付ビューの先頭に表示し、ワンタップで食事ログに記録もできるようにする。
+async function _renderPlannedRecipesHtml(dateStr) {
+    if (!dateStr) return '';
+    let links = [];
+    try { const d = await apiFetch('/api/links'); links = (d && d.links) || []; }
+    catch { return ''; }
+    const planned = links.filter(l => l.type === 'recipe'
+        && (l.cook_dates || '').split(',').map(s => s.trim()).includes(dateStr));
+    window._plannedRecipesById = window._plannedRecipesById || {};
+    planned.forEach(r => { window._plannedRecipesById[r.id] = r; });
+    if (!planned.length) return '';
+    const rows = planned.map(r => {
+        const title = escapeHtml(r.title || '(無題)');
+        return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px dashed rgba(255,255,255,0.08);">
+            <span style="font-size:0.84rem;color:var(--text-primary);flex:1;min-width:0;word-break:break-word;">🍳 ${title}</span>
+            <button class="mini-link" onclick="cookPlannedRecipe(${r.id})" style="color:var(--accent);font-weight:600;white-space:nowrap;">🍽 記録</button>
+            <button class="mini-link btn-danger" onclick="removePlannedRecipe(${r.id}, '${dateStr}')" title="この日の記録から外す">✕</button>
+        </div>`;
+    }).join('');
+    return `<div style="margin-bottom:10px;background:rgba(0,186,152,0.06);border:1px solid rgba(0,186,152,0.2);border-radius:8px;padding:8px 10px;">
+        <div style="font-size:0.78rem;color:var(--accent);font-weight:600;margin-bottom:2px;">🍳 この日に作ったレシピ</div>
+        ${rows}
+    </div>`;
+}
+
+// 作ったレシピを食事ログに記録（表示中の日付をプレフィルしてモーダルを開く）。
+window.cookPlannedRecipe = (linkId) => {
+    const lk = (window._plannedRecipesById || {})[linkId] || (window._stockedLinksById || {})[linkId];
+    if (!lk) return;
+    const parts = [];
+    if (lk.url) parts.push(lk.url);
+    if (lk.summary) parts.push(lk.summary);
+    if (lk.memo) parts.push(lk.memo);
+    openMealManualModal(null, {
+        name: lk.title || '',
+        memo: parts.join('\n'),
+        source: '自炊',
+        date: _mealsViewDate || _todayStr(),
+    });
+};
+
+// 作ったレシピをその日の記録から外す（レシピの cook_dates から削除）。
+window.removePlannedRecipe = async (linkId, dateStr) => {
+    try {
+        await apiFetch(`/api/links/${linkId}/cook_date`, { method: 'POST', body: JSON.stringify({ date: dateStr, add: false }) });
+        showToast('記録から外しました');
+        loadMeals();
+    } catch (e) { showToast('変更に失敗しました', true); }
+};
+
 // ダッシュボードに指定日（既定: 今日）の食事一覧を表示
 window.loadMeals = async () => {
     const listEl = $('#dash-meals-list');
@@ -6904,15 +7104,18 @@ window.loadMeals = async () => {
             }
         }
 
+        // 「この日に作る予定のレシピ」（レシピの cook_dates と食事ログの日を相互連携）
+        const plannedHtml = await _renderPlannedRecipesHtml(_mealsViewDate);
+
         if (!meals.length) {
             const hint = isToday
                 ? '<span class="muted-hint">「📷 写真」または「✏️ 手動」から追加。</span>'
                 : '<span class="muted-hint">「📅 履歴」で過去の食事を月別に確認できます。</span>';
-            listEl.innerHTML = `<div class="loading-placeholder">${isToday ? '食事が記録されていません。' : 'この日の食事は記録されていません。'}${hint}</div>`;
+            listEl.innerHTML = plannedHtml + `<div class="loading-placeholder">${isToday ? '食事が記録されていません。' : 'この日の食事は記録されていません。'}${hint}</div>`;
             return;
         }
 
-        listEl.innerHTML = meals.map(m => {
+        listEl.innerHTML = plannedHtml + meals.map(m => {
             // メモ内の URL を自動でリンク化（保存済みレシピから流し込んだURLもここでクリック可能になる）
             const memoHtml = m.memo
                 ? `<div style="font-size:0.74rem;color:var(--text-muted);margin-top:2px;word-break:break-word;">${linkifyText(m.memo)}</div>`
@@ -7561,6 +7764,12 @@ window.onMealRecipePicked = () => {
     const srcEl = $('#meal-source');
     if (srcEl && !srcEl.value) srcEl.value = '自炊';
     showToast(`「${title}」を追加しました`);
+    // 食事ログにレシピを選んだら、その日付を「そのレシピを作った日」として記録する
+    // （レシピ↔食事ログの相互連携）。複数日に対応。
+    const mealDate = $('#meal-date')?.value || _mealsViewDate || _todayStr();
+    if (r.id && mealDate) {
+        apiFetch(`/api/links/${r.id}/cook_date`, { method: 'POST', body: JSON.stringify({ date: mealDate, add: true }) }).catch(() => {});
+    }
     // 複数メニューの合算カロリーを反映するため、連結後の料理名から静かに推定し直す。
     estimateMealNutrition(true, true);
 };

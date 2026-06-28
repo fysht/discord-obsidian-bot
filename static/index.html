@@ -1117,6 +1117,7 @@
                     <label style="font-size:0.8rem; color:var(--text-secondary);">タグ（カンマ区切りで複数入力）</label>
                     <input type="text" id="link-tags-input" class="modern-input" style="padding:10px;" placeholder="後で読む, 重要, 仕事...">
                     <div id="link-tags-preview" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:4px;"></div>
+                    <div id="link-tags-suggest" style="display:flex; flex-wrap:wrap; gap:4px; margin-top:2px; align-items:center;"></div>
                 </div>
 
                 <div style="display:flex; flex-direction:column; gap:4px;">
@@ -1125,6 +1126,16 @@
                         <input type="date" id="link-date-input" class="modern-input" style="padding:10px; flex:1;">
                         <label style="font-size:0.8rem; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="link-calendar-check" checked> 予定に追加</label>
                     </div>
+                </div>
+
+                <div id="link-cookdates-section" style="display:none; flex-direction:column; gap:4px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">作った日（複数可・食事ログと連携）</label>
+                    <div style="display:flex; gap:8px; align-items:center;">
+                        <input type="date" id="link-cookdate-input" class="modern-input" style="padding:10px; flex:1;">
+                        <button type="button" class="mini-link" onclick="addLinkCookDate()" title="この日に作ったことを記録">＋ 追加</button>
+                    </div>
+                    <div id="link-cookdates-chips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;"></div>
+                    <div style="font-size:0.7rem; color:var(--text-muted);">食事ログでこのレシピを選ぶと、その日が自動で記録されます。設定した日の食事ログ画面にも表示されます。</div>
                 </div>
 
                 <div style="display:flex; flex-direction:column; gap:4px;">

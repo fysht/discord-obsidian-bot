@@ -478,6 +478,8 @@ async def init_db():
             "ALTER TABLE stocked_links ADD COLUMN calendar_event_id TEXT DEFAULT ''",
             # ウェブ/レシピ/書籍のサムネイル（OGP画像URL）をキャッシュする列
             "ALTER TABLE stocked_links ADD COLUMN thumbnail TEXT DEFAULT ''",
+            # レシピを「作る予定の日」（複数可・カンマ区切り YYYY-MM-DD）。食事ログの日と相互連携する。
+            "ALTER TABLE stocked_links ADD COLUMN cook_dates TEXT DEFAULT ''",
             "ALTER TABLE messages ADD COLUMN starred INTEGER DEFAULT 0",
             "ALTER TABLE messages ADD COLUMN reply_to INTEGER DEFAULT NULL",
             "ALTER TABLE messages ADD COLUMN label TEXT DEFAULT ''",
@@ -755,7 +757,7 @@ async def get_all_links():
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, thumbnail FROM stocked_links ORDER BY id ASC"
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, thumbnail, cook_dates FROM stocked_links ORDER BY id ASC"
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -765,7 +767,7 @@ async def get_link_by_id(link_id: int):
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, calendar_event_id, thumbnail FROM stocked_links WHERE id = ?",
+            "SELECT id, url, type, title, status, added_at, purpose, summary, memo, target_date, linked_note_url, tags, calendar_event_id, thumbnail, cook_dates FROM stocked_links WHERE id = ?",
             (link_id,)
         )
         row = await cursor.fetchone()
@@ -787,6 +789,16 @@ async def set_link_tags(link_id: int, tags: str) -> bool:
     async with aiosqlite.connect(str(DB_PATH)) as db:
         cursor = await db.execute(
             "UPDATE stocked_links SET tags = ? WHERE id = ?", (tags, int(link_id))
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def set_link_cook_dates(link_id: int, cook_dates: str) -> bool:
+    """レシピの「作る予定の日」（カンマ区切り YYYY-MM-DD）を設定する。食事ログ連携用。"""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        cursor = await db.execute(
+            "UPDATE stocked_links SET cook_dates = ? WHERE id = ?", (cook_dates, int(link_id))
         )
         await db.commit()
         return cursor.rowcount > 0
