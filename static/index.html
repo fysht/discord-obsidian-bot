@@ -1135,6 +1135,22 @@
                     </div>
                 </div>
 
+                <div id="link-thumb-section" style="display:flex; flex-direction:column; gap:6px;">
+                    <label style="font-size:0.8rem; color:var(--text-secondary);">サムネイル画像</label>
+                    <div style="display:flex; gap:10px; align-items:flex-start;">
+                        <div id="link-thumb-preview" style="flex-shrink:0;"></div>
+                        <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:6px;">
+                            <input type="text" id="link-thumb-url-input" class="modern-input" style="padding:8px;" placeholder="画像URLを貼り付け（https://...）">
+                            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                                <button type="button" class="mini-link" onclick="applyLinkThumbnailUrl()" title="入力した画像URLを反映">✅ 画像URLを反映</button>
+                                <button type="button" class="mini-link" onclick="refetchLinkThumbnail()" title="書籍はGoogle Books、マップはGoogleマップ写真から自動取得">🔄 自動取得</button>
+                                <button type="button" class="mini-link btn-danger" onclick="clearLinkThumbnail()" title="画像をクリア（No Image表示）">🗑 画像クリア</button>
+                            </div>
+                            <div style="font-size:0.7rem; color:var(--text-muted);">書籍・マップは「🔄 自動取得」で画像を探します。取得できないときは画像URLを貼り付けてください。</div>
+                        </div>
+                    </div>
+                </div>
+
                 <div style="display:flex; flex-direction:column; gap:4px;">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">要約 / 読書ノート</label>
                     <textarea id="link-summary-input" class="modern-input auto-grow-textarea" style="padding:10px; min-height:80px; resize:vertical;" placeholder="AIの要約やノートをコピペ..."></textarea>

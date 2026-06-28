@@ -4884,6 +4884,14 @@ window.openLinkDetailsModal = (lk) => {
         $('#link-type-select')?.addEventListener('change', _updateSummaryVisibility);
     });
 
+    // サムネイル画像セクション：プレビュー表示＋手動URL欄の初期化。
+    // YouTube は動画サムネ固定なので手動設定UIは隠す。
+    _renderLinkThumbPreview(lk);
+    const thumbUrlInput = $('#link-thumb-url-input');
+    if (thumbUrlInput) thumbUrlInput.value = '';
+    const thumbSection = $('#link-thumb-section');
+    if (thumbSection) thumbSection.style.display = _youtubeIdFromUrl(lk.url) ? 'none' : '';
+
     // タグ入力欄を設定（既存 purpose は後方互換フォールバック）
     const tagsInput = $('#link-tags-input');
     const tagsPreview = $('#link-tags-preview');
@@ -4959,6 +4967,82 @@ window.closeLinkDetailsModal = () => {
     $('#link-details-modal').classList.add('hidden');
     currentEditLinkId = null;
 };
+
+// 編集モーダルのサムネイルプレビューを描画する（画像 or No Image）。
+function _renderLinkThumbPreview(lk) {
+    const box = $('#link-thumb-preview');
+    if (!box) return;
+    const yt = _youtubeIdFromUrl(lk && lk.url);
+    let src = '';
+    if (yt) src = `https://i.ytimg.com/vi/${yt}/mqdefault.jpg`;
+    else if (lk && lk.thumbnail && lk.thumbnail !== '__none__') src = lk.thumbnail;
+    const imgStyle = 'width:120px;height:68px;object-fit:cover;border-radius:6px;background:rgba(255,255,255,0.05);';
+    box.innerHTML = src
+        ? `<img src="${escapeAttr(src)}" alt="" style="${imgStyle}">`
+        : `<span class="stocked-link-noimg" style="width:120px;height:68px;">No Image</span>`;
+}
+
+// 入力した画像URLをサムネイルとして手動設定する。
+window.applyLinkThumbnailUrl = async () => {
+    if (!currentEditLinkId) return;
+    const input = $('#link-thumb-url-input');
+    const url = (input && input.value || '').trim();
+    if (!url) { showToast('画像URLを入力してください', true); return; }
+    try {
+        const res = await apiFetch(`/api/links/${currentEditLinkId}/thumbnail_manual`, {
+            method: 'POST', body: JSON.stringify({ url }),
+        });
+        _updateLinkThumbCache(currentEditLinkId, res.thumbnail || url);
+        showToast('画像を設定しました');
+        if (input) input.value = '';
+        loadStockedLinks();
+    } catch (e) {
+        showToast('画像の設定に失敗しました（URLを確認してください）', true);
+    }
+};
+
+// 書籍=Google Books / マップ=Googleマップ写真 などから自動で取得し直す。
+window.refetchLinkThumbnail = async () => {
+    if (!currentEditLinkId) return;
+    showToast('🔄 画像を探しています…');
+    try {
+        const res = await apiFetch(`/api/links/${currentEditLinkId}/thumbnail`, {
+            method: 'POST', body: JSON.stringify({ refresh: true }),
+        });
+        _updateLinkThumbCache(currentEditLinkId, res.thumbnail || '__none__');
+        showToast(res.thumbnail ? '画像を取得しました' : '画像が見つかりませんでした。URLを貼り付けてください');
+        loadStockedLinks();
+    } catch (e) {
+        showToast('画像の取得に失敗しました', true);
+    }
+};
+
+// サムネイルをクリアして「No Image」に戻す。
+window.clearLinkThumbnail = async () => {
+    if (!currentEditLinkId) return;
+    try {
+        await apiFetch(`/api/links/${currentEditLinkId}/thumbnail_manual`, {
+            method: 'POST', body: JSON.stringify({ url: '' }),
+        });
+        _updateLinkThumbCache(currentEditLinkId, '__none__');
+        showToast('画像をクリアしました');
+        loadStockedLinks();
+    } catch (e) {
+        showToast('クリアに失敗しました', true);
+    }
+};
+
+// モーダルのプレビューとローカルキャッシュを更新する。
+function _updateLinkThumbCache(linkId, thumbnail) {
+    if (window._stockedLinksById && window._stockedLinksById[linkId]) {
+        window._stockedLinksById[linkId].thumbnail = thumbnail;
+    }
+    const lk = (window._stockedLinksById && window._stockedLinksById[linkId]) || { thumbnail };
+    if (window._currentEditLink && window._currentEditLink.id === linkId) {
+        window._currentEditLink.thumbnail = thumbnail;
+    }
+    _renderLinkThumbPreview(lk);
+}
 
 $('#link-save-btn')?.addEventListener('click', async () => {
     if(!currentEditLinkId) return;

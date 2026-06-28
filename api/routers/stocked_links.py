@@ -136,19 +136,77 @@ async def get_links():
     return {"links": await get_all_links()}
 
 
+async def _fetch_thumbnail_for_link(lk: dict) -> str:
+    """リンク種別に応じた最適な方法でサムネイル画像URLを取得する。
+    書籍は Google Books、マップは Google Places、それ以外は OGP画像。
+    種別固有の取得に失敗したら OGP画像にフォールバックする。"""
+    from api.routes import fetch_book_cover, fetch_place_photo, _extract_youtube_id
+
+    url = lk.get("url") or ""
+    ltype = lk.get("type") or "web"
+    title = (lk.get("title") or "").strip()
+
+    # YouTube は動画サムネをフロントで使うのでサーバー取得は不要
+    if _extract_youtube_id(url):
+        return ""
+
+    if ltype == "book":
+        img = await fetch_book_cover(title)
+        if img:
+            return img
+        return await fetch_og_image(url)
+    if ltype == "map":
+        # タイトルが場所名（fetch_maps_info 由来）。汎用名なら URL から場所名を引き直す。
+        query = title
+        if not query or query in ("Google Maps", "Google Maps Location", "Untitled"):
+            try:
+                from web_parser import fetch_maps_info
+                place_name, _ = await fetch_maps_info(url)
+                if place_name and place_name != "Google Maps Location":
+                    query = place_name
+            except Exception:
+                pass
+        img = await fetch_place_photo(query)
+        if img:
+            return img
+        return await fetch_og_image(url)
+    return await fetch_og_image(url)
+
+
+class ThumbnailRequest(BaseModel):
+    refresh: bool = False
+
+
 @router.post("/{link_id}/thumbnail", dependencies=[Depends(verify_api_key)])
-async def link_thumbnail(link_id: int):
-    """リンクのサムネイル（OGP画像）をオンデマンドで取得してキャッシュする。
-    一度取得すれば次回からは即返す。画像が無いページは再取得しないよう印を付ける。"""
+async def link_thumbnail(link_id: int, req: ThumbnailRequest = ThumbnailRequest()):
+    """リンクのサムネイル画像をオンデマンドで取得してキャッシュする。
+    refresh=True なら既存キャッシュ（取得失敗の __none__ 含む）を無視して取り直す。"""
     lk = await get_link_by_id(link_id)
     if not lk:
         raise HTTPException(status_code=404, detail="リンクが見つかりません")
     cached = (lk.get("thumbnail") or "").strip()
-    if cached:
+    if cached and not req.refresh:
         return {"ok": True, "thumbnail": "" if cached == "__none__" else cached}
-    img = await fetch_og_image(lk.get("url") or "")
+    img = await _fetch_thumbnail_for_link(lk)
     await set_link_thumbnail(link_id, img or "__none__")
     return {"ok": True, "thumbnail": img}
+
+
+class ThumbnailManualRequest(BaseModel):
+    url: str = ""
+
+
+@router.post("/{link_id}/thumbnail_manual", dependencies=[Depends(verify_api_key)])
+async def link_thumbnail_manual(link_id: int, req: ThumbnailManualRequest):
+    """サムネイル画像を手動で設定する（画像URLを貼り付け）。空文字でクリア（No Image表示）。"""
+    lk = await get_link_by_id(link_id)
+    if not lk:
+        raise HTTPException(status_code=404, detail="リンクが見つかりません")
+    url = (req.url or "").strip()
+    if url and not url.lower().startswith(("http://", "https://", "data:image/")):
+        raise HTTPException(status_code=400, detail="http(s) の画像URLを指定してください")
+    await set_link_thumbnail(link_id, url or "__none__")
+    return {"ok": True, "thumbnail": url}
 
 
 class RecipeSaveRequest(BaseModel):

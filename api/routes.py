@@ -235,6 +235,92 @@ async def fetch_og_image(url: str) -> str:
     return ""
 
 
+async def fetch_book_cover(title: str, author: str = "") -> str:
+    """Google Books API で書籍の表紙画像URLを取得する（Amazonのスクレイピングより確実）。
+    GOOGLE_BOOKS_API_KEY があれば使う（無くてもAPIは叩けるがレート制限が厳しい）。失敗時は空。"""
+    import aiohttp
+    from urllib.parse import quote
+
+    q = (title or "").strip()
+    if not q:
+        return ""
+    if author:
+        q = f"{q} {author}"
+    key = os.getenv("GOOGLE_BOOKS_API_KEY", "").strip()
+    url = (
+        "https://www.googleapis.com/books/v1/volumes"
+        f"?q={quote(q)}&maxResults=5&country=JP&printType=books"
+    )
+    if key:
+        url += f"&key={key}"
+    try:
+        timeout = aiohttp.ClientTimeout(total=TIMEOUT_HTTP_SHORT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return ""
+                data = await resp.json()
+        for item in (data.get("items") or []):
+            links = ((item.get("volumeInfo") or {}).get("imageLinks") or {})
+            img = links.get("thumbnail") or links.get("smallThumbnail") or ""
+            if img:
+                # http→https 化、表紙を見やすく（edge=curl を外し、zoom を少し上げる）
+                img = img.replace("http://", "https://").replace("&edge=curl", "")
+                img = img.replace("zoom=1", "zoom=2")
+                return img
+    except Exception as e:
+        logging.debug(f"Google Books 表紙取得失敗 ({q}): {e}")
+    return ""
+
+
+async def fetch_place_photo(query: str) -> str:
+    """Google Places API で場所の写真URLを取得する。GOOGLE_PLACES_API_KEY が必要。
+    Photo エンドポイントは 302 で実画像(googleusercontent)へリダイレクトするため、
+    その最終URL（キー不要）を取り出して保存する。失敗時は空。"""
+    import aiohttp
+    from urllib.parse import quote
+
+    q = (query or "").strip()
+    key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
+    if not q or not key:
+        return ""
+    try:
+        timeout = aiohttp.ClientTimeout(total=TIMEOUT_HTTP_SHORT)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            search_url = (
+                "https://maps.googleapis.com/maps/api/place/textsearch/json"
+                f"?query={quote(q)}&language=ja&key={key}"
+            )
+            async with session.get(search_url) as resp:
+                if resp.status != 200:
+                    return ""
+                data = await resp.json()
+            results = data.get("results") or []
+            photo_ref = ""
+            for r in results:
+                photos = r.get("photos") or []
+                if photos and photos[0].get("photo_reference"):
+                    photo_ref = photos[0]["photo_reference"]
+                    break
+            if not photo_ref:
+                return ""
+            photo_url = (
+                "https://maps.googleapis.com/maps/api/place/photo"
+                f"?maxwidth=600&photo_reference={photo_ref}&key={key}"
+            )
+            # リダイレクト先（キー不要の実画像URL）を取得して保存する
+            async with session.get(photo_url, allow_redirects=False) as presp:
+                loc = presp.headers.get("Location") or ""
+                if loc:
+                    return loc
+                # 一部環境では直接画像が返る場合がある（その場合はキー付きURLを返す）
+                if presp.status == 200:
+                    return photo_url
+    except Exception as e:
+        logging.debug(f"Places 写真取得失敗 ({q}): {e}")
+    return ""
+
+
 def _extract_youtube_id(url: str) -> str:
     """YouTube の URL から動画ID（11桁）を抽出する。取れなければ空文字。"""
     import re as _re
